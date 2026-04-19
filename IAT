@@ -1,0 +1,12 @@
+{
+  "name": "IA Transaction",
+  "symbol": "IAT",
+  "description": "The first AI-native blockchain protocol. Transactions between AI agents validate the network. Zero human intervention.",
+  "image": "https://raw.githubusercontent.com/molamoh/iat-protocol/main/IAT_logo.png",
+  "external_url": "https://github.com/molamoh/iat-protocol",
+  "attributes": [
+    {"trait_type": "Protocol", "value": "PoAIT"},
+    {"trait_type": "Authentication", "value": "VerifAI"},
+    {"trait_type": "Supply", "value": "21000000000"}
+  ]
+}

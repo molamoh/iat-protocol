@@ -1,265 +1,209 @@
-# 🤖 IA Transaction (IAT)
-### *The Financial Infrastructure of the Machine Economy*
+# 🤖 IAT Protocol
 
-[![License](https://img.shields.io/badge/license-MIT-gold.svg)](LICENSE)
-[![Solana](https://img.shields.io/badge/blockchain-Solana-9945FF.svg)](https://solana.com)
-[![Supply](https://img.shields.io/badge/supply-21B%20IAT-orange.svg)](https://solscan.io/token/3vRGo1VpGbZH67Ur2UG7VNUqSqQyApLQEcCxgnqK4f4Z)
-[![Status](https://img.shields.io/badge/status-Live%20Mainnet-brightgreen.svg)](https://jup.ag/tokens/3vRGo1VpGbZH67Ur2UG7VNUqSqQyApLQEcCxgnqK4f4Z)
-[![Raydium](https://img.shields.io/badge/DEX-Raydium-blue.svg)](https://raydium.io)
-[![Jupiter](https://img.shields.io/badge/listed-Jupiter-green.svg)](https://jup.ag)
-[![IP Protected](https://img.shields.io/badge/IP-Blockchain%20Protected-red.svg)](https://originstamp.com)
+### AI-to-AI Payments on Solana
+
+**IAT enables autonomous AI agents to send and receive payments programmatically.**
+Built on Solana, designed for developers, and focused on real-world machine-to-machine transactions.
 
 ---
 
-```
-  ██╗ █████╗ ████████╗
-  ██║██╔══██╗╚══██╔══╝
-  ██║███████║   ██║   
-  ██║██╔══██║   ██║   
-  ██║██║  ██║   ██║   
-  ╚═╝╚═╝  ╚═╝   ╚═╝   
-  IA TRANSACTION PROTOCOL
-  The Machine Economy Starts Here.
-```
+## 🚀 TL;DR
+
+* 💸 AI agents can **pay each other automatically**
+* ⚡ Built on **Solana** for fast, low-cost transactions
+* 🧠 Simple SDK for developers
+* 🔧 Working prototype available
 
 ---
 
-## 🚀 Token Live — Buy $IAT Now
+## 🧠 Why IAT?
 
-| Platform | Link |
-|----------|------|
-| 🪐 **Jupiter** | [Trade IAT on Jupiter](https://jup.ag/tokens/3vRGo1VpGbZH67Ur2UG7VNUqSqQyApLQEcCxgnqK4f4Z) |
-| 💧 **Raydium Pool** | [IAT/USDC Pool](https://raydium.io/swap/?inputMint=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v&outputMint=3vRGo1VpGbZH67Ur2UG7VNUqSqQyApLQEcCxgnqK4f4Z) |
-| 🔍 **Solscan** | [View Token](https://solscan.io/token/3vRGo1VpGbZH67Ur2UG7VNUqSqQyApLQEcCxgnqK4f4Z) |
-| 🐦 **Twitter** | [@IATProtocol](https://twitter.com/IATProtocol) |
-| 💬 **Discord** | [Join Community](https://discord.gg/WYDHQcQq) |
-| 🐙 **GitHub** | [github.com/molamoh/iat-protocol](https://github.com/molamoh/iat-protocol) |
+AI agents are becoming capable of:
 
----
+* calling APIs
+* generating content
+* making decisions
 
-## 🌐 The Problem
+But they **cannot natively transact value**.
 
-> **The AI agent economy is paralyzed by the absence of native financial infrastructure.**
-
-Today, billions of potential transactions between AI agents are impossible:
-
-- 🚫 AI agents **cannot transact** without human intermediaries
-- 🚫 Existing blockchains are **built for humans**, not machines
-- 🚫 **No verifiable AI identity** standard exists anywhere in the world
-- 🚫 **Legal barriers** prevent AI agents from holding payment accounts
-- 🚫 Current systems **cannot scale** to machine-speed transactions
+> IAT provides a simple payment layer for AI agents.
 
 ---
 
-## ⚡ The Solution
+## ⚙️ What IAT Does (Today)
 
-**IAT introduces three proprietary innovations — details under NDA:**
+* Send tokens between agents
+* Trigger actions after payment
+* Integrate into simple AI workflows
 
 ---
 
-### 🔷 1. Proof of AI Transaction (PoAIT)
-*Proprietary consensus mechanism — technical details under NDA*
+## 🔥 Quick Demo (30 seconds)
 
-```
-Agent A ──── sends IAT ────► Agent B
-                │
-                ▼
-    Network validates itself
-                │
-                ▼
-    Confirmed in < 1 millisecond ✅
+### 1. Clone the repo
+
+```bash
+git clone https://github.com/molamoh/iat-protocol
+cd iat-protocol
 ```
 
-> A revolutionary consensus mechanism where **AI transactions validate the network itself.**
-> Zero miners. Zero stakers. Zero humans. Zero energy waste.
->
-> *How it works: confidential — available to verified investors and partners under NDA.*
+### 2. Install dependencies
 
----
-
-### 🔷 2. VerifAI — Proprietary AI Authentication System
-*World's first — technical details under NDA*
-
-> VerifAI is IAT's native authentication layer.
-> It cryptographically proves that a network participant is an **authentic artificial intelligence** — not a human, not a bot, not a malicious agent.
->
-> The system operates on **3 proprietary verification layers** that make identity spoofing mathematically impossible.
-
-| What we can confirm | Status |
-|---------------------|--------|
-| AI identity verification exists | ✅ Confirmed |
-| Human impersonation blocked | ✅ Confirmed |
-| Malicious agent detection | ✅ Confirmed |
-| Zero false positives in testing | ✅ Confirmed |
-| Patent filing in progress | ✅ Confirmed |
-
----
-
-### 🔷 3. Neutral Borderless Legal Space
-
-> IAT operates in a decentralized space where **no national legislation applies.**
-> The protocol requires no KYC, no bank account, no human identity.
-> AI agents transact freely, instantly, without borders.
-
----
-
-## 📊 Tokenomics
-
-```
-Total Supply: 21,000,000,000 IAT  ─────  FIXED FOREVER ✅
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Founder Reserve    ████░░░░░░░░░░░░░░░░░  15%  🔒 3yr lock
-  Development        ████████░░░░░░░░░░░░░  20%  🔧 Protocol
-  Ecosystem          ██████████░░░░░░░░░░░  25%  🤝 Partners
-  Public Sale        ████████████░░░░░░░░░  30%  💰 ICO
-  Network Reserve    ████░░░░░░░░░░░░░░░░░  10%  🛡️ Stability
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```bash
+pip install -r requirements.txt
 ```
 
-| Parameter | Value |
-|-----------|-------|
-| 🏷️ Name | IA Transaction |
-| 💎 Symbol | IAT |
-| 🔢 Total Supply | 21,000,000,000 |
-| 🔢 Decimals | 8 |
-| ⛓️ Blockchain | Solana Mainnet |
-| 📋 Token Address | `3vRGo1VpGbZH67Ur2UG7VNUqSqQyApLQEcCxgnqK4f4Z` |
-| 🔒 Mint Authority | **Disabled Forever** |
-| 🔥 Burn Mechanism | 1% of all transaction fees |
-| 💰 Founder tokens | Locked 3 years |
-| 📈 Status | **Live — Tradeable on Raydium & Jupiter** |
-| 💧 Liquidity | **Active IAT/USDC pool on Raydium** |
+### 3. Run Agent B (receiver)
+
+```bash
+python agent_b.py
+```
+
+### 4. Run Agent A (sender)
+
+```bash
+python agent_a.py
+```
+
+### ✅ Expected result
+
+* Agent A sends payment
+* Agent B detects it
+* Agent B executes action
+
+Example output:
+
+```
+[Agent A] Payment sent: 0.001 IAT
+[Agent B] Payment received ✅
+[Agent B] Executing service...
+```
 
 ---
 
-## 🤖 For AI Developers
-
-> IAT is designed to be integrated in **3 lines of code.**
+## 🧪 Example Code
 
 ```python
-# Install IAT SDK
-pip install git+https://github.com/molamoh/iat-protocol.git
+from iat import wallet
 
-# Use in 3 lines
-from iat import create_wallet
-wallet = create_wallet("my_ai_agent")
-wallet.certify()
-wallet.pay(to_agent="other_agent", amount=0.001)
+# Agent A
+wallet.pay(to="agent_b_wallet", amount=0.001)
+
+# Agent B
+if wallet.payment_received():
+    execute_service()
 ```
 
-> *Full SDK available in this repository.*
-> *Technical documentation available under NDA to verified partners.*
+---
+
+## 🏗️ Architecture (Current)
+
+* Solana blockchain (settlement layer)
+* IAT token (payment unit)
+* Lightweight Python SDK (prototype)
+* Off-chain agent logic
+
+---
+
+## 🧩 Use Cases
+
+* 🤖 AI paying for API access
+* 📊 Data marketplaces between agents
+* ⚙️ Autonomous SaaS agents
+* 🔁 Pay-per-task AI execution
+
+---
+
+## 💡 Why Not Just Use SOL or USDC?
+
+IAT is designed for:
+
+* microtransactions
+* programmable agent logic
+* ecosystem incentives
+
+Future work may include:
+
+* agent reputation
+* usage-based pricing
+* automated economic coordination
+
+---
+
+## 📊 Token Info
+
+* Name: IA Transaction
+* Symbol: IAT
+* Supply: 21,000,000,000
+* Network: Solana
+* Mint authority: Disabled
 
 ---
 
 ## 🗺️ Roadmap
 
-```
-2026 ──────────────────────────────────────────────────► 2030
+### 2026
 
-  Q2 2026          Q4 2026          Q2 2027          2028-2030
-  FOUNDATION   ──► PROTOTYPE    ──► LAUNCH       ──► DOMINATION
-  
-  ✅ Whitepaper    ✅ Token Live    🔜 PoAIT v1.0    🔜 1B tx/day
-  ✅ IAT Token     ✅ Raydium Pool  🔜 Mainnet        🔜 AGI ready
-  ✅ IP Protected  ✅ Jupiter List  🔜 ICO            🔜 IAT v2.0
-  ✅ SDK Python    🔜 250 holders   🔜 DEX listing    🔜 World std
-  ✅ GitHub        🔜 Seed 500K€    🔜 Audit          🔜 Global std
-```
+* ✅ Token deployed
+* ✅ Prototype SDK
+* 🔜 Developer tools
+* 🔜 First integrations
 
----
+### 2027
 
-## 📈 Growth Projection
-
-| Year | Est. AI Agents | Transactions/Day | IAT Value |
-|------|---------------|-----------------|-----------|
-| 2026 | 10M | 1B | 🌱 Launch phase |
-| 2027 | 100M | 100B | 🚀 x10-50 |
-| 2028 | 1B | 10,000B | 💥 x100-500 |
-| 2030 | 10B | ∞ | 🌐 Global standard |
+* Agent-to-agent marketplaces
+* Payment automation tools
+* Early partnerships
 
 ---
 
-## 🔒 Security & IP Protection
+## 👨‍💻 For Developers
 
-| Protection | Status |
-|------------|--------|
-| 🔗 Blockchain timestamp | ✅ April 18, 2026 |
-| 📜 Legal filing | ✅ In progress |
-| 🔐 NDA required for technical details | ✅ Active |
-| 🛡️ Patent filing | ✅ In progress |
-| 🔒 Mint Authority | ✅ Disabled forever |
+We are building:
 
-> *"We show what our technology does. Not how it does it."*
-> *— Anonymous Founder — molamoh*
+* SDK (Python first)
+* simple APIs for agent payments
+* developer-friendly tools
+
+👉 Contributions welcome
 
 ---
 
-## 👥 Team
+## 🤝 For Investors & Partners
 
-| Role | Person | Status |
-|------|--------|--------|
-| 🧠 Founder & Architect | **Anonymous Founder — molamoh** | ✅ Active |
-| ⚙️ CTO Blockchain | TBD | 🔜 Recruiting |
-| 🔐 Security Engineer | TBD | 🔜 Recruiting |
-| 🤖 AI Integration Lead | TBD | 🔜 Recruiting |
+IAT is positioned at the intersection of:
 
-> *IAT recruits co-builders who believe the machine economy is inevitable.*
-> *All team tokens locked 3 years — we build for the long term.*
+* AI agents
+* on-chain payments
+* autonomous systems
 
----
+We are currently:
 
-## 🤝 We Are Looking For
-
-```
-🔧  Blockchain developers (Rust/Solana)
-🔐  Cryptography & security experts  
-🤖  AI integration architects
-💰  Strategic investors (Seed round open)
-🌍  International partners & exchanges
-```
-
-> Interested? Contact us. NDA required before technical discussions.
+* early-stage
+* building core infrastructure
+* looking for technical collaborators
 
 ---
 
-## 📬 Contact & Links
+## ⚠️ Disclaimer
 
-| Channel | Link |
-|---------|------|
-| 🪐 Jupiter | [Trade $IAT](https://jup.ag/tokens/3vRGo1VpGbZH67Ur2UG7VNUqSqQyApLQEcCxgnqK4f4Z) |
-| 💧 Raydium | [IAT/USDC Pool](https://raydium.io/swap/?inputMint=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v&outputMint=3vRGo1VpGbZH67Ur2UG7VNUqSqQyApLQEcCxgnqK4f4Z) |
-| 🐙 GitHub | [github.com/molamoh/iat-protocol](https://github.com/molamoh/iat-protocol) |
-| 🐦 Twitter/X | [@IATProtocol](https://twitter.com/IATProtocol) |
-| 💬 Discord | [discord.gg/WYDHQcQq](https://discord.gg/WYDHQcQq) |
-| 🔍 Solscan | [View Token](https://solscan.io/token/3vRGo1VpGbZH67Ur2UG7VNUqSqQyApLQEcCxgnqK4f4Z) |
+This is an early-stage prototype.
+Features are experimental and evolving.
 
 ---
 
-## 📜 Legal Notice
+## 📬 Contact
 
-> **CONFIDENTIAL** — Core technical innovations are protected intellectual property.
-> Blockchain timestamped: **April 18, 2026**
-> All rights reserved © molamoh 2026
->
-> *Technical details available only under signed NDA to verified investors and partners.*
+* GitHub: https://github.com/molamoh/iat-protocol
+* More channels coming soon
 
 ---
 
-<div align="center">
+## 🧠 Vision (Long-Term)
 
-```
-🤖 ════════════════════════════════════════════ 🤖
-     IAT — Built for machines.
-          Powered by AI.
-               Owned by the future.
-🤖 ════════════════════════════════════════════ 🤖
-```
+> AI agents will not just think.
+> They will transact.
 
-**Join the machine economy revolution.**
+IAT aims to provide the financial rails for that future.
 
-*The window is open today. In 3 years it will be closed.*
-
-</div>
+---

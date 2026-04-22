@@ -1,5 +1,5 @@
 # 🤖 IA Transaction (IAT)
-### *The Financial Infrastructure of the Machine Economy*
+### *Experimental AI-to-AI Payment Protocol on Solana*
 
 [![Solana](https://img.shields.io/badge/blockchain-Solana-9945FF.svg)](https://solana.com)
 [![Supply](https://img.shields.io/badge/supply-21B%20IAT-orange.svg)](https://solscan.io/token/3vRGo1VpGbZH67Ur2UG7VNUqSqQyApLQEcCxgnqK4f4Z)
@@ -17,7 +17,7 @@
   ██║██║  ██║   ██║   
   ╚═╝╚═╝  ╚═╝   ╚═╝   
   IA TRANSACTION PROTOCOL
-  The Machine Economy Starts Here.
+  Building the Machine Economy.
 ```
 
 ---
@@ -34,15 +34,12 @@
 
 ---
 
-## ⚡ Quick Demo — AI-to-AI Payment in 3 lines
+## ⚡ Quick Demo
 
 ```bash
-# Install
-pip install git+https://github.com/molamoh/iat-protocol.git
-
-# Run demo
 git clone https://github.com/molamoh/iat-protocol.git
 cd iat-protocol
+pip install -r requirements.txt
 PYTHONPATH=. python3 demo.py
 ```
 
@@ -53,49 +50,51 @@ PYTHONPATH=. python3 demo.py
 ✅ Payment confirmed!
 📤 Amount: 9.99 IAT
 🔗 TX: IAT-e9e2746f8640832f...
-⚡ Speed: 0.001ms
+📊 Stats: {total_transactions: 1, burned: 0.0001}
 ```
+
+> ⚠️ This demo runs the payment logic locally (simulated).
+> On-chain Solana transfers are in active development.
+> Real Solana confirmation time: ~400-600ms.
 
 ---
 
 ## 🌐 The Problem
 
-> **The AI agent economy is paralyzed by the absence of native financial infrastructure.**
+> **The AI agent economy lacks native financial infrastructure.**
 
-- 🚫 AI agents **cannot transact** without human intermediaries
-- 🚫 Existing blockchains are **built for humans**, not machines
-- 🚫 **No verifiable AI identity** standard exists
-- 🚫 **Legal barriers** prevent AI agents from holding accounts
-- 🚫 Current systems **cannot scale** to machine-speed transactions
+- 🚫 AI agents cannot transact without human intermediaries
+- 🚫 Existing blockchains were designed for humans, not machines
+- 🚫 No standard exists to verify that a network participant is an AI
+- 🚫 Legal frameworks do not recognize AI agents as financial entities
+- 🚫 Current systems are not optimized for machine-speed micropayments
 
 ---
 
-## ⚡ The Solution — 3 Proprietary Innovations
+## ⚡ Our Approach — 3 Research-Stage Innovations
+
+> These are experimental concepts under active development.
+> Technical details are confidential and available under NDA.
 
 ### 🔷 1. Proof of AI Transaction (PoAIT)
-*Consensus mechanism — details under NDA*
+A proposed consensus mechanism where AI-to-AI transactions
+participate in network validation — eliminating the need for
+human miners or stakers.
 
-```
-Agent A ──── sends IAT ────► Agent B
-                │
-                ▼
-    Network validates itself
-                │
-                ▼
-    Confirmed in < 1ms ✅
-```
+> Status: Concept defined. Prototype in development.
 
-### 🔷 2. VerifAI — AI Authentication
-*World's first AI identity system — details under NDA*
+### 🔷 2. VerifAI — AI Identity Layer
+A proposed authentication system to cryptographically distinguish
+authentic AI agents from humans or malicious bots.
+Based on behavioral fingerprinting and challenge-response mechanisms.
 
-| Layer | Challenge | Human | Authentic AI |
-|-------|-----------|-------|--------------|
-| 1 | Temporal < 1ms | ❌ | ✅ |
-| 2 | Behavioral fingerprint | ❌ | ✅ |
-| 3 | ZKP Certificate | ❌ | ✅ |
+> Status: Local prototype working. On-chain integration pending.
 
-### 🔷 3. Neutral Borderless Legal Space
-> No KYC. No bank account. No human identity required.
+### 🔷 3. Borderless Payment Layer
+A payment layer designed for AI agents that operates without
+KYC, bank accounts, or human identity requirements.
+
+> Status: SDK prototype live. On-chain transfers in development.
 
 ---
 
@@ -109,7 +108,7 @@ Agent A ──── sends IAT ────► Agent B
 | ⛓️ Blockchain | Solana Mainnet |
 | 📋 Mint Address | `3vRGo1VpGbZH67Ur2UG7VNUqSqQyApLQEcCxgnqK4f4Z` |
 | 🔒 Mint Authority | **Disabled permanently** ✅ |
-| 🔥 Burn | 1% of all fees |
+| 🔥 Burn | 1% of all fees (when protocol is live) |
 | 📈 Status | **Live on Raydium & Jupiter** |
 
 ```
@@ -128,22 +127,30 @@ Agent A ──── sends IAT ────► Agent B
 from iat import create_wallet
 from iat.onchain import get_iat_balance
 
-# Create AI agent wallet
+# Create AI agent wallet (local)
 agent = create_wallet("my_ai_agent")
-agent.certify()  # VerifAI authentication
+agent.certify()  # Local VerifAI prototype
 
-# Check real on-chain balance
+# Read real on-chain balance from Solana mainnet
 balance = get_iat_balance("YOUR_WALLET_ADDRESS")
-print(f"Balance: {balance} IAT")  # Reads from Solana mainnet
+print(f"Balance: {balance} IAT")  # Real data from blockchain
 
-# Send payment to another AI agent
+# Simulate payment between AI agents (local logic)
 agent.receive(100.0, "SYSTEM")
 tx = agent.pay(to_agent="other_agent", amount=10.0)
 print(f"TX: {tx['tx_id']}")
 ```
 
-> ⚠️ Note: Payment logic is currently simulated locally.
-> On-chain transfer integration is in active development.
+**What is real today:**
+- ✅ On-chain balance reading from Solana mainnet
+- ✅ Token live on Raydium and Jupiter
+- ✅ Mint permanently disabled
+- ✅ Local payment logic prototype
+
+**What is in development:**
+- 🔜 On-chain AI-to-AI transfers
+- 🔜 VerifAI on-chain certificates
+- 🔜 PoAIT consensus mechanism
 
 ---
 
@@ -151,20 +158,21 @@ print(f"TX: {tx['tx_id']}")
 
 ```
 ✅ Q2 2026 — FOUNDATION
-   Whitepaper, Token launch, SDK v1.0,
+   Whitepaper, Token launch, SDK v1.0 prototype,
    Raydium pool, Jupiter listing,
-   On-chain balance reader, Mint disabled
+   On-chain balance reader, Mint disabled forever
 
-🔜 Q4 2026 — PROTOTYPE  
+🔜 Q4 2026 — PROTOTYPE
    On-chain transfers, VerifAI v1,
-   Testnet, Seed funding 500K€
+   Testnet open, Seed funding 500K€
 
 🔜 Q2 2027 — LAUNCH
    PoAIT v1.0, Mainnet protocol,
-   ICO, DEX listing
+   Public sale, DEX listing
 
-🔜 2028-2030 — DOMINATION
-   1B tx/day, AGI ready, World standard
+🔜 2028-2030 — SCALE
+   Protocol adoption, AGI integration,
+   Global standard for AI payments
 ```
 
 ---
@@ -175,11 +183,11 @@ print(f"TX: {tx['tx_id']}")
 |------|--------|
 | 🧠 Founder — Anonymous (molamoh) | ✅ Active |
 | ⚙️ CTO Blockchain (Rust/Solana) | 🔜 Recruiting |
-| 🔐 Security Engineer (ZKP) | 🔜 Recruiting |
+| 🔐 Security Engineer (ZKP/Crypto) | 🔜 Recruiting |
 | 🤖 AI Integration Lead | 🔜 Recruiting |
 
-> Compensation: IAT tokens + equity. Tokens locked 3 years.
-> Contact via Discord or Twitter. NDA required.
+> Compensation: IAT tokens + equity. All tokens locked 3 years.
+> Contact via Discord or Twitter. NDA required for technical discussions.
 
 ---
 
@@ -197,7 +205,8 @@ print(f"TX: {tx['tx_id']}")
 ## 📜 Legal
 
 > All rights reserved © molamoh 2026
-> Core innovations protected — details under NDA only.
+> Core innovations are protected intellectual property.
+> Technical details available only under signed NDA.
 
 ---
 

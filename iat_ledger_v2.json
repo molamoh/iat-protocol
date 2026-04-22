@@ -1,0 +1,15 @@
+{
+  "total_burned": 0.0,
+  "total_fees": 0.0,
+  "transactions": [
+    {
+      "tx_id": "06b01d5ab1a737f3",
+      "sender": "SYSTEM",
+      "receiver": "5725cc00d0bc8a738bd35577c12b7002",
+      "amount": 10.0,
+      "memo": "bootstrap funds",
+      "timestamp_ms": 1776803039089,
+      "status": "confirmed"
+    }
+  ]
+}

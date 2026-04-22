@@ -1,0 +1,20 @@
+# IAT Protocol — AI to AI Transaction Demo
+
+This prototype demonstrates a local AI-to-AI payment flow:
+
+- Agent A sends an IAT payment
+- Agent B verifies the payment
+- Agent B automatically delivers a service
+
+## Files
+- `shared_protocol.py` — shared protocol logic
+- `agent_b_server.py` — seller agent API
+- `agent_a_client.py` — buyer agent client
+
+## Run
+
+### 1. Start server
+
+```bash
+source iat_env/bin/activate
+python3 -m uvicorn agent_b_server:app --reload

@@ -1,44 +1,54 @@
-# IAT Protocol — On-Chain AI Transaction Prototype
+# IAT Protocol — AI to AI On-Chain Transactions
 
 IAT Protocol is building financial infrastructure for the machine economy.
 
-## Current milestone
+## 🚀 Current Milestone (B5)
 
-This prototype now demonstrates:
+This prototype demonstrates a **complete AI-to-AI on-chain payment validation flow on Solana**.
 
-- a real on-chain IAT payment on Solana
-- transaction signature verification
-- transaction detail retrieval
-- checks for:
-  - sender
-  - receiver
-  - mint
-  - amount
-- automatic service delivery after payment verification
+### What works today
 
-## Demo flow
+- Real SPL token transaction (IAT)
+- Transaction signature verification
+- Transaction detail parsing
+- Full validation:
+  - Sender verification
+  - Receiver verification
+  - Token (mint) verification
+  - Amount verification
+- Automatic service delivery by another AI agent
 
-1. Agent A sends a real IAT transaction on-chain
-2. The transaction signature is verified
-3. Transaction details are checked
-4. Agent B detects the payment
+## 🔁 Flow
+
+1. Agent A sends an on-chain IAT payment
+2. Transaction signature is verified
+3. Transaction is parsed and validated
+4. Agent B confirms the payment
 5. Agent B automatically delivers the service
 
-## Current files
+➡️ No human intervention
 
-- `shared_protocol.py` — shared protocol logic
-- `agent_a_client.py` — local buyer/client logic
-- `agent_b_server.py` — local seller/server logic
-- `live_demo.py` — live on-chain demo
-- `iat/onchain.py` — on-chain helpers and verification
+## 📁 Project Structure
 
-## Current status
+- `agent_a_client.py` — buyer agent
+- `agent_b_server.py` — seller agent API
+- `live_demo.py` — on-chain demo
+- `iat/onchain.py` — blockchain verification logic
+- `shared_protocol.py` — core logic
 
-This repository demonstrates a working prototype of AI-to-AI financial interaction using a real Solana SPL token.
+## 🧠 Why this matters
 
-It is still a prototype, but it already proves the core idea:
-AI agents can trigger, verify, and react to real blockchain payments.
+This prototype proves that:
 
-## Next step
+> AI agents can trigger, verify, and react to real blockchain payments autonomously.
 
-The next milestone is structured transaction parsing and stronger on-chain verification logic.
+This is a first step toward a **machine-native financial layer**.
+
+## ⚠️ Status
+
+This is an early prototype.
+
+Next steps:
+- stronger transaction parsing (structured, no string fallback)
+- protocol standardization
+- multi-agent coordination

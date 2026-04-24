@@ -157,9 +157,12 @@ def verify_payment(req: VerifyRequest):
         orders[req.order_id] = order
         save_orders(orders)
 
+        result = generate_service_result(order["service"])
+
         return {
             "status": "paid",
-            "service": order["service"]
+            "service": order["service"],
+            "data": result
         }
 
     return {"status": "invalid_payment"}

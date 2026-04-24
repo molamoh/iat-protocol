@@ -4,17 +4,12 @@ from iat.transfer import send_iat
 
 API = "https://iat-protocol.onrender.com"
 
-DEFAULT_SELLER_WALLET = "EPabAZ3CtMkbjduLrNcDZuXaEp37Ge9cmrnwWF9TY5wc"
-
-
 def create_order(service):
     r = requests.post(f"{API}/create-order", json={"service": service})
     return r.json()
 
-
 def pay_order(keypair_path, wallet_to, amount, order_id):
     return send_iat(keypair_path, wallet_to, amount, order_id)
-
 
 def verify_order(order_id, tx_signature):
     r = requests.post(f"{API}/verify-payment", json={
@@ -23,8 +18,7 @@ def verify_order(order_id, tx_signature):
     })
     return r.json()
 
-
-def pay_and_get_service(service, keypair_path, seller_wallet=DEFAULT_SELLER_WALLET, max_attempts=10):
+def pay_and_get_service(service, keypair_path, seller_wallet, max_attempts=10):
     order = create_order(service)
 
     order_id = order["order_id"]

@@ -1,0 +1,66 @@
+import json
+from solana.rpc.api import Client
+from solders.keypair import Keypair
+from solders.pubkey import Pubkey
+from solders.instruction import Instruction
+from spl.token.instructions import transfer_checked, TransferCheckedParams, get_associated_token_address
+from spl.token.constants import TOKEN_PROGRAM_ID
+
+RPC = "https://blue-white-thunder.solana-mainnet.quiknode.pro/2777cfcf546a9704abe0d5c7b4b3bce2b7c31586/"
+IAT_MINT = "3vRGo1VpGbZH67Ur2UG7VNUqSqQyApLQEcCxgnqK4f4Z"
+
+# Memo program
+MEMO_PROGRAM_ID = Pubkey.from_string("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
+
+
+def send_iat(from_keypair_path, to_address, amount, order_id=None):
+    client = Client(RPC)
+
+    with open(from_keypair_path) as f:
+        keypair = Keypair.from_bytes(bytes(json.load(f)))
+
+    mint = Pubkey.from_string(IAT_MINT)
+
+    source = get_associated_token_address(keypair.pubkey(), mint)
+    dest = get_associated_token_address(Pubkey.from_string(to_address), mint)
+
+    amount_raw = int(amount * 10**8)
+
+    # Token transfer instruction
+    ix_transfer = transfer_checked(
+        TransferCheckedParams(
+            program_id=TOKEN_PROGRAM_ID,
+            source=source,
+            mint=mint,
+            dest=dest,
+            owner=keypair.pubkey(),
+            amount=amount_raw,
+            decimals=8,
+            signers=[]
+        )
+    )
+
+    instructions = [ix_transfer]
+
+    # Add memo if order_id exists
+    if order_id is not None:
+        memo_data = f"ORDER:{order_id}".encode("utf-8")
+
+        memo_ix = Instruction(
+            program_id=MEMO_PROGRAM_ID,
+            accounts=[],
+            data=memo_data
+        )
+
+        instructions.append(memo_ix)
+
+    blockhash = client.get_latest_blockhash().value.blockhash
+
+    from solders.message import Message
+    msg = Message(instructions, keypair.pubkey())
+
+    from solders.transaction import Transaction
+    tx = Transaction([keypair], msg, blockhash)
+
+    resp = client.send_raw_transaction(bytes(tx))
+    return str(resp.value)

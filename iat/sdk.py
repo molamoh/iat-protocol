@@ -2,7 +2,8 @@ import time
 import requests
 from iat.transfer import send_iat
 
-API = "https://iat-protocol.onrender.com"
+import os
+API = os.getenv("IAT_API_URL", "https://iat-protocol.onrender.com")
 
 
 def list_services():

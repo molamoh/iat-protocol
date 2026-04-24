@@ -56,7 +56,18 @@ from iat.onchain import (
     extract_memo
 )
 
+from iat.api.db import (
+    init_db,
+    create_order_db,
+    get_order_db,
+    list_orders_db,
+    update_order_delivered_db,
+    is_tx_processed_db,
+    save_processed_tx_db
+)
+
 app = FastAPI()
+init_db()
 
 WALLET_A = "DUtz7zHeVsd8mnJhWM52z5LsC9NqY6SVRjCBPgNM8Qrj"
 EXPECTED_ATA = "96SuCx9iyvp3uYXYAZSRxgMnoEL1gAE7DTjUKhUjKmSV"
@@ -214,7 +225,7 @@ def create_order(req: OrderRequest):
         "used": False
     }
 
-    save_orders(orders)
+    create_order_db(order_id, orders[order_id])
 
     return {
         "order_id": order_id,
@@ -232,37 +243,34 @@ def is_fresh(order):
 
 @app.get("/orders")
 def list_orders():
-    orders = load_orders()
     return {
         "status": "ok",
-        "orders": orders
+        "orders": list_orders_db()
     }
 
 
 @app.get("/orders/{order_id}")
 def get_order(order_id: str):
-    orders = load_orders()
+    order = get_order_db(order_id)
 
-    if order_id not in orders:
+    if order is None:
         return {"status": "invalid_order"}
 
     return {
         "status": "ok",
-        "order": orders[order_id]
+        "order": order
     }
+
 
 @app.post("/verify-payment")
 def verify_payment(req: VerifyRequest):
-    processed_txs = load_processed_txs()
-    orders = load_orders()
-
-    if req.tx_signature in processed_txs:
+    if is_tx_processed_db(req.tx_signature):
         return {"status": "replay_blocked"}
 
-    if req.order_id not in orders:
-        return {"status": "invalid_order"}
+    order = get_order_db(req.order_id)
 
-    order = orders[req.order_id]
+    if order is None:
+        return {"status": "invalid_order"}
 
     if order.get("used"):
         return {"status": "order_already_used"}
@@ -290,19 +298,10 @@ def verify_payment(req: VerifyRequest):
     memo_ok = memo is not None and req.order_id in memo
 
     if sender_ok and receiver_ok and mint_ok and amount_ok and memo_ok:
-        save_processed_tx(req.tx_signature)
-
         result = generate_service_result(order["service"])
 
-        order["used"] = True
-        order["status"] = "delivered"
-        order["tx_signature"] = req.tx_signature
-        order["updated_at"] = int(time.time())
-        order["delivered_at"] = int(time.time())
-        order["delivery_result"] = result
-
-        orders[req.order_id] = order
-        save_orders(orders)
+        save_processed_tx_db(req.tx_signature)
+        update_order_delivered_db(req.order_id, req.tx_signature, result)
 
         return {
             "status": "paid",

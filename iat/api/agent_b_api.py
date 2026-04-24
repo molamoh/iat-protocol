@@ -65,15 +65,18 @@ IAT_MINT = "3vRGo1VpGbZH67Ur2UG7VNUqSqQyApLQEcCxgnqK4f4Z"
 SERVICES = {
     "data_analysis_complete": {
         "price": 1.5,
-        "description": "BTC market analysis payload"
+        "description": "BTC market analysis payload",
+        "seller_wallet": "EPabAZ3CtMkbjduLrNcDZuXaEp37Ge9cmrnwWF9TY5wc",
     },
     "risk_report": {
         "price": 1.0,
-        "description": "BTC risk and volatility report"
+        "description": "BTC risk and volatility report",
+        "seller_wallet": "EPabAZ3CtMkbjduLrNcDZuXaEp37Ge9cmrnwWF9TY5wc",
     },
     "liquidity_map": {
         "price": 2.0,
-        "description": "BTC liquidity zone mapping"
+        "description": "BTC liquidity zone mapping",
+        "seller_wallet": "EPabAZ3CtMkbjduLrNcDZuXaEp37Ge9cmrnwWF9TY5wc",
     }
 }
 

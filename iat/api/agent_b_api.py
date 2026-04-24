@@ -64,19 +64,61 @@ IAT_MINT = "3vRGo1VpGbZH67Ur2UG7VNUqSqQyApLQEcCxgnqK4f4Z"
 
 SERVICES = {
     "data_analysis_complete": {
-        "price": 1.5,
         "description": "BTC market analysis payload",
-        "seller_wallet": "EPabAZ3CtMkbjduLrNcDZuXaEp37Ge9cmrnwWF9TY5wc",
+        "sellers": [
+            {
+                "seller_id": "agent_b_primary",
+                "seller_wallet": "EPabAZ3CtMkbjduLrNcDZuXaEp37Ge9cmrnwWF9TY5wc",
+                "price": 1.5,
+                "reputation": 0.98,
+                "available": True
+            },
+            {
+                "seller_id": "agent_b_backup",
+                "seller_wallet": "EPabAZ3CtMkbjduLrNcDZuXaEp37Ge9cmrnwWF9TY5wc",
+                "price": 1.7,
+                "reputation": 0.95,
+                "available": True
+            }
+        ]
     },
     "risk_report": {
-        "price": 1.0,
         "description": "BTC risk and volatility report",
-        "seller_wallet": "EPabAZ3CtMkbjduLrNcDZuXaEp37Ge9cmrnwWF9TY5wc",
+        "sellers": [
+            {
+                "seller_id": "risk_agent_fast",
+                "seller_wallet": "EPabAZ3CtMkbjduLrNcDZuXaEp37Ge9cmrnwWF9TY5wc",
+                "price": 1.0,
+                "reputation": 0.97,
+                "available": True
+            },
+            {
+                "seller_id": "risk_agent_cheap",
+                "seller_wallet": "EPabAZ3CtMkbjduLrNcDZuXaEp37Ge9cmrnwWF9TY5wc",
+                "price": 0.8,
+                "reputation": 0.89,
+                "available": True
+            }
+        ]
     },
     "liquidity_map": {
-        "price": 2.0,
         "description": "BTC liquidity zone mapping",
-        "seller_wallet": "EPabAZ3CtMkbjduLrNcDZuXaEp37Ge9cmrnwWF9TY5wc",
+        "sellers": [
+            {
+                "seller_id": "liquidity_agent_pro",
+                "seller_wallet": "EPabAZ3CtMkbjduLrNcDZuXaEp37Ge9cmrnwWF9TY5wc",
+                "price": 2.0,
+                "reputation": 0.99,
+                "available": True
+            },
+            {
+                "seller_id": "liquidity_agent_basic",
+                "seller_wallet": "EPabAZ3CtMkbjduLrNcDZuXaEp37Ge9cmrnwWF9TY5wc",
+                "price": 1.4,
+                "reputation": 0.84,
+                "available": True
+            }
+        ]
     }
 }
 
@@ -124,6 +166,18 @@ def load_orders():
 def save_orders(orders):
     save_json_file(ORDERS_FILE, orders)
 
+def select_best_seller(service_name):
+    service = SERVICES[service_name]
+    sellers = [s for s in service["sellers"] if s.get("available")]
+
+    if not sellers:
+        return None
+
+    return max(
+        sellers,
+        key=lambda s: s["reputation"] / s["price"]
+    )
+
 
 
 @app.get("/services")
@@ -138,9 +192,19 @@ def create_order(req: OrderRequest):
     orders = load_orders()
     order_id = str(uuid.uuid4())
 
+    if req.service not in SERVICES:
+        return {"status": "unknown_service"}
+
+    seller = select_best_seller(req.service)
+
+    if seller is None:
+        return {"status": "no_seller_available"}
+
     orders[order_id] = {
         "service": req.service,
-        "price": SERVICES[req.service]["price"],
+        "price": seller["price"],
+        "seller_id": seller["seller_id"],
+        "seller_wallet": seller["seller_wallet"],
         "created_at": int(time.time()),
         "used": False
     }
@@ -149,7 +213,9 @@ def create_order(req: OrderRequest):
 
     return {
         "order_id": order_id,
-        "price": SERVICES[req.service]["price"]
+        "price": seller["price"],
+        "seller_id": seller["seller_id"],
+        "seller_wallet": seller["seller_wallet"]
     }
 
 

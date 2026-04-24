@@ -20,8 +20,8 @@ IAT_MINT = "3vRGo1VpGbZH67Ur2UG7VNUqSqQyApLQEcCxgnqK4f4Z"
 SERVICE_PRICE = 1.0
 ORDER_TTL = 300
 
-PROCESSED_TX_FILE = "/home/ilias/iat-sdk/api_processed_txs.json"
-ORDERS_FILE = "/home/ilias/iat-sdk/api_orders.json"
+PROCESSED_TX_FILE = "api_processed_txs.json"
+ORDERS_FILE = "api_orders.json"
 
 
 class OrderRequest(BaseModel):

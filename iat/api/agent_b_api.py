@@ -206,6 +206,11 @@ def create_order(req: OrderRequest):
         "seller_id": seller["seller_id"],
         "seller_wallet": seller["seller_wallet"],
         "created_at": int(time.time()),
+        "updated_at": int(time.time()),
+        "status": "created",
+        "tx_signature": None,
+        "delivered_at": None,
+        "delivery_result": None,
         "used": False
     }
 
@@ -223,6 +228,28 @@ def is_fresh(order):
     age = int(time.time()) - order["created_at"]
     return age <= ORDER_TTL
 
+
+
+@app.get("/orders")
+def list_orders():
+    orders = load_orders()
+    return {
+        "status": "ok",
+        "orders": orders
+    }
+
+
+@app.get("/orders/{order_id}")
+def get_order(order_id: str):
+    orders = load_orders()
+
+    if order_id not in orders:
+        return {"status": "invalid_order"}
+
+    return {
+        "status": "ok",
+        "order": orders[order_id]
+    }
 
 @app.post("/verify-payment")
 def verify_payment(req: VerifyRequest):
@@ -265,11 +292,17 @@ def verify_payment(req: VerifyRequest):
     if sender_ok and receiver_ok and mint_ok and amount_ok and memo_ok:
         save_processed_tx(req.tx_signature)
 
+        result = generate_service_result(order["service"])
+
         order["used"] = True
+        order["status"] = "delivered"
+        order["tx_signature"] = req.tx_signature
+        order["updated_at"] = int(time.time())
+        order["delivered_at"] = int(time.time())
+        order["delivery_result"] = result
+
         orders[req.order_id] = order
         save_orders(orders)
-
-        result = generate_service_result(order["service"])
 
         return {
             "status": "paid",

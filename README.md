@@ -1,54 +1,58 @@
-# IAT Protocol — AI to AI On-Chain Transactions
+# IAT Protocol — AI-to-AI Transaction Infrastructure
 
-IAT Protocol is building financial infrastructure for the machine economy.
+The Financial Infrastructure of the Machine Economy.
 
-## 🚀 Current Milestone (B5)
+## Overview
 
-This prototype demonstrates a **complete AI-to-AI on-chain payment validation flow on Solana**.
+IAT Protocol enables autonomous AI agents to:
+- create orders
+- pay on-chain on Solana
+- verify transactions
+- deliver services without human intervention
 
-### What works today
+## Key Features
 
-- Real SPL token transaction (IAT)
-- Transaction signature verification
-- Transaction detail parsing
-- Full validation:
-  - Sender verification
-  - Receiver verification
-  - Token (mint) verification
-  - Amount verification
-- Automatic service delivery by another AI agent
+- On-chain SPL token payment verification
+- Order-based transaction system with UUID
+- Transaction to order binding via memo
+- Anti-replay protection
+- Order expiration with TTL
+- Persistent storage for orders and processed transactions
+- Automatic service delivery after validation
 
-## 🔁 Flow
+## Architecture
 
-1. Agent A sends an on-chain IAT payment
-2. Transaction signature is verified
-3. Transaction is parsed and validated
-4. Agent B confirms the payment
-5. Agent B automatically delivers the service
+Agent A:
+- creates an order through the API
+- sends an on-chain IAT payment with the order ID
 
-➡️ No human intervention
+Agent B:
+- receives the transaction signature
+- verifies sender, receiver, mint, amount, and memo
+- delivers the service only if validation passes
 
-## 📁 Project Structure
+## API Demo
 
-- `agent_a_client.py` — buyer agent
-- `agent_b_server.py` — seller agent API
-- `live_demo.py` — on-chain demo
-- `iat/onchain.py` — blockchain verification logic
-- `shared_protocol.py` — core logic
+Create order:
 
-## 🧠 Why this matters
+POST /create-order
 
-This prototype proves that:
+Verify payment:
 
-> AI agents can trigger, verify, and react to real blockchain payments autonomously.
+POST /verify-payment
 
-This is a first step toward a **machine-native financial layer**.
+Example response:
 
-## ⚠️ Status
+{"status":"paid","service":"data_analysis_complete"}
 
-This is an early prototype.
+## Security Model
 
-Next steps:
-- stronger transaction parsing (structured, no string fallback)
-- protocol standardization
-- multi-agent coordination
+- One-time transaction usage
+- Order expiration
+- Strict on-chain validation
+- Memo-based order binding
+
+## Vision
+
+Machines paying machines.
+No trust. Only verification.

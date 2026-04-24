@@ -63,7 +63,8 @@ from iat.api.db import (
     list_orders_db,
     update_order_delivered_db,
     is_tx_processed_db,
-    save_processed_tx_db
+    save_processed_tx_db,
+    get_stats_db
 )
 
 app = FastAPI()
@@ -239,6 +240,15 @@ def is_fresh(order):
     age = int(time.time()) - order["created_at"]
     return age <= ORDER_TTL
 
+
+
+
+@app.get("/stats")
+def get_stats():
+    return {
+        "status": "ok",
+        "stats": get_stats_db()
+    }
 
 
 @app.get("/orders")

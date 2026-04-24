@@ -158,3 +158,46 @@ def save_processed_tx_db(tx_signature):
 
     conn.commit()
     conn.close()
+
+
+def get_stats_db():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("SELECT COUNT(*) FROM orders")
+    total_orders = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM orders WHERE status = 'delivered'")
+    delivered_orders = cur.fetchone()[0]
+
+    cur.execute("SELECT COALESCE(SUM(price), 0) FROM orders WHERE status = 'delivered'")
+    total_volume = cur.fetchone()[0]
+
+    cur.execute("SELECT COUNT(*) FROM processed_txs")
+    processed_txs = cur.fetchone()[0]
+
+    cur.execute("""
+        SELECT service, COUNT(*) as count
+        FROM orders
+        WHERE status = 'delivered'
+        GROUP BY service
+        ORDER BY count DESC
+        LIMIT 1
+    """)
+    top_service_row = cur.fetchone()
+
+    conn.close()
+
+    success_rate = 0
+    if total_orders > 0:
+        success_rate = round((delivered_orders / total_orders) * 100, 2)
+
+    return {
+        "total_orders": total_orders,
+        "delivered_orders": delivered_orders,
+        "pending_orders": total_orders - delivered_orders,
+        "total_volume_iat": total_volume,
+        "processed_transactions": processed_txs,
+        "success_rate_percent": success_rate,
+        "top_service": top_service_row[0] if top_service_row else None
+    }

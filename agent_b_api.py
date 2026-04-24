@@ -61,7 +61,22 @@ app = FastAPI()
 WALLET_A = "DUtz7zHeVsd8mnJhWM52z5LsC9NqY6SVRjCBPgNM8Qrj"
 EXPECTED_ATA = "96SuCx9iyvp3uYXYAZSRxgMnoEL1gAE7DTjUKhUjKmSV"
 IAT_MINT = "3vRGo1VpGbZH67Ur2UG7VNUqSqQyApLQEcCxgnqK4f4Z"
-SERVICE_PRICE = 1.0
+
+SERVICES = {
+    "data_analysis_complete": {
+        "price": 1.5,
+        "description": "BTC market analysis payload"
+    },
+    "risk_report": {
+        "price": 1.0,
+        "description": "BTC risk and volatility report"
+    },
+    "liquidity_map": {
+        "price": 2.0,
+        "description": "BTC liquidity zone mapping"
+    }
+}
+
 ORDER_TTL = 1800
 
 PROCESSED_TX_FILE = "api_processed_txs.json"
@@ -107,6 +122,14 @@ def save_orders(orders):
     save_json_file(ORDERS_FILE, orders)
 
 
+
+@app.get("/services")
+def list_services():
+    return {
+        "status": "ok",
+        "services": SERVICES
+    }
+
 @app.post("/create-order")
 def create_order(req: OrderRequest):
     orders = load_orders()
@@ -114,7 +137,7 @@ def create_order(req: OrderRequest):
 
     orders[order_id] = {
         "service": req.service,
-        "price": SERVICE_PRICE,
+        "price": SERVICES[req.service]["price"],
         "created_at": int(time.time()),
         "used": False
     }
@@ -123,7 +146,7 @@ def create_order(req: OrderRequest):
 
     return {
         "order_id": order_id,
-        "price": SERVICE_PRICE
+        "price": SERVICES[req.service]["price"]
     }
 
 
@@ -167,7 +190,7 @@ def verify_payment(req: VerifyRequest):
     sender_ok = transfer_info["authority"] == WALLET_A
     receiver_ok = transfer_info["destination"] == EXPECTED_ATA
     mint_ok = transfer_info["mint"] == IAT_MINT
-    amount_ok = transfer_info["ui_amount"] == "1.0" or transfer_info["ui_amount_string"] == "1"
+    amount_ok = float(transfer_info["ui_amount"] or transfer_info["ui_amount_string"]) == float(order["price"])
     memo_ok = memo is not None and req.order_id in memo
 
     if sender_ok and receiver_ok and mint_ok and amount_ok and memo_ok:

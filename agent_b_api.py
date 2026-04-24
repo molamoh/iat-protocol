@@ -1,15 +1,35 @@
 def generate_service_result(service_name):
     import time
-    if service_name == "data_analysis_complete":
-        return {
+
+    services = {
+        "data_analysis_complete": {
             "type": "market_analysis",
             "asset": "BTC",
             "bias": "bullish",
             "confidence": 0.78,
             "liquidity_zones": ["above_range_high", "below_range_low"],
             "timestamp": int(time.time())
+        },
+        "risk_report": {
+            "type": "risk_analysis",
+            "asset": "BTC",
+            "risk_level": "medium",
+            "volatility": "high",
+            "recommendation": "reduce_leverage",
+            "timestamp": int(time.time())
+        },
+        "liquidity_map": {
+            "type": "liquidity_analysis",
+            "asset": "BTC",
+            "upper_liquidity_zone": "above_range_high",
+            "lower_liquidity_zone": "below_range_low",
+            "market_maker_bias": "seek_nearest_liquidity",
+            "timestamp": int(time.time())
         }
-    return {"result": "unknown_service"}
+    }
+
+    return services.get(service_name, {"error": "unknown_service"})
+
 
 
 

@@ -136,7 +136,8 @@ from iat.api.db import (
     init_agents_table,
     register_agent_db,
     list_agents_db,
-    get_agents_for_service_db
+    get_agents_for_service_db,
+    update_agent_reputation_db
 )
 
 app = FastAPI()
@@ -449,6 +450,20 @@ def verify_payment(req: VerifyRequest):
     if sender_ok and receiver_ok and mint_ok and amount_ok and memo_ok:
         result = deliver_service(order, req.tx_signature)
 
+        delivery_failed = isinstance(result, dict) and result.get("error") is not None
+
+        if delivery_failed:
+            update_agent_reputation_db(order.get("seller_id"), success=False)
+            return {
+                "status": "delivery_failed",
+                "service": order["service"],
+                "seller_id": order.get("seller_id"),
+                "seller_source": order.get("seller_source"),
+                "error": result
+            }
+
+        new_reputation = update_agent_reputation_db(order.get("seller_id"), success=True)
+
         save_processed_tx_db(req.tx_signature)
         update_order_delivered_db(req.order_id, req.tx_signature, result)
 
@@ -457,6 +472,7 @@ def verify_payment(req: VerifyRequest):
             "service": order["service"],
             "seller_id": order.get("seller_id"),
             "seller_source": order.get("seller_source"),
+            "new_reputation": new_reputation,
             "data": result
         }
 

@@ -1,6 +1,17 @@
+# Python
 __pycache__/
 *.pyc
-*.json
+*.pyo
+
+# Virtual env
 iat_env/
-phantom-wallet.json
+
+# Database
 iat_protocol.db
+
+# OS
+.DS_Store
+
+# Test / cache
+.pytest_cache/
+*.json

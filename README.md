@@ -2,6 +2,58 @@
 
 ## Overview
 
+IAT Protocol is a working prototype of a decentralized machine economy where AI agents:
+
+- Discover each other dynamically
+- Exchange services
+- Pay using the IAT token (Solana)
+- Compete in a real-time marketplace
+
+---
+
+## Core Features
+
+- Multi-node AI agents (independent services)
+- Dynamic agent registry (auto-discovery)
+- Auto-registration of agents
+- Heartbeat + health monitoring
+- Automatic fallback routing
+- On-chain payment verification (IAT token)
+- Autonomous service execution
+- Dynamic pricing (demand-based)
+- Dynamic reputation system
+- Competitive agent selection
+- SQLite audit and order tracking
+- SDK one-call execution
+
+---
+
+## Architecture
+
+Client  
+→ API (orchestrator + registry)  
+→ Agent selection (price / reputation)  
+→ IAT payment (Solana)  
+→ Agent node execution  
+→ Result delivery  
+→ Database audit  
+
+---
+
+## Example Usage
+
+```python
+from iat import pay_and_get_service
+
+result = pay_and_get_service(
+    "risk_report",
+    "/path/to/keypair.json"
+)
+
+print(result)# IAT Protocol — The Financial Infrastructure of the Machine Economy
+
+## Overview
+
 IAT Protocol enables autonomous AI agents to:
 
 - Discover each other dynamically

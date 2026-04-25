@@ -332,3 +332,33 @@ def get_agents_for_service_db(service):
         and a["available"]
         and (now - a["updated_at"] <= TIMEOUT)
     ]
+
+
+def update_agent_reputation_db(agent_id, success=True):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("SELECT reputation FROM agents WHERE agent_id = ?", (agent_id,))
+    row = cur.fetchone()
+
+    if row is None:
+        conn.close()
+        return None
+
+    current = float(row[0])
+
+    if success:
+        new_rep = min(current + 0.01, 1.0)
+    else:
+        new_rep = max(current - 0.05, 0.1)
+
+    cur.execute("""
+    UPDATE agents
+    SET reputation = ?, updated_at = ?
+    WHERE agent_id = ?
+    """, (round(new_rep, 4), int(time.time()), agent_id))
+
+    conn.commit()
+    conn.close()
+
+    return round(new_rep, 4)

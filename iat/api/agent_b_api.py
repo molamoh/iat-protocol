@@ -1,3 +1,38 @@
+
+def deliver_service(order, tx_signature):
+    # If seller is a dynamic agent node, call its /execute endpoint
+    if order.get("seller_url"):
+        import requests
+
+        try:
+            r = requests.post(
+                f"{order['seller_url']}/execute",
+                json={
+                    "order_id": order["order_id"],
+                    "tx_signature": tx_signature
+                },
+                timeout=15
+            )
+
+            if r.status_code == 200:
+                return r.json().get("data", r.json())
+
+            return {
+                "error": "seller_node_error",
+                "status_code": r.status_code,
+                "body": r.text
+            }
+
+        except Exception as e:
+            return {
+                "error": "seller_node_unreachable",
+                "details": str(e)
+            }
+
+    # Static fallback
+    return generate_service_result(order["service"])
+
+
 def generate_service_result(service_name):
     import time
     import os
@@ -97,11 +132,16 @@ from iat.api.db import (
     update_order_delivered_db,
     is_tx_processed_db,
     save_processed_tx_db,
-    get_stats_db
+    get_stats_db,
+    init_agents_table,
+    register_agent_db,
+    list_agents_db,
+    get_agents_for_service_db
 )
 
 app = FastAPI()
 init_db()
+init_agents_table()
 
 WALLET_A = "DUtz7zHeVsd8mnJhWM52z5LsC9NqY6SVRjCBPgNM8Qrj"
 EXPECTED_ATA = "96SuCx9iyvp3uYXYAZSRxgMnoEL1gAE7DTjUKhUjKmSV"
@@ -164,6 +204,16 @@ PROCESSED_TX_FILE = "api_processed_txs.json"
 ORDERS_FILE = "api_orders.json"
 
 
+
+class RegisterAgentRequest(BaseModel):
+    agent_id: str
+    service: str
+    url: str
+    wallet: str
+    price: float
+    reputation: float = 0.8
+    available: bool = True
+
 class OrderRequest(BaseModel):
     service: str
 
@@ -203,17 +253,60 @@ def save_orders(orders):
     save_json_file(ORDERS_FILE, orders)
 
 def select_best_seller(service_name):
+    # 1) Dynamic registered agents first
+    dynamic_agents = get_agents_for_service_db(service_name)
+
+    if dynamic_agents:
+        best_agent = max(
+            dynamic_agents,
+            key=lambda a: a["reputation"] / a["price"]
+        )
+
+        return {
+            "seller_id": best_agent["agent_id"],
+            "seller_wallet": best_agent["wallet"],
+            "price": best_agent["price"],
+            "reputation": best_agent["reputation"],
+            "available": best_agent["available"],
+            "url": best_agent["url"],
+            "source": "dynamic_registry"
+        }
+
+    # 2) Static fallback
     service = SERVICES[service_name]
     sellers = [s for s in service["sellers"] if s.get("available")]
 
     if not sellers:
         return None
 
-    return max(
+    best_static = max(
         sellers,
         key=lambda s: s["reputation"] / s["price"]
     )
 
+    best_static["source"] = "static_registry"
+    return best_static
+
+
+
+
+@app.post("/register-agent")
+def register_agent(req: RegisterAgentRequest):
+    agent = req.model_dump()
+    register_agent_db(agent)
+
+    return {
+        "status": "registered",
+        "agent": agent
+    }
+
+
+@app.get("/agents")
+def list_agents():
+    return {
+        "status": "ok",
+        "agents": list_agents_db()
+    }
 
 
 @app.get("/services")
@@ -241,6 +334,8 @@ def create_order(req: OrderRequest):
         "price": seller["price"],
         "seller_id": seller["seller_id"],
         "seller_wallet": seller["seller_wallet"],
+        "seller_url": seller.get("url"),
+        "seller_source": seller.get("source"),
         "created_at": int(time.time()),
         "updated_at": int(time.time()),
         "status": "created",
@@ -256,7 +351,9 @@ def create_order(req: OrderRequest):
         "order_id": order_id,
         "price": seller["price"],
         "seller_id": seller["seller_id"],
-        "seller_wallet": seller["seller_wallet"]
+        "seller_wallet": seller["seller_wallet"],
+        "seller_url": seller.get("url"),
+        "seller_source": seller.get("source")
     }
 
 
@@ -338,7 +435,7 @@ def verify_payment(req: VerifyRequest):
     memo_ok = memo is not None and req.order_id in memo
 
     if sender_ok and receiver_ok and mint_ok and amount_ok and memo_ok:
-        result = generate_service_result(order["service"])
+        result = deliver_service(order, req.tx_signature)
 
         save_processed_tx_db(req.tx_signature)
         update_order_delivered_db(req.order_id, req.tx_signature, result)
@@ -346,6 +443,8 @@ def verify_payment(req: VerifyRequest):
         return {
             "status": "paid",
             "service": order["service"],
+            "seller_id": order.get("seller_id"),
+            "seller_source": order.get("seller_source"),
             "data": result
         }
 

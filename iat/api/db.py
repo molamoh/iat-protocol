@@ -21,6 +21,8 @@ def init_db():
         price REAL NOT NULL,
         seller_id TEXT,
         seller_wallet TEXT,
+        seller_url TEXT,
+        seller_source TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         status TEXT NOT NULL,
@@ -30,6 +32,18 @@ def init_db():
         used INTEGER DEFAULT 0
     )
     """)
+
+
+    # Lightweight migrations for existing SQLite DB
+    for column_name, column_type in [
+        ("seller_url", "TEXT"),
+        ("seller_source", "TEXT")
+    ]:
+        try:
+            cur.execute(f"ALTER TABLE orders ADD COLUMN {column_name} {column_type}")
+        except sqlite3.OperationalError:
+            pass
+
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS processed_txs (
@@ -48,17 +62,19 @@ def create_order_db(order_id, order):
 
     cur.execute("""
     INSERT INTO orders (
-        order_id, service, price, seller_id, seller_wallet,
+        order_id, service, price, seller_id, seller_wallet, seller_url, seller_source,
         created_at, updated_at, status, tx_signature,
         delivered_at, delivery_result, used
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         order_id,
         order["service"],
         order["price"],
         order.get("seller_id"),
         order.get("seller_wallet"),
+        order.get("seller_url"),
+        order.get("seller_source"),
         order["created_at"],
         order["updated_at"],
         order["status"],
@@ -74,6 +90,7 @@ def create_order_db(order_id, order):
 
 def get_order_db(order_id):
     conn = get_conn()
+    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
 
     cur.execute("SELECT * FROM orders WHERE order_id = ?", (order_id,))
@@ -83,17 +100,19 @@ def get_order_db(order_id):
     if not row:
         return None
 
-    keys = [
-        "order_id", "service", "price", "seller_id", "seller_wallet",
-        "created_at", "updated_at", "status", "tx_signature",
-        "delivered_at", "delivery_result", "used"
-    ]
+    order = dict(row)
 
-    order = dict(zip(keys, row))
-    order["used"] = bool(order["used"])
+    if "used" in order:
+        order["used"] = bool(order["used"])
 
-    if order["delivery_result"]:
-        order["delivery_result"] = json.loads(order["delivery_result"])
+    if order.get("delivery_result"):
+        try:
+            order["delivery_result"] = json.loads(order["delivery_result"])
+        except Exception:
+            order["delivery_result"] = {
+                "raw": order["delivery_result"],
+                "parse_error": True
+            }
 
     return order
 
@@ -186,6 +205,23 @@ def get_stats_db():
     """)
     top_service_row = cur.fetchone()
 
+    cur.execute("""
+        SELECT seller_id, COUNT(*) as orders_count, COALESCE(SUM(price), 0) as revenue
+        FROM orders
+        WHERE status = 'delivered'
+        GROUP BY seller_id
+        ORDER BY revenue DESC
+    """)
+    seller_rows = cur.fetchall()
+
+    revenue_by_seller = {
+        seller_id: {
+            "orders": orders_count,
+            "revenue_iat": revenue
+        }
+        for seller_id, orders_count, revenue in seller_rows
+    }
+
     conn.close()
 
     success_rate = 0
@@ -199,5 +235,95 @@ def get_stats_db():
         "total_volume_iat": total_volume,
         "processed_transactions": processed_txs,
         "success_rate_percent": success_rate,
-        "top_service": top_service_row[0] if top_service_row else None
+        "top_service": top_service_row[0] if top_service_row else None,
+        "revenue_by_seller": revenue_by_seller
     }
+
+
+def init_agents_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS agents (
+        agent_id TEXT PRIMARY KEY,
+        service TEXT NOT NULL,
+        url TEXT NOT NULL,
+        wallet TEXT NOT NULL,
+        price REAL NOT NULL,
+        reputation REAL NOT NULL,
+        available INTEGER DEFAULT 1,
+        registered_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+def register_agent_db(agent):
+    conn = get_conn()
+    cur = conn.cursor()
+    now = int(time.time())
+
+    cur.execute("""
+    INSERT OR REPLACE INTO agents (
+        agent_id, service, url, wallet, price, reputation,
+        available, registered_at, updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(
+        (SELECT registered_at FROM agents WHERE agent_id = ?),
+        ?
+    ), ?)
+    """, (
+        agent["agent_id"],
+        agent["service"],
+        agent["url"],
+        agent["wallet"],
+        agent["price"],
+        agent["reputation"],
+        1 if agent.get("available", True) else 0,
+        agent["agent_id"],
+        now,
+        now
+    ))
+
+    conn.commit()
+    conn.close()
+
+
+def list_agents_db():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    SELECT agent_id, service, url, wallet, price, reputation, available, registered_at, updated_at
+    FROM agents
+    ORDER BY service, price ASC
+    """)
+
+    rows = cur.fetchall()
+    conn.close()
+
+    return [
+        {
+            "agent_id": r[0],
+            "service": r[1],
+            "url": r[2],
+            "wallet": r[3],
+            "price": r[4],
+            "reputation": r[5],
+            "available": bool(r[6]),
+            "registered_at": r[7],
+            "updated_at": r[8]
+        }
+        for r in rows
+    ]
+
+
+def get_agents_for_service_db(service):
+    return [
+        a for a in list_agents_db()
+        if a["service"] == service and a["available"]
+    ]

@@ -1,4 +1,75 @@
-# IAT Protocol — AI-to-AI Transaction Infrastructure
+# IAT Protocol — The Financial Infrastructure of the Machine Economy
+
+## Overview
+
+IAT Protocol enables autonomous AI agents to:
+
+- Discover each other dynamically
+- Exchange services
+- Pay using on-chain IAT token (Solana)
+- Execute tasks autonomously
+- Compete in a decentralized marketplace
+
+This project is a working prototype of a machine-to-machine economy.
+
+## Core Features
+
+- Multi-node AI agents
+- Dynamic agent registry
+- Auto-registration
+- Heartbeat monitoring
+- Fallback routing
+- On-chain payment (IAT)
+- Dynamic pricing
+- Order tracking
+
+## Architecture
+
+Client → API → Agent Registry → Agent Node → Payment → Execution → DB
+
+## Example
+
+```python
+from iat import pay_and_get_service
+
+result = pay_and_get_service("risk_report", "/path/to/keypair.json")
+print(result)uvicorn main:app --reload
+# IAT Protocol — The Financial Infrastructure of the Machine Economy
+
+## Overview
+
+IAT Protocol enables autonomous AI agents to:
+
+- Discover each other dynamically
+- Exchange services
+- Pay using on-chain IAT token (Solana)
+- Execute tasks autonomously
+- Compete in a decentralized marketplace
+
+This project is a working prototype of a machine-to-machine economy.
+
+## Core Features
+
+- Multi-node AI agents
+- Dynamic agent registry
+- Auto-registration
+- Heartbeat monitoring
+- Fallback routing
+- On-chain payment (IAT)
+- Dynamic pricing
+- Order tracking
+
+## Architecture
+
+Client → API → Agent Registry → Agent Node → Payment → Execution → DB
+
+## Example
+
+```python
+from iat import pay_and_get_service
+
+result = pay_and_get_service("risk_report", "/path/to/keypair.json")
+print(result)# IAT Protocol — AI-to-AI Transaction Infrastructure
 
 The Financial Infrastructure of the Machine Economy.
 

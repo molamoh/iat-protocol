@@ -79,6 +79,8 @@ import json
 import os
 from fastapi import FastAPI
 from pydantic import BaseModel
+from solders.pubkey import Pubkey
+from spl.token.instructions import get_associated_token_address
 
 from iat.onchain import (
     verify_tx_signature,
@@ -324,7 +326,13 @@ def verify_payment(req: VerifyRequest):
         return {"status": "invalid_tx"}
 
     sender_ok = transfer_info["authority"] == WALLET_A
-    receiver_ok = transfer_info["destination"] == EXPECTED_ATA
+    expected_ata = str(
+        get_associated_token_address(
+            Pubkey.from_string(order["seller_wallet"]),
+            Pubkey.from_string(IAT_MINT)
+        )
+    )
+    receiver_ok = transfer_info["destination"] == expected_ata
     mint_ok = transfer_info["mint"] == IAT_MINT
     amount_ok = float(transfer_info["ui_amount"] or transfer_info["ui_amount_string"]) == float(order["price"])
     memo_ok = memo is not None and req.order_id in memo

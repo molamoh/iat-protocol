@@ -3,7 +3,7 @@ from solana.rpc.api import Client
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.instruction import Instruction
-from spl.token.instructions import transfer_checked, TransferCheckedParams, get_associated_token_address
+from spl.token.instructions import transfer_checked, TransferCheckedParams, get_associated_token_address, create_associated_token_account
 from spl.token.constants import TOKEN_PROGRAM_ID
 
 RPC = "https://blue-white-thunder.solana-mainnet.quiknode.pro/2777cfcf546a9704abe0d5c7b4b3bce2b7c31586/"
@@ -40,7 +40,19 @@ def send_iat(from_keypair_path, to_address, amount, order_id=None):
         )
     )
 
-    instructions = [ix_transfer]
+    instructions = []
+
+    # Create recipient associated token account if it does not exist
+    dest_info = client.get_account_info(dest)
+    if dest_info.value is None:
+        ix_create_ata = create_associated_token_account(
+            payer=keypair.pubkey(),
+            owner=Pubkey.from_string(to_address),
+            mint=mint
+        )
+        instructions.append(ix_create_ata)
+
+    instructions.append(ix_transfer)
 
     # Add memo if order_id exists
     if order_id is not None:

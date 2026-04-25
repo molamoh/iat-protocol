@@ -42,7 +42,7 @@ def generate_service_result(service_name):
         "sellers": [
             {
                 "seller_id": "orchestrator_reseller",
-                "seller_wallet": "EPabAZ3CtMkbjduLrNcDZuXaEp37Ge9cmrnwWF9TY5wc",
+                "seller_wallet": "DXNm6zAWs2GVdcE5qNs2boHtkAeZATd793rNEHD6qP2V",
                 "price": 3.0,
                 "reputation": 0.99,
                 "available": True
@@ -115,13 +115,6 @@ SERVICES = {
                 "price": 1.5,
                 "reputation": 0.98,
                 "available": True
-            },
-            {
-                "seller_id": "agent_b_backup",
-                "seller_wallet": "EPabAZ3CtMkbjduLrNcDZuXaEp37Ge9cmrnwWF9TY5wc",
-                "price": 1.7,
-                "reputation": 0.95,
-                "available": True
             }
         ]
     },
@@ -129,17 +122,22 @@ SERVICES = {
         "description": "BTC risk and volatility report",
         "sellers": [
             {
-                "seller_id": "risk_agent_fast",
-                "seller_wallet": "EPabAZ3CtMkbjduLrNcDZuXaEp37Ge9cmrnwWF9TY5wc",
-                "price": 1.0,
-                "reputation": 0.97,
-                "available": True
-            },
-            {
                 "seller_id": "risk_agent_cheap",
-                "seller_wallet": "EPabAZ3CtMkbjduLrNcDZuXaEp37Ge9cmrnwWF9TY5wc",
+                "seller_wallet": "3aK6yemWa3AJFszWu1eyvhoWK6czLRnvCc4bUHgQSvip",
                 "price": 0.8,
                 "reputation": 0.89,
+                "available": True
+            }
+        ]
+    },
+    "liquidity_map": {
+        "description": "BTC liquidity zone mapping",
+        "sellers": [
+            {
+                "seller_id": "liquidity_agent_basic",
+                "seller_wallet": "DCw9z3eesRafSh2ppnCWGjnnxuV3MQGewbNDSrokUARi",
+                "price": 1.4,
+                "reputation": 0.84,
                 "available": True
             }
         ]
@@ -149,28 +147,9 @@ SERVICES = {
         "sellers": [
             {
                 "seller_id": "orchestrator_reseller",
-                "seller_wallet": "EPabAZ3CtMkbjduLrNcDZuXaEp37Ge9cmrnwWF9TY5wc",
+                "seller_wallet": "DXNm6zAWs2GVdcE5qNs2boHtkAeZATd793rNEHD6qP2V",
                 "price": 3.0,
                 "reputation": 0.99,
-                "available": True
-            }
-        ]
-    },
-    "liquidity_map": {
-        "description": "BTC liquidity zone mapping",
-        "sellers": [
-            {
-                "seller_id": "liquidity_agent_pro",
-                "seller_wallet": "EPabAZ3CtMkbjduLrNcDZuXaEp37Ge9cmrnwWF9TY5wc",
-                "price": 2.0,
-                "reputation": 0.99,
-                "available": True
-            },
-            {
-                "seller_id": "liquidity_agent_basic",
-                "seller_wallet": "EPabAZ3CtMkbjduLrNcDZuXaEp37Ge9cmrnwWF9TY5wc",
-                "price": 1.4,
-                "reputation": 0.84,
                 "available": True
             }
         ]

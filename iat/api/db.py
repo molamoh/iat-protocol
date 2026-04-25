@@ -362,3 +362,113 @@ def update_agent_reputation_db(agent_id, success=True):
     conn.close()
 
     return round(new_rep, 4)
+
+
+def get_network_status_db():
+    agents = list_agents_db()
+    stats = get_stats_db()
+
+    now = int(time.time())
+    TIMEOUT = 30
+
+    online_agents = [
+        a for a in agents
+        if a["available"] and (now - a["updated_at"] <= TIMEOUT)
+    ]
+
+    services = {}
+
+    for agent in online_agents:
+        service = agent["service"]
+
+        if service not in services:
+            services[service] = {
+                "agents": [],
+                "best_agent": None
+            }
+
+        score = round(agent["reputation"] / agent["price"], 4)
+
+        agent_info = {
+            "agent_id": agent["agent_id"],
+            "url": agent["url"],
+            "wallet": agent["wallet"],
+            "price": agent["price"],
+            "reputation": agent["reputation"],
+            "score": score,
+            "updated_at": agent["updated_at"]
+        }
+
+        services[service]["agents"].append(agent_info)
+
+    for service, data in services.items():
+        data["best_agent"] = max(
+            data["agents"],
+            key=lambda a: a["score"]
+        )
+
+    return {
+        "network": {
+            "status": "online" if online_agents else "degraded",
+            "total_agents": len(agents),
+            "online_agents": len(online_agents),
+            "services_count": len(services)
+        },
+        "services": services,
+        "economy": stats
+    }
+
+
+def get_network_status_db():
+    agents = list_agents_db()
+    stats = get_stats_db()
+
+    now = int(time.time())
+    TIMEOUT = 30
+
+    online_agents = [
+        a for a in agents
+        if a["available"] and (now - a["updated_at"] <= TIMEOUT)
+    ]
+
+    services = {}
+
+    for agent in online_agents:
+        service = agent["service"]
+
+        if service not in services:
+            services[service] = {
+                "agents": [],
+                "best_agent": None
+            }
+
+        score = round(agent["reputation"] / agent["price"], 4)
+
+        agent_info = {
+            "agent_id": agent["agent_id"],
+            "url": agent["url"],
+            "wallet": agent["wallet"],
+            "price": agent["price"],
+            "reputation": agent["reputation"],
+            "score": score,
+            "updated_at": agent["updated_at"]
+        }
+
+        services[service]["agents"].append(agent_info)
+
+    for service, data in services.items():
+        data["best_agent"] = max(
+            data["agents"],
+            key=lambda a: a["score"]
+        )
+
+    return {
+        "network": {
+            "status": "online" if online_agents else "degraded",
+            "total_agents": len(agents),
+            "online_agents": len(online_agents),
+            "services_count": len(services)
+        },
+        "services": services,
+        "economy": stats
+    }

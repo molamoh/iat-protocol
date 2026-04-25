@@ -137,7 +137,8 @@ from iat.api.db import (
     register_agent_db,
     list_agents_db,
     get_agents_for_service_db,
-    update_agent_reputation_db
+    update_agent_reputation_db,
+    get_network_status_db
 )
 
 app = FastAPI()
@@ -375,6 +376,15 @@ def is_fresh(order):
     return age <= ORDER_TTL
 
 
+
+
+
+@app.get("/network-status")
+def network_status():
+    return {
+        "status": "ok",
+        "data": get_network_status_db()
+    }
 
 
 @app.get("/stats")

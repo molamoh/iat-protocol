@@ -23,12 +23,20 @@ def pay_order(keypair_path, wallet_to, amount, order_id):
 
 
 def verify_order(order_id, tx_signature):
-    r = requests.post(f"{API}/verify-payment", json={
-        "order_id": order_id,
-        "tx_signature": tx_signature
-    })
-    r.raise_for_status()
-    return r.json()
+    try:
+        r = requests.post(f"{API}/verify-payment", json={
+            "order_id": order_id,
+            "tx_signature": tx_signature
+        }, timeout=30)
+
+        if r.status_code >= 500:
+            return {"status": "server_error", "code": r.status_code}
+
+        r.raise_for_status()
+        return r.json()
+
+    except requests.exceptions.RequestException as e:
+        return {"status": "network_error", "error": str(e)}
 
 
 def pay_and_get_service(service, keypair_path, max_attempts=12, delay=5):

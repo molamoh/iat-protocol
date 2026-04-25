@@ -3,3 +3,4 @@ __pycache__/
 *.json
 iat_env/
 phantom-wallet.json
+iat_protocol.db

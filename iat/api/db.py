@@ -323,7 +323,12 @@ def list_agents_db():
 
 
 def get_agents_for_service_db(service):
+    now = int(time.time())
+    TIMEOUT = 30  # seconds
+
     return [
         a for a in list_agents_db()
-        if a["service"] == service and a["available"]
+        if a["service"] == service
+        and a["available"]
+        and (now - a["updated_at"] <= TIMEOUT)
     ]

@@ -301,6 +301,18 @@ def register_agent(req: RegisterAgentRequest):
     }
 
 
+
+@app.post("/agent-heartbeat")
+def agent_heartbeat(req: RegisterAgentRequest):
+    agent = req.model_dump()
+    register_agent_db(agent)
+
+    return {
+        "status": "heartbeat_ok",
+        "agent_id": agent["agent_id"],
+        "timestamp": int(time.time())
+    }
+
 @app.get("/agents")
 def list_agents():
     return {

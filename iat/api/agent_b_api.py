@@ -40,7 +40,7 @@ def generate_service_result(service_name):
     if service_name == "trade_signal_pro":
         from iat.orchestrator import run_strategy
 
-        keypair_path = os.getenv("IAT_INTERNAL_KEYPAIR", "/home/ilias/phantom-wallet.json")
+        keypair_path = os.getenv("IAT_INTERNAL_KEYPAIR", "$IAT_KEYPAIR_PATH")
         result = run_strategy("btc_trade_signal", keypair_path)
 
         return {
@@ -335,10 +335,10 @@ def create_order(req: OrderRequest):
     orders = load_orders()
     order_id = str(uuid.uuid4())
 
-    if req.service not in SERVICES:
-        return {"status": "unknown_service"}
-
     seller = select_best_seller(req.service)
+
+    if seller is None:
+        return {"status": "unknown_service"}
 
     if seller is None:
         return {"status": "no_seller_available"}

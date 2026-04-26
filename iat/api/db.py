@@ -324,7 +324,7 @@ def list_agents_db():
 
 def get_agents_for_service_db(service):
     now = int(time.time())
-    TIMEOUT = 30  # seconds
+    TIMEOUT = 120  # seconds
 
     return [
         a for a in list_agents_db()
@@ -369,7 +369,7 @@ def get_network_status_db():
     stats = get_stats_db()
 
     now = int(time.time())
-    TIMEOUT = 30
+    TIMEOUT = 120
 
     online_agents = [
         a for a in agents
@@ -424,7 +424,7 @@ def get_network_status_db():
     stats = get_stats_db()
 
     now = int(time.time())
-    TIMEOUT = 30
+    TIMEOUT = 120
 
     online_agents = [
         a for a in agents

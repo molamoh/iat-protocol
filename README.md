@@ -87,3 +87,13 @@ IAT Protocol aims to become a financial and execution layer for autonomous AI ag
 ## Status
 
 Advanced prototype — functional public multi-agent economic system.
+
+## Security Notice
+
+Never commit wallet keypair files or private paths to GitHub.
+
+Use an environment variable:
+
+```bash
+export IAT_KEYPAIR_PATH="/secure/path/to/keypair.json"
+

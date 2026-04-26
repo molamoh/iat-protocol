@@ -1,6 +1,10 @@
+import os
 from iat import pay_and_get_service
 
-KEYPAIR_PATH = "/home/ilias/phantom-wallet.json"
+KEYPAIR_PATH = os.getenv("IAT_KEYPAIR_PATH")
+
+if not KEYPAIR_PATH:
+    raise RuntimeError("Missing IAT_KEYPAIR_PATH environment variable")
 
 result = pay_and_get_service(
     "risk_report",

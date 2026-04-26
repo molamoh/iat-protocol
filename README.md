@@ -97,3 +97,44 @@ Use an environment variable:
 ```bash
 export IAT_KEYPAIR_PATH="/secure/path/to/keypair.json"
 
+🧠 Autonomous Decision Agent
+
+An AI agent can decide when it needs external capabilities.
+
+Example:
+
+from iat import enable_ai_market
+
+market = enable_ai_market()
+
+# agent decides it needs external data
+result = market.buy("risk_report")
+
+This enables:
+
+decision-based service usage
+dynamic capability access
+external reasoning augmentation
+🤖 Autonomous Multi-Agent Orchestration
+
+An AI agent can:
+
+decide which services it needs
+request multiple agents
+combine outputs
+produce a final decision
+Example flow:
+Agent → decides required services  
+      → buys risk_report  
+      → buys market_sentiment  
+      → combines results  
+      → produces final BTC signal  
+Example output:
+Final decision: WAIT_FOR_LIQUIDITY_SWEEP  
+Confidence: 0.82  
+Total cost: 1.95 IAT  
+Run the demo:
+export IAT_KEYPAIR_PATH="..."
+
+PYTHONPATH=. IAT_API_URL=http://localhost:8000 \
+python3 examples/fully_autonomous_multi_agent.py

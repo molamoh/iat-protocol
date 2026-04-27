@@ -64,16 +64,55 @@ def info():
     }
 
 
-def simple_search(query):
+def search_with_serper(query):
+    api_key = os.getenv("SERPER_API_KEY")
+
+    if not api_key:
+        return None
+
     try:
-        url = "https://html.duckduckgo.com/html/"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
+        r = requests.post(
+            "https://google.serper.dev/search",
+            headers={
+                "X-API-KEY": api_key,
+                "Content-Type": "application/json",
+            },
+            json={"q": query},
+            timeout=15,
+        )
 
-        r = requests.get(url, params={"q": query}, headers=headers, timeout=10)
+        data = r.json()
+        results = []
+
+        for item in data.get("organic", [])[:5]:
+            results.append({
+                "source": "serper_google",
+                "title": item.get("title"),
+                "snippet": item.get("snippet"),
+                "link": item.get("link"),
+            })
+
+        return results
+
+    except Exception as e:
+        return [{
+            "source": "serper_google",
+            "title": "Serper error",
+            "snippet": str(e),
+            "link": "",
+        }]
+
+
+def search_with_duckduckgo(query):
+    try:
+        r = requests.get(
+            "https://html.duckduckgo.com/html/",
+            params={"q": query},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=10,
+        )
+
         soup = BeautifulSoup(r.text, "html.parser")
-
         results = []
 
         for result in soup.select(".result")[:5]:
@@ -83,26 +122,40 @@ def simple_search(query):
 
             if title and link:
                 results.append({
+                    "source": "duckduckgo_html",
                     "title": title.get_text(strip=True),
                     "snippet": snippet.get_text(strip=True) if snippet else "",
                     "link": link.get("href"),
                 })
 
-        if not results:
-            return [{
-                "title": "No results found",
-                "snippet": "Search engine returned no data. Possible block or HTML change.",
-                "link": "",
-            }]
-
         return results
 
     except Exception as e:
         return [{
-            "title": "Search error",
+            "source": "duckduckgo_html",
+            "title": "DuckDuckGo error",
             "snippet": str(e),
             "link": "",
         }]
+
+
+def simple_search(query):
+    results = search_with_serper(query)
+
+    if results:
+        return results
+
+    results = search_with_duckduckgo(query)
+
+    if results:
+        return results
+
+    return [{
+        "source": "fallback",
+        "title": "No results found",
+        "snippet": "No usable result from Serper or DuckDuckGo.",
+        "link": "",
+    }]
 
 
 @app.post("/execute")

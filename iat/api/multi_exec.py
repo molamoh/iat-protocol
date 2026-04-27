@@ -47,10 +47,29 @@ def multi_call(agents, order):
     return [call_agent(agent, order) for agent in agents]
 
 
+def compute_quality(result):
+    data = result.get("data", {}).get("data", {})
+    results = data.get("results", [])
+
+    quality = len(results)
+
+    if results:
+        first = results[0]
+        if first.get("title"):
+            quality += 1
+        if first.get("snippet"):
+            quality += 1
+
+    latency = result.get("latency", 1)
+    latency_score = 1 / (latency + 0.001)
+
+    return quality * 2 + latency_score
+
+
 def select_best_result(results):
     valid = [r for r in results if r.get("success")]
 
     if not valid:
         return None
 
-    return min(valid, key=lambda r: r["latency"])
+    return max(valid, key=compute_quality)

@@ -16,3 +16,4 @@ iat_protocol.db
 .pytest_cache/
 *.json
 iat_wallets_v2.json
+iat_wallets_v2.json

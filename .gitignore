@@ -17,3 +17,6 @@ iat_protocol.db
 *.json
 iat_wallets_v2.json
 iat_wallets_v2.json
+*.json
+*wallet*
+*keypair*

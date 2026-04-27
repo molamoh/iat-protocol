@@ -12,8 +12,11 @@ def list_services():
     return r.json()
 
 
-def create_order(service):
-    r = requests.post(f"{API}/create-order", json={"service": service})
+def create_order(service, query=None):
+    payload = {"service": service}
+    if query:
+        payload["query"] = query
+    r = requests.post(f"{API}/create-order", json=payload)
     r.raise_for_status()
     return r.json()
 
@@ -39,8 +42,8 @@ def verify_order(order_id, tx_signature):
         return {"status": "network_error", "error": str(e)}
 
 
-def pay_and_get_service(service, keypair_path, max_attempts=12, delay=5):
-    order = create_order(service)
+def pay_and_get_service(service, keypair_path, max_attempts=12, delay=5, query=None):
+    order = create_order(service, query=query)
 
     if order.get("status") in ["unknown_service", "no_seller_available"]:
         return {"status": "failed", "reason": order}

@@ -105,6 +105,7 @@ class RegisterAgentRequest(BaseModel):
 
 class OrderRequest(BaseModel):
     service: str
+    query: str | None = None
 
 
 class VerifyPaymentRequest(BaseModel):
@@ -268,6 +269,7 @@ def deliver_service(order, tx_signature):
                 json={
                     "order_id": order["order_id"],
                     "tx_signature": tx_signature,
+                    "query": order.get("query"),
                 },
                 timeout=15,
             )
@@ -429,6 +431,7 @@ def create_order(req: OrderRequest):
     order = {
         "order_id": order_id,
         "service": req.service,
+        "query": req.query,
         "price": seller["price"],
         "seller_id": seller["seller_id"],
         "seller_wallet": seller["seller_wallet"],

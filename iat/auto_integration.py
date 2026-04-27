@@ -25,14 +25,14 @@ class IATMarket:
         if not self.keypair_path:
             raise RuntimeError("Missing IAT_KEYPAIR_PATH environment variable")
 
-    def buy(self, service: str = "risk_report"):
-        return pay_and_get_service(service, self.keypair_path)
+    def buy(self, service: str = "risk_report", query=None):
+        return pay_and_get_service(service, self.keypair_path, query=query)
 
-    def run(self, service: str = "risk_report"):
-        return self.buy(service)
+    def run(self, service: str = "risk_report", query=None):
+        return self.buy(service, query=query)
 
-    def __call__(self, service: str = "risk_report"):
-        return self.buy(service)
+    def __call__(self, service: str = "risk_report", query=None):
+        return self.buy(service, query=query)
 
 
 # Backward-compatible alias

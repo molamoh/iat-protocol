@@ -7,7 +7,9 @@ DB_PATH = Path("iat_protocol.db")
 
 
 def get_conn():
-    return sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def init_db():
@@ -18,6 +20,7 @@ def init_db():
     CREATE TABLE IF NOT EXISTS orders (
         order_id TEXT PRIMARY KEY,
         service TEXT NOT NULL,
+        query TEXT,
         price REAL NOT NULL,
         seller_id TEXT,
         seller_wallet TEXT,
@@ -33,22 +36,33 @@ def init_db():
     )
     """)
 
-
-    # Lightweight migrations for existing SQLite DB
-    for column_name, column_type in [
-        ("seller_url", "TEXT"),
-        ("seller_source", "TEXT")
-    ]:
-        try:
-            cur.execute(f"ALTER TABLE orders ADD COLUMN {column_name} {column_type}")
-        except sqlite3.OperationalError:
-            pass
-
-
     cur.execute("""
     CREATE TABLE IF NOT EXISTS processed_txs (
         tx_signature TEXT PRIMARY KEY,
         processed_at INTEGER NOT NULL
+    )
+    """)
+
+    conn.commit()
+    conn.close()
+    init_agents_table()
+
+
+def init_agents_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS agents (
+        agent_id TEXT PRIMARY KEY,
+        service TEXT NOT NULL,
+        url TEXT,
+        wallet TEXT NOT NULL,
+        price REAL NOT NULL,
+        reputation REAL DEFAULT 0.8,
+        available INTEGER DEFAULT 1,
+        registered_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
     )
     """)
 
@@ -62,14 +76,14 @@ def create_order_db(order_id, order):
 
     cur.execute("""
     INSERT INTO orders (
-        order_id, service, price, seller_id, seller_wallet, seller_url, seller_source,
-        created_at, updated_at, status, tx_signature,
-        delivered_at, delivery_result, used
+        order_id, service, query, price, seller_id, seller_wallet, seller_url, seller_source,
+        created_at, updated_at, status, tx_signature, delivered_at, delivery_result, used
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         order_id,
         order["service"],
+        order.get("query"),
         order["price"],
         order.get("seller_id"),
         order.get("seller_wallet"),
@@ -90,9 +104,7 @@ def create_order_db(order_id, order):
 
 def get_order_db(order_id):
     conn = get_conn()
-    conn.row_factory = sqlite3.Row
     cur = conn.cursor()
-
     cur.execute("SELECT * FROM orders WHERE order_id = ?", (order_id,))
     row = cur.fetchone()
     conn.close()
@@ -101,18 +113,13 @@ def get_order_db(order_id):
         return None
 
     order = dict(row)
-
-    if "used" in order:
-        order["used"] = bool(order["used"])
+    order["used"] = bool(order.get("used", 0))
 
     if order.get("delivery_result"):
         try:
             order["delivery_result"] = json.loads(order["delivery_result"])
         except Exception:
-            order["delivery_result"] = {
-                "raw": order["delivery_result"],
-                "parse_error": True
-            }
+            order["delivery_result"] = {"raw": order["delivery_result"], "parse_error": True}
 
     return order
 
@@ -120,21 +127,16 @@ def get_order_db(order_id):
 def list_orders_db():
     conn = get_conn()
     cur = conn.cursor()
-
     cur.execute("SELECT order_id FROM orders ORDER BY created_at DESC")
     rows = cur.fetchall()
     conn.close()
 
-    return {
-        order_id: get_order_db(order_id)
-        for (order_id,) in rows
-    }
+    return {row["order_id"]: get_order_db(row["order_id"]) for row in rows}
 
 
 def update_order_delivered_db(order_id, tx_signature, delivery_result):
     conn = get_conn()
     cur = conn.cursor()
-
     now = int(time.time())
 
     cur.execute("""
@@ -158,106 +160,19 @@ def update_order_delivered_db(order_id, tx_signature, delivery_result):
 def is_tx_processed_db(tx_signature):
     conn = get_conn()
     cur = conn.cursor()
-
     cur.execute("SELECT tx_signature FROM processed_txs WHERE tx_signature = ?", (tx_signature,))
     row = cur.fetchone()
     conn.close()
-
     return row is not None
 
 
 def save_processed_tx_db(tx_signature):
     conn = get_conn()
     cur = conn.cursor()
-
     cur.execute("""
     INSERT OR IGNORE INTO processed_txs (tx_signature, processed_at)
     VALUES (?, ?)
     """, (tx_signature, int(time.time())))
-
-    conn.commit()
-    conn.close()
-
-
-def get_stats_db():
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute("SELECT COUNT(*) FROM orders")
-    total_orders = cur.fetchone()[0]
-
-    cur.execute("SELECT COUNT(*) FROM orders WHERE status = 'delivered'")
-    delivered_orders = cur.fetchone()[0]
-
-    cur.execute("SELECT COALESCE(SUM(price), 0) FROM orders WHERE status = 'delivered'")
-    total_volume = cur.fetchone()[0]
-
-    cur.execute("SELECT COUNT(*) FROM processed_txs")
-    processed_txs = cur.fetchone()[0]
-
-    cur.execute("""
-        SELECT service, COUNT(*) as count
-        FROM orders
-        WHERE status = 'delivered'
-        GROUP BY service
-        ORDER BY count DESC
-        LIMIT 1
-    """)
-    top_service_row = cur.fetchone()
-
-    cur.execute("""
-        SELECT seller_id, COUNT(*) as orders_count, COALESCE(SUM(price), 0) as revenue
-        FROM orders
-        WHERE status = 'delivered'
-        GROUP BY seller_id
-        ORDER BY revenue DESC
-    """)
-    seller_rows = cur.fetchall()
-
-    revenue_by_seller = {
-        seller_id: {
-            "orders": orders_count,
-            "revenue_iat": revenue
-        }
-        for seller_id, orders_count, revenue in seller_rows
-    }
-
-    conn.close()
-
-    success_rate = 0
-    if total_orders > 0:
-        success_rate = round((delivered_orders / total_orders) * 100, 2)
-
-    return {
-        "total_orders": total_orders,
-        "delivered_orders": delivered_orders,
-        "pending_orders": total_orders - delivered_orders,
-        "total_volume_iat": total_volume,
-        "processed_transactions": processed_txs,
-        "success_rate_percent": success_rate,
-        "top_service": top_service_row[0] if top_service_row else None,
-        "revenue_by_seller": revenue_by_seller
-    }
-
-
-def init_agents_table():
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS agents (
-        agent_id TEXT PRIMARY KEY,
-        service TEXT NOT NULL,
-        url TEXT NOT NULL,
-        wallet TEXT NOT NULL,
-        price REAL NOT NULL,
-        reputation REAL NOT NULL,
-        available INTEGER DEFAULT 1,
-        registered_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-    )
-    """)
-
     conn.commit()
     conn.close()
 
@@ -267,27 +182,41 @@ def register_agent_db(agent):
     cur = conn.cursor()
     now = int(time.time())
 
-    cur.execute("""
-    INSERT OR REPLACE INTO agents (
-        agent_id, service, url, wallet, price, reputation,
-        available, registered_at, updated_at
-    )
-    VALUES (?, ?, ?, ?, ?, ?, ?, COALESCE(
-        (SELECT registered_at FROM agents WHERE agent_id = ?),
-        ?
-    ), ?)
-    """, (
-        agent["agent_id"],
-        agent["service"],
-        agent["url"],
-        agent["wallet"],
-        agent["price"],
-        agent["reputation"],
-        1 if agent.get("available", True) else 0,
-        agent["agent_id"],
-        now,
-        now
-    ))
+    cur.execute("SELECT agent_id FROM agents WHERE agent_id = ?", (agent["agent_id"],))
+    exists = cur.fetchone()
+
+    if exists:
+        cur.execute("""
+        UPDATE agents
+        SET service = ?, url = ?, wallet = ?, price = ?, reputation = ?, available = ?, updated_at = ?
+        WHERE agent_id = ?
+        """, (
+            agent["service"],
+            agent.get("url") or "",
+            agent["wallet"],
+            float(agent["price"]),
+            float(agent.get("reputation", 0.8)),
+            1 if agent.get("available", True) else 0,
+            now,
+            agent["agent_id"]
+        ))
+    else:
+        cur.execute("""
+        INSERT INTO agents (
+            agent_id, service, url, wallet, price, reputation, available, registered_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            agent["agent_id"],
+            agent["service"],
+            agent.get("url") or "",
+            agent["wallet"],
+            float(agent["price"]),
+            float(agent.get("reputation", 0.8)),
+            1 if agent.get("available", True) else 0,
+            now,
+            now
+        ))
 
     conn.commit()
     conn.close()
@@ -296,61 +225,53 @@ def register_agent_db(agent):
 def list_agents_db():
     conn = get_conn()
     cur = conn.cursor()
-
-    cur.execute("""
-    SELECT agent_id, service, url, wallet, price, reputation, available, registered_at, updated_at
-    FROM agents
-    ORDER BY service, price ASC
-    """)
-
+    cur.execute("SELECT * FROM agents ORDER BY service, agent_id")
     rows = cur.fetchall()
     conn.close()
 
-    return [
-        {
-            "agent_id": r[0],
-            "service": r[1],
-            "url": r[2],
-            "wallet": r[3],
-            "price": r[4],
-            "reputation": r[5],
-            "available": bool(r[6]),
-            "registered_at": r[7],
-            "updated_at": r[8]
-        }
-        for r in rows
-    ]
+    agents = []
+    for row in rows:
+        a = dict(row)
+        a["available"] = bool(a.get("available", 0))
+        agents.append(a)
+
+    return agents
 
 
 def get_agents_for_service_db(service):
     now = int(time.time())
-    TIMEOUT = 120  # seconds
+    timeout = 120
 
-    return [
+    agents = [
         a for a in list_agents_db()
         if a["service"] == service
         and a["available"]
-        and (now - a["updated_at"] <= TIMEOUT)
+        and (now - int(a["updated_at"]) <= timeout)
     ]
+
+    return agents
 
 
 def update_agent_reputation_db(agent_id, success=True):
+    if not agent_id:
+        return None
+
     conn = get_conn()
     cur = conn.cursor()
 
     cur.execute("SELECT reputation FROM agents WHERE agent_id = ?", (agent_id,))
     row = cur.fetchone()
 
-    if row is None:
+    if not row:
         conn.close()
         return None
 
-    current = float(row[0])
+    old_rep = float(row["reputation"])
 
     if success:
-        new_rep = min(current + 0.01, 1.0)
+        new_rep = min(old_rep + 0.01, 1.0)
     else:
-        new_rep = max(current - 0.05, 0.1)
+        new_rep = max(old_rep - 0.03, 0.1)
 
     cur.execute("""
     UPDATE agents
@@ -364,32 +285,70 @@ def update_agent_reputation_db(agent_id, success=True):
     return round(new_rep, 4)
 
 
+def get_stats_db():
+    orders = list_orders_db()
+
+    total_orders = len(orders)
+    delivered_orders = len([o for o in orders.values() if o.get("status") == "delivered"])
+    pending_orders = len([o for o in orders.values() if o.get("status") != "delivered"])
+
+    total_volume = sum(float(o.get("price") or 0) for o in orders.values() if o.get("status") == "delivered")
+    processed_transactions = delivered_orders
+
+    revenue_by_seller = {}
+    service_count = {}
+
+    for o in orders.values():
+        if o.get("status") != "delivered":
+            continue
+
+        seller = o.get("seller_id") or "unknown"
+        service = o.get("service") or "unknown"
+
+        revenue_by_seller.setdefault(seller, {"orders": 0, "revenue_iat": 0})
+        revenue_by_seller[seller]["orders"] += 1
+        revenue_by_seller[seller]["revenue_iat"] = round(
+            revenue_by_seller[seller]["revenue_iat"] + float(o.get("price") or 0),
+            4
+        )
+
+        service_count[service] = service_count.get(service, 0) + 1
+
+    top_service = max(service_count, key=service_count.get) if service_count else None
+
+    return {
+        "total_orders": total_orders,
+        "delivered_orders": delivered_orders,
+        "pending_orders": pending_orders,
+        "total_volume_iat": round(total_volume, 4),
+        "processed_transactions": processed_transactions,
+        "success_rate_percent": round((delivered_orders / total_orders * 100), 2) if total_orders else 0,
+        "top_service": top_service,
+        "revenue_by_seller": revenue_by_seller
+    }
+
+
 def get_network_status_db():
     agents = list_agents_db()
     stats = get_stats_db()
 
     now = int(time.time())
-    TIMEOUT = 120
+    timeout = 120
 
     online_agents = [
         a for a in agents
-        if a["available"] and (now - a["updated_at"] <= TIMEOUT)
+        if a["available"] and (now - int(a["updated_at"]) <= timeout)
     ]
 
     services = {}
 
     for agent in online_agents:
         service = agent["service"]
+        services.setdefault(service, {"agents": [], "best_agent": None})
 
-        if service not in services:
-            services[service] = {
-                "agents": [],
-                "best_agent": None
-            }
+        score = round(float(agent["reputation"]) / float(agent["price"]), 4)
 
-        score = round(agent["reputation"] / agent["price"], 4)
-
-        agent_info = {
+        info = {
             "agent_id": agent["agent_id"],
             "url": agent["url"],
             "wallet": agent["wallet"],
@@ -399,13 +358,10 @@ def get_network_status_db():
             "updated_at": agent["updated_at"]
         }
 
-        services[service]["agents"].append(agent_info)
+        services[service]["agents"].append(info)
 
     for service, data in services.items():
-        data["best_agent"] = max(
-            data["agents"],
-            key=lambda a: a["score"]
-        )
+        data["best_agent"] = max(data["agents"], key=lambda a: a["score"])
 
     return {
         "network": {
@@ -418,64 +374,10 @@ def get_network_status_db():
         "economy": stats
     }
 
-
-def get_network_status_db():
-    agents = list_agents_db()
-    stats = get_stats_db()
-
-    now = int(time.time())
-    TIMEOUT = 120
-
-    online_agents = [
-        a for a in agents
-        if a["available"] and (now - a["updated_at"] <= TIMEOUT)
-    ]
-
-    services = {}
-
-    for agent in online_agents:
-        service = agent["service"]
-
-        if service not in services:
-            services[service] = {
-                "agents": [],
-                "best_agent": None
-            }
-
-        score = round(agent["reputation"] / agent["price"], 4)
-
-        agent_info = {
-            "agent_id": agent["agent_id"],
-            "url": agent["url"],
-            "wallet": agent["wallet"],
-            "price": agent["price"],
-            "reputation": agent["reputation"],
-            "score": score,
-            "updated_at": agent["updated_at"]
-        }
-
-        services[service]["agents"].append(agent_info)
-
-    for service, data in services.items():
-        data["best_agent"] = max(
-            data["agents"],
-            key=lambda a: a["score"]
-        )
-
-    return {
-        "network": {
-            "status": "online" if online_agents else "degraded",
-            "total_agents": len(agents),
-            "online_agents": len(online_agents),
-            "services_count": len(services)
-        },
-        "services": services,
-        "economy": stats
-    }
 
 def create_factory_agent_db(service, description=None):
     agent_id = f"factory_{service}"
-    wallet = "EPabAZ3CtMkbjduLrNcDZuXaEp37Ge9cmrnwWF9TY5wc"
+    wallet = "EPabAZ3CtMkbjduLrNcDZuXaEp37Ur2UG7VNUqSqQyApLQEcCxgnqK4f4Z"
     now = int(time.time())
 
     agent = {

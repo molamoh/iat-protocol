@@ -11,11 +11,11 @@ app = FastAPI()
 REGISTRY_URL = os.getenv("IAT_REGISTRY_URL", "http://localhost:8000")
 PUBLIC_URL = os.getenv("IAT_AGENT_PUBLIC_URL", "http://localhost:8005")
 
-AGENT_ID = "web_research_agent"
-SERVICE = "web_research"
+AGENT_ID = os.getenv("IAT_AGENT_ID", "web_research_agent")
+SERVICE = os.getenv("IAT_SERVICE", "web_research")
 AGENT_WALLET = os.getenv("IAT_AGENT_WALLET", "EPabAZ3CtMkbjduLrNcDZuXaEp37Ge9cmrnwWF9TY5wc")
-PRICE = 1.2
-REPUTATION = 0.85
+PRICE = float(os.getenv("IAT_PRICE", "1.2"))
+REPUTATION = float(os.getenv("IAT_REPUTATION", "0.85"))
 
 
 class ExecuteRequest(BaseModel):

@@ -472,3 +472,31 @@ def get_network_status_db():
         "services": services,
         "economy": stats
     }
+
+def create_factory_agent_db(service, description=None):
+    agent_id = f"factory_{service}"
+    wallet = "EPabAZ3CtMkbjduLrNcDZuXaEp37Ge9cmrnwWF9TY5wc"
+    now = int(time.time())
+
+    agent = {
+        "agent_id": agent_id,
+        "service": service,
+        "url": "",
+        "wallet": wallet,
+        "price": 1.5,
+        "reputation": 0.7,
+        "available": True
+    }
+
+    register_agent_db(agent)
+
+    return {
+        "agent_id": agent_id,
+        "service": service,
+        "description": description or f"Factory-generated agent for {service}",
+        "wallet": wallet,
+        "price": 1.5,
+        "reputation": 0.7,
+        "created_at": now,
+        "source": "agent_factory"
+    }

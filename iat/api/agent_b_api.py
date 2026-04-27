@@ -558,3 +558,32 @@ def request_endpoint(payload: dict):
         }
     }
 
+
+
+@app.post("/multi-call-test")
+def multi_call_test(payload: dict):
+    from iat.api.multi_exec import multi_call, select_best_result
+    from iat.api.db import get_agents_for_service_db
+
+    service = payload.get("service")
+    query = payload.get("query")
+
+    if not service:
+        return {"error": "missing service"}
+
+    agents = get_agents_for_service_db(service)
+
+    order = {
+        "order_id": "test",
+        "query": query,
+        "service": service
+    }
+
+    results = multi_call(agents, order)
+    best = select_best_result(results)
+
+    return {
+        "agents_called": len(agents),
+        "results": results,
+        "best": best
+    }

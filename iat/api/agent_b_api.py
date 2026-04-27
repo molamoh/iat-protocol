@@ -345,6 +345,44 @@ def network_status():
     }
 
 
+@app.get("/marketplace")
+def marketplace():
+    agents = list_agents_db()
+    now = int(time.time())
+    timeout = 120
+
+    listings = []
+
+    for agent in agents:
+        online = agent["available"] and (now - agent["updated_at"] <= timeout)
+
+        listings.append({
+            "agent_id": agent["agent_id"],
+            "service": agent["service"],
+            "url": agent["url"],
+            "wallet": agent["wallet"],
+            "price_iat": agent["price"],
+            "reputation": agent["reputation"],
+            "score": round(agent["reputation"] / agent["price"], 4),
+            "status": "online" if online else "offline",
+            "source": "dynamic_registry",
+            "updated_at": agent["updated_at"]
+        })
+
+    listings = sorted(
+        listings,
+        key=lambda x: (x["service"], x["status"] != "online", -x["score"])
+    )
+
+    return {
+        "status": "ok",
+        "marketplace": {
+            "total_agents": len(listings),
+            "online_agents": len([a for a in listings if a["status"] == "online"]),
+            "services": sorted(list(set(a["service"] for a in listings))),
+            "listings": listings
+        }
+    }
 @app.get("/stats")
 def stats():
     return {

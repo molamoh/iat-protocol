@@ -20,3 +20,5 @@ iat_wallets_v2.json
 *.json
 *wallet*
 *keypair*
+phantom-wallet.json
+iat_protocol.db

@@ -795,3 +795,10 @@ def leaderboard():
         "count": len(leaderboard_items),
         "leaderboard": leaderboard_items,
     }
+
+
+def require_api_key(payload: dict):
+    expected = os.getenv("IAT_ADMIN_API_KEY")
+    if not expected:
+        return True
+    return payload.get("api_key") == expected

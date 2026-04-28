@@ -25,6 +25,12 @@ def pay_order(keypair_path, wallet_to, amount, order_id):
     return send_iat(keypair_path, wallet_to, amount, order_id)
 
 
+
+def get_order(order_id):
+    r = requests.get(f"{API}/orders/{order_id}")
+    return r.json()
+
+
 def verify_order(order_id, tx_signature):
     try:
         r = requests.post(f"{API}/verify-payment-multicall", json={
@@ -42,7 +48,7 @@ def verify_order(order_id, tx_signature):
         return {"status": "network_error", "error": str(e)}
 
 
-def pay_and_get_service(service, keypair_path, max_attempts=12, delay=5, query=None):
+def pay_and_get_service(service, keypair_path, max_attempts=24, delay=5, query=None):
     order = create_order(service, query=query)
 
     if order.get("status") in ["unknown_service", "no_seller_available"]:
@@ -75,7 +81,22 @@ def pay_and_get_service(service, keypair_path, max_attempts=12, delay=5, query=N
                 "result": result
             }
 
+        
+        if result.get("status") == "already_used":
+            return {
+                "status": "success_already_used",
+                "order_id": order_id,
+                "seller_id": seller_id,
+                "seller_wallet": seller_wallet,
+                "price": price,
+                "tx_signature": tx,
+                "attempts": attempt + 1,
+                "result": result,
+                "order": get_order(order_id),
+            }
+
         if result.get("status") in ["invalid_payment", "expired", "replay_blocked", "order_already_used"]:
+
             return {
                 "status": "failed",
                 "order_id": order_id,

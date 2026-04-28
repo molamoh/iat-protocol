@@ -705,3 +705,36 @@ def public_demo():
         "run_locally": "PYTHONPATH=. IAT_API_URL=http://localhost:8000 python3 examples/paid_multicall_demo.py"
     }
 
+
+
+@app.get("/transactions")
+def transactions():
+    orders = list_orders_db()
+
+    txs = []
+
+    for order_id, order in orders.items():
+        if order.get("status") != "delivered":
+            continue
+
+        delivery = order.get("delivery_result") or {}
+
+        txs.append({
+            "order_id": order_id,
+            "service": order.get("service"),
+            "query": order.get("query"),
+            "seller_id": order.get("seller_id"),
+            "seller_source": order.get("seller_source"),
+            "price_iat": order.get("price"),
+            "tx_signature": order.get("tx_signature"),
+            "delivered_at": order.get("delivered_at"),
+            "protocol_status": delivery.get("status"),
+            "agents_called": delivery.get("agents_called"),
+            "best_agent": (delivery.get("best") or {}).get("agent_id"),
+        })
+
+    return {
+        "status": "ok",
+        "count": len(txs),
+        "transactions": txs[:50],
+    }

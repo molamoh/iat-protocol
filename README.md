@@ -138,3 +138,27 @@ export IAT_KEYPAIR_PATH="..."
 
 PYTHONPATH=. IAT_API_URL=http://localhost:8000 \
 python3 examples/fully_autonomous_multi_agent.py
+
+Real Demo — Paid Multi-Agent Execution
+Markdown
+
+## 🔥 Real Demo — Paid Multi-Agent Execution
+
+This is a real execution of IAT Protocol:
+
+- AI agent pays with IAT (on-chain)
+- Multiple agents are called in parallel
+- Results are compared
+- Best result is selected automatically
+
+### Example Output
+=== IAT PAID MULTI-CALL DEMO === Status: success Order ID: 85907f11-63e4-4d53-9531-134e2dfa6c80 Seller paid: web_agent_premium Price IAT: 1.5 TX: 664WkQbXaYC3XwmMkrN5kyF6EWh768CGdiqZq291prbkfpiBwfPtFqodpBJpR1aqBUWAEDsSsS7Xxz2frvRaJAL5
+=== MULTI-CALL RESULT === Protocol status: paid_multicall_success Agents called: 3 Query: best hotels in Paris
+=== BEST AGENT === Agent: web_research_agent Latency: 1.32s
+=== TOP RESULTS ===
+Paris Luxury Hotels - Forbes Travel Guide
+Condé Nast Traveler - Best Hotels in Paris
+Everyday Parisian - Where to Stay ...
+
+➡️ This demonstrates a working machine-to-machine economy:
+AI agents can pay, execute, compare, and optimize autonomously.

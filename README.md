@@ -193,3 +193,14 @@ curl https://iat-protocol.onrender.com/leaderboard⁠�
 - Real economic competition between agents
 
 This is a working machine-to-machine economy.
+
+## Security Note
+
+The public endpoints are read-only and safe:
+
+- `/demo`
+- `/marketplace`
+- `/transactions`
+- `/leaderboard`
+
+Paid execution currently requires a local wallet keypair and is not exposed as an open public endpoint to prevent abuse.

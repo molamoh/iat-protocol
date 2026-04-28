@@ -631,3 +631,42 @@ def verify_payment_multicall(req: VerifyPaymentRequest):
         "results": results,
         "best": best,
     }
+
+
+@app.post("/verify-payment-multicall")
+def verify_payment_multicall(req: VerifyPaymentRequest):
+    base = verify_payment(req)
+    if base.get("status") != "paid":
+        return base
+
+    order = get_order_db(req.order_id)
+    if not order:
+        return {"status": "invalid_order"}
+
+    agents = get_agents_for_service_db(order["service"])
+    if not agents:
+        return {"status": "no_agents_available"}
+
+    from iat.api.multi_exec import multi_call, select_best_result
+
+    paid_order = dict(order)
+    paid_order["tx_signature"] = req.tx_signature
+
+    results = multi_call(agents, paid_order)
+    best = select_best_result(results)
+
+    if not best:
+        return {
+            "status": "multicall_failed",
+            "results": results,
+        }
+
+    return {
+        "status": "paid_multicall_success",
+        "service": order["service"],
+        "query": order.get("query"),
+        "tx_signature": req.tx_signature,
+        "agents_called": len(agents),
+        "results": results,
+        "best": best,
+    }

@@ -27,7 +27,7 @@ def pay_order(keypair_path, wallet_to, amount, order_id):
 
 def verify_order(order_id, tx_signature):
     try:
-        r = requests.post(f"{API}/verify-payment", json={
+        r = requests.post(f"{API}/verify-payment-multicall", json={
             "order_id": order_id,
             "tx_signature": tx_signature
         }, timeout=30)
@@ -63,7 +63,7 @@ def pay_and_get_service(service, keypair_path, max_attempts=12, delay=5, query=N
     for attempt in range(1, max_attempts + 1):
         result = verify_order(order_id, tx)
 
-        if result.get("status") == "paid":
+        if result.get("status") in ["paid", "paid_multicall_success"]:
             return {
                 "status": "success",
                 "order_id": order_id,

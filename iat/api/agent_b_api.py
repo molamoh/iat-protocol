@@ -738,3 +738,60 @@ def transactions():
         "count": len(txs),
         "transactions": txs[:50],
     }
+
+
+@app.get("/leaderboard")
+def leaderboard():
+    orders = list_orders_db()
+    agents = list_agents_db()
+
+    stats = {}
+
+    for agent in agents:
+        agent_id = agent.get("agent_id")
+        stats[agent_id] = {
+            "agent_id": agent_id,
+            "service": agent.get("service"),
+            "reputation": agent.get("reputation"),
+            "listed_price_iat": agent.get("price"),
+            "wins": 0,
+            "paid_orders": 0,
+            "revenue_iat": 0,
+            "last_active": agent.get("updated_at"),
+        }
+
+    for order_id, order in orders.items():
+        if order.get("status") != "delivered":
+            continue
+
+        seller_id = order.get("seller_id")
+        price = float(order.get("price") or 0)
+        delivery = order.get("delivery_result") or {}
+        best_agent = (delivery.get("best") or {}).get("agent_id")
+
+        if seller_id in stats:
+            stats[seller_id]["paid_orders"] += 1
+            stats[seller_id]["revenue_iat"] += price
+
+        if best_agent in stats:
+            stats[best_agent]["wins"] += 1
+
+    leaderboard_items = list(stats.values())
+
+    for item in leaderboard_items:
+        item["revenue_iat"] = round(item["revenue_iat"], 4)
+
+    leaderboard_items.sort(
+        key=lambda x: (
+            x["wins"],
+            x["paid_orders"],
+            x["reputation"] or 0,
+        ),
+        reverse=True,
+    )
+
+    return {
+        "status": "ok",
+        "count": len(leaderboard_items),
+        "leaderboard": leaderboard_items,
+    }

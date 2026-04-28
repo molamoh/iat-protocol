@@ -845,3 +845,85 @@ def settlements():
         "count": len(rows),
         "settlements": rows[:50],
     }
+
+
+@app.post("/intent-preview")
+def intent_preview(payload: dict):
+    service = payload.get("service")
+    query = payload.get("query")
+    max_price = float(payload.get("max_price", 999999))
+    priority = payload.get("priority", "quality")
+
+    if not service:
+        return {
+            "status": "error",
+            "message": "missing service",
+        }
+
+    agents = get_agents_for_service_db(service)
+
+    bids = []
+
+    for agent in agents:
+        price = float(agent.get("price") or 999999)
+        reputation = float(agent.get("reputation") or 0.5)
+
+        if price > max_price:
+            continue
+
+        estimated_latency = 1.0 + (price / 10)
+        confidence = min(0.99, reputation + 0.05)
+
+        price_score = 1 / price if price > 0 else 0
+        latency_score = 1 / estimated_latency if estimated_latency > 0 else 0
+
+        if priority == "price":
+            score = (
+                reputation * 0.25 +
+                confidence * 0.20 +
+                price_score * 0.40 +
+                latency_score * 0.15
+            )
+        elif priority == "speed":
+            score = (
+                reputation * 0.25 +
+                confidence * 0.20 +
+                price_score * 0.15 +
+                latency_score * 0.40
+            )
+        else:
+            score = (
+                reputation * 0.35 +
+                confidence * 0.25 +
+                price_score * 0.20 +
+                latency_score * 0.20
+            )
+
+        bids.append({
+            "agent_id": agent.get("agent_id"),
+            "service": agent.get("service"),
+            "url": agent.get("url"),
+            "wallet": agent.get("wallet"),
+            "price_iat": price,
+            "reputation": reputation,
+            "confidence": round(confidence, 4),
+            "estimated_latency": round(estimated_latency, 4),
+            "score": round(score, 6),
+        })
+
+    bids.sort(key=lambda x: x["score"], reverse=True)
+
+    return {
+        "status": "ok",
+        "type": "intent_preview",
+        "intent": {
+            "service": service,
+            "query": query,
+            "max_price": max_price,
+            "priority": priority,
+        },
+        "agents_found": len(agents),
+        "bids_count": len(bids),
+        "selected": bids[:3],
+        "all_bids": bids,
+    }

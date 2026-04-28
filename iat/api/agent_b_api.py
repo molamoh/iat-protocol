@@ -597,7 +597,7 @@ def multi_call_test(payload: dict):
 def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = Header(default=None)):
     if not require_admin_key(x_api_key):
         return {"status": "error", "message": "unauthorized"}
-    base = verify_payment(req)
+    base = verify_payment(req, x_api_key=x_api_key)
 
     if base.get("status") == "already_used":
         order = get_order_db(req.order_id)
@@ -653,7 +653,7 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
 def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = Header(default=None)):
     if not require_admin_key(x_api_key):
         return {"status": "error", "message": "unauthorized"}
-    base = verify_payment(req)
+    base = verify_payment(req, x_api_key=x_api_key)
     if base.get("status") == "already_used":
         order = get_order_db(req.order_id)
         if order and order.get("delivery_result"):

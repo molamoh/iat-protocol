@@ -2,7 +2,7 @@ import os
 import time
 import uuid
 import requests
-from fastapi import FastAPI
+from fastapi import FastAPI, Header
 from pydantic import BaseModel
 from solders.pubkey import Pubkey
 from spl.token.instructions import get_associated_token_address
@@ -381,7 +381,9 @@ def get_order(order_id: str):
 
 
 @app.post("/create-order")
-def create_order(req: OrderRequest):
+def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
     seller = select_best_seller(req.service)
 
     if seller is None:
@@ -423,7 +425,9 @@ def create_order(req: OrderRequest):
 
 
 @app.post("/verify-payment")
-def verify_payment(req: VerifyPaymentRequest):
+def verify_payment(req: VerifyPaymentRequest, x_api_key: str | None = Header(default=None)):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
     order = get_order_db(req.order_id)
 
     if not order:
@@ -590,7 +594,9 @@ def multi_call_test(payload: dict):
 
 
 @app.post("/verify-payment-multicall")
-def verify_payment_multicall(req: VerifyPaymentRequest):
+def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = Header(default=None)):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
     base = verify_payment(req)
 
     if base.get("status") == "already_used":
@@ -644,7 +650,9 @@ def verify_payment_multicall(req: VerifyPaymentRequest):
 
 
 @app.post("/verify-payment-multicall")
-def verify_payment_multicall(req: VerifyPaymentRequest):
+def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = Header(default=None)):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
     base = verify_payment(req)
     if base.get("status") == "already_used":
         order = get_order_db(req.order_id)
@@ -796,9 +804,8 @@ def leaderboard():
         "leaderboard": leaderboard_items,
     }
 
-
-def require_api_key(payload: dict):
+def require_admin_key(x_api_key: str | None):
     expected = os.getenv("IAT_ADMIN_API_KEY")
     if not expected:
         return True
-    return payload.get("api_key") == expected
+    return x_api_key == expected

@@ -670,3 +670,22 @@ def verify_payment_multicall(req: VerifyPaymentRequest):
         "results": results,
         "best": best,
     }
+
+
+
+@app.get("/demo")
+def public_demo():
+    return {
+        "demo": "IAT Protocol Public Demo",
+        "status": "ok",
+        "description": "AI pays with IAT, multiple agents execute, best result is selected.",
+        "latest_verified_flow": {
+            "payment": "on-chain IAT payment",
+            "execution": "paid multi-call",
+            "agents_called": 3,
+            "best_result_selection": True,
+            "real_web_data": True
+        },
+        "run_locally": "PYTHONPATH=. IAT_API_URL=http://localhost:8000 python3 examples/paid_multicall_demo.py"
+    }
+

@@ -4,3 +4,5 @@ solana
 solders
 pydantic
 requests
+beautifulsoup4
+requests

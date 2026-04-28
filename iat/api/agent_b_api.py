@@ -809,3 +809,39 @@ def require_admin_key(x_api_key: str | None):
     if not expected:
         return True
     return x_api_key == expected
+
+
+@app.get("/settlements")
+def settlements():
+    orders = list_orders_db()
+    rows = []
+
+    for order_id, order in orders.items():
+        if order.get("status") != "delivered":
+            continue
+
+        delivery = order.get("delivery_result") or {}
+        best = delivery.get("best") or {}
+        best_agent = best.get("agent_id")
+        seller_id = order.get("seller_id")
+
+        if not best_agent:
+            continue
+
+        rows.append({
+            "order_id": order_id,
+            "service": order.get("service"),
+            "query": order.get("query"),
+            "tx_signature": order.get("tx_signature"),
+            "payer_paid_to": seller_id,
+            "best_agent": best_agent,
+            "price_iat": order.get("price"),
+            "winner_payment_status": "already_paid" if best_agent == seller_id else "payout_due",
+            "payout_due_to": None if best_agent == seller_id else best_agent,
+        })
+
+    return {
+        "status": "ok",
+        "count": len(rows),
+        "settlements": rows[:50],
+    }

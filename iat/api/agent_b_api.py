@@ -593,6 +593,12 @@ def multi_call_test(payload: dict):
 def verify_payment_multicall(req: VerifyPaymentRequest):
     base = verify_payment(req)
 
+    if base.get("status") == "already_used":
+        order = get_order_db(req.order_id)
+        if order and order.get("delivery_result"):
+            return order["delivery_result"]
+        return base
+
     if base.get("status") != "paid":
         return base
 
@@ -621,7 +627,7 @@ def verify_payment_multicall(req: VerifyPaymentRequest):
             "results": results,
         }
 
-    return {
+    final_result = {
         "status": "paid_multicall_success",
         "service": order["service"],
         "query": order.get("query"),
@@ -632,10 +638,20 @@ def verify_payment_multicall(req: VerifyPaymentRequest):
         "best": best,
     }
 
+    update_order_delivered_db(req.order_id, req.tx_signature, final_result)
+
+    return final_result
+
 
 @app.post("/verify-payment-multicall")
 def verify_payment_multicall(req: VerifyPaymentRequest):
     base = verify_payment(req)
+    if base.get("status") == "already_used":
+        order = get_order_db(req.order_id)
+        if order and order.get("delivery_result"):
+            return order["delivery_result"]
+        return base
+
     if base.get("status") != "paid":
         return base
 

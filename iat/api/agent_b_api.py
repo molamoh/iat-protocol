@@ -851,7 +851,7 @@ def settlements():
             "service": order.get("service"),
             "query": order.get("query"),
             "tx_signature": order.get("tx_signature"),
-            "payer_paid_to": seller_id,
+            "payer_paid_to": "escrow_wallet" if order.get("payment_target") == "escrow" else seller_id,
             "best_agent": best_agent,
             "price_iat": order.get("price"),
             "winner_payment_status": "already_paid" if best_agent == seller_id else "payout_due",

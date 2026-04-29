@@ -37,9 +37,13 @@ from iat.api.db import (
 app = FastAPI()
 
 
-def resolve_payment_wallet(agent_wallet):
+def payment_wallet_for(agent_wallet):
     escrow_wallet = os.getenv("IAT_ESCROW_WALLET")
     return escrow_wallet if escrow_wallet else agent_wallet
+
+
+def payment_target():
+    return "escrow" if os.getenv("IAT_ESCROW_WALLET") else "seller"
 
 
 init_db()
@@ -401,17 +405,14 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
     now = int(time.time())
 
     order = {
-        "seller_wallet": resolve_payment_wallet(seller.get("wallet") or seller.get("seller_wallet")),
-        "actual_agent_wallet": seller.get("wallet") or seller.get("seller_wallet"),
-
         "order_id": order_id,
         "service": req.service,
         "query": req.query,
         "price": seller["price"],
         "seller_id": seller["seller_id"],
-        "seller_wallet": resolve_payment_wallet(seller["seller_wallet"]),
+        "seller_wallet": payment_wallet_for(seller["seller_wallet"]),
         "actual_agent_wallet": seller["seller_wallet"],
-        "payment_target": "escrow" if os.getenv("IAT_ESCROW_WALLET") else "seller",
+        "payment_target": payment_target(),
         "seller_url": seller.get("url") or "",
         "seller_source": seller.get("source"),
         "created_at": now,
@@ -429,9 +430,9 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
         "order_id": order_id,
         "price": seller["price"],
         "seller_id": seller["seller_id"],
-        "seller_wallet": resolve_payment_wallet(seller["seller_wallet"]),
+        "seller_wallet": payment_wallet_for(seller["seller_wallet"]),
         "actual_agent_wallet": seller["seller_wallet"],
-        "payment_target": "escrow" if os.getenv("IAT_ESCROW_WALLET") else "seller",
+        "payment_target": payment_target(),
         "seller_url": seller.get("url") or "",
         "seller_source": seller.get("source"),
     }
@@ -591,9 +592,6 @@ def multi_call_test(payload: dict):
     agents = get_agents_for_service_db(service)
 
     order = {
-        "seller_wallet": resolve_payment_wallet(seller.get("wallet") or seller.get("seller_wallet")),
-        "actual_agent_wallet": seller.get("wallet") or seller.get("seller_wallet"),
-
         "order_id": "test",
         "query": query,
         "service": service
@@ -852,12 +850,7 @@ def settlements():
             "service": order.get("service"),
             "query": order.get("query"),
             "tx_signature": order.get("tx_signature"),
-            escrow_wallet = os.getenv("IAT_ESCROW_WALLET")
-        "payer_paid_to": (
-            "escrow_wallet"
-            if order.get("seller_wallet") == escrow_wallet
-            else seller_id
-        ),
+            "payer_paid_to": seller_id,
             "best_agent": best_agent,
             "price_iat": order.get("price"),
             "winner_payment_status": "already_paid" if best_agent == seller_id else "payout_due",
@@ -965,7 +958,7 @@ def payout_winner_if_escrow(order, best, agents):
             "reason": "escrow_not_configured",
         }
 
-    if not order.get("seller_wallet") or escrow_wallet not in order.get("seller_wallet"):
+    if order.get("seller_wallet") != escrow_wallet:
         return {
             "winner_payment_status": "payout_due",
             "payout_tx": None,

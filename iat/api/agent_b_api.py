@@ -36,6 +36,12 @@ from iat.api.db import (
 
 app = FastAPI()
 
+
+def resolve_payment_wallet(agent_wallet):
+    escrow_wallet = os.getenv("IAT_ESCROW_WALLET")
+    return escrow_wallet if escrow_wallet else agent_wallet
+
+
 init_db()
 init_agents_table()
 
@@ -400,7 +406,9 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
         "query": req.query,
         "price": seller["price"],
         "seller_id": seller["seller_id"],
-        "seller_wallet": seller["seller_wallet"],
+        "seller_wallet": resolve_payment_wallet(seller["seller_wallet"]),
+        "actual_agent_wallet": seller["seller_wallet"],
+        "payment_target": "escrow" if os.getenv("IAT_ESCROW_WALLET") else "seller",
         "seller_url": seller.get("url") or "",
         "seller_source": seller.get("source"),
         "created_at": now,
@@ -418,7 +426,9 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
         "order_id": order_id,
         "price": seller["price"],
         "seller_id": seller["seller_id"],
-        "seller_wallet": seller["seller_wallet"],
+        "seller_wallet": resolve_payment_wallet(seller["seller_wallet"]),
+        "actual_agent_wallet": seller["seller_wallet"],
+        "payment_target": "escrow" if os.getenv("IAT_ESCROW_WALLET") else "seller",
         "seller_url": seller.get("url") or "",
         "seller_source": seller.get("source"),
     }

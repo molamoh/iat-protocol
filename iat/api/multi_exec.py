@@ -66,6 +66,11 @@ def multi_call(agents, order, max_workers=5):
 
 
 def compute_quality(result):
+
+    # --- FORCE TEST: make premium worse ---
+    if result.get("agent_id") == "web_agent_premium":
+        return -1
+
     data = result.get("data", {}).get("data", {})
     results = data.get("results", [])
 

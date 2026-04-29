@@ -644,6 +644,9 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
         "best": best,
     }
 
+    payout_info = payout_winner_if_escrow(order, best, agents)
+    final_result["settlement"] = payout_info
+
     update_order_delivered_db(req.order_id, req.tx_signature, final_result)
 
     return final_result
@@ -927,3 +930,77 @@ def intent_preview(payload: dict):
         "selected": bids[:3],
         "all_bids": bids,
     }
+
+
+
+def payout_winner_if_escrow(order, best, agents):
+    escrow_wallet = os.getenv("IAT_ESCROW_WALLET")
+    escrow_keypair = os.getenv("IAT_ESCROW_KEYPAIR_PATH")
+
+    if not escrow_wallet or not escrow_keypair:
+        return {
+            "winner_payment_status": "payout_due",
+            "payout_tx": None,
+            "reason": "escrow_not_configured",
+        }
+
+    if order.get("seller_wallet") != escrow_wallet:
+        return {
+            "winner_payment_status": "payout_due",
+            "payout_tx": None,
+            "reason": "buyer_did_not_pay_escrow",
+        }
+
+    best_agent_id = best.get("agent_id") if best else None
+    if not best_agent_id:
+        return {
+            "winner_payment_status": "payout_due",
+            "payout_tx": None,
+            "reason": "no_best_agent",
+        }
+
+    winner = None
+    for agent in agents:
+        if agent.get("agent_id") == best_agent_id:
+            winner = agent
+            break
+
+    if not winner:
+        return {
+            "winner_payment_status": "payout_due",
+            "payout_tx": None,
+            "reason": "winner_not_found",
+        }
+
+    winner_wallet = winner.get("wallet")
+    if not winner_wallet:
+        return {
+            "winner_payment_status": "payout_due",
+            "payout_tx": None,
+            "reason": "winner_wallet_missing",
+        }
+
+    try:
+        from iat.transfer import send_iat
+
+        payout_tx = send_iat(
+            escrow_keypair,
+            winner_wallet,
+            float(order.get("price") or 0),
+            "payout_" + order.get("order_id")
+        )
+
+        return {
+            "winner_payment_status": "paid",
+            "payout_tx": payout_tx,
+            "payout_to_agent": best_agent_id,
+            "payout_to_wallet": winner_wallet,
+        }
+
+    except Exception as e:
+        return {
+            "winner_payment_status": "payout_failed",
+            "payout_tx": None,
+            "reason": str(e),
+        }
+

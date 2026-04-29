@@ -1,5 +1,6 @@
 import time
 import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 def call_agent(agent, order):
@@ -13,21 +14,21 @@ def call_agent(agent, order):
                 "tx_signature": order.get("tx_signature"),
                 "query": order.get("query"),
             },
-            timeout=10,
+            timeout=15,
         )
 
         latency = max(time.monotonic() - start, 0)
 
         if r.status_code == 200:
             return {
-                "agent_id": agent["agent_id"],
+                "agent_id": agent.get("agent_id"),
                 "success": True,
                 "latency": round(latency, 6),
                 "data": r.json(),
             }
 
         return {
-            "agent_id": agent["agent_id"],
+            "agent_id": agent.get("agent_id"),
             "success": False,
             "latency": round(latency, 6),
             "error": r.text,
@@ -43,8 +44,25 @@ def call_agent(agent, order):
         }
 
 
-def multi_call(agents, order):
-    return [call_agent(agent, order) for agent in agents]
+def multi_call(agents, order, max_workers=5):
+    results = []
+
+    if not agents:
+        return results
+
+    workers = min(max_workers, len(agents))
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [
+            executor.submit(call_agent, agent, order)
+            for agent in agents
+            if agent.get("url")
+        ]
+
+        for future in as_completed(futures):
+            results.append(future.result())
+
+    return results
 
 
 def compute_quality(result):
@@ -58,6 +76,8 @@ def compute_quality(result):
         if first.get("title"):
             quality += 1
         if first.get("snippet"):
+            quality += 1
+        if first.get("link"):
             quality += 1
 
     latency = result.get("latency", 1)

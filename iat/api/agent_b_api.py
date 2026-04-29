@@ -401,6 +401,9 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
     now = int(time.time())
 
     order = {
+        "seller_wallet": resolve_payment_wallet(seller.get("wallet") or seller.get("seller_wallet")),
+        "actual_agent_wallet": seller.get("wallet") or seller.get("seller_wallet"),
+
         "order_id": order_id,
         "service": req.service,
         "query": req.query,
@@ -588,6 +591,9 @@ def multi_call_test(payload: dict):
     agents = get_agents_for_service_db(service)
 
     order = {
+        "seller_wallet": resolve_payment_wallet(seller.get("wallet") or seller.get("seller_wallet")),
+        "actual_agent_wallet": seller.get("wallet") or seller.get("seller_wallet"),
+
         "order_id": "test",
         "query": query,
         "service": service
@@ -954,7 +960,7 @@ def payout_winner_if_escrow(order, best, agents):
             "reason": "escrow_not_configured",
         }
 
-    if order.get("seller_wallet") != escrow_wallet:
+    if not order.get("seller_wallet") or escrow_wallet not in order.get("seller_wallet"):
         return {
             "winner_payment_status": "payout_due",
             "payout_tx": None,

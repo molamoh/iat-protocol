@@ -851,11 +851,11 @@ def settlements():
             "service": order.get("service"),
             "query": order.get("query"),
             "tx_signature": order.get("tx_signature"),
-            "payer_paid_to": "escrow_wallet" if order.get("payment_target") == "escrow" else seller_id,
+            "payer_paid_to": "escrow_wallet" if order.get("seller_wallet") == os.getenv("IAT_ESCROW_WALLET") else seller_id,
             "best_agent": best_agent,
             "price_iat": order.get("price"),
-            "winner_payment_status": "already_paid" if best_agent == seller_id else "payout_due",
-            "payout_due_to": None if best_agent == seller_id else best_agent,
+            "winner_payment_status": "payout_due" if order.get("seller_wallet") == os.getenv("IAT_ESCROW_WALLET") else ("already_paid" if best_agent == seller_id else "payout_due"),
+            "payout_due_to": best_agent if order.get("seller_wallet") == os.getenv("IAT_ESCROW_WALLET") else (None if best_agent == seller_id else best_agent),
         })
 
     return {

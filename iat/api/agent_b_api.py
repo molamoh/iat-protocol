@@ -1078,7 +1078,7 @@ def release_payout(order_id: str):
     if not winner:
         return {"status": "error", "message": "winner agent not found"}
 
-    escrow_key = os.getenv("IAT_ESCROW_KEYPAIR_PATH")
+    escrow_key = os.getenv("IAT_ESCROW_KEYPAIR_JSON") or os.getenv("IAT_ESCROW_KEYPAIR_PATH")
 
     if not escrow_key:
         return {"status": "error", "message": "escrow not configured"}

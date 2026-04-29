@@ -13,6 +13,17 @@ IAT_MINT = "3vRGo1VpGbZH67Ur2UG7VNUqSqQyApLQEcCxgnqK4f4Z"
 MEMO_PROGRAM_ID = Pubkey.from_string("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
 
 
+
+def load_keypair(keypair_input):
+    from solders.keypair import Keypair
+
+    if isinstance(keypair_input, str) and keypair_input.strip().startswith("["):
+        return Keypair.from_bytes(bytes(json.loads(keypair_input)))
+
+    with open(keypair_input, "r") as f:
+        return Keypair.from_bytes(bytes(json.load(f)))
+
+
 def send_iat(from_keypair_path, to_address, amount, order_id=None):
     client = Client(RPC)
 

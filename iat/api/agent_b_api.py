@@ -6,7 +6,7 @@ from fastapi import FastAPI, Header
 from pydantic import BaseModel
 from solders.pubkey import Pubkey
 from spl.token.instructions import get_associated_token_address
-
+from iat.transfer import send_iat
 from iat.onchain import (
     verify_tx_signature,
     get_tx_details,

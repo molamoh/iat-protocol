@@ -32,6 +32,7 @@ from iat.api.db import (
     update_agent_reputation_db,
     get_network_status_db,
     create_factory_agent_db,
+    update_order_db,
 )
 
 app = FastAPI()
@@ -1017,5 +1018,95 @@ def payout_winner_if_escrow(order, best, agents):
             "winner_payment_status": "payout_failed",
             "payout_tx": None,
             "reason": str(e),
+        }
+
+
+@app.post("/confirm-delivery")
+def confirm_delivery(order_id: str, decision: str):
+    order = get_order_db(order_id)
+
+    if not order:
+        return {"status": "error", "message": "order not found"}
+
+    if decision not in ["accept", "reject"]:
+        return {"status": "error", "message": "invalid decision"}
+
+    if decision == "accept":
+        update_order_db(order_id, {"status": "ready_to_release"})
+        return {
+            "status": "ok",
+            "message": "delivery accepted",
+            "order_id": order_id,
+            "payout_state": "ready_to_release"
+        }
+
+    if decision == "reject":
+        update_order_db(order_id, {"status": "disputed"})
+        return {
+            "status": "ok",
+            "message": "order disputed",
+            "order_id": order_id,
+            "payout_state": "disputed"
+        }
+
+
+@app.post("/release-payout")
+def release_payout(order_id: str):
+    order = get_order_db(order_id)
+
+    if not order:
+        return {"status": "error", "message": "order not found"}
+
+    if order.get("status") != "ready_to_release":
+        return {"status": "error", "message": "order not ready for payout"}
+
+    delivery = order.get("delivery_result") or {}
+    best = delivery.get("best") or {}
+    best_agent_id = best.get("agent_id")
+
+    if not best_agent_id:
+        return {"status": "error", "message": "no best agent"}
+
+    agents = get_agents_for_service_db(order.get("service"))
+
+    winner = None
+    for a in agents:
+        if a.get("agent_id") == best_agent_id:
+            winner = a
+            break
+
+    if not winner:
+        return {"status": "error", "message": "winner agent not found"}
+
+    escrow_key = os.getenv("IAT_ESCROW_KEYPAIR_PATH")
+
+    if not escrow_key:
+        return {"status": "error", "message": "escrow not configured"}
+
+    try:
+        tx = send_iat(
+            escrow_key,
+            winner.get("wallet"),
+            order.get("price"),
+            order_id=order_id
+        )
+
+        update_order_db(order_id, {
+            "status": "settled",
+            "tx_signature": tx
+        })
+
+        return {
+            "status": "ok",
+            "message": "payout executed",
+            "tx": tx,
+            "paid_to": winner.get("agent_id")
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": "payout failed",
+            "error": str(e)
         }
 

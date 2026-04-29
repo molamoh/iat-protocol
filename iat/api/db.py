@@ -402,3 +402,27 @@ def create_factory_agent_db(service, description=None):
         "created_at": now,
         "source": "agent_factory"
     }
+
+
+def update_order_db(order_id, fields):
+    conn = get_conn()
+    cur = conn.cursor()
+    now = int(time.time())
+
+    updates = []
+    values = []
+
+    for k, v in fields.items():
+        updates.append(f"{k} = ?")
+        values.append(v)
+
+    updates.append("updated_at = ?")
+    values.append(now)
+
+    values.append(order_id)
+
+    query = f"UPDATE orders SET {', '.join(updates)} WHERE order_id = ?"
+
+    cur.execute(query, tuple(values))
+    conn.commit()
+    conn.close()

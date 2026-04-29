@@ -22,3 +22,4 @@ iat_wallets_v2.json
 *keypair*
 phantom-wallet.json
 iat_protocol.db
+.env.local

@@ -27,8 +27,7 @@ def load_keypair(keypair_input):
 def send_iat(from_keypair_path, to_address, amount, order_id=None):
     client = Client(RPC)
 
-    with open(from_keypair_path) as f:
-        keypair = Keypair.from_bytes(bytes(json.load(f)))
+    keypair = load_keypair(from_keypair_path)
 
     mint = Pubkey.from_string(IAT_MINT)
 

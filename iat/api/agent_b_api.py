@@ -392,6 +392,7 @@ def get_order(order_id: str):
 
 @app.post("/create-order")
 def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)):
+    print("ESCROW ENV:", os.getenv("IAT_ESCROW_WALLET"))
     if not require_admin_key(x_api_key):
         return {"status": "error", "message": "unauthorized"}
     seller = select_best_seller(req.service)

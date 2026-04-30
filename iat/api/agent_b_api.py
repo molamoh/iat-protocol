@@ -617,48 +617,6 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
     if not require_admin_key(x_api_key):
         return {"status": "error", "message": "unauthorized"}
     base = verify_payment(req, x_api_key=x_api_key)
-
-    if base.get("status") == "already_used":
-        order = get_order_db(req.order_id)
-        if order and order.get("delivery_result"):
-            return order["delivery_result"]
-        return base
-
-    if base.get("status") != "paid":
-        return base
-
-    order = get_order_db(req.order_id)
-
-    if not order:
-        return {"status": "invalid_order"}
-
-    agents = get_agents_for_service_db(order["service"])
-
-    if not agents:
-        return {"status": "no_agents_available"}
-
-    from iat.api.multi_exec import multi_call, select_best_result
-
-    paid_order = dict(order)
-    paid_order["tx_signature"] = req.tx_signature
-
-    results = multi_call(agents, paid_order)
-    best = select_best_result(results)
-    consensus = compute_consensus(results)
-
-    if not best:
-        return {
-            "status": "multicall_failed",
-            "base_payment": base,
-            "results": results,
-        }
-
-
-@app.post("/verify-payment-multicall")
-def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = Header(default=None)):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
-    base = verify_payment(req, x_api_key=x_api_key)
     if base.get("status") == "already_used":
         order = get_order_db(req.order_id)
         if order and order.get("delivery_result"):
@@ -715,6 +673,8 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
         payout_info = payout_winner_if_escrow(order, best, agents)
 
     final_result["settlement"] = payout_info
+
+    return final_result
 
 @app.get("/demo")
 def public_demo():

@@ -423,6 +423,7 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
         "tx_signature": None,
         "delivered_at": None,
         "delivery_result": None,
+        "buyer_secret": str(uuid.uuid4()),
         "used": False,
     }
 
@@ -430,6 +431,8 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
 
     return {
         "order_id": order_id,
+        "buyer_secret":
+    order["buyer_secret"],
         "price": seller["price"],
         "seller_id": seller["seller_id"],
         "seller_wallet": payment_wallet_for(seller["seller_wallet"]),
@@ -1022,11 +1025,14 @@ def payout_winner_if_escrow(order, best, agents):
 
 
 @app.post("/confirm-delivery")
-def confirm_delivery(order_id: str, decision: str):
+def confirm_delivery(order_id: str, decision: str, buyer_secret: str):
     order = get_order_db(order_id)
 
     if not order:
         return {"status": "error", "message": "order not found"}
+
+    if buyer_secret != order.get("buyer_secret"):
+        return {"status": "error", "message": "unauthorized"}
 
     if decision not in ["accept", "reject"]:
         return {"status": "error", "message": "invalid decision"}

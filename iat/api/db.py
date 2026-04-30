@@ -78,9 +78,9 @@ def create_order_db(order_id, order):
     cur.execute("""
     INSERT INTO orders (
         order_id, service, query, price, seller_id, seller_wallet, seller_url, seller_source,
-        created_at, updated_at, status, tx_signature, delivered_at, delivery_result, used
+        buyer_secret, created_at, updated_at, status, tx_signature, delivered_at, delivery_result, used
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         order_id,
         order["service"],

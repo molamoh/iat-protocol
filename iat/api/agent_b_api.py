@@ -673,6 +673,7 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
         payout_info = payout_winner_if_escrow(order, best, agents)
 
     final_result["settlement"] = payout_info
+    update_order_delivered_db(req.order_id, req.tx_signature, final_result)
 
     return final_result
 

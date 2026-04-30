@@ -585,7 +585,7 @@ def request_endpoint(payload: dict):
 
 @app.post("/multi-call-test")
 def multi_call_test(payload: dict):
-    from iat.api.multi_exec import multi_call, select_best_result
+    from iat.api.multi_exec import multi_call, select_best_result, compute_consensus
     from iat.api.db import get_agents_for_service_db
 
     service = payload.get("service")
@@ -644,6 +644,7 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
 
     results = multi_call(agents, paid_order)
     best = select_best_result(results)
+    consensus = compute_consensus(results)
 
     if not best:
         return {
@@ -661,15 +662,19 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
         "payment_result": base,
         "results": results,
         "best": best,
+        "consensus": consensus,
     }
 
+if consensus.get("status") != "passed":
+    payout_info = {
+        "winner_payment_status": "blocked_by_consensus",
+        "reason": "consensus_not_reached",
+        "consensus": consensus,
+    }
+else:
     payout_info = payout_winner_if_escrow(order, best, agents)
-    final_result["settlement"] = payout_info
 
-    update_order_delivered_db(req.order_id, req.tx_signature, final_result)
-
-    return final_result
-
+final_result["settlement"] = payout_info
 
 @app.post("/verify-payment-multicall")
 def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = Header(default=None)):

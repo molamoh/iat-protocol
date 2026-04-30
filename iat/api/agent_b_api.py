@@ -653,28 +653,6 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
             "results": results,
         }
 
-    final_result = {
-        "status": "paid_multicall_success",
-        "service": order["service"],
-        "query": order.get("query"),
-        "tx_signature": req.tx_signature,
-        "agents_called": len(agents),
-        "payment_result": base,
-        "results": results,
-        "best": best,
-        "consensus": consensus,
-    }
-
-if consensus.get("status") != "passed":
-    payout_info = {
-        "winner_payment_status": "blocked_by_consensus",
-        "reason": "consensus_not_reached",
-        "consensus": consensus,
-    }
-else:
-    payout_info = payout_winner_if_escrow(order, best, agents)
-
-final_result["settlement"] = payout_info
 
 @app.post("/verify-payment-multicall")
 def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = Header(default=None)):
@@ -706,23 +684,37 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
     results = multi_call(agents, paid_order)
     best = select_best_result(results)
 
+    from iat.api.multi_exec import compute_consensus
+
+    consensus = compute_consensus(results)
+
     if not best:
         return {
             "status": "multicall_failed",
             "results": results,
         }
 
-    return {
-        "status": "paid_multicall_success",
-        "service": order["service"],
-        "query": order.get("query"),
-        "tx_signature": req.tx_signature,
-        "agents_called": len(agents),
-        "results": results,
-        "best": best,
-    }
+    final_result = {
+           "status": "paid_multicall_success",
+           "service": order["service"],
+           "query": order.get("query"),
+           "tx_signature": req.tx_signature,
+           "agents_called": len(agents),
+           "payment_result": base,
+           "results": results,
+           "best": best,
+           "consensus": consensus,
+        }
+    if consensus.get("status") != "passed":
+        payout_info = {
+            "winner_payment_status": "blocked_by_consensus",
+            "reason": "consensus_not_reached",
+            "consensus": consensus,
+        }
+    else:
+        payout_info = payout_winner_if_escrow(order, best, agents)
 
-
+    final_result["settlement"] = payout_info
 
 @app.get("/demo")
 def public_demo():

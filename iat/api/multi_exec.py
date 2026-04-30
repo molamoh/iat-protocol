@@ -109,32 +109,51 @@ def compute_consensus(results):
             "reason": "no_successful_results",
         }
 
-    weights = {}
+    agent_sets = []
     total_weight = 0
 
     for r in valid:
         data = r.get("data", {}).get("data", {})
         items = data.get("results", [])
 
-        links = []
+        links = set()
         for item in items[:5]:
             link = item.get("link")
             if link:
-                links.append(link.strip().lower())
+                links.add(link.strip().lower())
 
-        signature = tuple(sorted(links))
+        rep = float(r.get("reputation", 0.5))
 
-        rep = r.get("reputation", 0.5)
+        agent_sets.append({
+            "agent_id": r.get("agent_id"),
+            "links": links,
+            "weight": rep,
+        })
 
-        weights[signature] = weights.get(signature, 0) + rep
         total_weight += rep
 
-    best_weight = max(weights.values()) if weights else 0
-    score = best_weight / total_weight if total_weight > 0 else 0
+    weighted_score = 0
+
+    for agent in agent_sets:
+        links = agent["links"]
+
+        if not links:
+            continue
+
+        other_links = set()
+        for other in agent_sets:
+            if other["agent_id"] != agent["agent_id"]:
+                other_links.update(other["links"])
+
+        overlap = len(links.intersection(other_links)) / len(links)
+        weighted_score += overlap * agent["weight"]
+
+    score = weighted_score / total_weight if total_weight > 0 else 0
 
     return {
         "status": "passed" if score >= 0.66 else "suspicious",
         "score": round(score, 4),
         "total_weight": round(total_weight, 4),
-        "winning_weight": round(best_weight, 4),
+        "weighted_overlap": round(weighted_score, 4),
+        "valid_agents": len(valid),
     }

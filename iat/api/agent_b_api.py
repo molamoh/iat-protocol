@@ -912,7 +912,7 @@ def intent_preview(payload: dict):
 
 def payout_winner_if_escrow(order, best, agents):
     escrow_wallet = os.getenv("IAT_ESCROW_WALLET")
-    escrow_keypair = os.getenv("IAT_ESCROW_KEYPAIR_PATH")
+    escrow_keypair = os.getenv("IAT_ESCROW_KEYPAIR_JSON") or os.getenv("IAT_ESCROW_KEYPAIR_PATH")
 
     if not escrow_wallet or not escrow_keypair:
         return {

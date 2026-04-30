@@ -1057,6 +1057,9 @@ def release_payout(order_id: str):
     if not order:
         return {"status": "error", "message": "order not found"}
 
+    if order.get("status") == "settled":
+        return {"status": "error", "message": "already_settled"}
+
     if order.get("status") != "ready_to_release":
         return {"status": "error", "message": "order not ready for payout"}
 

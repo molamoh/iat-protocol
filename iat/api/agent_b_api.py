@@ -522,10 +522,7 @@ def verify_payment(req: VerifyPaymentRequest, x_api_key: str | None = Header(def
                 "error": result,
             }
 
-        new_reputation = update_agent_reputation_db(
-            order.get("seller_id"),
-            success=True,
-        )
+        new_reputation = None
 
         save_processed_tx_db(req.tx_signature)
         update_order_delivered_db(req.order_id, req.tx_signature, result)
@@ -671,6 +668,11 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
         }
     else:
         payout_info = payout_winner_if_escrow(order, best, agents)
+
+    winner_id = best.get("agent_id") if best else None
+    if winner_id:
+        winner_reputation = update_agent_reputation_db(winner_id, success=True)
+        payout_info["winner_new_reputation"] = winner_reputation
 
     final_result["settlement"] = payout_info
     update_order_delivered_db(req.order_id, req.tx_signature, final_result)

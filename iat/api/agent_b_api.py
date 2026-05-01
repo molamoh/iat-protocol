@@ -661,12 +661,12 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
         "consensus": consensus,
     }
 
+    suspicious = consensus.get("suspicious_agents", [])
+
+    for agent_id in suspicious:
+        update_agent_reputation_db(agent_id, success=False)
+
     if consensus.get("status") != "passed":
-        suspicious = consensus.get("suspicious_agents", [])
-
-        for agent_id in suspicious:
-            update_agent_reputation_db(agent_id, success=False)
-
         payout_info = {
             "winner_payment_status": "blocked_by_consensus",
             "reason": "consensus_not_reached",

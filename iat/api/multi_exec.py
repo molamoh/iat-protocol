@@ -173,7 +173,7 @@ def compute_consensus(results):
         weighted_score += overlap * agent["weight"]
 
     score = weighted_score / total_weight if total_weight > 0 else 0
-    status = "passed" if score >= 0.66 else "suspicious"
+    status = "passed" if score >= 0.60 else "suspicious"
 
     suspicious_agents = [
         agent["agent_id"]

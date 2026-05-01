@@ -214,22 +214,19 @@ def register_agent_db(agent):
 
     if exists:
         cur.execute(f"""
-        UPDATE agents
-        SET service = {p}, url = {p}, wallet = {p}, price = {p}, reputation = {p}, available = {p}, updated_at = {p}
+    UPDATE agents
+        SET service = {p}, url = {p}, wallet = {p}, price = {p}, available = {p}, updated_at = {p}
         WHERE agent_id = {p}
         """, (
             agent["service"],
             agent.get("url") or "",
             agent["wallet"],
             float(agent["price"]),
-            float(agent.get("reputation", 0.8)),
             1 if agent.get("available", True) else 0,
             now,
             agent["agent_id"]
         ))
-    else:
-        cur.execute(f"""
-        INSERT INTO agents (
+    else: cur.execute(f""" INSERT INTO agents (
             agent_id, service, url, wallet, price, reputation, available, registered_at, updated_at
         )
         VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})

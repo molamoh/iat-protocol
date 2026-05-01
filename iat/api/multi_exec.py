@@ -144,7 +144,7 @@ def compute_consensus(results):
             wallet_weights[w] += agent["weight"]
 
         # --- CAP WALLET DOMINANCE ---
-        MAX_WALLET_WEIGHT = 1.0
+        MAX_WALLET_WEIGHT = 3.0
 
         for agent in agent_sets:
             w = agent.get("wallet")

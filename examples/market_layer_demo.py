@@ -29,6 +29,7 @@ print("\n=== EXECUTION ===")
 print(f"Order ID: {execution.get('order_id')}")
 print(f"Seller paid: {execution.get('seller_id')}")
 print(f"TX: {execution.get('tx_signature')}")
+print(f"Buyer secret: {execution.get('buyer_secret')}")
 
 result = execution.get("result", {})
 print(f"Protocol status: {result.get('status')}")

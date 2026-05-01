@@ -70,6 +70,7 @@ def pay_and_get_service(service, keypair_path, max_attempts=24, delay=5, query=N
         }
 
     order_id = order["order_id"]
+    buyer_secret = order.get("buyer_secret")
     seller_id = order["seller_id"]
     seller_wallet = order["seller_wallet"]
     price = order["price"]
@@ -83,6 +84,7 @@ def pay_and_get_service(service, keypair_path, max_attempts=24, delay=5, query=N
             return {
                 "status": "success",
                 "order_id": order_id,
+                "buyer_secret": buyer_secret,
                 "seller_id": seller_id,
                 "seller_wallet": seller_wallet,
                 "price": price,

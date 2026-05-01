@@ -650,29 +650,36 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
         }
 
     final_result = {
-           "status": "paid_multicall_success",
-           "service": order["service"],
-           "query": order.get("query"),
-           "tx_signature": req.tx_signature,
-           "agents_called": len(agents),
-           "payment_result": base,
-           "results": results,
-           "best": best,
-           "consensus": consensus,
-        }
+        "status": "paid_multicall_success",
+        "service": order["service"],
+        "query": order.get("query"),
+        "tx_signature": req.tx_signature,
+        "agents_called": len(agents),
+        "payment_result": base,
+        "results": results,
+        "best": best,
+        "consensus": consensus,
+    }
+
     if consensus.get("status") != "passed":
+        suspicious = consensus.get("suspicious_agents", [])
+
+        for agent_id in suspicious:
+            update_agent_reputation_db(agent_id, success=False)
+
         payout_info = {
             "winner_payment_status": "blocked_by_consensus",
             "reason": "consensus_not_reached",
             "consensus": consensus,
+            "slashed_agents": suspicious,
         }
     else:
         payout_info = payout_winner_if_escrow(order, best, agents)
 
-    winner_id = best.get("agent_id") if best else None
-    if winner_id:
-        winner_reputation = update_agent_reputation_db(winner_id, success=True)
-        payout_info["winner_new_reputation"] = winner_reputation
+        winner_id = best.get("agent_id") if best else None
+        if winner_id:
+            winner_reputation = update_agent_reputation_db(winner_id, success=True)
+            payout_info["winner_new_reputation"] = winner_reputation
 
     final_result["settlement"] = payout_info
     update_order_delivered_db(req.order_id, req.tx_signature, final_result)

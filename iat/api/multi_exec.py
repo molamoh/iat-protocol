@@ -38,12 +38,13 @@ def call_agent(agent, order):
 
     except Exception as e:
         latency = max(time.monotonic() - start, 0)
-        return {
-            "agent_id": agent.get("agent_id"),
-            "success": False,
-            "latency": round(latency, 6),
-            "error": str(e),
-        }
+    return {
+        "agent_id": agent.get("agent_id"),
+        "success": False,
+        "latency": round(latency, 6),
+        "reputation": agent.get("reputation", 0.5),
+        "error": str(e),
+    }
 
 
 def multi_call(agents, order, max_workers=5):
@@ -107,6 +108,7 @@ def compute_consensus(results):
             "score": 0,
             "valid_agents": 0,
             "reason": "no_successful_results",
+            "suspicious_agents": [],
         }
 
     agent_sets = []
@@ -128,6 +130,7 @@ def compute_consensus(results):
             "agent_id": r.get("agent_id"),
             "links": links,
             "weight": rep,
+            "overlap": 0,
         })
 
         total_weight += rep
@@ -138,6 +141,7 @@ def compute_consensus(results):
         links = agent["links"]
 
         if not links:
+            agent["overlap"] = 0
             continue
 
         other_links = set()
@@ -146,14 +150,33 @@ def compute_consensus(results):
                 other_links.update(other["links"])
 
         overlap = len(links.intersection(other_links)) / len(links)
+        agent["overlap"] = round(overlap, 4)
         weighted_score += overlap * agent["weight"]
 
     score = weighted_score / total_weight if total_weight > 0 else 0
+    status = "passed" if score >= 0.66 else "suspicious"
+
+    suspicious_agents = []
+    if status != "passed":
+        suspicious_agents = [
+            agent["agent_id"]
+            for agent in agent_sets
+            if agent["overlap"] < 0.5
+        ]
 
     return {
-        "status": "passed" if score >= 0.66 else "suspicious",
+        "status": status,
         "score": round(score, 4),
         "total_weight": round(total_weight, 4),
         "weighted_overlap": round(weighted_score, 4),
         "valid_agents": len(valid),
+        "agent_overlaps": [
+            {
+                "agent_id": agent["agent_id"],
+                "overlap": agent["overlap"],
+                "weight": agent["weight"],
+            }
+            for agent in agent_sets
+        ],
+        "suspicious_agents": suspicious_agents,
     }

@@ -677,6 +677,7 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
         }
     else:
         payout_info = payout_winner_if_escrow(order, best, agents)
+        payout_info["slashed_agents"] = suspicious
 
         winner_id = best.get("agent_id") if best else None
         if winner_id:

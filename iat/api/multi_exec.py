@@ -22,6 +22,7 @@ def call_agent(agent, order):
         if r.status_code == 200:
             return {
                 "agent_id": agent.get("agent_id"),
+                "wallet": agent.get("wallet"),  # ✅ AJOUT
                 "success": True,
                 "latency": round(latency, 6),
                 "reputation": agent.get("reputation", 0.5),
@@ -128,12 +129,30 @@ def compute_consensus(results):
 
         agent_sets.append({
             "agent_id": r.get("agent_id"),
+            "wallet": r.get("wallet"),  # ✅ AJOUT
             "links": links,
             "weight": rep,
-            "overlap": 0,
         })
 
         total_weight += rep
+        # --- GROUP BY WALLET ---
+        wallet_weights = {}
+
+        for agent in agent_sets:
+            w = agent.get("wallet")
+            wallet_weights.setdefault(w, 0)
+            wallet_weights[w] += agent["weight"]
+
+        # --- CAP WALLET DOMINANCE ---
+        MAX_WALLET_WEIGHT = 1.0
+
+        for agent in agent_sets:
+            w = agent.get("wallet")
+            total_w = wallet_weights.get(w, 0)
+
+            if total_w > MAX_WALLET_WEIGHT:
+                reduction_factor = MAX_WALLET_WEIGHT / total_w
+                agent["weight"] *= reduction_factor
 
     weighted_score = 0
 

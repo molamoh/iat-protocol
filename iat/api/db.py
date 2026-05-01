@@ -1,15 +1,27 @@
+import os
 import sqlite3
 import json
 import time
 from pathlib import Path
 
 DB_PATH = Path("iat_protocol.db")
+DATABASE_URL = os.getenv("DATABASE_URL")
+USE_POSTGRES = bool(DATABASE_URL)
 
 
 def get_conn():
+    if USE_POSTGRES:
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
+        return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def qmark():
+    return "%s" if USE_POSTGRES else "?"
 
 
 def init_db():
@@ -74,13 +86,14 @@ def init_agents_table():
 def create_order_db(order_id, order):
     conn = get_conn()
     cur = conn.cursor()
+    p = qmark()
 
-    cur.execute("""
+    cur.execute(f"""
     INSERT INTO orders (
         order_id, service, query, price, seller_id, seller_wallet, seller_url, seller_source,
         buyer_secret, created_at, updated_at, status, tx_signature, delivered_at, delivery_result, used
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
     """, (
         order_id,
         order["service"],
@@ -107,7 +120,8 @@ def create_order_db(order_id, order):
 def get_order_db(order_id):
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM orders WHERE order_id = ?", (order_id,))
+    p = qmark()
+    cur.execute(f"SELECT * FROM orders WHERE order_id = {p}", (order_id,))
     row = cur.fetchone()
     conn.close()
 
@@ -140,11 +154,12 @@ def update_order_delivered_db(order_id, tx_signature, delivery_result):
     conn = get_conn()
     cur = conn.cursor()
     now = int(time.time())
+    p = qmark()
 
-    cur.execute("""
+    cur.execute(f"""
     UPDATE orders
-    SET status = ?, tx_signature = ?, updated_at = ?, delivered_at = ?, delivery_result = ?, used = ?
-    WHERE order_id = ?
+    SET status = {p}, tx_signature = {p}, updated_at = {p}, delivered_at = {p}, delivery_result = {p}, used = {p}
+    WHERE order_id = {p}
     """, (
         "delivered",
         tx_signature,
@@ -162,7 +177,8 @@ def update_order_delivered_db(order_id, tx_signature, delivery_result):
 def is_tx_processed_db(tx_signature):
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT tx_signature FROM processed_txs WHERE tx_signature = ?", (tx_signature,))
+    p = qmark()
+    cur.execute(f"SELECT tx_signature FROM processed_txs WHERE tx_signature = {p}", (tx_signature,))
     row = cur.fetchone()
     conn.close()
     return row is not None
@@ -171,10 +187,18 @@ def is_tx_processed_db(tx_signature):
 def save_processed_tx_db(tx_signature):
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("""
-    INSERT OR IGNORE INTO processed_txs (tx_signature, processed_at)
-    VALUES (?, ?)
-    """, (tx_signature, int(time.time())))
+    p = qmark()
+    if USE_POSTGRES:
+        cur.execute(f"""
+        INSERT INTO processed_txs (tx_signature, processed_at)
+        VALUES ({p}, {p})
+        ON CONFLICT (tx_signature) DO NOTHING
+        """, (tx_signature, int(time.time())))
+    else:
+        cur.execute(f"""
+        INSERT OR IGNORE INTO processed_txs (tx_signature, processed_at)
+        VALUES ({p}, {p})
+        """, (tx_signature, int(time.time())))
     conn.commit()
     conn.close()
 
@@ -184,14 +208,15 @@ def register_agent_db(agent):
     cur = conn.cursor()
     now = int(time.time())
 
-    cur.execute("SELECT agent_id FROM agents WHERE agent_id = ?", (agent["agent_id"],))
+    p = qmark()
+    cur.execute(f"SELECT agent_id FROM agents WHERE agent_id = {p}", (agent["agent_id"],))
     exists = cur.fetchone()
 
     if exists:
-        cur.execute("""
+        cur.execute(f"""
         UPDATE agents
-        SET service = ?, url = ?, wallet = ?, price = ?, reputation = ?, available = ?, updated_at = ?
-        WHERE agent_id = ?
+        SET service = {p}, url = {p}, wallet = {p}, price = {p}, reputation = {p}, available = {p}, updated_at = {p}
+        WHERE agent_id = {p}
         """, (
             agent["service"],
             agent.get("url") or "",
@@ -203,11 +228,11 @@ def register_agent_db(agent):
             agent["agent_id"]
         ))
     else:
-        cur.execute("""
+        cur.execute(f"""
         INSERT INTO agents (
             agent_id, service, url, wallet, price, reputation, available, registered_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
         """, (
             agent["agent_id"],
             agent["service"],
@@ -261,7 +286,8 @@ def update_agent_reputation_db(agent_id, success=True):
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute("SELECT reputation FROM agents WHERE agent_id = ?", (agent_id,))
+    p = qmark()
+    cur.execute(f"SELECT reputation FROM agents WHERE agent_id = {p}", (agent_id,))
     row = cur.fetchone()
 
     if not row:
@@ -275,10 +301,11 @@ def update_agent_reputation_db(agent_id, success=True):
     else:
         new_rep = max(old_rep - 0.03, 0.1)
 
-    cur.execute("""
+    p = qmark()
+    cur.execute(f"""
     UPDATE agents
-    SET reputation = ?, updated_at = ?
-    WHERE agent_id = ?
+    SET reputation = {p}, updated_at = {p}
+    WHERE agent_id = {p}
     """, (round(new_rep, 4), int(time.time()), agent_id))
 
     conn.commit()
@@ -415,15 +442,15 @@ def update_order_db(order_id, fields):
     values = []
 
     for k, v in fields.items():
-        updates.append(f"{k} = ?")
+        updates.append(f"{k} = {qmark()}")
         values.append(v)
 
-    updates.append("updated_at = ?")
+    updates.append(f"updated_at = {qmark()}")
     values.append(now)
 
     values.append(order_id)
 
-    query = f"UPDATE orders SET {', '.join(updates)} WHERE order_id = ?"
+    query = f"UPDATE orders SET {', '.join(updates)} WHERE order_id = {qmark()}"
 
     cur.execute(query, tuple(values))
     conn.commit()

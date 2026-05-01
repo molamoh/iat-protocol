@@ -6,3 +6,4 @@ pydantic
 requests
 beautifulsoup4
 requests
+psycopg2-binary

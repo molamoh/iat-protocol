@@ -225,11 +225,13 @@ def register_agent_db(agent):
     now = int(time.time())
 
     p = qmark()
-    cur.execute(f"SELECT agent_id available FROM agents WHERE agent_id = {p}", (agent["agent_id"],))
+    cur.execute(f"SELECT agent_id available, reputation FROM agents WHERE agent_id = {p}", (agent["agent_id"],))
     exists = cur.fetchone()
     current_available = int(exists["available"]) if exists else 1
+    current_reputation = float(exists["reputation"]) if exists else 0.8
     requested_available = 1 if agent.get("available", True) else 0
-    new_available = 0 if current_available == 0 else requested_available
+
+    new_available = 0 if current_available == 0 or current_reputation <= 0.5 else requested_available
 
     if exists:
         cur.execute(f"""

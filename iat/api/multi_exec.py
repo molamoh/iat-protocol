@@ -57,6 +57,12 @@ def call_agent(agent, order):
 def multi_call(agents, order, max_workers=5):
     results = []
 
+    # Do not call disabled / killed agents
+    agents = [
+        a for a in agents
+        if bool(a.get("available", True))
+    ]
+
     if not agents:
         return results
 

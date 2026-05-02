@@ -394,52 +394,90 @@ def update_agent_reputation_db(agent_id, success=True):
     if not agent_id:
         return None
 
-    conn = get_conn()
-    cur = conn.cursor()
+    conn = None
 
-    p = qmark()
-    cur.execute(f"SELECT reputation FROM agents WHERE agent_id = {p}", (agent_id,))
-    row = cur.fetchone()
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
 
-    if not row:
-        release_conn(locals().get("conn"))
-        return None
-
-    old_rep = float(row["reputation"])
-    now = int(time.time())
-
-    if success:
-        new_rep = min(old_rep + 0.01, 1.0)
-
+        p = qmark()
         cur.execute(f"""
-        UPDATE agents
-        SET reputation = {p},
-            success_count = COALESCE(success_count, 0) + 1,
-            updated_at = {p}
+        SELECT reputation, success_count, failure_count
+        FROM agents
         WHERE agent_id = {p}
-        """, (round(new_rep, 4), int(time.time()), agent_id))
+        """, (agent_id,))
+        row = cur.fetchone()
 
-    else:
-        new_rep = max(old_rep - 0.03, 0.1)
+        if not row:
+            return None
 
-        new_available = 0 if new_rep <= 0.5 else 1
-
+        old_rep = float(row.get("reputation", 0.8))
+        success_count = int(row.get("success_count", 0) or 0)
+        failure_count = int(row.get("failure_count", 0) or 0)
         now = int(time.time())
 
-        cur.execute(f"""
-        UPDATE agents
-        SET reputation = {p},
-            failure_count = COALESCE(failure_count, 0) + 1,
-            last_slashed_at = {p},
-            available = {p},
-            updated_at = {p}
-        WHERE agent_id = {p}
-        """, (round(new_rep, 4), now, new_available, now, agent_id))
+        if success:
+            success_count += 1
 
-    conn.commit()
-    release_conn(locals().get("conn"))
+            # honest history can slowly recover old failures
+            if success_count >= 5 and failure_count > 0:
+                failure_count = max(0, failure_count - 1)
 
-    return round(new_rep, 4)
+            new_rep = min(old_rep + 0.01, 1.0)
+
+            cur.execute(f"""
+            UPDATE agents
+            SET reputation = {p},
+                success_count = {p},
+                failure_count = {p},
+                updated_at = {p}
+            WHERE agent_id = {p}
+            """, (
+                round(new_rep, 4),
+                success_count,
+                failure_count,
+                now,
+                agent_id,
+            ))
+
+        else:
+            failure_count += 1
+            new_rep = max(old_rep - 0.03, 0.1)
+
+            # hard kill rule: suspicious repeatedly => disabled
+            new_available = 0 if failure_count >= 3 or new_rep <= 0.5 else 1
+
+            cur.execute(f"""
+            UPDATE agents
+            SET reputation = {p},
+                failure_count = {p},
+                last_slashed_at = {p},
+                available = {p},
+                updated_at = {p}
+            WHERE agent_id = {p}
+            """, (
+                round(new_rep, 4),
+                failure_count,
+                now,
+                new_available,
+                now,
+                agent_id,
+            ))
+
+        conn.commit()
+        return round(new_rep, 4)
+
+    except Exception:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        raise
+
+    finally:
+        release_conn(conn)
+
 
 
 def get_stats_db():

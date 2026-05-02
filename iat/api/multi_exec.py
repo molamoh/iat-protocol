@@ -154,7 +154,7 @@ def compute_consensus(results):
 
         total_weight += rep
 
-    # --- GROUP BY WALLET ---
+    # --- WALLET DIAGNOSTIC ONLY ---
     wallet_weights = {}
 
     for agent in agent_sets:
@@ -162,18 +162,8 @@ def compute_consensus(results):
         wallet_weights.setdefault(w, 0)
         wallet_weights[w] += agent["weight"]
 
-    # --- CAP WALLET DOMINANCE ---
-    MAX_WALLET_WEIGHT = 3.0
-
-    for agent in agent_sets:
-        w = agent.get("wallet")
-        total_w = wallet_weights.get(w, 0)
-
-        if total_w > MAX_WALLET_WEIGHT:
-            reduction_factor = MAX_WALLET_WEIGHT / total_w
-            agent["weight"] *= reduction_factor
-
-    #  RECOMPUTE TOTAL WEIGHT
+    # Same wallet is not a fault by itself.
+    # We keep wallet_weights for diagnostics, but we do not reduce weights here.
     total_weight = sum(a["weight"] for a in agent_sets)
 
     # --- CALCULATE OVERLAPS FIRST ---

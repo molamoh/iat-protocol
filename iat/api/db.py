@@ -75,10 +75,26 @@ def init_agents_table():
         reputation REAL DEFAULT 0.8,
         available INTEGER DEFAULT 1,
         registered_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
+        updated_at INTEGER NOT NULL,
+        success_count INTEGER DEFAULT 0,
+        failure_count INTEGER DEFAULT 0,
+        last_slashed_at INTEGER
     )
     """)
+    agent_columns = {
+        "success_count": "INTEGER DEFAULT 0",
+        "failure_count": "INTEGER DEFAULT 0",
+        "last_slashed_at": "INTEGER",
+    }
 
+    for column, col_type in agent_columns.items():
+        try:
+            if USE_POSTGRES:
+                cur.execute(f"ALTER TABLE agents ADD COLUMN IF NOT EXISTS {column} {col_type}")
+            else:
+                cur.execute(f"ALTER TABLE agents ADD COLUMN {column} {col_type}")
+        except Exception:
+            pass
     conn.commit()
     conn.close()
 
@@ -292,18 +308,30 @@ def update_agent_reputation_db(agent_id, success=True):
         return None
 
     old_rep = float(row["reputation"])
+    now = int(time.time())
 
     if success:
         new_rep = min(old_rep + 0.01, 1.0)
+
+        cur.execute(f"""
+        UPDATE agents
+        SET reputation = {p},
+            success_count = COALESCE(success_count, 0) + 1,
+            updated_at = {p}
+        WHERE agent_id = {p}
+        """, (round(new_rep, 4), now, agent_id))
+
     else:
         new_rep = max(old_rep - 0.03, 0.1)
 
-    p = qmark()
-    cur.execute(f"""
-    UPDATE agents
-    SET reputation = {p}, updated_at = {p}
-    WHERE agent_id = {p}
-    """, (round(new_rep, 4), int(time.time()), agent_id))
+        cur.execute(f"""
+        UPDATE agents
+        SET reputation = {p},
+            failure_count = COALESCE(failure_count, 0) + 1,
+            last_slashed_at = {p},
+            updated_at = {p}
+        WHERE agent_id = {p}
+        """, (round(new_rep, 4), now, now, agent_id))
 
     conn.commit()
     conn.close()

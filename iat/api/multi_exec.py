@@ -137,13 +137,13 @@ def compute_consensus(results):
         successes = int(r.get("success_count", 0) or 0)
         failures = int(r.get("failure_count", 0) or 0)
 
-    # pénalité historique (plus tu triches, plus tu meurs)
-        history_factor = 1 / (1 + failures * 0.5)
+    # Historical behavior weighting:
+    # - success_count increases trust slowly
+    # - failure_count reduces trust strongly
+        success_factor = 1 + min(successes * 0.02, 0.20)
+        failure_factor = 1 / (1 + failures)
 
-    # bonus léger si fiable
-        success_factor = 1 + min(successes * 0.01, 0.1)
-
-        rep = rep * history_factor * success_factor
+        rep = rep * success_factor * failure_factor
 
         agent_sets.append({
             "agent_id": r.get("agent_id"),

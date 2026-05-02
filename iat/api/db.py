@@ -23,8 +23,8 @@ def get_conn():
     if USE_POSTGRES:
         if pool is None:
             pool = SimpleConnectionPool(
-                0,
-                2,
+                1,
+                1,
                 DATABASE_URL,
                 cursor_factory=RealDictCursor
             )

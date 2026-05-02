@@ -2,7 +2,7 @@ import os
 import time
 import uuid
 import requests
-from fastapi import FastAPI, Header
+from fastapi import FastAPI, Header, Request
 from pydantic import BaseModel
 from solders.pubkey import Pubkey
 from spl.token.instructions import get_associated_token_address
@@ -17,6 +17,7 @@ from iat.onchain import (
 from iat.api.execution_engine import select_best_agent, compute_agent_score
 
 from iat.api.db import (
+    reactivate_agent_db,
     init_db,
     create_order_db,
     get_order_db,
@@ -687,6 +688,33 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
     update_order_delivered_db(req.order_id, req.tx_signature, final_result)
 
     return final_result
+
+
+@app.post("/admin/reactivate-agent/{agent_id}")
+def admin_reactivate_agent(agent_id: str, request: Request):
+    expected_key = os.getenv("IAT_ADMIN_API_KEY")
+    provided_key = request.headers.get("x-api-key")
+
+    if expected_key and provided_key != expected_key:
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    result = reactivate_agent_db(agent_id)
+
+    if not result:
+        return {
+            "status": "error",
+            "message": "agent_not_found",
+            "agent_id": agent_id,
+        }
+
+    return {
+        "status": "ok",
+        "agent": result,
+    }
+
 
 @app.get("/demo")
 def public_demo():

@@ -480,6 +480,63 @@ def update_agent_reputation_db(agent_id, success=True):
 
 
 
+def reactivate_agent_db(agent_id, reputation_floor=0.6):
+    if not agent_id:
+        return None
+
+    conn = None
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        now = int(time.time())
+        p = qmark()
+
+        cur.execute(f"SELECT * FROM agents WHERE agent_id = {p}", (agent_id,))
+        row = cur.fetchone()
+
+        if not row:
+            return None
+
+        try:
+            old_rep = float(row.get("reputation", 0.8))
+        except Exception:
+            old_rep = 0.8
+
+        new_rep = max(old_rep, reputation_floor)
+
+        cur.execute(f"""
+        UPDATE agents
+        SET available = 1,
+            reputation = {p},
+            failure_count = 0,
+            last_slashed_at = NULL,
+            updated_at = {p}
+        WHERE agent_id = {p}
+        """, (round(new_rep, 4), now, agent_id))
+
+        conn.commit()
+
+        return {
+            "agent_id": agent_id,
+            "available": True,
+            "reputation": round(new_rep, 4),
+            "failure_count": 0,
+            "last_slashed_at": None,
+        }
+
+    except Exception:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        raise
+
+    finally:
+        release_conn(conn)
+
+
 def get_stats_db():
     orders = list_orders_db()
 

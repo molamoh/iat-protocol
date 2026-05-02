@@ -245,57 +245,99 @@ def save_processed_tx_db(tx_signature):
 
 
 def register_agent_db(agent):
-    conn = get_conn()
-    cur = conn.cursor()
-    now = int(time.time())
+    conn = None
 
-    p = qmark()
-    cur.execute(f"SELECT agent_id available, reputation FROM agents WHERE agent_id = {p}", (agent["agent_id"],))
-    exists = cur.fetchone()
     try:
-        current_available = int(exists.get("available", 1))
-    except:
-        current_available = 1
-    try:
-        current_reputation = float(exists.get("reputation", 0.8))
-    except:
-        current_reputation = 0.8
-    requested_available = 1 if agent.get("available", True) else 0
+        conn = get_conn()
+        cur = conn.cursor()
+        now = int(time.time())
 
-    new_available = 0 if current_available == 0 or current_reputation <= 0.5 else requested_available
+        p = qmark()
 
-    if exists:
-        cur.execute(f"""
-    UPDATE agents
-        SET service = {p}, url = {p}, wallet = {p}, price = {p}, available = {p}, updated_at = {p}
-        WHERE agent_id = {p}
-        """, (
-            agent["service"],
-            agent.get("url") or "",
-            agent["wallet"],
-            float(agent["price"]),
-            new_available,
-            now,
-            agent["agent_id"]
-        ))
-    else: cur.execute(f""" INSERT INTO agents (
-            agent_id, service, url, wallet, price, reputation, available, registered_at, updated_at
+        cur.execute(
+            f"SELECT agent_id, available, reputation FROM agents WHERE agent_id = {p}",
+            (agent["agent_id"],)
         )
-        VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
-        """, (
-            agent["agent_id"],
-            agent["service"],
-            agent.get("url") or "",
-            agent["wallet"],
-            float(agent["price"]),
-            float(agent.get("reputation", 0.8)),
-            1 if agent.get("available", True) else 0,
-            now,
-            now
-        ))
+        exists = cur.fetchone()
 
-    conn.commit()
-    release_conn(locals().get("conn"))
+        def safe_get(row, key, default=None):
+            if not row:
+                return default
+            try:
+                return row.get(key, default)
+            except AttributeError:
+                return default
+
+        def safe_int(value, default=1):
+            try:
+                return int(value)
+            except Exception:
+                return default
+
+        def safe_float(value, default=0.8):
+            try:
+                return float(value)
+            except Exception:
+                return default
+
+        current_available = safe_int(safe_get(exists, "available", 1), 1)
+        current_reputation = safe_float(safe_get(exists, "reputation", 0.8), 0.8)
+        requested_available = 1 if agent.get("available", True) else 0
+
+        # Kill rule:
+        # - if already disabled, stay disabled
+        # - if reputation <= 0.5, heartbeat cannot resurrect it
+        new_available = 0 if current_available == 0 or current_reputation <= 0.5 else requested_available
+
+        if exists:
+            cur.execute(f"""
+            UPDATE agents
+            SET service = {p},
+                url = {p},
+                wallet = {p},
+                price = {p},
+                available = {p},
+                updated_at = {p}
+            WHERE agent_id = {p}
+            """, (
+                agent["service"],
+                agent.get("url") or "",
+                agent["wallet"],
+                float(agent["price"]),
+                new_available,
+                now,
+                agent["agent_id"],
+            ))
+        else:
+            cur.execute(f"""
+            INSERT INTO agents (
+                agent_id, service, url, wallet, price, reputation, available, registered_at, updated_at
+            )
+            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+            """, (
+                agent["agent_id"],
+                agent["service"],
+                agent.get("url") or "",
+                agent["wallet"],
+                float(agent["price"]),
+                float(agent.get("reputation", 0.8)),
+                1 if agent.get("available", True) else 0,
+                now,
+                now,
+            ))
+
+        conn.commit()
+
+    except Exception:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        raise
+
+    finally:
+        release_conn(conn)
 
 
 def list_agents_db():

@@ -159,8 +159,7 @@ def compute_consensus(results):
     #  RECOMPUTE TOTAL WEIGHT
     total_weight = sum(a["weight"] for a in agent_sets)
 
-    weighted_score = 0
-
+    # --- CALCULATE OVERLAPS FIRST ---
     for agent in agent_sets:
         links = agent["links"]
 
@@ -175,7 +174,24 @@ def compute_consensus(results):
 
         overlap = len(links.intersection(other_links)) / len(links)
         agent["overlap"] = round(overlap, 4)
-        weighted_score += overlap * agent["weight"]
+
+    # --- DYNAMIC WEIGHT BY BEHAVIOR ---
+    for agent in agent_sets:
+        overlap = float(agent.get("overlap", 0))
+
+    # garder trace du poids initial (debug utile)
+    agent["base_weight"] = agent["weight"]
+
+    # 🔥 pénalité forte si overlap faible
+    agent["weight"] = agent["weight"] * (0.2 + 0.8 * overlap)
+
+    # recalcul total_weight après modification
+    total_weight = sum(a["weight"] for a in agent_sets)
+
+    # --- FINAL SCORE ---
+    weighted_score = 0
+    for agent in agent_sets:
+        weighted_score += agent["overlap"] * agent["weight"]
 
     score = weighted_score / total_weight if total_weight > 0 else 0
     status = "passed" if score >= 0.60 else "suspicious"

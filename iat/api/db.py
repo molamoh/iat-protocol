@@ -1,3 +1,6 @@
+from psycopg2.pool import SimpleConnectionPool
+
+pool = None
 import os
 import sqlite3
 import json
@@ -10,14 +13,36 @@ USE_POSTGRES = bool(DATABASE_URL)
 
 
 def get_conn():
+    global pool
+
     if USE_POSTGRES:
-        import psycopg2
-        from psycopg2.extras import RealDictCursor
-        return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        if pool is None:
+            pool = SimpleConnectionPool(
+                1,
+                5,
+                DATABASE_URL,
+                cursor_factory=RealDictCursor,
+            )
+        return pool.getconn()
 
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def release_conn(conn):
+    global pool
+
+    if conn is None:
+        return
+
+    try:
+        if USE_POSTGRES and pool is not None:
+            pool.putconn(conn)
+        else:
+            conn.close()
+    except Exception:
+        pass
 
 
 def qmark():
@@ -57,7 +82,7 @@ def init_db():
     """)
 
     conn.commit()
-    conn.close()
+    release_conn(locals().get("conn"))
     init_agents_table()
 
 
@@ -96,7 +121,7 @@ def init_agents_table():
         except Exception:
             pass
     conn.commit()
-    conn.close()
+    release_conn(locals().get("conn"))
 
 
 def create_order_db(order_id, order):
@@ -130,7 +155,7 @@ def create_order_db(order_id, order):
     ))
 
     conn.commit()
-    conn.close()
+    release_conn(locals().get("conn"))
 
 
 def get_order_db(order_id):
@@ -139,7 +164,7 @@ def get_order_db(order_id):
     p = qmark()
     cur.execute(f"SELECT * FROM orders WHERE order_id = {p}", (order_id,))
     row = cur.fetchone()
-    conn.close()
+    release_conn(locals().get("conn"))
 
     if not row:
         return None
@@ -161,7 +186,7 @@ def list_orders_db():
     cur = conn.cursor()
     cur.execute("SELECT order_id FROM orders ORDER BY created_at DESC")
     rows = cur.fetchall()
-    conn.close()
+    release_conn(locals().get("conn"))
 
     return {row["order_id"]: get_order_db(row["order_id"]) for row in rows}
 
@@ -187,7 +212,7 @@ def update_order_delivered_db(order_id, tx_signature, delivery_result):
     ))
 
     conn.commit()
-    conn.close()
+    release_conn(locals().get("conn"))
 
 
 def is_tx_processed_db(tx_signature):
@@ -196,7 +221,7 @@ def is_tx_processed_db(tx_signature):
     p = qmark()
     cur.execute(f"SELECT tx_signature FROM processed_txs WHERE tx_signature = {p}", (tx_signature,))
     row = cur.fetchone()
-    conn.close()
+    release_conn(locals().get("conn"))
     return row is not None
 
 
@@ -216,7 +241,7 @@ def save_processed_tx_db(tx_signature):
         VALUES ({p}, {p})
         """, (tx_signature, int(time.time())))
     conn.commit()
-    conn.close()
+    release_conn(locals().get("conn"))
 
 
 def register_agent_db(agent):
@@ -270,7 +295,7 @@ def register_agent_db(agent):
         ))
 
     conn.commit()
-    conn.close()
+    release_conn(locals().get("conn"))
 
 
 def list_agents_db():
@@ -278,7 +303,7 @@ def list_agents_db():
     cur = conn.cursor()
     cur.execute("SELECT * FROM agents ORDER BY service, agent_id")
     rows = cur.fetchall()
-    conn.close()
+    release_conn(locals().get("conn"))
 
     agents = []
     for row in rows:
@@ -315,7 +340,7 @@ def update_agent_reputation_db(agent_id, success=True):
     row = cur.fetchone()
 
     if not row:
-        conn.close()
+        release_conn(locals().get("conn"))
         return None
 
     old_rep = float(row["reputation"])
@@ -350,7 +375,7 @@ def update_agent_reputation_db(agent_id, success=True):
         """, (round(new_rep, 4), now, new_available, now, agent_id))
 
     conn.commit()
-    conn.close()
+    release_conn(locals().get("conn"))
 
     return round(new_rep, 4)
 
@@ -495,4 +520,4 @@ def update_order_db(order_id, fields):
 
     cur.execute(query, tuple(values))
     conn.commit()
-    conn.close()
+    release_conn(locals().get("conn"))

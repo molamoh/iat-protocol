@@ -319,11 +319,14 @@ def update_agent_reputation_db(agent_id, success=True):
             success_count = COALESCE(success_count, 0) + 1,
             updated_at = {p}
         WHERE agent_id = {p}
-        """, (round(new_rep, 4), now, now, agent_id))
+        """, (round(new_rep, 4), int(time.time()), agent_id))
 
     else:
         new_rep = max(old_rep - 0.03, 0.1)
+
         new_available = 0 if new_rep <= 0.5 else 1
+
+        now = int(time.time())
 
         cur.execute(f"""
         UPDATE agents
@@ -333,7 +336,7 @@ def update_agent_reputation_db(agent_id, success=True):
             available = {p},
             updated_at = {p}
         WHERE agent_id = {p}
-        """, (round(new_rep, 4), now,new_available, now, agent_id))
+        """, (round(new_rep, 4), now, new_available, now, agent_id))
 
     conn.commit()
     conn.close()

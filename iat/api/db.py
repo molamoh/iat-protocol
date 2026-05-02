@@ -225,8 +225,11 @@ def register_agent_db(agent):
     now = int(time.time())
 
     p = qmark()
-    cur.execute(f"SELECT agent_id FROM agents WHERE agent_id = {p}", (agent["agent_id"],))
+    cur.execute(f"SELECT agent_id available FROM agents WHERE agent_id = {p}", (agent["agent_id"],))
     exists = cur.fetchone()
+    current_available = int(exists["available"]) if exists else 1
+    requested_available = 1 if agent.get("available", True) else 0
+    new_available = 0 if current_available == 0 else requested_available
 
     if exists:
         cur.execute(f"""
@@ -238,7 +241,7 @@ def register_agent_db(agent):
             agent.get("url") or "",
             agent["wallet"],
             float(agent["price"]),
-            1 if agent.get("available", True) else 0,
+            new_available,
             now,
             agent["agent_id"]
         ))

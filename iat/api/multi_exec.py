@@ -26,6 +26,8 @@ def call_agent(agent, order):
                 "success": True,
                 "latency": round(latency, 6),
                 "reputation": agent.get("reputation", 0.5),
+                "success_count": agent.get("success_count", 0),
+                "failure_count": agent.get("failure_count", 0),
                 "data": r.json(),
             }
 
@@ -34,6 +36,8 @@ def call_agent(agent, order):
             "success": False,
             "latency": round(latency, 6),
             "reputation": agent.get("reputation", 0.5),
+            "success_count": agent.get("success_count", 0),
+            "failure_count": agent.get("failure_count", 0),
             "error": r.text,
         }
 
@@ -44,6 +48,8 @@ def call_agent(agent, order):
         "success": False,
         "latency": round(latency, 6),
         "reputation": agent.get("reputation", 0.5),
+        "success_count": agent.get("success_count", 0),
+        "failure_count": agent.get("failure_count", 0),
         "error": str(e),
     }
 
@@ -127,6 +133,17 @@ def compute_consensus(results):
                 links.add(link.strip().lower())
 
         rep = float(r.get("reputation", 0.5))
+
+        successes = int(r.get("success_count", 0) or 0)
+        failures = int(r.get("failure_count", 0) or 0)
+
+    # pénalité historique (plus tu triches, plus tu meurs)
+        history_factor = 1 / (1 + failures * 0.5)
+
+    # bonus léger si fiable
+        success_factor = 1 + min(successes * 0.01, 0.1)
+
+        rep = rep * history_factor * success_factor
 
         agent_sets.append({
             "agent_id": r.get("agent_id"),

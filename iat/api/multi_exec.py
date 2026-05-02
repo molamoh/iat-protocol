@@ -180,13 +180,13 @@ def compute_consensus(results):
         overlap = float(agent.get("overlap", 0))
 
     # garder trace du poids initial (debug utile)
-    agent["base_weight"] = agent["weight"]
+        agent["base_weight"] = agent["weight"]
 
     # 🔥 pénalité forte si overlap faible
-    agent["weight"] = agent["weight"] * (0.2 + 0.8 * overlap)
+        agent["weight"] = agent["weight"] * (0.2 + 0.8 * overlap)
 
     # recalcul total_weight après modification
-    total_weight = sum(a["weight"] for a in agent_sets)
+        total_weight = sum(a["weight"] for a in agent_sets)
 
     # --- FINAL SCORE ---
     weighted_score = 0

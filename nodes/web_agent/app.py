@@ -44,7 +44,7 @@ def heartbeat_loop():
             requests.post(f"{REGISTRY_URL}/agent-heartbeat", json=payload(), timeout=5)
         except Exception:
             pass
-        time.sleep(10)
+        time.sleep(60)
 
 
 @app.on_event("startup")

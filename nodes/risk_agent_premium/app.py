@@ -46,7 +46,7 @@ def heartbeat_loop():
         except Exception:
             pass
 
-        time.sleep(10)
+        time.sleep(60)
 
 
 @app.on_event("startup")

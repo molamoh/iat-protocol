@@ -115,6 +115,7 @@ def compute_consensus(results):
     agent_sets = []
     total_weight = 0
 
+    # --- BUILD AGENTS ---
     for r in valid:
         data = r.get("data", {}).get("data", {})
         items = data.get("results", [])
@@ -129,30 +130,34 @@ def compute_consensus(results):
 
         agent_sets.append({
             "agent_id": r.get("agent_id"),
-            "wallet": r.get("wallet"),  # ✅ AJOUT
+            "wallet": r.get("wallet"),
             "links": links,
             "weight": rep,
         })
 
         total_weight += rep
-        # --- GROUP BY WALLET ---
-        wallet_weights = {}
 
-        for agent in agent_sets:
-            w = agent.get("wallet")
-            wallet_weights.setdefault(w, 0)
-            wallet_weights[w] += agent["weight"]
+    # --- GROUP BY WALLET ---
+    wallet_weights = {}
 
-        # --- CAP WALLET DOMINANCE ---
-        MAX_WALLET_WEIGHT = 3.0
+    for agent in agent_sets:
+        w = agent.get("wallet")
+        wallet_weights.setdefault(w, 0)
+        wallet_weights[w] += agent["weight"]
 
-        for agent in agent_sets:
-            w = agent.get("wallet")
-            total_w = wallet_weights.get(w, 0)
+    # --- CAP WALLET DOMINANCE ---
+    MAX_WALLET_WEIGHT = 3.0
 
-            if total_w > MAX_WALLET_WEIGHT:
-                reduction_factor = MAX_WALLET_WEIGHT / total_w
-                agent["weight"] *= reduction_factor
+    for agent in agent_sets:
+        w = agent.get("wallet")
+        total_w = wallet_weights.get(w, 0)
+
+        if total_w > MAX_WALLET_WEIGHT:
+            reduction_factor = MAX_WALLET_WEIGHT / total_w
+            agent["weight"] *= reduction_factor
+
+    #  RECOMPUTE TOTAL WEIGHT
+    total_weight = sum(a["weight"] for a in agent_sets)
 
     weighted_score = 0
 

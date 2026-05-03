@@ -24,7 +24,7 @@ def load_keypair(keypair_input):
         return Keypair.from_bytes(bytes(json.load(f)))
 
 
-def send_iat(from_keypair_path, to_address, amount, order_id=None):
+def send_iat(from_keypair_path, to_address, amount, order_id=None, memo_text=None):
     client = Client(RPC)
 
     keypair = load_keypair(from_keypair_path)
@@ -64,9 +64,15 @@ def send_iat(from_keypair_path, to_address, amount, order_id=None):
 
     instructions.append(ix_transfer)
 
-    # Add memo if order_id exists
-    if order_id is not None:
+    # Add memo if provided
+    if memo_text is not None:
+        memo_data = str(memo_text).encode("utf-8")
+    elif order_id is not None:
         memo_data = f"ORDER:{order_id}".encode("utf-8")
+    else:
+        memo_data = None
+
+    if memo_data is not None:
 
         memo_ix = Instruction(
             program_id=MEMO_PROGRAM_ID,

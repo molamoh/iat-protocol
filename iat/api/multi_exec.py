@@ -19,11 +19,16 @@ def compute_agent_market_score(agent):
     call_count = int(agent.get("call_count", 0) or 0)
     win_count = int(agent.get("win_count", 0) or 0)
 
-    win_rate = (win_count / call_count) if call_count > 0 else 0
+    # Anti-gaming:
+    # Win rate only becomes meaningful after enough calls.
+    raw_win_rate = (win_count / call_count) if call_count > 0 else 0
+
+    confidence = min(call_count / 10, 1.0)
+    adjusted_win_rate = raw_win_rate * confidence
 
     success_bonus = min(successes * 0.03, 0.30)
     failure_penalty = failures * 0.25
-    win_rate_bonus = win_rate * 0.35
+    win_rate_bonus = adjusted_win_rate * 0.35
 
     price_score = 1 / (price + 0.001)
 

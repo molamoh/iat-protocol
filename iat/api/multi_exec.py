@@ -19,6 +19,9 @@ def compute_agent_market_score(agent):
     call_count = int(agent.get("call_count", 0) or 0)
     win_count = int(agent.get("win_count", 0) or 0)
     latency_total = float(agent.get("latency_total", 0) or 0)
+    stake_amount = float(agent.get("stake_amount", 0) or 0)
+    stake_required = float(agent.get("stake_required", 0) or 0)
+    risk_score = float(agent.get("risk_score", 0) or 0)
 
     avg_latency = (latency_total / call_count) if call_count > 0 else None
 
@@ -40,13 +43,29 @@ def compute_agent_market_score(agent):
     if avg_latency is not None:
         stability_bonus = min(1 / (avg_latency + 0.1), 1.0) * 0.15
 
+    # Hybrid trust: stake gives a small boost, risk gives a strong penalty.
+    trust_bonus = 0
+    if stake_amount >= 1000:
+        trust_bonus = 0.20
+    elif stake_amount >= 100:
+        trust_bonus = 0.10
+    elif stake_amount >= 10:
+        trust_bonus = 0.03
+
+    stake_gap_penalty = 0
+    if stake_required > 0 and stake_amount < stake_required:
+        stake_gap_penalty = 0.30
+
     score = (
         reputation * 1.5
         + success_bonus
         + win_rate_bonus
         + stability_bonus
+        + trust_bonus
         + price_score * 0.25
         - failure_penalty
+        - min(risk_score, 1.0) * 0.50
+        - stake_gap_penalty
     )
 
     return round(score, 6)
@@ -100,6 +119,14 @@ def call_agent(agent, order):
                 "call_count": agent.get("call_count", 0),
                 "win_count": agent.get("win_count", 0),
                 "latency_total": agent.get("latency_total", 0),
+            "trust_tier": agent.get("trust_tier", "free"),
+            "stake_amount": agent.get("stake_amount", 0),
+            "stake_required": agent.get("stake_required", 0),
+            "risk_score": agent.get("risk_score", 0),
+                "trust_tier": agent.get("trust_tier", "free"),
+                "stake_amount": agent.get("stake_amount", 0),
+                "stake_required": agent.get("stake_required", 0),
+                "risk_score": agent.get("risk_score", 0),
                 "data": r.json(),
             }
 
@@ -113,6 +140,10 @@ def call_agent(agent, order):
             "call_count": agent.get("call_count", 0),
             "win_count": agent.get("win_count", 0),
             "latency_total": agent.get("latency_total", 0),
+                "trust_tier": agent.get("trust_tier", "free"),
+                "stake_amount": agent.get("stake_amount", 0),
+                "stake_required": agent.get("stake_required", 0),
+                "risk_score": agent.get("risk_score", 0),
             "error": r.text,
         }
 
@@ -128,6 +159,10 @@ def call_agent(agent, order):
         "call_count": agent.get("call_count", 0),
         "win_count": agent.get("win_count", 0),
         "latency_total": agent.get("latency_total", 0),
+                "trust_tier": agent.get("trust_tier", "free"),
+                "stake_amount": agent.get("stake_amount", 0),
+                "stake_required": agent.get("stake_required", 0),
+                "risk_score": agent.get("risk_score", 0),
         "error": str(e),
     }
 
@@ -228,6 +263,10 @@ def compute_consensus(results):
         agent_sets.append({
             "agent_id": r.get("agent_id"),
             "wallet": r.get("wallet"),
+            "trust_tier": r.get("trust_tier", "free"),
+            "stake_amount": float(r.get("stake_amount", 0) or 0),
+            "stake_required": float(r.get("stake_required", 0) or 0),
+            "risk_score": float(r.get("risk_score", 0) or 0),
             "links": links,
             "base_weight": base_weight,
             "weight": base_weight,
@@ -260,6 +299,39 @@ def compute_consensus(results):
     for agent in agent_sets:
         overlap = float(agent.get("overlap", 0))
         agent["weight"] = agent["weight"] * (0.2 + 0.8 * overlap)
+
+    # --- HYBRID TRUST CONSENSUS ADJUSTMENT ---
+    for agent in agent_sets:
+        overlap = float(agent.get("overlap", 0) or 0)
+        risk = float(agent.get("risk_score", 0) or 0)
+        stake = float(agent.get("stake_amount", 0) or 0)
+        required = float(agent.get("stake_required", 0) or 0)
+
+        # behavior risk overrides passive DB risk
+        if overlap < 0.5:
+            risk = max(risk, 0.7)
+        if overlap == 0:
+            risk = max(risk, 0.9)
+
+        agent["effective_risk_score"] = round(min(risk, 1.0), 4)
+
+        # risk penalty
+        agent["weight"] = agent["weight"] * max(0.1, 1 - min(risk, 1.0) * 0.5)
+
+        # missing required stake penalty
+        if required > 0 and stake < required:
+            agent["weight"] = agent["weight"] * 0.7
+            agent["trust_tier"] = "stake_required"
+
+        # stake confidence bonus
+        if stake >= 1000:
+            agent["weight"] = agent["weight"] * 1.15
+            agent["trust_tier"] = "premium"
+        elif stake >= 100:
+            agent["weight"] = agent["weight"] * 1.07
+            agent["trust_tier"] = "standard"
+        elif stake >= 10 and agent.get("trust_tier") == "free":
+            agent["trust_tier"] = "recovery"
 
     # --- INTELLIGENT ANTI-SYBIL WALLET CAP ---
     # Same wallet is allowed.
@@ -379,6 +451,16 @@ def compute_consensus(results):
             for a in agent_sets
         ],
         "sybil_wallet_caps": sybil_wallet_caps,
+        "agent_trust": [
+            {
+                "agent_id": a["agent_id"],
+                "tier": a.get("trust_tier", "free"),
+                "stake_amount": a.get("stake_amount", 0),
+                "stake_required": a.get("stake_required", 0),
+                "risk_score": a.get("effective_risk_score", a.get("risk_score", 0)),
+            }
+            for a in agent_sets
+        ],
         "wallet_weights": {
             wallet: round(weight, 4)
             for wallet, weight in wallet_weights.items()

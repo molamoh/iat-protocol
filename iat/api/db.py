@@ -126,7 +126,12 @@ def init_agents_table():
         last_slashed_at INTEGER,
         call_count INTEGER DEFAULT 0,
         win_count INTEGER DEFAULT 0,
-        latency_total REAL DEFAULT 0
+        latency_total REAL DEFAULT 0,
+        trust_tier TEXT DEFAULT 'free',
+        stake_amount REAL DEFAULT 0,
+        stake_required REAL DEFAULT 0,
+        risk_score REAL DEFAULT 0,
+        wallet_agent_count INTEGER DEFAULT 0
     )
     """)
     agent_columns = {
@@ -136,6 +141,11 @@ def init_agents_table():
         "call_count": "INTEGER DEFAULT 0",
         "win_count": "INTEGER DEFAULT 0",
         "latency_total": "REAL DEFAULT 0",
+        "trust_tier": "TEXT DEFAULT 'free'",
+        "stake_amount": "REAL DEFAULT 0",
+        "stake_required": "REAL DEFAULT 0",
+        "risk_score": "REAL DEFAULT 0",
+        "wallet_agent_count": "INTEGER DEFAULT 0",
     }
 
     for column, col_type in agent_columns.items():

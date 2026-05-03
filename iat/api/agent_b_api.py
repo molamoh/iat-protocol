@@ -584,7 +584,7 @@ def request_endpoint(payload: dict):
 
 @app.post("/multi-call-test")
 def multi_call_test(payload: dict):
-    from iat.api.multi_exec import multi_call, select_best_result, select_top_agents, compute_consensus
+    from iat.api.multi_exec import multi_call, select_best_result, select_top_agents, select_top_agents, compute_consensus
     from iat.api.db import get_agents_for_service_db
 
     service = payload.get("service")
@@ -634,7 +634,7 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
     if not agents:
         return {"status": "no_agents_available"}
 
-    from iat.api.multi_exec import multi_call, select_best_result
+    from iat.api.multi_exec import multi_call, select_best_result, select_top_agents
 
     paid_order = dict(order)
     paid_order["tx_signature"] = req.tx_signature

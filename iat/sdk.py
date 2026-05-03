@@ -32,18 +32,57 @@ def safe_json_response(r):
         }
 
 
+
+def post_with_retry(url, json=None, headers=None, timeout=60, retries=3, delay=2):
+    last_error = None
+
+    for attempt in range(1, retries + 1):
+        try:
+            r = requests.post(
+                url,
+                json=json,
+                headers=headers,
+                timeout=timeout,
+            )
+
+            if r.status_code >= 500 and attempt < retries:
+                print(f"⚠️ API server error {r.status_code}, retry {attempt}/{retries}")
+                time.sleep(delay)
+                continue
+
+            return r
+
+        except Exception as e:
+            last_error = str(e)
+            print(f"⚠️ Request failed, retry {attempt}/{retries}: {last_error}")
+            if attempt < retries:
+                time.sleep(delay)
+
+    return {
+        "status": "error",
+        "message": "request_failed_after_retries",
+        "error": last_error,
+    }
+
+
 def list_services():
     r = requests.get(f"{API}/services", headers=auth_headers(), timeout=30)
     return safe_json_response(r)
 
 
 def create_order(service, query=None):
-    r = requests.post(
+    r = post_with_retry(
         f"{API}/create-order",
         json={"service": service, "query": query},
         headers=auth_headers(),
         timeout=30,
+        retries=3,
+        delay=2,
     )
+
+    if isinstance(r, dict):
+        return r
+
     return safe_json_response(r)
 
 
@@ -61,7 +100,7 @@ def pay_order(order, keypair_path):
 
 
 def verify_order(order_id, tx_signature):
-    r = requests.post(
+    r = post_with_retry(
         f"{API}/verify-payment-multicall",
         json={
             "order_id": order_id,
@@ -69,7 +108,13 @@ def verify_order(order_id, tx_signature):
         },
         headers=auth_headers(),
         timeout=60,
+        retries=3,
+        delay=2,
     )
+
+    if isinstance(r, dict):
+        return r
+
     return safe_json_response(r)
 
 

@@ -261,6 +261,38 @@ def compute_consensus(results):
         overlap = float(agent.get("overlap", 0))
         agent["weight"] = agent["weight"] * (0.2 + 0.8 * overlap)
 
+    # --- INTELLIGENT ANTI-SYBIL WALLET CAP ---
+    # Same wallet is allowed.
+    # But if multiple wallets participate, one wallet cannot dominate the consensus.
+    unique_wallets = set((a.get("wallet") or "UNKNOWN") for a in agent_sets)
+
+    sybil_wallet_caps = {}
+
+    if len(unique_wallets) > 1:
+        pre_cap_total = sum(a["weight"] for a in agent_sets)
+        max_wallet_share = 0.65
+        max_wallet_weight = pre_cap_total * max_wallet_share
+
+        wallet_totals = {}
+        for agent in agent_sets:
+            wallet = agent.get("wallet") or "UNKNOWN"
+            wallet_totals.setdefault(wallet, 0)
+            wallet_totals[wallet] += agent["weight"]
+
+        for wallet, wallet_weight in wallet_totals.items():
+            if wallet_weight > max_wallet_weight:
+                reduction_factor = max_wallet_weight / wallet_weight
+                sybil_wallet_caps[wallet] = {
+                    "original_weight": round(wallet_weight, 4),
+                    "capped_weight": round(max_wallet_weight, 4),
+                    "reduction_factor": round(reduction_factor, 4),
+                    "reason": "wallet_dominance_cap",
+                }
+
+                for agent in agent_sets:
+                    if (agent.get("wallet") or "UNKNOWN") == wallet:
+                        agent["weight"] = agent["weight"] * reduction_factor
+
     total_weight = sum(a["weight"] for a in agent_sets)
 
     weighted_score = 0
@@ -346,6 +378,7 @@ def compute_consensus(results):
             }
             for a in agent_sets
         ],
+        "sybil_wallet_caps": sybil_wallet_caps,
         "wallet_weights": {
             wallet: round(weight, 4)
             for wallet, weight in wallet_weights.items()

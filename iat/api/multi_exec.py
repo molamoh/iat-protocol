@@ -18,6 +18,9 @@ def compute_agent_market_score(agent):
     failures = int(agent.get("failure_count", 0) or 0)
     call_count = int(agent.get("call_count", 0) or 0)
     win_count = int(agent.get("win_count", 0) or 0)
+    latency_total = float(agent.get("latency_total", 0) or 0)
+
+    avg_latency = (latency_total / call_count) if call_count > 0 else None
 
     # Anti-gaming:
     # Win rate only becomes meaningful after enough calls.
@@ -32,10 +35,16 @@ def compute_agent_market_score(agent):
 
     price_score = 1 / (price + 0.001)
 
+    # Stability: reward low average latency over time.
+    stability_bonus = 0
+    if avg_latency is not None:
+        stability_bonus = min(1 / (avg_latency + 0.1), 1.0) * 0.15
+
     score = (
         reputation * 1.5
         + success_bonus
         + win_rate_bonus
+        + stability_bonus
         + price_score * 0.25
         - failure_penalty
     )
@@ -90,6 +99,7 @@ def call_agent(agent, order):
                 "failure_count": agent.get("failure_count", 0),
                 "call_count": agent.get("call_count", 0),
                 "win_count": agent.get("win_count", 0),
+                "latency_total": agent.get("latency_total", 0),
                 "data": r.json(),
             }
 
@@ -102,6 +112,7 @@ def call_agent(agent, order):
             "failure_count": agent.get("failure_count", 0),
             "call_count": agent.get("call_count", 0),
             "win_count": agent.get("win_count", 0),
+            "latency_total": agent.get("latency_total", 0),
             "error": r.text,
         }
 
@@ -116,6 +127,7 @@ def call_agent(agent, order):
         "failure_count": agent.get("failure_count", 0),
         "call_count": agent.get("call_count", 0),
         "win_count": agent.get("win_count", 0),
+        "latency_total": agent.get("latency_total", 0),
         "error": str(e),
     }
 

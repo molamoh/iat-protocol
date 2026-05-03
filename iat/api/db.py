@@ -125,7 +125,8 @@ def init_agents_table():
         failure_count INTEGER DEFAULT 0,
         last_slashed_at INTEGER,
         call_count INTEGER DEFAULT 0,
-        win_count INTEGER DEFAULT 0
+        win_count INTEGER DEFAULT 0,
+        latency_total REAL DEFAULT 0
     )
     """)
     agent_columns = {
@@ -134,6 +135,7 @@ def init_agents_table():
         "last_slashed_at": "INTEGER",
         "call_count": "INTEGER DEFAULT 0",
         "win_count": "INTEGER DEFAULT 0",
+        "latency_total": "REAL DEFAULT 0",
     }
 
     for column, col_type in agent_columns.items():
@@ -541,7 +543,7 @@ def reactivate_agent_db(agent_id, reputation_floor=0.6):
         release_conn(conn)
 
 
-def update_agent_call_stats_db(agent_ids, winner_id=None):
+def update_agent_call_stats_db(agent_ids, winner_id=None, latencies=None):
     if not agent_ids:
         return None
 
@@ -553,25 +555,31 @@ def update_agent_call_stats_db(agent_ids, winner_id=None):
         now = int(time.time())
         p = qmark()
 
+        latencies = latencies or {}
+
         for agent_id in agent_ids:
             if not agent_id:
                 continue
+
+            latency = float(latencies.get(agent_id, 0) or 0)
 
             if winner_id and agent_id == winner_id:
                 cur.execute(f"""
                 UPDATE agents
                 SET call_count = COALESCE(call_count, 0) + 1,
                     win_count = COALESCE(win_count, 0) + 1,
+                    latency_total = COALESCE(latency_total, 0) + {p},
                     updated_at = {p}
                 WHERE agent_id = {p}
-                """, (now, agent_id))
+                """, (latency, now, agent_id))
             else:
                 cur.execute(f"""
                 UPDATE agents
                 SET call_count = COALESCE(call_count, 0) + 1,
+                    latency_total = COALESCE(latency_total, 0) + {p},
                     updated_at = {p}
                 WHERE agent_id = {p}
-                """, (now, agent_id))
+                """, (latency, now, agent_id))
 
         conn.commit()
         return True

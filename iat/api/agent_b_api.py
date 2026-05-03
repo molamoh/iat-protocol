@@ -694,8 +694,14 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
     agent_ids = [a.get("agent_id") for a in selected_agents]
     winner_id = best.get("agent_id") if best else None
 
+    latencies = {
+        r.get("agent_id"): r.get("latency", 0)
+        for r in results
+        if r.get("agent_id")
+    }
+
     try:
-        update_agent_call_stats_db(agent_ids, winner_id)
+        update_agent_call_stats_db(agent_ids, winner_id, latencies=latencies)
     except Exception as e:
         print("Learning layer error:", e)
 

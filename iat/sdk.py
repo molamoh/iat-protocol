@@ -95,6 +95,7 @@ def pay_order(order, keypair_path):
         keypair_path,
         seller_wallet,
         price,
+        order_id=order_id,
     )
 
 

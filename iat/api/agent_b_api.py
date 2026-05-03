@@ -49,6 +49,13 @@ class AgentTrustUpdate(BaseModel):
     risk_score: float | None = None
 
 
+
+class AgentStakeVerifyRequest(BaseModel):
+    agent_id: str
+    tx_signature: str
+    expected_amount: float = 0
+
+
 app = FastAPI()
 
 
@@ -721,6 +728,113 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
 
     return final_result
 
+
+
+
+@app.post("/admin/verify-agent-stake")
+def admin_verify_agent_stake(req: AgentStakeVerifyRequest, request: Request):
+    expected_key = os.getenv("IAT_ADMIN_API_KEY")
+    provided_key = request.headers.get("x-api-key")
+
+    if expected_key and provided_key != expected_key:
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    escrow_wallet = os.getenv("IAT_ESCROW_WALLET")
+
+    if not escrow_wallet:
+        return {
+            "status": "error",
+            "message": "escrow_wallet_not_configured",
+        }
+
+    tx_details = get_tx_details(req.tx_signature)
+
+    if not tx_details:
+        return {
+            "status": "error",
+            "message": "tx_not_found",
+        }
+
+    transfer = extract_transfer_checked_info(tx_details)
+    memo = extract_memo(tx_details)
+
+    if not transfer:
+        return {
+            "status": "error",
+            "message": "transfer_not_found",
+        }
+
+    expected_ata = str(
+        get_associated_token_address(
+            Pubkey.from_string(escrow_wallet),
+            Pubkey.from_string(IAT_MINT),
+        )
+    )
+
+    actual_destination = transfer.get("destination")
+    actual_mint = transfer.get("mint")
+    actual_amount = float(transfer.get("ui_amount") or 0)
+
+    memo_ok = memo is not None and f"STAKE:{req.agent_id}" in str(memo)
+    receiver_ok = actual_destination == expected_ata
+    mint_ok = actual_mint == IAT_MINT
+    amount_ok = actual_amount >= float(req.expected_amount or 0)
+
+    checks = {
+        "receiver_ok": receiver_ok,
+        "mint_ok": mint_ok,
+        "amount_ok": amount_ok,
+        "memo_ok": memo_ok,
+        "expected_ata": expected_ata,
+        "actual_destination": actual_destination,
+        "expected_mint": IAT_MINT,
+        "actual_mint": actual_mint,
+        "expected_amount": req.expected_amount,
+        "actual_amount": actual_amount,
+        "expected_memo": f"STAKE:{req.agent_id}",
+        "actual_memo": str(memo),
+    }
+
+    if not (receiver_ok and mint_ok and amount_ok and memo_ok):
+        return {
+            "status": "invalid_stake",
+            "checks": checks,
+        }
+
+    # Tier by amount
+    if actual_amount >= 1000:
+        trust_tier = "premium"
+    elif actual_amount >= 100:
+        trust_tier = "standard"
+    elif actual_amount >= 10:
+        trust_tier = "recovery"
+    else:
+        trust_tier = "free"
+
+    result = set_agent_trust_db(
+        req.agent_id,
+        trust_tier=trust_tier,
+        stake_amount=actual_amount,
+        stake_required=0,
+        risk_score=0,
+    )
+
+    if not result:
+        return {
+            "status": "error",
+            "message": "agent_not_found",
+            "agent_id": req.agent_id,
+        }
+
+    return {
+        "status": "ok",
+        "message": "stake_verified",
+        "agent": result,
+        "checks": checks,
+    }
 
 
 @app.post("/admin/set-agent-trust")

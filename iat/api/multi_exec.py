@@ -122,10 +122,10 @@ def compute_consensus(results):
             "valid_agents": 0,
             "reason": "no_successful_results",
             "suspicious_agents": [],
+            "collusion_flags": [],
         }
 
     agent_sets = []
-    total_weight = 0
 
     # --- BUILD AGENTS ---
     for r in valid:
@@ -139,40 +139,30 @@ def compute_consensus(results):
                 links.add(link.strip().lower())
 
         rep = float(r.get("reputation", 0.5))
-
         successes = int(r.get("success_count", 0) or 0)
         failures = int(r.get("failure_count", 0) or 0)
 
-    # Historical behavior weighting:
-    # - success_count increases trust slowly
-    # - failure_count reduces trust strongly
         success_factor = 1 + min(successes * 0.02, 0.20)
         failure_factor = 1 / (1 + failures)
 
-        rep = rep * success_factor * failure_factor
+        base_weight = rep * success_factor * failure_factor
 
         agent_sets.append({
             "agent_id": r.get("agent_id"),
             "wallet": r.get("wallet"),
             "links": links,
-            "weight": rep,
+            "base_weight": base_weight,
+            "weight": base_weight,
         })
-
-        total_weight += rep
 
     # --- WALLET DIAGNOSTIC ONLY ---
     wallet_weights = {}
-
     for agent in agent_sets:
-        w = agent.get("wallet")
+        w = agent.get("wallet") or "UNKNOWN"
         wallet_weights.setdefault(w, 0)
         wallet_weights[w] += agent["weight"]
 
-    # Same wallet is not a fault by itself.
-    # We keep wallet_weights for diagnostics, but we do not reduce weights here.
-    total_weight = sum(a["weight"] for a in agent_sets)
-
-    # --- CALCULATE OVERLAPS FIRST ---
+    # --- CALCULATE OVERLAPS ---
     for agent in agent_sets:
         links = agent["links"]
 
@@ -191,17 +181,10 @@ def compute_consensus(results):
     # --- DYNAMIC WEIGHT BY BEHAVIOR ---
     for agent in agent_sets:
         overlap = float(agent.get("overlap", 0))
-
-    # garder trace du poids initial (debug utile)
-        agent["base_weight"] = agent["weight"]
-
-    # 🔥 pénalité forte si overlap faible
         agent["weight"] = agent["weight"] * (0.2 + 0.8 * overlap)
 
-    # recalcul total_weight après modification
-        total_weight = sum(a["weight"] for a in agent_sets)
+    total_weight = sum(a["weight"] for a in agent_sets)
 
-    # --- FINAL SCORE ---
     weighted_score = 0
     for agent in agent_sets:
         weighted_score += agent["overlap"] * agent["weight"]
@@ -215,6 +198,61 @@ def compute_consensus(results):
         if agent["overlap"] < 0.5
     ]
 
+    # --- WALLET COLLUSION DIAGNOSTIC ---
+    wallet_groups = {}
+    for agent in agent_sets:
+        wallet = agent.get("wallet") or "UNKNOWN"
+        wallet_groups.setdefault(wallet, []).append(agent)
+
+    collusion_flags = []
+
+    def overlap_between(a, b):
+        links_a = a.get("links", set())
+        links_b = b.get("links", set())
+
+        if not links_a or not links_b:
+            return 0
+
+        return len(links_a.intersection(links_b)) / max(len(links_a), 1)
+
+    for wallet, group in wallet_groups.items():
+        if len(group) < 2:
+            continue
+
+        other_agents = [
+            a for a in agent_sets
+            if (a.get("wallet") or "UNKNOWN") != wallet
+        ]
+
+        if not other_agents:
+            continue
+
+        internal_scores = []
+        for i, a in enumerate(group):
+            for b in group[i + 1:]:
+                internal_scores.append(overlap_between(a, b))
+
+        external_scores = []
+        for a in group:
+            for b in other_agents:
+                external_scores.append(overlap_between(a, b))
+
+        internal_avg = sum(internal_scores) / len(internal_scores) if internal_scores else 0
+        external_avg = sum(external_scores) / len(external_scores) if external_scores else 0
+
+        if internal_avg >= 0.8 and external_avg <= 0.3:
+            for agent in group:
+                collusion_flags.append({
+                    "agent_id": agent.get("agent_id"),
+                    "wallet": wallet,
+                    "internal_overlap": round(internal_avg, 4),
+                    "external_overlap": round(external_avg, 4),
+                    "reason": "same_wallet_cluster_low_external_agreement",
+                })
+
+    collusion_agent_ids = set(flag["agent_id"] for flag in collusion_flags)
+    suspicious_agents = list(set(suspicious_agents).union(collusion_agent_ids))
+
     return {
         "status": status,
         "score": round(score, 4),
@@ -223,11 +261,18 @@ def compute_consensus(results):
         "valid_agents": len(valid),
         "agent_overlaps": [
             {
-                "agent_id": agent["agent_id"],
-                "overlap": agent["overlap"],
-                "weight": agent["weight"],
+                "agent_id": a["agent_id"],
+                "overlap": a["overlap"],
+                "base_weight": round(a["base_weight"], 4),
+                "weight": round(a["weight"], 4),
             }
-            for agent in agent_sets
+            for a in agent_sets
         ],
+        "wallet_weights": {
+            wallet: round(weight, 4)
+            for wallet, weight in wallet_weights.items()
+        },
         "suspicious_agents": suspicious_agents,
+        "collusion_flags": collusion_flags,
     }
+

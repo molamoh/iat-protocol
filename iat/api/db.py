@@ -123,13 +123,17 @@ def init_agents_table():
         updated_at INTEGER NOT NULL,
         success_count INTEGER DEFAULT 0,
         failure_count INTEGER DEFAULT 0,
-        last_slashed_at INTEGER
+        last_slashed_at INTEGER,
+        call_count INTEGER DEFAULT 0,
+        win_count INTEGER DEFAULT 0
     )
     """)
     agent_columns = {
         "success_count": "INTEGER DEFAULT 0",
         "failure_count": "INTEGER DEFAULT 0",
         "last_slashed_at": "INTEGER",
+        "call_count": "INTEGER DEFAULT 0",
+        "win_count": "INTEGER DEFAULT 0",
     }
 
     for column, col_type in agent_columns.items():
@@ -524,6 +528,53 @@ def reactivate_agent_db(agent_id, reputation_floor=0.6):
             "failure_count": 0,
             "last_slashed_at": None,
         }
+
+    except Exception:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        raise
+
+    finally:
+        release_conn(conn)
+
+
+def update_agent_call_stats_db(agent_ids, winner_id=None):
+    if not agent_ids:
+        return None
+
+    conn = None
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        now = int(time.time())
+        p = qmark()
+
+        for agent_id in agent_ids:
+            if not agent_id:
+                continue
+
+            if winner_id and agent_id == winner_id:
+                cur.execute(f"""
+                UPDATE agents
+                SET call_count = COALESCE(call_count, 0) + 1,
+                    win_count = COALESCE(win_count, 0) + 1,
+                    updated_at = {p}
+                WHERE agent_id = {p}
+                """, (now, agent_id))
+            else:
+                cur.execute(f"""
+                UPDATE agents
+                SET call_count = COALESCE(call_count, 0) + 1,
+                    updated_at = {p}
+                WHERE agent_id = {p}
+                """, (now, agent_id))
+
+        conn.commit()
+        return True
 
     except Exception:
         if conn is not None:

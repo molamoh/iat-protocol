@@ -17,6 +17,7 @@ from iat.onchain import (
 from iat.api.execution_engine import select_best_agent, compute_agent_score
 
 from iat.api.db import (
+    update_agent_call_stats_db,
     reactivate_agent_db,
     init_db,
     create_order_db,

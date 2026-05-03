@@ -16,15 +16,21 @@ def compute_agent_market_score(agent):
     price = float(agent.get("price", 1.0) or 1.0)
     successes = int(agent.get("success_count", 0) or 0)
     failures = int(agent.get("failure_count", 0) or 0)
+    call_count = int(agent.get("call_count", 0) or 0)
+    win_count = int(agent.get("win_count", 0) or 0)
+
+    win_rate = (win_count / call_count) if call_count > 0 else 0
 
     success_bonus = min(successes * 0.03, 0.30)
     failure_penalty = failures * 0.25
+    win_rate_bonus = win_rate * 0.35
 
     price_score = 1 / (price + 0.001)
 
     score = (
         reputation * 1.5
         + success_bonus
+        + win_rate_bonus
         + price_score * 0.25
         - failure_penalty
     )
@@ -77,6 +83,8 @@ def call_agent(agent, order):
                 "reputation": agent.get("reputation", 0.5),
                 "success_count": agent.get("success_count", 0),
                 "failure_count": agent.get("failure_count", 0),
+                "call_count": agent.get("call_count", 0),
+                "win_count": agent.get("win_count", 0),
                 "data": r.json(),
             }
 
@@ -87,6 +95,8 @@ def call_agent(agent, order):
             "reputation": agent.get("reputation", 0.5),
             "success_count": agent.get("success_count", 0),
             "failure_count": agent.get("failure_count", 0),
+            "call_count": agent.get("call_count", 0),
+            "win_count": agent.get("win_count", 0),
             "error": r.text,
         }
 
@@ -99,6 +109,8 @@ def call_agent(agent, order):
         "reputation": agent.get("reputation", 0.5),
         "success_count": agent.get("success_count", 0),
         "failure_count": agent.get("failure_count", 0),
+        "call_count": agent.get("call_count", 0),
+        "win_count": agent.get("win_count", 0),
         "error": str(e),
     }
 

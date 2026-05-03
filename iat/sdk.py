@@ -17,7 +17,36 @@ def auth_headers():
 
 def list_services():
     r = requests.get(f"{API}/marketplace", timeout=30)
+    
+try:
+    
+if r.status_code != 200:
+    print("\n❌ API ERROR")
+    print("Status:", r.status_code)
+    print("Response:", r.text[:500])
+
+try:
     return r.json()
+except Exception:
+    print("\n❌ API RESPONSE NOT JSON")
+    print("Status:", r.status_code)
+    print("Response:", r.text[:1000])
+    return {
+        "status": "error",
+        "http_status": r.status_code,
+        "raw_response": r.text[:1000],
+    }
+
+except Exception:
+    print("\n❌ API RESPONSE NOT JSON")
+    print("Status:", r.status_code)
+    print("Response:", r.text[:1000])
+    return {
+        "status": "error",
+        "http_status": r.status_code,
+        "raw_response": r.text[:1000],
+    }
+
 
 def create_order(service, query=None):
     payload = {"service": service}
@@ -30,7 +59,36 @@ def create_order(service, query=None):
         headers=auth_headers(),
         timeout=30,
     )
+    
+try:
+    
+if r.status_code != 200:
+    print("\n❌ API ERROR")
+    print("Status:", r.status_code)
+    print("Response:", r.text[:500])
+
+try:
     return r.json()
+except Exception:
+    print("\n❌ API RESPONSE NOT JSON")
+    print("Status:", r.status_code)
+    print("Response:", r.text[:1000])
+    return {
+        "status": "error",
+        "http_status": r.status_code,
+        "raw_response": r.text[:1000],
+    }
+
+except Exception:
+    print("\n❌ API RESPONSE NOT JSON")
+    print("Status:", r.status_code)
+    print("Response:", r.text[:1000])
+    return {
+        "status": "error",
+        "http_status": r.status_code,
+        "raw_response": r.text[:1000],
+    }
+
 
 
 def pay_order(order, keypair_path):
@@ -44,7 +102,36 @@ def pay_order(order, keypair_path):
 
 def get_order(order_id):
     r = requests.get(f"{API}/orders/{order_id}", timeout=30)
+    
+try:
+    
+if r.status_code != 200:
+    print("\n❌ API ERROR")
+    print("Status:", r.status_code)
+    print("Response:", r.text[:500])
+
+try:
     return r.json()
+except Exception:
+    print("\n❌ API RESPONSE NOT JSON")
+    print("Status:", r.status_code)
+    print("Response:", r.text[:1000])
+    return {
+        "status": "error",
+        "http_status": r.status_code,
+        "raw_response": r.text[:1000],
+    }
+
+except Exception:
+    print("\n❌ API RESPONSE NOT JSON")
+    print("Status:", r.status_code)
+    print("Response:", r.text[:1000])
+    return {
+        "status": "error",
+        "http_status": r.status_code,
+        "raw_response": r.text[:1000],
+    }
+
 
 
 def verify_order(order_id, tx_signature):
@@ -57,7 +144,36 @@ def verify_order(order_id, tx_signature):
         headers=auth_headers(),
         timeout=60,
     )
+    
+try:
+    
+if r.status_code != 200:
+    print("\n❌ API ERROR")
+    print("Status:", r.status_code)
+    print("Response:", r.text[:500])
+
+try:
     return r.json()
+except Exception:
+    print("\n❌ API RESPONSE NOT JSON")
+    print("Status:", r.status_code)
+    print("Response:", r.text[:1000])
+    return {
+        "status": "error",
+        "http_status": r.status_code,
+        "raw_response": r.text[:1000],
+    }
+
+except Exception:
+    print("\n❌ API RESPONSE NOT JSON")
+    print("Status:", r.status_code)
+    print("Response:", r.text[:1000])
+    return {
+        "status": "error",
+        "http_status": r.status_code,
+        "raw_response": r.text[:1000],
+    }
+
 
 
 def pay_and_get_service(service, keypair_path, max_attempts=24, delay=5, query=None):

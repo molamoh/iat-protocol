@@ -687,6 +687,7 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
         if winner_id:
             winner_reputation = update_agent_reputation_db(winner_id, success=True)
         payout_info["winner_new_reputation"] = winner_reputation
+    
     final_result["settlement"] = payout_info
 
     # --- LEARNING LAYER (call + win stats) ---
@@ -699,8 +700,8 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
         print("Learning layer error:", e)
 
     update_order_delivered_db(req.order_id, req.tx_signature, final_result)
-        return final_result
 
+    return final_result
 
 @app.post("/admin/reactivate-agent/{agent_id}")
 def admin_reactivate_agent(agent_id: str, request: Request):

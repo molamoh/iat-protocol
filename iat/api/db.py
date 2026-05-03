@@ -596,6 +596,79 @@ def update_agent_call_stats_db(agent_ids, winner_id=None, latencies=None):
         release_conn(conn)
 
 
+def rename_agent_db(old_agent_id, new_agent_id):
+    if not old_agent_id or not new_agent_id:
+        return None
+
+    conn = None
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        p = qmark()
+
+        cur.execute(f"SELECT * FROM agents WHERE agent_id = {p}", (old_agent_id,))
+        old_row = cur.fetchone()
+
+        if not old_row:
+            return {"status": "error", "message": "old_agent_not_found"}
+
+        cur.execute(f"SELECT * FROM agents WHERE agent_id = {p}", (new_agent_id,))
+        new_row = cur.fetchone()
+
+        if new_row:
+            # Merge stats into the correct existing agent, then delete typo agent
+            cur.execute(f"""
+            UPDATE agents
+            SET reputation = MAX(reputation, (SELECT reputation FROM agents WHERE agent_id = {p})),
+                success_count = COALESCE(success_count, 0) + COALESCE((SELECT success_count FROM agents WHERE agent_id = {p}), 0),
+                failure_count = COALESCE(failure_count, 0) + COALESCE((SELECT failure_count FROM agents WHERE agent_id = {p}), 0),
+                call_count = COALESCE(call_count, 0) + COALESCE((SELECT call_count FROM agents WHERE agent_id = {p}), 0),
+                win_count = COALESCE(win_count, 0) + COALESCE((SELECT win_count FROM agents WHERE agent_id = {p}), 0),
+                latency_total = COALESCE(latency_total, 0) + COALESCE((SELECT latency_total FROM agents WHERE agent_id = {p}), 0),
+                updated_at = {p}
+            WHERE agent_id = {p}
+            """, (
+                old_agent_id,
+                old_agent_id,
+                old_agent_id,
+                old_agent_id,
+                old_agent_id,
+                old_agent_id,
+                int(time.time()),
+                new_agent_id,
+            ))
+
+            cur.execute(f"DELETE FROM agents WHERE agent_id = {p}", (old_agent_id,))
+
+        else:
+            cur.execute(f"""
+            UPDATE agents
+            SET agent_id = {p},
+                updated_at = {p}
+            WHERE agent_id = {p}
+            """, (new_agent_id, int(time.time()), old_agent_id))
+
+        conn.commit()
+
+        return {
+            "status": "ok",
+            "old_agent_id": old_agent_id,
+            "new_agent_id": new_agent_id,
+        }
+
+    except Exception:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        raise
+
+    finally:
+        release_conn(conn)
+
+
 def get_stats_db():
     orders = list_orders_db()
 

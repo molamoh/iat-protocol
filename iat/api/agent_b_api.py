@@ -19,6 +19,7 @@ from iat.api.execution_engine import select_best_agent, compute_agent_score
 from iat.api.db import (
     update_agent_call_stats_db,
     reactivate_agent_db,
+    rename_agent_db,
     init_db,
     create_order_db,
     get_order_db,
@@ -708,6 +709,21 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
     update_order_delivered_db(req.order_id, req.tx_signature, final_result)
 
     return final_result
+
+
+@app.post("/admin/rename-agent")
+def admin_rename_agent(request: Request, old_agent_id: str, new_agent_id: str):
+    expected_key = os.getenv("IAT_ADMIN_API_KEY")
+    provided_key = request.headers.get("x-api-key")
+
+    if expected_key and provided_key != expected_key:
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return rename_agent_db(old_agent_id, new_agent_id)
+
 
 @app.post("/admin/reactivate-agent/{agent_id}")
 def admin_reactivate_agent(agent_id: str, request: Request):

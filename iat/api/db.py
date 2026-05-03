@@ -679,6 +679,80 @@ def rename_agent_db(old_agent_id, new_agent_id):
         release_conn(conn)
 
 
+def set_agent_trust_db(agent_id, trust_tier=None, stake_amount=None, stake_required=None, risk_score=None):
+    if not agent_id:
+        return None
+
+    conn = None
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        p = qmark()
+        now = int(time.time())
+
+        cur.execute(f"SELECT agent_id FROM agents WHERE agent_id = {p}", (agent_id,))
+        row = cur.fetchone()
+
+        if not row:
+            return None
+
+        updates = []
+        values = []
+
+        if trust_tier is not None:
+            updates.append(f"trust_tier = {p}")
+            values.append(str(trust_tier))
+
+        if stake_amount is not None:
+            updates.append(f"stake_amount = {p}")
+            values.append(float(stake_amount))
+
+        if stake_required is not None:
+            updates.append(f"stake_required = {p}")
+            values.append(float(stake_required))
+
+        if risk_score is not None:
+            risk_score = max(0.0, min(float(risk_score), 1.0))
+            updates.append(f"risk_score = {p}")
+            values.append(risk_score)
+
+        updates.append(f"updated_at = {p}")
+        values.append(now)
+
+        values.append(agent_id)
+
+        query = f"UPDATE agents SET {', '.join(updates)} WHERE agent_id = {p}"
+        cur.execute(query, tuple(values))
+        conn.commit()
+
+        cur.execute(f"SELECT * FROM agents WHERE agent_id = {p}", (agent_id,))
+        updated = cur.fetchone()
+
+        return dict(updated)
+
+    except Exception:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        raise
+
+    finally:
+        release_conn(conn)
+
+
+def reset_agent_trust_db(agent_id):
+    return set_agent_trust_db(
+        agent_id,
+        trust_tier="free",
+        stake_amount=0,
+        stake_required=0,
+        risk_score=0,
+    )
+
+
 def get_stats_db():
     orders = list_orders_db()
 

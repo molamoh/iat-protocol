@@ -20,6 +20,8 @@ from iat.api.db import (
     update_agent_call_stats_db,
     reactivate_agent_db,
     rename_agent_db,
+    set_agent_trust_db,
+    reset_agent_trust_db,
     init_db,
     create_order_db,
     get_order_db,
@@ -37,6 +39,15 @@ from iat.api.db import (
     create_factory_agent_db,
     update_order_db,
 )
+
+
+class AgentTrustUpdate(BaseModel):
+    agent_id: str
+    trust_tier: str | None = None
+    stake_amount: float | None = None
+    stake_required: float | None = None
+    risk_score: float | None = None
+
 
 app = FastAPI()
 
@@ -709,6 +720,65 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
     update_order_delivered_db(req.order_id, req.tx_signature, final_result)
 
     return final_result
+
+
+
+@app.post("/admin/set-agent-trust")
+def admin_set_agent_trust(req: AgentTrustUpdate, request: Request):
+    expected_key = os.getenv("IAT_ADMIN_API_KEY")
+    provided_key = request.headers.get("x-api-key")
+
+    if expected_key and provided_key != expected_key:
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    result = set_agent_trust_db(
+        req.agent_id,
+        trust_tier=req.trust_tier,
+        stake_amount=req.stake_amount,
+        stake_required=req.stake_required,
+        risk_score=req.risk_score,
+    )
+
+    if not result:
+        return {
+            "status": "error",
+            "message": "agent_not_found",
+            "agent_id": req.agent_id,
+        }
+
+    return {
+        "status": "ok",
+        "agent": result,
+    }
+
+
+@app.post("/admin/reset-agent-trust/{agent_id}")
+def admin_reset_agent_trust(agent_id: str, request: Request):
+    expected_key = os.getenv("IAT_ADMIN_API_KEY")
+    provided_key = request.headers.get("x-api-key")
+
+    if expected_key and provided_key != expected_key:
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    result = reset_agent_trust_db(agent_id)
+
+    if not result:
+        return {
+            "status": "error",
+            "message": "agent_not_found",
+            "agent_id": agent_id,
+        }
+
+    return {
+        "status": "ok",
+        "agent": result,
+    }
 
 
 @app.post("/admin/rename-agent")

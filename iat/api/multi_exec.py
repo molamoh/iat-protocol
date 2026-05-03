@@ -3,6 +3,55 @@ import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
+def compute_agent_market_score(agent):
+    """
+    Market pre-selection score.
+    Same wallet is NOT penalized here.
+    We rank agents by reliability, history, price, and availability.
+    """
+    if not bool(agent.get("available", True)):
+        return -999999
+
+    reputation = float(agent.get("reputation", 0.5) or 0.5)
+    price = float(agent.get("price", 1.0) or 1.0)
+    successes = int(agent.get("success_count", 0) or 0)
+    failures = int(agent.get("failure_count", 0) or 0)
+
+    success_bonus = min(successes * 0.03, 0.30)
+    failure_penalty = failures * 0.25
+
+    price_score = 1 / (price + 0.001)
+
+    score = (
+        reputation * 1.5
+        + success_bonus
+        + price_score * 0.25
+        - failure_penalty
+    )
+
+    return round(score, 6)
+
+
+def select_top_agents(agents, limit=3):
+    """
+    Select best available agents before execution.
+    This reduces cost and avoids calling disabled/bad agents.
+    """
+    available_agents = [
+        a for a in agents
+        if bool(a.get("available", True))
+    ]
+
+    ranked = sorted(
+        available_agents,
+        key=compute_agent_market_score,
+        reverse=True,
+    )
+
+    return ranked[:limit]
+
+
+
 def call_agent(agent, order):
     start = time.monotonic()
 

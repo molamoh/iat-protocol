@@ -583,7 +583,7 @@ def request_endpoint(payload: dict):
 
 @app.post("/multi-call-test")
 def multi_call_test(payload: dict):
-    from iat.api.multi_exec import multi_call, select_best_result, compute_consensus
+    from iat.api.multi_exec import multi_call, select_best_result, select_top_agents, compute_consensus
     from iat.api.db import get_agents_for_service_db
 
     service = payload.get("service")
@@ -604,7 +604,8 @@ def multi_call_test(payload: dict):
     best = select_best_result(results)
 
     return {
-        "agents_called": len(agents),
+        "agents_called": len(selected_agents),
+        "selected_agents": [a.get("agent_id") for a in selected_agents],
         "results": results,
         "best": best
     }
@@ -637,7 +638,8 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
     paid_order = dict(order)
     paid_order["tx_signature"] = req.tx_signature
 
-    results = multi_call(agents, paid_order)
+    selected_agents = select_top_agents(agents, limit=3)
+    results = multi_call(selected_agents, paid_order)
     best = select_best_result(results)
 
     from iat.api.multi_exec import compute_consensus
@@ -655,7 +657,7 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
         "service": order["service"],
         "query": order.get("query"),
         "tx_signature": req.tx_signature,
-        "agents_called": len(agents),
+        "agents_called": len(selected_agents),
         "payment_result": base,
         "results": results,
         "best": best,

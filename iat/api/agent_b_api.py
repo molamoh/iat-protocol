@@ -688,7 +688,8 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
     # DEBUG ONLY: force one agent into execution when env var is set.
     # Example on Render env:
     # IAT_FORCE_AGENT_ID=web_agent_malicious
-    forced_agent_id = os.getenv("IAT_FORCE_AGENT_ID")
+    # FORCE_AGENT disabled in production
+    forced_agent_id = None
     selected_agents = force_agent_into_selection(
         selected_agents,
         agents,

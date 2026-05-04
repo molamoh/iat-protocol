@@ -21,6 +21,7 @@ from iat.api.db import (
     reactivate_agent_db,
     rename_agent_db,
     set_agent_trust_db,
+    slash_agent_stake_db,
     reset_agent_trust_db,
     init_db,
     create_order_db,
@@ -687,8 +688,21 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
 # --- SLASH suspicious agents ---
     suspicious = consensus.get("suspicious_agents", [])
 
+    slashing_events = []
+
     for agent_id in suspicious:
         update_agent_reputation_db(agent_id, success=False)
+
+        try:
+            slash_info = slash_agent_stake_db(
+                agent_id,
+                slash_ratio=0.10,
+                reason="consensus_suspicious_agent",
+            )
+            if slash_info:
+                slashing_events.append(slash_info)
+        except Exception as e:
+            print("Stake slashing error:", e)
 
 # --- payout logic ---
     if consensus.get("status") != "passed":
@@ -697,10 +711,12 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
             "reason": "consensus_not_reached",
             "consensus": consensus,
             "slashed_agents": suspicious,
+            "stake_slashing_events": slashing_events,
         }
     else:
         payout_info = payout_winner_if_escrow(order, best, agents)
         payout_info["slashed_agents"] = suspicious
+        payout_info["stake_slashing_events"] = slashing_events
 
         winner_id = best.get("agent_id") if best else None
         if winner_id:

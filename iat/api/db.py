@@ -131,7 +131,8 @@ def init_agents_table():
         stake_amount REAL DEFAULT 0,
         stake_required REAL DEFAULT 0,
         risk_score REAL DEFAULT 0,
-        wallet_agent_count INTEGER DEFAULT 0
+        wallet_agent_count INTEGER DEFAULT 0,
+        stake_slashed_total REAL DEFAULT 0
     )
     """)
     agent_columns = {
@@ -146,6 +147,7 @@ def init_agents_table():
         "stake_required": "REAL DEFAULT 0",
         "risk_score": "REAL DEFAULT 0",
         "wallet_agent_count": "INTEGER DEFAULT 0",
+        "stake_slashed_total": "REAL DEFAULT 0",
     }
 
     for column, col_type in agent_columns.items():
@@ -751,6 +753,92 @@ def reset_agent_trust_db(agent_id):
         stake_required=0,
         risk_score=0,
     )
+
+
+def slash_agent_stake_db(agent_id, slash_ratio=0.10, reason="protocol_slash"):
+    if not agent_id:
+        return None
+
+    conn = None
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        p = qmark()
+        now = int(time.time())
+
+        cur.execute(f"""
+        SELECT agent_id, stake_amount, stake_slashed_total
+        FROM agents
+        WHERE agent_id = {p}
+        """, (agent_id,))
+        row = cur.fetchone()
+
+        if not row:
+            return None
+
+        current_stake = float(row.get("stake_amount", 0) or 0)
+        old_slashed = float(row.get("stake_slashed_total", 0) or 0)
+
+        if current_stake <= 0:
+            return {
+                "agent_id": agent_id,
+                "slashed_amount": 0,
+                "remaining_stake": 0,
+                "stake_slashed_total": old_slashed,
+                "reason": "no_stake_to_slash",
+            }
+
+        slash_ratio = max(0.0, min(float(slash_ratio), 1.0))
+        slashed_amount = round(current_stake * slash_ratio, 6)
+        remaining_stake = max(0.0, current_stake - slashed_amount)
+        new_slashed_total = old_slashed + slashed_amount
+
+        if remaining_stake >= 1000:
+            trust_tier = "premium"
+        elif remaining_stake >= 100:
+            trust_tier = "standard"
+        elif remaining_stake >= 10:
+            trust_tier = "recovery"
+        else:
+            trust_tier = "free"
+
+        cur.execute(f"""
+        UPDATE agents
+        SET stake_amount = {p},
+            stake_slashed_total = {p},
+            trust_tier = {p},
+            updated_at = {p}
+        WHERE agent_id = {p}
+        """, (
+            round(remaining_stake, 6),
+            round(new_slashed_total, 6),
+            trust_tier,
+            now,
+            agent_id,
+        ))
+
+        conn.commit()
+
+        return {
+            "agent_id": agent_id,
+            "slashed_amount": round(slashed_amount, 6),
+            "remaining_stake": round(remaining_stake, 6),
+            "stake_slashed_total": round(new_slashed_total, 6),
+            "trust_tier": trust_tier,
+            "reason": reason,
+        }
+
+    except Exception:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        raise
+
+    finally:
+        release_conn(conn)
 
 
 def get_stats_db():

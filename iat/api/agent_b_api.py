@@ -762,6 +762,37 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
 
 
 
+
+@app.post("/admin/test-slash-agent/{agent_id}")
+def admin_test_slash_agent(agent_id: str, request: Request, slash_ratio: float = 0.10):
+    expected_key = os.getenv("IAT_ADMIN_API_KEY")
+    provided_key = request.headers.get("x-api-key")
+
+    if expected_key and provided_key != expected_key:
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    result = slash_agent_stake_db(
+        agent_id,
+        slash_ratio=slash_ratio,
+        reason="admin_test_slash",
+    )
+
+    if not result:
+        return {
+            "status": "error",
+            "message": "agent_not_found",
+            "agent_id": agent_id,
+        }
+
+    return {
+        "status": "ok",
+        "slash": result,
+    }
+
+
 @app.post("/admin/verify-agent-stake")
 def admin_verify_agent_stake(req: AgentStakeVerifyRequest, request: Request):
     expected_key = os.getenv("IAT_ADMIN_API_KEY")

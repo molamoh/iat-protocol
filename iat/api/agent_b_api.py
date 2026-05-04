@@ -24,6 +24,7 @@ from iat.api.db import (
     slash_agent_stake_db,
     update_agent_volume_stats_db,
     compute_dynamic_stake_required_db,
+    get_network_economics_db,
     reset_agent_trust_db,
     init_db,
     create_order_db,
@@ -373,6 +374,15 @@ def marketplace():
             "services": sorted(list(set(a["service"] for a in listings))),
             "listings": listings,
         },
+    }
+
+
+
+@app.get("/network-economics")
+def network_economics():
+    return {
+        "status": "ok",
+        "economics": get_network_economics_db(),
     }
 
 

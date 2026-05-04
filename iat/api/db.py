@@ -963,6 +963,64 @@ def update_agent_volume_stats_db(agent_id, amount, honest=True):
     return compute_dynamic_stake_required_db(agent_id)
 
 
+def get_network_economics_db():
+    conn = None
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+
+        cur.execute("""
+        SELECT
+            COUNT(*) as agents_count,
+            COALESCE(SUM(stake_amount), 0) as total_stake,
+            COALESCE(SUM(stake_slashed_total), 0) as total_slashed,
+            COALESCE(SUM(volume_total), 0) as total_volume,
+            COALESCE(SUM(honest_volume), 0) as honest_volume,
+            COALESCE(SUM(fraud_volume), 0) as fraud_volume,
+            COALESCE(SUM(dynamic_stake_required), 0) as total_dynamic_stake_required
+        FROM agents
+        """)
+        row = cur.fetchone()
+
+        total_volume = float(row["total_volume"] or 0)
+        honest_volume = float(row["honest_volume"] or 0)
+        fraud_volume = float(row["fraud_volume"] or 0)
+        total_stake = float(row["total_stake"] or 0)
+        required = float(row["total_dynamic_stake_required"] or 0)
+
+        fraud_rate = fraud_volume / total_volume if total_volume > 0 else 0
+        honest_rate = honest_volume / total_volume if total_volume > 0 else 0
+        stake_coverage = total_stake / required if required > 0 else 1
+
+        resilience_score = max(
+            0.0,
+            min(
+                1.0,
+                (honest_rate * 0.60)
+                + (min(stake_coverage, 1.0) * 0.30)
+                + ((1 - fraud_rate) * 0.10)
+            )
+        )
+
+        return {
+            "agents_count": int(row["agents_count"] or 0),
+            "total_stake": round(total_stake, 6),
+            "total_slashed": round(float(row["total_slashed"] or 0), 6),
+            "total_volume": round(total_volume, 6),
+            "honest_volume": round(honest_volume, 6),
+            "fraud_volume": round(fraud_volume, 6),
+            "honest_rate": round(honest_rate, 6),
+            "fraud_rate": round(fraud_rate, 6),
+            "total_dynamic_stake_required": round(required, 6),
+            "stake_coverage": round(stake_coverage, 6),
+            "market_resilience_score": round(resilience_score, 6),
+        }
+
+    finally:
+        release_conn(conn)
+
+
 def get_stats_db():
     orders = list_orders_db()
 

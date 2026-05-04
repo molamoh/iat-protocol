@@ -132,7 +132,11 @@ def init_agents_table():
         stake_required REAL DEFAULT 0,
         risk_score REAL DEFAULT 0,
         wallet_agent_count INTEGER DEFAULT 0,
-        stake_slashed_total REAL DEFAULT 0
+        stake_slashed_total REAL DEFAULT 0,
+        volume_total REAL DEFAULT 0,
+        honest_volume REAL DEFAULT 0,
+        fraud_volume REAL DEFAULT 0,
+        dynamic_stake_required REAL DEFAULT 0
     )
     """)
     agent_columns = {
@@ -148,6 +152,10 @@ def init_agents_table():
         "risk_score": "REAL DEFAULT 0",
         "wallet_agent_count": "INTEGER DEFAULT 0",
         "stake_slashed_total": "REAL DEFAULT 0",
+        "volume_total": "REAL DEFAULT 0",
+        "honest_volume": "REAL DEFAULT 0",
+        "fraud_volume": "REAL DEFAULT 0",
+        "dynamic_stake_required": "REAL DEFAULT 0",
     }
 
     for column, col_type in agent_columns.items():
@@ -839,6 +847,120 @@ def slash_agent_stake_db(agent_id, slash_ratio=0.10, reason="protocol_slash"):
 
     finally:
         release_conn(conn)
+
+
+def compute_dynamic_stake_required_db(agent_id):
+    conn = None
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        p = qmark()
+
+        cur.execute(f"""
+        SELECT reputation, stake_amount, volume_total, honest_volume, fraud_volume, failure_count
+        FROM agents
+        WHERE agent_id = {p}
+        """, (agent_id,))
+        row = cur.fetchone()
+
+        if not row:
+            return None
+
+        reputation = float(row.get("reputation", 0.5) or 0.5)
+        volume_total = float(row.get("volume_total", 0) or 0)
+        honest_volume = float(row.get("honest_volume", 0) or 0)
+        fraud_volume = float(row.get("fraud_volume", 0) or 0)
+        failures = int(row.get("failure_count", 0) or 0)
+
+        fraud_rate = fraud_volume / volume_total if volume_total > 0 else 0
+        honest_rate = honest_volume / volume_total if volume_total > 0 else 0
+
+        # Market resilience: high if most processed value was honest.
+        market_resilience_score = max(0.0, min(1.0, honest_rate * reputation))
+
+        # Base required stake scales with value handled.
+        base_required = volume_total * 0.10
+
+        # Honest agents get easier conditions as they prove volume.
+        honest_discount = market_resilience_score * 0.50
+
+        # Suspicious agents face higher requirements.
+        risk_multiplier = 1 + (fraud_rate * 5) + min(failures * 0.25, 2)
+
+        required = base_required * risk_multiplier * (1 - honest_discount)
+
+        # Minimums:
+        # - honest/free low-volume agents are not blocked
+        # - suspicious agents need skin in the game
+        if fraud_rate > 0.20 or failures >= 3:
+            required = max(required, 10)
+
+        required = round(required, 6)
+
+        cur.execute(f"""
+        UPDATE agents
+        SET dynamic_stake_required = {p},
+            stake_required = CASE
+                WHEN {p} > stake_required THEN {p}
+                ELSE stake_required
+            END
+        WHERE agent_id = {p}
+        """, (required, required, required, agent_id))
+
+        conn.commit()
+
+        return {
+            "agent_id": agent_id,
+            "volume_total": round(volume_total, 6),
+            "honest_volume": round(honest_volume, 6),
+            "fraud_volume": round(fraud_volume, 6),
+            "fraud_rate": round(fraud_rate, 6),
+            "honest_rate": round(honest_rate, 6),
+            "market_resilience_score": round(market_resilience_score, 6),
+            "dynamic_stake_required": required,
+        }
+
+    finally:
+        release_conn(conn)
+
+
+def update_agent_volume_stats_db(agent_id, amount, honest=True):
+    if not agent_id:
+        return None
+
+    conn = None
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        p = qmark()
+        now = int(time.time())
+        amount = float(amount or 0)
+
+        if honest:
+            cur.execute(f"""
+            UPDATE agents
+            SET volume_total = COALESCE(volume_total, 0) + {p},
+                honest_volume = COALESCE(honest_volume, 0) + {p},
+                updated_at = {p}
+            WHERE agent_id = {p}
+            """, (amount, amount, now, agent_id))
+        else:
+            cur.execute(f"""
+            UPDATE agents
+            SET volume_total = COALESCE(volume_total, 0) + {p},
+                fraud_volume = COALESCE(fraud_volume, 0) + {p},
+                updated_at = {p}
+            WHERE agent_id = {p}
+            """, (amount, amount, now, agent_id))
+
+        conn.commit()
+
+    finally:
+        release_conn(conn)
+
+    return compute_dynamic_stake_required_db(agent_id)
 
 
 def get_stats_db():

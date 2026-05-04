@@ -22,6 +22,8 @@ from iat.api.db import (
     rename_agent_db,
     set_agent_trust_db,
     slash_agent_stake_db,
+    update_agent_volume_stats_db,
+    compute_dynamic_stake_required_db,
     reset_agent_trust_db,
     init_db,
     create_order_db,
@@ -776,6 +778,18 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
     slashing_events = []
 
     slashing_events = []
+    order_value = float(order.get("price", 0) or 0)
+
+    # Honest/fraud value accounting
+    for r in results:
+        aid = r.get("agent_id")
+        if not aid:
+            continue
+
+        if aid in suspicious:
+            update_agent_volume_stats_db(aid, order_value, honest=False)
+        elif r.get("success"):
+            update_agent_volume_stats_db(aid, order_value, honest=True)
 
     for agent_id in suspicious:
         update_agent_reputation_db(agent_id, success=False)

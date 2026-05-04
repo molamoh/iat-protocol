@@ -22,6 +22,10 @@ def compute_agent_market_score(agent):
     stake_amount = float(agent.get("stake_amount", 0) or 0)
     stake_required = float(agent.get("stake_required", 0) or 0)
     risk_score = float(agent.get("risk_score", 0) or 0)
+    volume_total = float(agent.get("volume_total", 0) or 0)
+    honest_volume = float(agent.get("honest_volume", 0) or 0)
+    fraud_volume = float(agent.get("fraud_volume", 0) or 0)
+    dynamic_stake_required = float(agent.get("dynamic_stake_required", 0) or 0)
 
     avg_latency = (latency_total / call_count) if call_count > 0 else None
 
@@ -53,8 +57,15 @@ def compute_agent_market_score(agent):
         trust_bonus = 0.03
 
     stake_gap_penalty = 0
-    if stake_required > 0 and stake_amount < stake_required:
-        stake_gap_penalty = 0.30
+    effective_required = max(stake_required, dynamic_stake_required)
+    if effective_required > 0 and stake_amount < effective_required:
+        stake_gap_penalty = min(0.50, (effective_required - stake_amount) / (effective_required + 0.001) * 0.50)
+
+    # Reward proven honest value; punish fraud value.
+    fraud_rate = fraud_volume / volume_total if volume_total > 0 else 0
+    honest_rate = honest_volume / volume_total if volume_total > 0 else 0
+    adaptive_market_bonus = min(honest_rate * 0.10, 0.10)
+    adaptive_fraud_penalty = min(fraud_rate * 0.60, 0.60)
 
     score = (
         reputation * 1.5
@@ -62,10 +73,12 @@ def compute_agent_market_score(agent):
         + win_rate_bonus
         + stability_bonus
         + trust_bonus
+        + adaptive_market_bonus
         + price_score * 0.25
         - failure_penalty
         - min(risk_score, 1.0) * 0.50
         - stake_gap_penalty
+        - adaptive_fraud_penalty
     )
 
     return round(score, 6)
@@ -123,10 +136,18 @@ def call_agent(agent, order):
             "stake_amount": agent.get("stake_amount", 0),
             "stake_required": agent.get("stake_required", 0),
             "risk_score": agent.get("risk_score", 0),
+                "volume_total": agent.get("volume_total", 0),
+                "honest_volume": agent.get("honest_volume", 0),
+                "fraud_volume": agent.get("fraud_volume", 0),
+                "dynamic_stake_required": agent.get("dynamic_stake_required", 0),
                 "trust_tier": agent.get("trust_tier", "free"),
                 "stake_amount": agent.get("stake_amount", 0),
                 "stake_required": agent.get("stake_required", 0),
                 "risk_score": agent.get("risk_score", 0),
+                "volume_total": agent.get("volume_total", 0),
+                "honest_volume": agent.get("honest_volume", 0),
+                "fraud_volume": agent.get("fraud_volume", 0),
+                "dynamic_stake_required": agent.get("dynamic_stake_required", 0),
                 "data": r.json(),
             }
 
@@ -144,6 +165,10 @@ def call_agent(agent, order):
                 "stake_amount": agent.get("stake_amount", 0),
                 "stake_required": agent.get("stake_required", 0),
                 "risk_score": agent.get("risk_score", 0),
+                "volume_total": agent.get("volume_total", 0),
+                "honest_volume": agent.get("honest_volume", 0),
+                "fraud_volume": agent.get("fraud_volume", 0),
+                "dynamic_stake_required": agent.get("dynamic_stake_required", 0),
             "error": r.text,
         }
 
@@ -163,6 +188,10 @@ def call_agent(agent, order):
                 "stake_amount": agent.get("stake_amount", 0),
                 "stake_required": agent.get("stake_required", 0),
                 "risk_score": agent.get("risk_score", 0),
+                "volume_total": agent.get("volume_total", 0),
+                "honest_volume": agent.get("honest_volume", 0),
+                "fraud_volume": agent.get("fraud_volume", 0),
+                "dynamic_stake_required": agent.get("dynamic_stake_required", 0),
         "error": str(e),
     }
 

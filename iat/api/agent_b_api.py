@@ -776,8 +776,7 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
     suspicious = list(dict.fromkeys(suspicious))
 
     slashing_events = []
-
-    slashing_events = []
+    economic_volume_updates = []
     order_value = float(order.get("price", 0) or 0)
 
     # Honest/fraud value accounting
@@ -787,9 +786,13 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
             continue
 
         if aid in suspicious:
-            update_agent_volume_stats_db(aid, order_value, honest=False)
+            econ = update_agent_volume_stats_db(aid, order_value, honest=False)
+            if econ:
+                economic_volume_updates.append(econ)
         elif r.get("success"):
-            update_agent_volume_stats_db(aid, order_value, honest=True)
+            econ = update_agent_volume_stats_db(aid, order_value, honest=True)
+            if econ:
+                economic_volume_updates.append(econ)
 
     for agent_id in suspicious:
         update_agent_reputation_db(agent_id, success=False)
@@ -843,6 +846,7 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
             winner_reputation = update_agent_reputation_db(winner_id, success=True)
         payout_info["winner_new_reputation"] = winner_reputation
     
+    final_result["economic_volume_updates"] = economic_volume_updates
     final_result["settlement"] = payout_info
 
     # --- LEARNING LAYER (call + win stats) ---

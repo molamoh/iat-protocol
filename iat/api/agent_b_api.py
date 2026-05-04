@@ -724,6 +724,9 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
 # --- SLASH suspicious agents ---
     suspicious = consensus.get("suspicious_agents", [])
 
+    # Prevent double slashing same agent in same order
+    suspicious = list(dict.fromkeys(suspicious))
+
     slashing_events = []
 
     slashing_events = []

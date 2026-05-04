@@ -854,6 +854,32 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
 
 
 
+
+@app.post("/admin/test-onchain-slash-agent/{agent_id}")
+def admin_test_onchain_slash_agent(agent_id: str, request: Request, amount: float = 0.1):
+    expected_key = os.getenv("IAT_ADMIN_API_KEY")
+    provided_key = request.headers.get("x-api-key")
+
+    if expected_key and provided_key != expected_key:
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    onchain = execute_onchain_slash(
+        agent_id,
+        amount,
+        order_id="ADMIN_TEST",
+    )
+
+    return {
+        "status": "ok",
+        "agent_id": agent_id,
+        "amount": amount,
+        "onchain_slash": onchain,
+    }
+
+
 @app.post("/admin/test-slash-agent/{agent_id}")
 def admin_test_slash_agent(agent_id: str, request: Request, slash_ratio: float = 0.10):
     expected_key = os.getenv("IAT_ADMIN_API_KEY")

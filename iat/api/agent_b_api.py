@@ -632,6 +632,30 @@ def multi_call_test(payload: dict):
     }
 
 
+
+def force_agent_into_selection(selected_agents, all_agents, forced_agent_id, limit=3):
+    if not forced_agent_id:
+        return selected_agents
+
+    forced = None
+    for agent in all_agents:
+        if agent.get("agent_id") == forced_agent_id:
+            forced = agent
+            break
+
+    if not forced:
+        return selected_agents
+
+    # Remove duplicate if already present
+    selected_agents = [
+        a for a in selected_agents
+        if a.get("agent_id") != forced_agent_id
+    ]
+
+    # Put forced agent first for debug, then keep limit
+    return [forced] + selected_agents[: max(0, limit - 1)]
+
+
 @app.post("/verify-payment-multicall")
 def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = Header(default=None)):
     if not require_admin_key(x_api_key):
@@ -660,6 +684,18 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
     paid_order["tx_signature"] = req.tx_signature
 
     selected_agents = select_top_agents(agents, limit=3)
+
+    # DEBUG ONLY: force one agent into execution when env var is set.
+    # Example on Render env:
+    # IAT_FORCE_AGENT_ID=web_agent_malicious
+    forced_agent_id = os.getenv("IAT_FORCE_AGENT_ID")
+    selected_agents = force_agent_into_selection(
+        selected_agents,
+        agents,
+        forced_agent_id,
+        limit=3,
+    )
+
     results = multi_call(selected_agents, paid_order)
     best = select_best_result(results)
 

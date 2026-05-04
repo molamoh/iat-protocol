@@ -656,6 +656,51 @@ def force_agent_into_selection(selected_agents, all_agents, forced_agent_id, lim
     return [forced] + selected_agents[: max(0, limit - 1)]
 
 
+
+def execute_onchain_slash(agent_id, amount, order_id):
+    treasury_wallet = os.getenv("IAT_SLASH_TREASURY_WALLET")
+    escrow_key = os.getenv("IAT_ESCROW_KEYPAIR_JSON") or os.getenv("IAT_ESCROW_KEYPAIR_PATH")
+
+    if not treasury_wallet:
+        return {
+            "status": "skipped",
+            "reason": "slash_treasury_not_configured",
+        }
+
+    if not escrow_key:
+        return {
+            "status": "skipped",
+            "reason": "escrow_key_not_configured",
+        }
+
+    if not amount or float(amount) <= 0:
+        return {
+            "status": "skipped",
+            "reason": "no_amount_to_slash",
+        }
+
+    try:
+        tx = send_iat(
+            escrow_key,
+            treasury_wallet,
+            float(amount),
+            memo_text=f"SLASH:{agent_id}:{order_id}",
+        )
+
+        return {
+            "status": "sent",
+            "tx_signature": tx,
+            "to": treasury_wallet,
+            "amount": float(amount),
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e),
+        }
+
+
 @app.post("/verify-payment-multicall")
 def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = Header(default=None)):
     if not require_admin_key(x_api_key):
@@ -742,6 +787,12 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
                 reason="consensus_suspicious_agent",
             )
             if slash_info:
+                onchain = execute_onchain_slash(
+                    agent_id,
+                    slash_info.get("slashed_amount", 0),
+                    req.order_id,
+                )
+                slash_info["onchain_slash"] = onchain
                 slashing_events.append(slash_info)
         except Exception as e:
             print("Stake slashing error:", e)

@@ -106,16 +106,8 @@ SERVICES = {
         ],
     },
     "web_research": {
-        "description": "General autonomous web research",
-        "sellers": [
-            {
-                "seller_id": "web_research_agent",
-                "seller_wallet": "EPabAZ3CtMkbjduLrNcDZuXaEp37Ge9cmrnwWF9TY5wc",
-                "price": 1.2,
-                "reputation": 0.85,
-                "available": True,
-            }
-        ],
+    "description": "General autonomous web research",
+    "sellers": [],
     },
 }
 
@@ -143,53 +135,26 @@ class VerifyPaymentRequest(BaseModel):
 def select_best_seller(service_name):
     dynamic_agents = get_agents_for_service_db(service_name)
 
-    if dynamic_agents:
-        best_agent = select_best_agent(dynamic_agents)
+    # Production rule:
+    # Only dynamic registry agents are valid sellers.
+    # No static registry fallback.
+    # No factory fallback.
+    if not dynamic_agents:
+        return None
 
-        return {
-            "seller_id": best_agent["agent_id"],
-            "seller_wallet": best_agent["wallet"],
-            "price": best_agent["price"],
-            "reputation": best_agent["reputation"],
-            "available": best_agent["available"],
-            "url": best_agent["url"],
-            "source": "dynamic_registry",
-        }
+    best_agent = select_best_agent(dynamic_agents)
 
-    if service_name in SERVICES:
-        sellers = [s for s in SERVICES[service_name]["sellers"] if s.get("available")]
-
-        if not sellers:
-            return None
-
-        best_static = max(
-            sellers,
-            key=lambda s: float(s["reputation"]) / float(s["price"]),
-        )
-
-        return {
-            "seller_id": best_static["seller_id"],
-            "seller_wallet": best_static["seller_wallet"],
-            "price": best_static["price"],
-            "reputation": best_static["reputation"],
-            "available": best_static["available"],
-            "url": best_static.get("url"),
-            "source": "static_registry",
-        }
-
-    factory_agent = create_factory_agent_db(
-        service_name,
-        description=f"Auto-generated agent for service {service_name}",
-    )
+    if not best_agent:
+        return None
 
     return {
-        "seller_id": factory_agent["agent_id"],
-        "seller_wallet": factory_agent["wallet"],
-        "price": factory_agent["price"],
-        "reputation": factory_agent["reputation"],
-        "available": True,
-        "url": "",
-        "source": "agent_factory",
+        "seller_id": best_agent["agent_id"],
+        "seller_wallet": best_agent["wallet"],
+        "price": best_agent["price"],
+        "reputation": best_agent["reputation"],
+        "available": best_agent["available"],
+        "url": best_agent["url"],
+        "source": "dynamic_registry",
     }
 
 
@@ -326,6 +291,79 @@ def agent_heartbeat(req: RegisterAgentRequest):
         "status": "heartbeat_ok",
         "agent_id": agent["agent_id"],
         "timestamp": int(time.time()),
+    }
+
+
+
+@app.post("/admin/disable-localhost-agents")
+def admin_disable_localhost_agents(x_api_key: str | None = Header(default=None)):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    import sqlite3
+    from iat.api.db import DB_PATH
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT agent_id, url
+        FROM agents
+        WHERE url LIKE 'http://localhost:%'
+           OR url LIKE 'http://127.0.0.1:%'
+    """)
+    rows = [dict(r) for r in cur.fetchall()]
+
+    cur.execute("""
+        UPDATE agents
+        SET available = 0
+        WHERE url LIKE 'http://localhost:%'
+           OR url LIKE 'http://127.0.0.1:%'
+    """)
+    affected = cur.rowcount
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "status": "ok",
+        "disabled_count": affected,
+        "disabled_agents": rows,
+    }
+
+
+@app.delete("/admin/delete-agent/{agent_id}")
+def admin_delete_agent(agent_id: str, x_api_key: str | None = Header(default=None)):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    import sqlite3
+    from iat.api.db import DB_PATH
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+
+    cur.execute("SELECT * FROM agents WHERE agent_id = ?", (agent_id,))
+    row = cur.fetchone()
+
+    if not row:
+        conn.close()
+        return {
+            "status": "not_found",
+            "agent_id": agent_id,
+        }
+
+    deleted = dict(row)
+
+    cur.execute("DELETE FROM agents WHERE agent_id = ?", (agent_id,))
+    conn.commit()
+    conn.close()
+
+    return {
+        "status": "ok",
+        "deleted_agent": deleted,
     }
 
 
@@ -477,8 +515,8 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
     }
 
 
-@app.post("/verify-payment")
-def verify_payment(req: VerifyPaymentRequest, x_api_key: str | None = Header(default=None)):
+@app.post("/verify-payment-base")
+def verify_payment(req: VerifyPaymentRequest, x_api_key: str | None = Header(default=None), deliver: bool = True):
     if not require_admin_key(x_api_key):
         return {"status": "error", "message": "unauthorized"}
     order = get_order_db(req.order_id)
@@ -542,6 +580,16 @@ def verify_payment(req: VerifyPaymentRequest, x_api_key: str | None = Header(def
     memo_ok = order["order_id"] in memo_text
 
     if sender_ok and receiver_ok and mint_ok and amount_ok and memo_ok:
+        if not deliver:
+            return {
+                "status": "paid",
+                "service": order["service"],
+                "seller_id": order.get("seller_id"),
+                "seller_source": order.get("seller_source"),
+                "new_reputation": None,
+                "data": None,
+            }
+
         result = deliver_service(order, req.tx_signature)
 
         delivery_failed = isinstance(result, dict) and result.get("error") is not None
@@ -714,10 +762,11 @@ def execute_onchain_slash(agent_id, amount, order_id):
 
 
 @app.post("/verify-payment-multicall")
+@app.post("/verify-payment")
 def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = Header(default=None)):
     if not require_admin_key(x_api_key):
         return {"status": "error", "message": "unauthorized"}
-    base = verify_payment(req, x_api_key=x_api_key)
+    base = verify_payment(req, x_api_key=x_api_key, deliver=False)
     if base.get("status") == "already_used":
         order = get_order_db(req.order_id)
         if order and order.get("delivery_result"):
@@ -824,17 +873,6 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
         except Exception as e:
             print("Stake slashing error:", e)
 
-        try:
-            slash_info = slash_agent_stake_db(
-                agent_id,
-                slash_ratio=0.10,
-                reason="consensus_suspicious_agent",
-            )
-            if slash_info:
-                slashing_events.append(slash_info)
-        except Exception as e:
-            print("Stake slashing error:", e)
-
 # --- payout logic ---
     if consensus.get("status") != "passed":
         payout_info = {
@@ -851,6 +889,7 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
         payout_info["stake_slashing_events"] = slashing_events
         payout_info["stake_slashing_events"] = slashing_events
 
+        winner_reputation = None
         winner_id = best.get("agent_id") if best else None
         if winner_id:
             winner_reputation = update_agent_reputation_db(winner_id, success=True)
@@ -873,6 +912,11 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
         update_agent_call_stats_db(agent_ids, winner_id, latencies=latencies)
     except Exception as e:
         print("Learning layer error:", e)
+
+    try:
+        save_processed_tx_db(req.tx_signature)
+    except Exception as e:
+        print("Processed tx save error:", e)
 
     update_order_delivered_db(req.order_id, req.tx_signature, final_result)
 

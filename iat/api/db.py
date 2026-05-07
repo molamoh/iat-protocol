@@ -65,6 +65,19 @@ def release_conn(conn):
         pass
 
 
+
+def row_get(row, key, default=None):
+    if row is None:
+        return default
+    try:
+        return row_get(row, key, default)
+    except AttributeError:
+        try:
+            return row[key]
+        except Exception:
+            return default
+
+
 def qmark():
     return "%s" if USE_POSTGRES else "?"
 
@@ -310,7 +323,7 @@ def register_agent_db(agent):
             if not row:
                 return default
             try:
-                return row.get(key, default)
+                return row_get(row, key, default)
             except AttributeError:
                 return default
 
@@ -460,9 +473,9 @@ def update_agent_reputation_db(agent_id, success=True):
         if not row:
             return None
 
-        old_rep = float(row.get("reputation", 0.8))
-        success_count = int(row.get("success_count", 0) or 0)
-        failure_count = int(row.get("failure_count", 0) or 0)
+        old_rep = float(row_get(row, "reputation", 0.8))
+        success_count = int(row_get(row, "success_count", 0) or 0)
+        failure_count = int(row_get(row, "failure_count", 0) or 0)
         now = int(time.time())
 
         if success:
@@ -548,7 +561,7 @@ def reactivate_agent_db(agent_id, reputation_floor=0.6):
             return None
 
         try:
-            old_rep = float(row.get("reputation", 0.8))
+            old_rep = float(row_get(row, "reputation", 0.8))
         except Exception:
             old_rep = 0.8
 
@@ -808,8 +821,8 @@ def slash_agent_stake_db(agent_id, slash_ratio=0.10, reason="protocol_slash"):
         if not row:
             return None
 
-        current_stake = float(row.get("stake_amount", 0) or 0)
-        old_slashed = float(row.get("stake_slashed_total", 0) or 0)
+        current_stake = float(row_get(row, "stake_amount", 0) or 0)
+        old_slashed = float(row_get(row, "stake_slashed_total", 0) or 0)
 
         if current_stake <= 0:
             return {
@@ -892,11 +905,11 @@ def compute_dynamic_stake_required_db(agent_id):
 
         row = dict(row)
 
-        reputation = float(row.get("reputation", 0.5) or 0.5)
-        volume_total = float(row.get("volume_total", 0) or 0)
-        honest_volume = float(row.get("honest_volume", 0) or 0)
-        fraud_volume = float(row.get("fraud_volume", 0) or 0)
-        failures = int(row.get("failure_count", 0) or 0)
+        reputation = float(row_get(row, "reputation", 0.5) or 0.5)
+        volume_total = float(row_get(row, "volume_total", 0) or 0)
+        honest_volume = float(row_get(row, "honest_volume", 0) or 0)
+        fraud_volume = float(row_get(row, "fraud_volume", 0) or 0)
+        failures = int(row_get(row, "failure_count", 0) or 0)
 
         fraud_rate = fraud_volume / volume_total if volume_total > 0 else 0
         honest_rate = honest_volume / volume_total if volume_total > 0 else 0

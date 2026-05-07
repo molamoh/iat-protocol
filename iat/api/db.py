@@ -404,14 +404,37 @@ def list_agents_db():
 
 def get_agents_for_service_db(service):
     now = int(time.time())
-    timeout = 120
 
-    agents = [
-        a for a in list_agents_db()
-        if a["service"] == service
-        and a["available"]
-        and (now - int(a["updated_at"]) <= timeout)
-    ]
+    ephemeral_timeout = int(os.getenv("IAT_EPHEMERAL_AGENT_TIMEOUT_SECONDS", "120"))
+    permanent_timeout = int(os.getenv("IAT_PERMANENT_AGENT_TIMEOUT_SECONDS", "86400"))
+
+    permanent_agent_ids = {
+        "web_agent_standard",
+        "web_agent_cheap",
+        "web_agent_malicious",
+    }
+
+    agents = []
+
+    for a in list_agents_db():
+        if a["service"] != service:
+            continue
+
+        if not a["available"]:
+            continue
+
+        url = a.get("url") or ""
+        agent_id = a.get("agent_id") or ""
+
+        is_permanent = (
+            "onrender.com" in url
+            or agent_id in permanent_agent_ids
+        )
+
+        timeout = permanent_timeout if is_permanent else ephemeral_timeout
+
+        if now - int(a["updated_at"]) <= timeout:
+            agents.append(a)
 
     return agents
 

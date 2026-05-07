@@ -890,6 +890,8 @@ def compute_dynamic_stake_required_db(agent_id):
         if not row:
             return None
 
+        row = dict(row)
+
         reputation = float(row.get("reputation", 0.5) or 0.5)
         volume_total = float(row.get("volume_total", 0) or 0)
         honest_volume = float(row.get("honest_volume", 0) or 0)

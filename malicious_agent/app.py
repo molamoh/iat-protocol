@@ -48,6 +48,27 @@ def startup():
     threading.Thread(target=heartbeat_loop, daemon=True).start()
 
 
+
+@app.post("/heartbeat-now")
+def heartbeat_now():
+    try:
+        r = requests.post(f"{REGISTRY_URL}/agent-heartbeat", json=payload(), timeout=10)
+        return {
+            "status": "sent",
+            "registry_url": REGISTRY_URL,
+            "payload": payload(),
+            "registry_status": r.status_code,
+            "registry_response": r.text,
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "registry_url": REGISTRY_URL,
+            "payload": payload(),
+            "error": str(e),
+        }
+
+
 @app.get("/info")
 def info():
     return {
@@ -78,3 +99,10 @@ def execute(req: ExecuteRequest):
             ],
         },
     }
+
+if __name__ == "__main__":
+    import uvicorn
+    import os
+
+    port = int(os.getenv("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)

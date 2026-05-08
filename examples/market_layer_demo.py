@@ -25,21 +25,37 @@ for bid in res.get("selected_bids", []):
     )
 
 execution = res.get("execution", {})
+execution = res.get("execution", {})
+result = execution.get("result", {})
+best = result.get("best", {})
+consensus = result.get("consensus", {})
+settlement = result.get("settlement", {})
+
 print("\n=== EXECUTION ===")
 print(f"Order ID: {execution.get('order_id')}")
-print(f"Seller paid: {execution.get('seller_id')}")
+print(f"Initial selected seller: {execution.get('seller_id')}")
 print(f"TX: {execution.get('tx_signature')}")
 print(f"Buyer secret: {execution.get('buyer_secret')}")
-
-result = execution.get("result", {})
 print(f"Protocol status: {result.get('status')}")
 print(f"Agents called: {result.get('agents_called')}")
 
-best = result.get("best", {})
-print("\n=== BEST RESULT ===")
-print(f"Best agent: {best.get('agent_id')}")
-print(f"Latency: {best.get('latency')}s")
+print("\n=== CONSENSUS ===")
+print(f"Consensus status: {consensus.get('status')}")
+print(f"Consensus score: {consensus.get('score')}")
+print(f"Suspicious agents: {consensus.get('suspicious_agents')}")
 
+print("\n=== FINAL WINNER ===")
+print(f"Winner agent: {best.get('agent_id')}")
+print(f"Selection score: {best.get('selection_score')}")
+print(f"Latency: {best.get('latency')}s")
+print(f"Score details: {best.get('selection_score_details')}")
+
+print("\n=== PAYOUT ===")
+print(f"Winner payment status: {settlement.get('winner_payment_status')}")
+print(f"Payout to agent: {settlement.get('payout_to_agent')}")
+print(f"Payout tx: {settlement.get('payout_tx')}")
+
+print("\n=== BEST RESULT ===")
 data = best.get("data", {}).get("data", {})
 for i, item in enumerate(data.get("results", [])[:5], start=1):
     print(f"{i}. {item.get('title')}")

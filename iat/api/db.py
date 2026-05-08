@@ -98,6 +98,7 @@ def init_db():
         seller_url TEXT,
         seller_source TEXT,
         buyer_secret TEXT,
+        buyer_wallet TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         status TEXT NOT NULL,
@@ -107,6 +108,19 @@ def init_db():
         used INTEGER DEFAULT 0
     )
     """)
+
+    order_columns = {
+        "buyer_wallet": "TEXT",
+    }
+
+    for column, col_type in order_columns.items():
+        try:
+            if USE_POSTGRES:
+                cur.execute(f"ALTER TABLE orders ADD COLUMN IF NOT EXISTS {column} {col_type}")
+            else:
+                cur.execute(f"ALTER TABLE orders ADD COLUMN {column} {col_type}")
+        except Exception:
+            pass
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS processed_txs (
@@ -425,9 +439,9 @@ def create_order_db(order_id, order):
     cur.execute(f"""
     INSERT INTO orders (
         order_id, service, query, price, seller_id, seller_wallet, seller_url, seller_source,
-        buyer_secret, created_at, updated_at, status, tx_signature, delivered_at, delivery_result, used
+        buyer_secret, buyer_wallet, created_at, updated_at, status, tx_signature, delivered_at, delivery_result, used
     )
-    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
     """, (
         order_id,
         order["service"],
@@ -438,6 +452,7 @@ def create_order_db(order_id, order):
         order.get("seller_url"),
         order.get("seller_source"),
         order.get("buyer_secret"),
+        order.get("buyer_wallet"),
         order["created_at"],
         order["updated_at"],
         order["status"],
@@ -449,6 +464,44 @@ def create_order_db(order_id, order):
 
     conn.commit()
     release_conn(locals().get("conn"))
+
+
+def update_order_buyer_wallet_db(order_id, buyer_wallet):
+    if not order_id or not buyer_wallet:
+        return None
+
+    conn = None
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        p = qmark()
+        now = int(time.time())
+
+        cur.execute(f"""
+        UPDATE orders
+        SET buyer_wallet = {p},
+            updated_at = {p}
+        WHERE order_id = {p}
+        """, (
+            buyer_wallet,
+            now,
+            order_id,
+        ))
+
+        conn.commit()
+        return get_order_db(order_id)
+
+    except Exception:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        raise
+
+    finally:
+        release_conn(conn)
 
 
 def get_order_db(order_id):

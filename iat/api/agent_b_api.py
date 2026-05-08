@@ -44,6 +44,8 @@ from iat.api.db import (
     update_order_db,
     list_buyers_db,
     get_buyer_db,
+    register_buyer_seen_db,
+    update_order_buyer_wallet_db,
 )
 
 
@@ -551,6 +553,18 @@ def verify_payment(req: VerifyPaymentRequest, x_api_key: str | None = Header(def
     tx_details = get_tx_details(req.tx_signature)
     transfer_info = extract_transfer_checked_info(tx_details)
     memo = extract_memo(tx_details)
+
+    buyer_wallet = None
+    if transfer_info:
+        buyer_wallet = transfer_info.get("authority")
+
+    if buyer_wallet:
+        try:
+            register_buyer_seen_db(buyer_wallet)
+            update_order_buyer_wallet_db(req.order_id, buyer_wallet)
+            order["buyer_wallet"] = buyer_wallet
+        except Exception as e:
+            print("Buyer tracking error:", e)
 
     if not transfer_info:
         return {

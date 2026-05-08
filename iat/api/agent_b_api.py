@@ -874,23 +874,44 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
             print("Stake slashing error:", e)
 
 # --- payout logic ---
-    if consensus.get("status") != "passed":
+    winner_id = best.get("agent_id") if best else None
+    winner_score = float(best.get("selection_score", 0) or 0) if best else 0
+    winner_details = best.get("selection_score_details", {}) if best else {}
+    winner_is_suspicious = winner_id in suspicious if winner_id else True
+
+    consensus_passed = consensus.get("status") == "passed"
+
+    # Weak pass rule:
+    # If consensus is globally suspicious but the selected winner has a strong
+    # final score and is not individually suspicious, allow payout.
+    weak_pass = (
+        not consensus_passed
+        and best is not None
+        and not winner_is_suspicious
+        and winner_score >= 0.75
+    )
+
+    if not consensus_passed and not weak_pass:
         payout_info = {
             "winner_payment_status": "blocked_by_consensus",
             "reason": "consensus_not_reached",
             "consensus": consensus,
+            "winner_id": winner_id,
+            "winner_selection_score": winner_score,
+            "winner_score_details": winner_details,
             "slashed_agents": suspicious,
-            "stake_slashing_events": slashing_events,
             "stake_slashing_events": slashing_events,
         }
     else:
         payout_info = payout_winner_if_escrow(order, best, agents)
         payout_info["slashed_agents"] = suspicious
         payout_info["stake_slashing_events"] = slashing_events
-        payout_info["stake_slashing_events"] = slashing_events
+        payout_info["consensus_status"] = consensus.get("status")
+        payout_info["weak_pass"] = weak_pass
+        payout_info["winner_selection_score"] = winner_score
+        payout_info["winner_score_details"] = winner_details
 
         winner_reputation = None
-        winner_id = best.get("agent_id") if best else None
         if winner_id:
             winner_reputation = update_agent_reputation_db(winner_id, success=True)
         payout_info["winner_new_reputation"] = winner_reputation

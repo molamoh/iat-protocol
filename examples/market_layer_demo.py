@@ -15,7 +15,7 @@ print(f"Status: {res.get('status')}")
 print("\n=== INTENT ===")
 print(res.get("intent"))
 
-print("\n=== SELECTED BIDS ===")
+print("\n=== MARKET CANDIDATES ===")
 for bid in res.get("selected_bids", []):
     print(
         f"- {bid.get('agent_id')} | "
@@ -33,7 +33,7 @@ settlement = result.get("settlement", {})
 
 print("\n=== EXECUTION ===")
 print(f"Order ID: {execution.get('order_id')}")
-print(f"Initial selected seller: {execution.get('seller_id')}")
+print(f"Initial candidate: {execution.get('seller_id')}")
 print(f"TX: {execution.get('tx_signature')}")
 print(f"Buyer secret: {execution.get('buyer_secret')}")
 print(f"Protocol status: {result.get('status')}")

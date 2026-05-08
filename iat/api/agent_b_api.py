@@ -42,6 +42,8 @@ from iat.api.db import (
     get_network_status_db,
     create_factory_agent_db,
     update_order_db,
+    list_buyers_db,
+    get_buyer_db,
 )
 
 
@@ -1271,6 +1273,31 @@ def transactions():
         "status": "ok",
         "count": len(txs),
         "transactions": txs[:50],
+    }
+
+
+@app.get("/buyers")
+def buyers(limit: int = 100):
+    return {
+        "status": "ok",
+        "count": len(list_buyers_db(limit=limit)),
+        "buyers": list_buyers_db(limit=limit),
+    }
+
+
+@app.get("/buyers/{buyer_wallet}")
+def buyer_profile(buyer_wallet: str):
+    buyer = get_buyer_db(buyer_wallet)
+
+    if not buyer:
+        return {
+            "status": "not_found",
+            "buyer_wallet": buyer_wallet,
+        }
+
+    return {
+        "status": "ok",
+        "buyer": buyer,
     }
 
 

@@ -512,7 +512,24 @@ def compute_consensus(results):
         weighted_score += agent["overlap"] * agent["weight"]
 
     score = weighted_score / total_weight if total_weight > 0 else 0
-    status = "passed" if score >= 0.60 else "suspicious"
+
+    high_overlap_agents = [
+        a for a in agent_sets
+        if float(a.get("overlap", 0) or 0) >= 0.75
+    ]
+
+    low_risk_agents = [
+        a for a in agent_sets
+        if float(a.get("effective_risk_score", a.get("risk_score", 0)) or 0) < 0.5
+    ]
+
+    quorum_passed = (
+        score >= 0.60
+        or len(high_overlap_agents) >= 2
+        or len(low_risk_agents) >= 2
+    )
+
+    status = "passed" if quorum_passed else "suspicious"
 
     suspicious_agents = [
         agent["agent_id"]
@@ -587,6 +604,7 @@ def compute_consensus(results):
                 "overlap": a["overlap"],
                 "base_weight": round(a["base_weight"], 4),
                 "weight": round(a["weight"], 4),
+                "overlap_details": a.get("overlap_details", {}),
             }
             for a in agent_sets
         ],

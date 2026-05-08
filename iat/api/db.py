@@ -69,14 +69,15 @@ def release_conn(conn):
 def row_get(row, key, default=None):
     if row is None:
         return default
-    try:
-        return row_get(row, key, default)
-    except AttributeError:
-        try:
-            return row[key]
-        except Exception:
-            return default
 
+    try:
+        if not isinstance(row, dict):
+            row = dict(row)
+
+        return row.get(key, default)
+
+    except Exception:
+        return default
 
 def qmark():
     return "%s" if USE_POSTGRES else "?"

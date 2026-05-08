@@ -23,3 +23,4 @@ iat_wallets_v2.json
 phantom-wallet.json
 iat_protocol.db
 .env.local
+docs/

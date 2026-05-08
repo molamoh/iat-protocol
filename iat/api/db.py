@@ -118,6 +118,7 @@ def init_db():
     conn.commit()
     release_conn(locals().get("conn"))
     init_agents_table()
+    init_buyers_table()
 
 
 def init_agents_table():
@@ -182,6 +183,238 @@ def init_agents_table():
             pass
     conn.commit()
     release_conn(locals().get("conn"))
+
+
+def init_buyers_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS buyers (
+        buyer_wallet TEXT PRIMARY KEY,
+        orders_count INTEGER DEFAULT 0,
+        claims_count INTEGER DEFAULT 0,
+        false_claims_count INTEGER DEFAULT 0,
+        disputes_count INTEGER DEFAULT 0,
+        refunded_count INTEGER DEFAULT 0,
+        buyer_risk_score REAL DEFAULT 0,
+        first_seen INTEGER NOT NULL,
+        last_seen INTEGER NOT NULL
+    )
+    """)
+
+    buyer_columns = {
+        "orders_count": "INTEGER DEFAULT 0",
+        "claims_count": "INTEGER DEFAULT 0",
+        "false_claims_count": "INTEGER DEFAULT 0",
+        "disputes_count": "INTEGER DEFAULT 0",
+        "refunded_count": "INTEGER DEFAULT 0",
+        "buyer_risk_score": "REAL DEFAULT 0",
+        "first_seen": "INTEGER",
+        "last_seen": "INTEGER",
+    }
+
+    for column, col_type in buyer_columns.items():
+        try:
+            if USE_POSTGRES:
+                cur.execute(f"ALTER TABLE buyers ADD COLUMN IF NOT EXISTS {column} {col_type}")
+            else:
+                cur.execute(f"ALTER TABLE buyers ADD COLUMN {column} {col_type}")
+        except Exception:
+            pass
+
+    conn.commit()
+    release_conn(locals().get("conn"))
+
+
+def get_buyer_db(buyer_wallet):
+    if not buyer_wallet:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"SELECT * FROM buyers WHERE buyer_wallet = {p}", (buyer_wallet,))
+    row = cur.fetchone()
+
+    release_conn(locals().get("conn"))
+
+    if not row:
+        return None
+
+    return dict(row)
+
+
+def list_buyers_db(limit=100):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    SELECT *
+    FROM buyers
+    ORDER BY buyer_risk_score DESC, last_seen DESC
+    """)
+
+    rows = cur.fetchall()
+    release_conn(locals().get("conn"))
+
+    buyers = [dict(row) for row in rows]
+    return buyers[:limit]
+
+
+def register_buyer_seen_db(buyer_wallet):
+    if not buyer_wallet:
+        return None
+
+    now = int(time.time())
+    conn = None
+
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        p = qmark()
+
+        cur.execute(f"SELECT * FROM buyers WHERE buyer_wallet = {p}", (buyer_wallet,))
+        row = cur.fetchone()
+
+        if row:
+            cur.execute(f"""
+            UPDATE buyers
+            SET orders_count = orders_count + 1,
+                last_seen = {p}
+            WHERE buyer_wallet = {p}
+            """, (now, buyer_wallet))
+        else:
+            cur.execute(f"""
+            INSERT INTO buyers (
+                buyer_wallet,
+                orders_count,
+                claims_count,
+                false_claims_count,
+                disputes_count,
+                refunded_count,
+                buyer_risk_score,
+                first_seen,
+                last_seen
+            )
+            VALUES ({p}, 1, 0, 0, 0, 0, 0, {p}, {p})
+            """, (buyer_wallet, now, now))
+
+        conn.commit()
+        return get_buyer_db(buyer_wallet)
+
+    except Exception:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        raise
+
+    finally:
+        release_conn(conn)
+
+
+def compute_buyer_risk_score(claims_count, false_claims_count, disputes_count, refunded_count, orders_count):
+    orders = max(int(orders_count or 0), 1)
+    claims = int(claims_count or 0)
+    false_claims = int(false_claims_count or 0)
+    disputes = int(disputes_count or 0)
+    refunded = int(refunded_count or 0)
+
+    claims_rate = claims / orders
+    false_claims_rate = false_claims / orders
+    disputes_rate = disputes / orders
+    refunded_rate = refunded / orders
+
+    risk = (
+        claims_rate * 0.25 +
+        false_claims_rate * 0.40 +
+        disputes_rate * 0.25 +
+        refunded_rate * 0.10
+    )
+
+    return round(min(max(risk, 0), 1), 4)
+
+
+def update_buyer_claim_stats_db(
+    buyer_wallet,
+    claim=False,
+    false_claim=False,
+    dispute=False,
+    refunded=False,
+):
+    if not buyer_wallet:
+        return None
+
+    now = int(time.time())
+    conn = None
+
+    try:
+        existing = get_buyer_db(buyer_wallet)
+        if not existing:
+            register_buyer_seen_db(buyer_wallet)
+
+        conn = get_conn()
+        cur = conn.cursor()
+        p = qmark()
+
+        cur.execute(f"SELECT * FROM buyers WHERE buyer_wallet = {p}", (buyer_wallet,))
+        row = cur.fetchone()
+
+        if not row:
+            return None
+
+        buyer = dict(row)
+
+        orders_count = int(buyer.get("orders_count", 0) or 0)
+        claims_count = int(buyer.get("claims_count", 0) or 0) + (1 if claim else 0)
+        false_claims_count = int(buyer.get("false_claims_count", 0) or 0) + (1 if false_claim else 0)
+        disputes_count = int(buyer.get("disputes_count", 0) or 0) + (1 if dispute else 0)
+        refunded_count = int(buyer.get("refunded_count", 0) or 0) + (1 if refunded else 0)
+
+        buyer_risk_score = compute_buyer_risk_score(
+            claims_count,
+            false_claims_count,
+            disputes_count,
+            refunded_count,
+            orders_count,
+        )
+
+        cur.execute(f"""
+        UPDATE buyers
+        SET claims_count = {p},
+            false_claims_count = {p},
+            disputes_count = {p},
+            refunded_count = {p},
+            buyer_risk_score = {p},
+            last_seen = {p}
+        WHERE buyer_wallet = {p}
+        """, (
+            claims_count,
+            false_claims_count,
+            disputes_count,
+            refunded_count,
+            buyer_risk_score,
+            now,
+            buyer_wallet,
+        ))
+
+        conn.commit()
+        return get_buyer_db(buyer_wallet)
+
+    except Exception:
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        raise
+
+    finally:
+        release_conn(conn)
+
 
 
 def create_order_db(order_id, order):

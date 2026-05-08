@@ -134,8 +134,9 @@ def pay_and_get_service(service, keypair_path, max_attempts=24, delay=5, query=N
     price = order["price"]
 
     tx = pay_order(order, keypair_path)
-    print("DEBUG ORDER:", order_id)
-    print("DEBUG TX:", tx)
+    if os.getenv("IAT_DEBUG") == "1":
+        print("DEBUG ORDER:", order_id)
+        print("DEBUG TX:", tx)
 
     for attempt in range(max_attempts):
         result = verify_order(order_id, tx)

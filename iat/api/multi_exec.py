@@ -252,7 +252,71 @@ def select_best_result(results):
     if not valid:
         return None
 
-    return max(valid, key=compute_quality)
+    consensus = compute_consensus(valid)
+    suspicious = set(consensus.get("suspicious_agents", []))
+
+    max_quality = max(compute_quality(r) for r in valid) or 1
+    prices = [float(r.get("price", r.get("price_iat", 1)) or 1) for r in valid]
+    min_price = min(prices) if prices else 1
+
+    scored = []
+
+    for r in valid:
+        agent_id = r.get("agent_id")
+
+        quality_raw = compute_quality(r)
+        quality_score = min(1.0, quality_raw / max_quality)
+
+        reputation_score = float(r.get("reputation", 0.5) or 0.5)
+
+        price = float(r.get("price", r.get("price_iat", 1)) or 1)
+        price_score = min(1.0, min_price / price) if price > 0 else 0
+
+        latency = float(r.get("latency", 5) or 5)
+        latency_score = min(1.0, 1 / (latency + 0.001))
+
+        overlap_score = 0
+        risk_score = float(r.get("risk_score", 0) or 0)
+
+        for item in consensus.get("agent_overlaps", []):
+            if item.get("agent_id") == agent_id:
+                overlap_score = float(item.get("overlap", 0) or 0)
+                break
+
+        for item in consensus.get("agent_trust", []):
+            if item.get("agent_id") == agent_id:
+                risk_score = float(item.get("risk_score", risk_score) or 0)
+                break
+
+        final_score = (
+            overlap_score * 0.40 +
+            reputation_score * 0.25 +
+            quality_score * 0.20 +
+            price_score * 0.10 +
+            latency_score * 0.05
+        )
+
+        final_score = final_score * max(0.05, 1 - risk_score)
+
+        if agent_id in suspicious:
+            final_score = final_score * 0.10
+
+        r["selection_score"] = round(final_score, 6)
+        r["selection_score_details"] = {
+            "overlap_score": round(overlap_score, 4),
+            "reputation_score": round(reputation_score, 4),
+            "quality_score": round(quality_score, 4),
+            "price_score": round(price_score, 4),
+            "latency_score": round(latency_score, 4),
+            "risk_score": round(risk_score, 4),
+            "suspicious": agent_id in suspicious,
+        }
+
+        scored.append((final_score, r))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    return scored[0][1]
 
 def compute_consensus(results):
     valid = [r for r in results if r.get("success")]
@@ -275,10 +339,31 @@ def compute_consensus(results):
         items = data.get("results", [])
 
         links = set()
+        domains = set()
+        title_words = set()
+
         for item in items[:5]:
             link = item.get("link")
+            title = item.get("title") or ""
+            snippet = item.get("snippet") or ""
+
             if link:
-                links.add(link.strip().lower())
+                clean_link = link.strip().lower()
+                links.add(clean_link)
+
+                domain = clean_link
+                domain = domain.replace("https://", "").replace("http://", "")
+                domain = domain.replace("//duckduckgo.com/l/?uddg=", "")
+                domain = domain.split("/")[0]
+                domain = domain.split("%2f")[0]
+                domain = domain.split("&")[0]
+                domains.add(domain)
+
+            text_blob = (title + " " + snippet).lower()
+            for token in text_blob.replace("-", " ").replace("_", " ").split():
+                token = token.strip(".,:;!?()[]{}'\"")
+                if len(token) >= 4:
+                    title_words.add(token)
 
         rep = float(r.get("reputation", 0.5))
         successes = int(r.get("success_count", 0) or 0)
@@ -297,6 +382,8 @@ def compute_consensus(results):
             "stake_required": float(r.get("stake_required", 0) or 0),
             "risk_score": float(r.get("risk_score", 0) or 0),
             "links": links,
+            "domains": domains,
+            "title_words": title_words,
             "base_weight": base_weight,
             "weight": base_weight,
         })
@@ -308,21 +395,45 @@ def compute_consensus(results):
         wallet_weights.setdefault(w, 0)
         wallet_weights[w] += agent["weight"]
 
-    # --- CALCULATE OVERLAPS ---
+    # --- CALCULATE CONSENSUS OVERLAPS ---
     for agent in agent_sets:
-        links = agent["links"]
-
-        if not links:
-            agent["overlap"] = 0
-            continue
+        links = agent.get("links", set())
+        domains = agent.get("domains", set())
+        title_words = agent.get("title_words", set())
 
         other_links = set()
+        other_domains = set()
+        other_title_words = set()
+
         for other in agent_sets:
             if other["agent_id"] != agent["agent_id"]:
-                other_links.update(other["links"])
+                other_links.update(other.get("links", set()))
+                other_domains.update(other.get("domains", set()))
+                other_title_words.update(other.get("title_words", set()))
 
-        overlap = len(links.intersection(other_links)) / len(links)
+        link_overlap = len(links.intersection(other_links)) / len(links) if links else 0
+        domain_overlap = len(domains.intersection(other_domains)) / len(domains) if domains else 0
+        title_overlap = len(title_words.intersection(other_title_words)) / len(title_words) if title_words else 0
+
+        fake_penalty = 0
+        if any("fake" in link for link in links) or any("fake" in word for word in title_words):
+            fake_penalty = 0.8
+
+        overlap = (
+            link_overlap * 0.45 +
+            domain_overlap * 0.20 +
+            title_overlap * 0.35
+        )
+
+        overlap = max(0, overlap - fake_penalty)
+
         agent["overlap"] = round(overlap, 4)
+        agent["overlap_details"] = {
+            "link_overlap": round(link_overlap, 4),
+            "domain_overlap": round(domain_overlap, 4),
+            "title_overlap": round(title_overlap, 4),
+            "fake_penalty": round(fake_penalty, 4),
+        }
 
     # --- DYNAMIC WEIGHT BY BEHAVIOR ---
     for agent in agent_sets:

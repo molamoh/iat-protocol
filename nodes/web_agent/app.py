@@ -85,6 +85,54 @@ def info():
     }
 
 
+@app.get("/search-config")
+def search_config():
+    return {
+        "google_api_key_configured": bool(os.getenv("GOOGLE_API_KEY")),
+        "google_cse_id_configured": bool(os.getenv("GOOGLE_CSE_ID")),
+        "serper_api_key_configured": bool(os.getenv("SERPER_API_KEY")),
+    }
+
+
+def search_with_google_custom_search(query):
+    api_key = os.getenv("GOOGLE_API_KEY")
+    cse_id = os.getenv("GOOGLE_CSE_ID")
+
+    if not api_key or not cse_id:
+        return None
+
+    try:
+        r = requests.get(
+            "https://www.googleapis.com/customsearch/v1",
+            params={
+                "key": api_key,
+                "cx": cse_id,
+                "q": query,
+                "num": 5,
+            },
+            timeout=15,
+        )
+
+        if r.status_code != 200:
+            return None
+
+        data = r.json()
+        results = []
+
+        for item in data.get("items", [])[:5]:
+            results.append({
+                "source": "google_custom_search",
+                "title": item.get("title"),
+                "snippet": item.get("snippet"),
+                "link": item.get("link"),
+            })
+
+        return results if results else None
+
+    except Exception:
+        return None
+
+
 def search_with_serper(query):
     api_key = os.getenv("SERPER_API_KEY")
 
@@ -115,13 +163,8 @@ def search_with_serper(query):
 
         return results
 
-    except Exception as e:
-        return [{
-            "source": "serper_google",
-            "title": "Serper error",
-            "snippet": str(e),
-            "link": "",
-        }]
+    except Exception:
+        return None
 
 
 def search_with_duckduckgo(query):
@@ -151,16 +194,16 @@ def search_with_duckduckgo(query):
 
         return results
 
-    except Exception as e:
-        return [{
-            "source": "duckduckgo_html",
-            "title": "DuckDuckGo error",
-            "snippet": str(e),
-            "link": "",
-        }]
+    except Exception:
+        return None
 
 
 def simple_search(query):
+    results = search_with_google_custom_search(query)
+
+    if results:
+        return results
+
     results = search_with_serper(query)
 
     if results:
@@ -171,12 +214,49 @@ def simple_search(query):
     if results:
         return results
 
-    return [{
-        "source": "fallback",
-        "title": "No results found",
-        "snippet": "No usable result from Serper or DuckDuckGo.",
-        "link": "",
-    }]
+    return []
+
+
+@app.get("/test-google-search")
+def test_google_search(q: str = "best hotels in Paris"):
+    api_key = os.getenv("GOOGLE_API_KEY")
+    cse_id = os.getenv("GOOGLE_CSE_ID")
+
+    if not api_key or not cse_id:
+        return {
+            "status": "missing_config",
+            "google_api_key_configured": bool(api_key),
+            "google_cse_id_configured": bool(cse_id),
+        }
+
+    try:
+        r = requests.get(
+            "https://www.googleapis.com/customsearch/v1",
+            params={
+                "key": api_key,
+                "cx": cse_id,
+                "q": q,
+                "num": 5,
+            },
+            timeout=15,
+        )
+
+        data = r.json()
+
+        return {
+            "status": "ok" if r.status_code == 200 else "google_error",
+            "http_status": r.status_code,
+            "has_items": bool(data.get("items")),
+            "items_count": len(data.get("items", [])),
+            "error": data.get("error"),
+            "first_title": (data.get("items", [{}])[0] or {}).get("title") if data.get("items") else None,
+        }
+
+    except Exception as e:
+        return {
+            "status": "exception",
+            "error": str(e),
+        }
 
 
 @app.post("/execute")
@@ -189,6 +269,22 @@ def execute(req: ExecuteRequest):
 
     query = req.query or "general search"
     results = simple_search(query)
+
+    if not results:
+        return {
+            "status": "error",
+            "agent_id": AGENT_ID,
+            "service": SERVICE,
+            "order_id": req.order_id,
+            "tx_signature": req.tx_signature,
+            "reason": "no_search_results",
+            "data": {
+                "type": "web_research",
+                "query": query,
+                "results": [],
+                "timestamp": int(time.time()),
+            },
+        }
 
     return {
         "status": "delivered",

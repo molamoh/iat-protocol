@@ -902,12 +902,28 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
             "slashed_agents": suspicious,
             "stake_slashing_events": slashing_events,
         }
+
+    elif weak_pass:
+        payout_info = {
+            "winner_payment_status": "payout_due_weak_consensus",
+            "reason": "weak_consensus_manual_review",
+            "consensus": consensus,
+            "winner_id": winner_id,
+            "winner_selection_score": winner_score,
+            "winner_score_details": winner_details,
+            "slashed_agents": suspicious,
+            "stake_slashing_events": slashing_events,
+            "consensus_status": consensus.get("status"),
+            "weak_pass": True,
+        }
+
     else:
         payout_info = payout_winner_if_escrow(order, best, agents)
+
         payout_info["slashed_agents"] = suspicious
         payout_info["stake_slashing_events"] = slashing_events
         payout_info["consensus_status"] = consensus.get("status")
-        payout_info["weak_pass"] = weak_pass
+        payout_info["weak_pass"] = False
         payout_info["winner_selection_score"] = winner_score
         payout_info["winner_score_details"] = winner_details
 

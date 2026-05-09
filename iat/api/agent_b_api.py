@@ -122,6 +122,7 @@ class RegisterAgentRequest(BaseModel):
     service: str
     url: str | None = None
     wallet: str
+    agent_type: str = "standard"
     price: float
     reputation: float = 0.8
     available: bool = True
@@ -1326,6 +1327,7 @@ def buyers(limit: int = 100):
 
 @app.get("/buyers/{buyer_wallet}")
 def buyer_profile(buyer_wallet: str):
+    agent_type: str = "standard"
     buyer = get_buyer_db(buyer_wallet)
 
     if not buyer:

@@ -500,8 +500,8 @@ def compute_consensus(results):
         # - agreement with other agents matters
         # - but independently valid, query-relevant results must not be punished
         overlap = (
-            overlap * 0.45 +
-            independent_quality * 0.55
+            overlap * 0.20 +
+            independent_quality * 0.80
         )
 
         overlap = max(0, overlap - fake_penalty)

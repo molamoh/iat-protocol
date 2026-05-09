@@ -85,14 +85,6 @@ def info():
     }
 
 
-@app.get("/search-config")
-def search_config():
-    return {
-        "google_api_key_configured": bool(os.getenv("GOOGLE_API_KEY")),
-        "google_cse_id_configured": bool(os.getenv("GOOGLE_CSE_ID")),
-        "serper_api_key_configured": bool(os.getenv("SERPER_API_KEY")),
-    }
-
 
 def search_with_google_custom_search(query):
     api_key = os.getenv("GOOGLE_API_KEY")
@@ -217,92 +209,3 @@ def simple_search(query):
     return []
 
 
-@app.get("/test-google-search")
-def test_google_search(q: str = "best hotels in Paris"):
-    api_key = os.getenv("GOOGLE_API_KEY")
-    cse_id = os.getenv("GOOGLE_CSE_ID")
-
-    if not api_key or not cse_id:
-        return {
-            "status": "missing_config",
-            "google_api_key_configured": bool(api_key),
-            "google_cse_id_configured": bool(cse_id),
-        }
-
-    try:
-        r = requests.get(
-            "https://www.googleapis.com/customsearch/v1",
-            params={
-                "key": api_key,
-                "cx": cse_id,
-                "q": q,
-                "num": 5,
-            },
-            timeout=15,
-        )
-
-        data = r.json()
-
-        return {
-            "status": "ok" if r.status_code == 200 else "google_error",
-            "http_status": r.status_code,
-            "has_items": bool(data.get("items")),
-            "items_count": len(data.get("items", [])),
-            "error": data.get("error"),
-            "first_title": (data.get("items", [{}])[0] or {}).get("title") if data.get("items") else None,
-        }
-
-    except Exception as e:
-        return {
-            "status": "exception",
-            "error": str(e),
-        }
-
-
-@app.post("/execute")
-def execute(req: ExecuteRequest):
-    if not req.tx_signature and not ALLOW_UNPAID_TEST:
-        return {
-            "status": "rejected",
-            "reason": "missing_tx_signature",
-        }
-
-    query = req.query or "general search"
-    results = simple_search(query)
-
-    if not results:
-        return {
-            "status": "error",
-            "agent_id": AGENT_ID,
-            "service": SERVICE,
-            "order_id": req.order_id,
-            "tx_signature": req.tx_signature,
-            "reason": "no_search_results",
-            "data": {
-                "type": "web_research",
-                "query": query,
-                "results": [],
-                "timestamp": int(time.time()),
-            },
-        }
-
-    return {
-        "status": "delivered",
-        "agent_id": AGENT_ID,
-        "service": SERVICE,
-        "order_id": req.order_id,
-        "tx_signature": req.tx_signature,
-        "data": {
-            "type": "web_research",
-            "query": query,
-            "results": results,
-            "timestamp": int(time.time()),
-        },
-    }
-
-if __name__ == "__main__":
-    import uvicorn
-    import os
-
-    port = int(os.getenv("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)

@@ -23,6 +23,7 @@ from iat.api.db import (
     set_agent_trust_db,
     slash_agent_stake_db,
     update_agent_volume_stats_db,
+    recompute_agent_metrics_db,
     compute_dynamic_stake_required_db,
     get_network_economics_db,
     reset_agent_trust_db,
@@ -950,6 +951,30 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
     
     final_result["economic_volume_updates"] = economic_volume_updates
     final_result["settlement"] = payout_info
+
+    # --- recompute dynamic metrics ---
+    recomputed_agents = []
+
+    processed_agent_ids = set()
+
+    for r in results:
+        aid = r.get("agent_id")
+
+        if not aid or aid in processed_agent_ids:
+            continue
+
+        processed_agent_ids.add(aid)
+
+        try:
+            metrics = recompute_agent_metrics_db(aid)
+
+            if metrics:
+                recomputed_agents.append(metrics)
+
+        except Exception as e:
+            print("Recompute metrics error:", e)
+
+    final_result["recomputed_agents"] = recomputed_agents
 
     # --- LEARNING LAYER (call + win stats) ---
     agent_ids = [a.get("agent_id") for a in selected_agents]

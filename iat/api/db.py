@@ -794,7 +794,15 @@ def update_agent_reputation_db(agent_id, success=True):
             new_rep = max(old_rep - 0.03, 0.1)
 
             # hard kill rule: suspicious repeatedly => disabled
-            new_available = 0 if failure_count >= 3 or new_rep <= 0.5 else 1
+            # Multi-source decentralized market:
+            # disagreement alone must not disable agents.
+            # Availability should only drop for extreme cases.
+            severe_failure = (
+                failure_count >= 10
+                and new_rep <= 0.20
+            )
+
+            new_available = 0 if severe_failure else 1
 
             cur.execute(f"""
             UPDATE agents
@@ -1487,3 +1495,118 @@ def update_order_db(order_id, fields):
     cur.execute(query, tuple(values))
     conn.commit()
     release_conn(locals().get("conn"))
+
+
+def recompute_agent_metrics_db(agent_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(
+        f"SELECT * FROM agents WHERE agent_id = {p}",
+        (agent_id,)
+    )
+
+    row = cur.fetchone()
+
+    if not row:
+        release_conn(locals().get("conn"))
+        return None
+
+    agent = dict(row)
+
+    success_count = int(agent.get("success_count") or 0)
+    failure_count = int(agent.get("failure_count") or 0)
+    call_count = int(agent.get("call_count") or 0)
+    win_count = int(agent.get("win_count") or 0)
+
+    latency_total = float(agent.get("latency_total") or 0)
+
+    honest_volume = float(agent.get("honest_volume") or 0)
+    fraud_volume = float(agent.get("fraud_volume") or 0)
+    volume_total = float(agent.get("volume_total") or 0)
+
+    total_actions = success_count + failure_count
+
+    success_rate = (
+        success_count / total_actions
+        if total_actions > 0 else 0.5
+    )
+
+    avg_latency = (
+        latency_total / call_count
+        if call_count > 0 else 0
+    )
+
+    honest_rate = (
+        honest_volume / volume_total
+        if volume_total > 0 else 0.5
+    )
+
+    fraud_rate = (
+        fraud_volume / volume_total
+        if volume_total > 0 else 0
+    )
+
+    reputation = (
+        success_rate * 0.45 +
+        honest_rate * 0.35 +
+        min(win_count / max(call_count, 1), 1.0) * 0.20
+    )
+
+    reputation = round(max(0.0, min(1.0, reputation)), 4)
+
+    latency_penalty = min(avg_latency / 15.0, 1.0)
+
+    risk_score = (
+        fraud_rate * 0.60 +
+        (1.0 - success_rate) * 0.25 +
+        latency_penalty * 0.15
+    )
+
+    risk_score = round(max(0.0, min(1.0, risk_score)), 4)
+
+    if reputation >= 0.90 and risk_score <= 0.15:
+        trust_tier = "premium"
+    elif reputation >= 0.75 and risk_score <= 0.35:
+        trust_tier = "verified"
+    else:
+        trust_tier = "free"
+
+    dynamic_stake_required = round(
+        max(
+            10,
+            volume_total * (1 + risk_score * 4)
+        ),
+        2
+    )
+
+    cur.execute(f"""
+    UPDATE agents
+    SET reputation = {p},
+        risk_score = {p},
+        trust_tier = {p},
+        dynamic_stake_required = {p}
+    WHERE agent_id = {p}
+    """, (
+        reputation,
+        risk_score,
+        trust_tier,
+        dynamic_stake_required,
+        agent_id,
+    ))
+
+    conn.commit()
+    release_conn(locals().get("conn"))
+
+    return {
+        "agent_id": agent_id,
+        "reputation": reputation,
+        "risk_score": risk_score,
+        "trust_tier": trust_tier,
+        "dynamic_stake_required": dynamic_stake_required,
+        "success_rate": round(success_rate, 4),
+        "honest_rate": round(honest_rate, 4),
+        "avg_latency": round(avg_latency, 4),
+    }
+

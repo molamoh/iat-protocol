@@ -342,6 +342,27 @@ def compute_consensus(results):
         domains = set()
         title_words = set()
 
+        stopwords = {
+            "the", "and", "for", "with", "from",
+            "this", "that", "into", "your",
+            "best", "top", "guide", "review",
+            "reviews", "hotel", "hotels",
+            "paris", "france"
+        }
+
+        def normalize_token(token):
+            token = token.strip().lower()
+
+            token = token.strip(".,:;!?()[]{}'\"")
+
+            if token.endswith("s") and len(token) > 4:
+                token = token[:-1]
+
+            if token.endswith("ing") and len(token) > 5:
+                token = token[:-3]
+
+            return token
+
         for item in items[:5]:
             link = item.get("link")
             title = item.get("title") or ""
@@ -360,10 +381,49 @@ def compute_consensus(results):
                 domains.add(domain)
 
             text_blob = (title + " " + snippet).lower()
-            for token in text_blob.replace("-", " ").replace("_", " ").split():
-                token = token.strip(".,:;!?()[]{}'\"")
-                if len(token) >= 4:
+
+            for raw_token in text_blob.replace("-", " ").replace("_", " ").split():
+                token = normalize_token(raw_token)
+
+                if (
+                    len(token) >= 3
+                    and token not in stopwords
+                    and not token.isdigit()
+                ):
                     title_words.add(token)
+
+        query = (
+            data.get("query")
+            or r.get("query")
+            or ""
+        ).lower()
+
+        query_words = set()
+        for raw_token in query.replace("-", " ").replace("_", " ").split():
+            token = normalize_token(raw_token)
+            if (
+                len(token) >= 3
+                and token not in stopwords
+                and not token.isdigit()
+            ):
+                query_words.add(token)
+
+        query_relevance = (
+            len(title_words.intersection(query_words)) / len(query_words)
+            if query_words else 0
+        )
+
+        result_validity = 0
+        if len(items) >= 3:
+            result_validity += 0.35
+        if links:
+            result_validity += 0.25
+        if domains:
+            result_validity += 0.20
+        if title_words:
+            result_validity += 0.20
+
+        result_validity = min(result_validity, 1.0)
 
         rep = float(r.get("reputation", 0.5))
         successes = int(r.get("success_count", 0) or 0)
@@ -384,6 +444,8 @@ def compute_consensus(results):
             "links": links,
             "domains": domains,
             "title_words": title_words,
+            "query_relevance": round(query_relevance, 4),
+            "result_validity": round(result_validity, 4),
             "base_weight": base_weight,
             "weight": base_weight,
         })
@@ -400,6 +462,8 @@ def compute_consensus(results):
         links = agent.get("links", set())
         domains = agent.get("domains", set())
         title_words = agent.get("title_words", set())
+        query_relevance = float(agent.get("query_relevance", 0) or 0)
+        result_validity = float(agent.get("result_validity", 0) or 0)
 
         other_links = set()
         other_domains = set()
@@ -419,10 +483,25 @@ def compute_consensus(results):
         if any("fake" in link for link in links) or any("fake" in word for word in title_words):
             fake_penalty = 0.8
 
+        # Real-world decentralized consensus:
+        # exact links matter less than semantic/result coherence.
         overlap = (
-            link_overlap * 0.45 +
-            domain_overlap * 0.20 +
-            title_overlap * 0.35
+            link_overlap * 0.15 +
+            domain_overlap * 0.30 +
+            title_overlap * 0.55
+        )
+
+        independent_quality = (
+            query_relevance * 0.45 +
+            result_validity * 0.55
+        )
+
+        # Hybrid consensus:
+        # - agreement with other agents matters
+        # - but independently valid, query-relevant results must not be punished
+        overlap = (
+            overlap * 0.45 +
+            independent_quality * 0.55
         )
 
         overlap = max(0, overlap - fake_penalty)
@@ -432,6 +511,9 @@ def compute_consensus(results):
             "link_overlap": round(link_overlap, 4),
             "domain_overlap": round(domain_overlap, 4),
             "title_overlap": round(title_overlap, 4),
+            "query_relevance": round(query_relevance, 4),
+            "result_validity": round(result_validity, 4),
+            "independent_quality": round(independent_quality, 4),
             "fake_penalty": round(fake_penalty, 4),
         }
 
@@ -448,9 +530,11 @@ def compute_consensus(results):
         required = float(agent.get("stake_required", 0) or 0)
 
         # behavior risk overrides passive DB risk
-        if overlap < 0.5:
+        # decentralized agents may legitimately use different sources.
+        if overlap < 0.20:
             risk = max(risk, 0.7)
-        if overlap == 0:
+
+        if overlap == 0 and fake_penalty > 0:
             risk = max(risk, 0.9)
 
         agent["effective_risk_score"] = round(min(risk, 1.0), 4)

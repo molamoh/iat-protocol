@@ -89,18 +89,37 @@ def select_top_agents(agents, limit=3):
     Select best available agents before execution.
     This reduces cost and avoids calling disabled/bad agents.
     """
-    available_agents = [
-        a for a in agents
-        if bool(a.get("available", True))
-    ]
+    foundation_agents = []
+    seller_agents = []
 
-    ranked = sorted(
-        available_agents,
+    for a in agents:
+        if not bool(a.get("available", True)):
+            continue
+
+        agent_type = a.get("agent_type", "seller")
+
+        if agent_type == "foundation":
+            foundation_agents.append(a)
+        else:
+            seller_agents.append(a)
+
+    ranked_sellers = sorted(
+        seller_agents,
         key=compute_agent_market_score,
         reverse=True,
     )
 
-    return ranked[:limit]
+    selected = ranked_sellers[:limit]
+
+    # If no external sellers are available, the foundation layer executes.
+    if not selected and foundation_agents:
+        selected = sorted(
+            foundation_agents,
+            key=compute_agent_market_score,
+            reverse=True,
+        )[:limit]
+
+    return selected
 
 
 

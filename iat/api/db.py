@@ -145,6 +145,7 @@ def init_agents_table():
         service TEXT NOT NULL,
         url TEXT,
         wallet TEXT NOT NULL,
+        agent_type TEXT DEFAULT 'standard',
         price REAL NOT NULL,
         reputation REAL DEFAULT 0.8,
         available INTEGER DEFAULT 1,
@@ -175,6 +176,8 @@ def init_agents_table():
         "call_count": "INTEGER DEFAULT 0",
         "win_count": "INTEGER DEFAULT 0",
         "latency_total": "REAL DEFAULT 0",
+        "agent_type": "TEXT DEFAULT 'standard'",
+
         "trust_tier": "TEXT DEFAULT 'free'",
         "stake_amount": "REAL DEFAULT 0",
         "stake_required": "REAL DEFAULT 0",
@@ -641,6 +644,7 @@ def register_agent_db(agent):
             SET service = {p},
                 url = {p},
                 wallet = {p},
+                agent_type = {p},
                 price = {p},
                 available = {p},
                 updated_at = {p}
@@ -649,6 +653,7 @@ def register_agent_db(agent):
                 agent["service"],
                 agent.get("url") or "",
                 agent["wallet"],
+                agent.get("agent_type", "standard"),
                 float(agent["price"]),
                 new_available,
                 now,
@@ -657,14 +662,15 @@ def register_agent_db(agent):
         else:
             cur.execute(f"""
             INSERT INTO agents (
-                agent_id, service, url, wallet, price, reputation, available, registered_at, updated_at
+                agent_id, service, url, wallet, agent_type, price, reputation, available, registered_at, updated_at
             )
-            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
             """, (
                 agent["agent_id"],
                 agent["service"],
                 agent.get("url") or "",
                 agent["wallet"],
+                agent.get("agent_type", "standard"),
                 float(agent["price"]),
                 float(agent.get("reputation", 0.8)),
                 1 if agent.get("available", True) else 0,
@@ -1421,6 +1427,7 @@ def get_network_status_db():
             "agent_id": agent["agent_id"],
             "url": agent["url"],
             "wallet": agent["wallet"],
+            "agent_type": agent.get("agent_type", "standard"),
             "price": agent["price"],
             "reputation": agent["reputation"],
             "score": score,

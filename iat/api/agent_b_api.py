@@ -557,13 +557,37 @@ def verify_payment(req: VerifyPaymentRequest, x_api_key: str | None = Header(def
         }
 
     if is_tx_processed_db(req.tx_signature):
+        buyer_wallet = order.get("buyer_wallet")
+        banned_buyer = None
+
+        if buyer_wallet:
+            banned_buyer = ban_buyer_db(
+                buyer_wallet,
+                reason="replay_tx_attempt",
+            )
+
         return {
             "status": "tx_already_processed",
+            "buyer_wallet": buyer_wallet,
+            "buyer_banned": bool(banned_buyer),
+            "ban_reason": "replay_tx_attempt" if banned_buyer else None,
         }
 
     if not verify_tx_signature(req.tx_signature):
+        buyer_wallet = order.get("buyer_wallet")
+        banned_buyer = None
+
+        if buyer_wallet:
+            banned_buyer = ban_buyer_db(
+                buyer_wallet,
+                reason="invalid_tx_signature",
+            )
+
         return {
             "status": "invalid_signature",
+            "buyer_wallet": buyer_wallet,
+            "buyer_banned": bool(banned_buyer),
+            "ban_reason": "invalid_tx_signature" if banned_buyer else None,
         }
 
     tx_details = get_tx_details(req.tx_signature)

@@ -45,25 +45,9 @@ def release_conn(conn):
         if USE_POSTGRES and pool is not None:
             pool.putconn(conn)
         else:
-            release_conn(conn)
-    except:
-        pass
-
-
-def release_conn(conn):
-    global pool
-
-    if conn is None:
-        return
-
-    try:
-        if USE_POSTGRES and pool is not None:
-            pool.putconn(conn)
-        else:
-            release_conn(conn)
+            conn.close()
     except Exception:
         pass
-
 
 
 def row_get(row, key, default=None):
@@ -753,6 +737,9 @@ def register_agent_db(agent):
                 agent_type = {p},
                 price = {p},
                 available = {p},
+                stake_amount = {p},
+                stake_required = {p},
+                trust_tier = {p},
                 updated_at = {p}
             WHERE agent_id = {p}
             """, (
@@ -762,15 +749,20 @@ def register_agent_db(agent):
                 agent.get("agent_type", "standard"),
                 float(agent["price"]),
                 new_available,
+                float(agent.get("stake_amount", 0) or 0),
+                float(agent.get("stake_required", 0) or 0),
+                agent.get("trust_tier", "free"),
                 now,
                 agent["agent_id"],
             ))
         else:
             cur.execute(f"""
             INSERT INTO agents (
-                agent_id, service, url, wallet, agent_type, price, reputation, available, registered_at, updated_at
+                agent_id, service, url, wallet, agent_type, price, reputation, available,
+                stake_amount, stake_required, trust_tier,
+                registered_at, updated_at
             )
-            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
             """, (
                 agent["agent_id"],
                 agent["service"],
@@ -780,6 +772,9 @@ def register_agent_db(agent):
                 float(agent["price"]),
                 float(agent.get("reputation", 0.8)),
                 1 if agent.get("available", True) else 0,
+                float(agent.get("stake_amount", 0) or 0),
+                float(agent.get("stake_required", 0) or 0),
+                agent.get("trust_tier", "free"),
                 now,
                 now,
             ))

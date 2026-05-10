@@ -340,6 +340,35 @@ def ban_buyer_db(buyer_wallet, reason="fraud_detected"):
     return dict(row) if row else None
 
 
+def unban_buyer_db(buyer_wallet):
+    if not buyer_wallet:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    UPDATE buyers
+    SET banned = 0,
+        ban_reason = NULL,
+        banned_at = NULL,
+        buyer_risk_score = 0,
+        last_seen = {p}
+    WHERE buyer_wallet = {p}
+    """, (now, buyer_wallet))
+
+    conn.commit()
+
+    cur.execute(f"SELECT * FROM buyers WHERE buyer_wallet = {p}", (buyer_wallet,))
+    row = cur.fetchone()
+
+    release_conn(conn)
+
+    return dict(row) if row else None
+
+
 def list_buyers_db(limit=100):
     conn = get_conn()
     cur = conn.cursor()

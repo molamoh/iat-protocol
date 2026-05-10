@@ -47,6 +47,7 @@ from iat.api.db import (
     get_buyer_db,
     is_buyer_banned_db,
     ban_buyer_db,
+    unban_buyer_db,
     register_buyer_seen_db,
     update_order_buyer_wallet_db,
 )
@@ -1380,6 +1381,25 @@ def admin_ban_buyer(
         "buyer_wallet": buyer_wallet,
         "reason": reason,
         "buyer": banned,
+    }
+
+
+
+
+@app.post("/admin/unban-buyer/{buyer_wallet}")
+def admin_unban_buyer(
+    buyer_wallet: str,
+    x_api_key: str | None = Header(default=None),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    buyer = unban_buyer_db(buyer_wallet)
+
+    return {
+        "status": "ok",
+        "buyer_wallet": buyer_wallet,
+        "buyer": buyer,
     }
 
 

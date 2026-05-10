@@ -793,6 +793,30 @@ def register_agent_db(agent):
         release_conn(conn)
 
 
+def delete_agent_db(agent_id):
+    if not agent_id:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"SELECT * FROM agents WHERE agent_id = {p}", (agent_id,))
+    row = cur.fetchone()
+
+    if not row:
+        release_conn(conn)
+        return None
+
+    deleted = dict(row)
+
+    cur.execute(f"DELETE FROM agents WHERE agent_id = {p}", (agent_id,))
+    conn.commit()
+    release_conn(conn)
+
+    return deleted
+
+
 def list_agents_db():
     conn = get_conn()
     cur = conn.cursor()

@@ -38,6 +38,7 @@ from iat.api.db import (
     init_agents_table,
     register_agent_db,
     list_agents_db,
+    delete_agent_db,
     get_agents_for_service_db,
     update_agent_reputation_db,
     get_network_status_db,
@@ -376,28 +377,13 @@ def admin_delete_agent(agent_id: str, x_api_key: str | None = Header(default=Non
     if not require_admin_key(x_api_key):
         return {"status": "error", "message": "unauthorized"}
 
-    import sqlite3
-    from iat.api.db import DB_PATH
+    deleted = delete_agent_db(agent_id)
 
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-
-    cur.execute("SELECT * FROM agents WHERE agent_id = ?", (agent_id,))
-    row = cur.fetchone()
-
-    if not row:
-        conn.close()
+    if not deleted:
         return {
             "status": "not_found",
             "agent_id": agent_id,
         }
-
-    deleted = dict(row)
-
-    cur.execute("DELETE FROM agents WHERE agent_id = ?", (agent_id,))
-    conn.commit()
-    conn.close()
 
     return {
         "status": "ok",

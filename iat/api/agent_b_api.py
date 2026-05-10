@@ -129,6 +129,9 @@ class RegisterAgentRequest(BaseModel):
     price: float
     reputation: float = 0.8
     available: bool = True
+    stake_amount: float = 0
+    stake_required: float = 10
+    trust_tier: str = "free"
 
 
 class OrderRequest(BaseModel):
@@ -281,9 +284,30 @@ def list_services():
     }
 
 
+def apply_seller_stake_gate(agent):
+    agent_type = agent.get("agent_type", "seller")
+
+    if agent_type == "foundation":
+        agent["available"] = True
+        return agent
+
+    # External sellers must stake before they can be selected.
+    stake_amount = float(agent.get("stake_amount", 0) or 0)
+    stake_required = float(agent.get("stake_required", 10) or 10)
+
+    agent["stake_required"] = stake_required
+
+    if stake_amount < stake_required:
+        agent["available"] = False
+        agent["trust_tier"] = "stake_required"
+
+    return agent
+
+
 @app.post("/register-agent")
 def register_agent(req: RegisterAgentRequest):
     agent = req.model_dump()
+    agent = apply_seller_stake_gate(agent)
     register_agent_db(agent)
 
     return {
@@ -295,11 +319,15 @@ def register_agent(req: RegisterAgentRequest):
 @app.post("/agent-heartbeat")
 def agent_heartbeat(req: RegisterAgentRequest):
     agent = req.model_dump()
+    agent = apply_seller_stake_gate(agent)
     register_agent_db(agent)
 
     return {
         "status": "heartbeat_ok",
         "agent_id": agent["agent_id"],
+        "agent_type": agent.get("agent_type"),
+        "available": agent.get("available"),
+        "stake_required": agent.get("stake_required"),
         "timestamp": int(time.time()),
     }
 

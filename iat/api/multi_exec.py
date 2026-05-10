@@ -14,6 +14,19 @@ def compute_agent_market_score(agent):
 
     reputation = float(agent.get("reputation", 0.5) or 0.5)
     price = float(agent.get("price", 1.0) or 1.0)
+
+    agent_type = agent.get("agent_type", "seller")
+
+    # Foundation agents are protocol infrastructure.
+    # They are not market sellers and should bypass
+    # seller-market economic penalties.
+    if agent_type == "foundation":
+        return round(
+            1000
+            + reputation * 10
+            - price * 0.01,
+            6
+        )
     successes = int(agent.get("success_count", 0) or 0)
     failures = int(agent.get("failure_count", 0) or 0)
     call_count = int(agent.get("call_count", 0) or 0)

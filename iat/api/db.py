@@ -215,6 +215,9 @@ def init_buyers_table():
         disputes_count INTEGER DEFAULT 0,
         refunded_count INTEGER DEFAULT 0,
         buyer_risk_score REAL DEFAULT 0,
+        banned INTEGER DEFAULT 0,
+        ban_reason TEXT,
+        banned_at INTEGER,
         first_seen INTEGER NOT NULL,
         last_seen INTEGER NOT NULL
     )
@@ -227,6 +230,9 @@ def init_buyers_table():
         "disputes_count": "INTEGER DEFAULT 0",
         "refunded_count": "INTEGER DEFAULT 0",
         "buyer_risk_score": "REAL DEFAULT 0",
+        "banned": "INTEGER DEFAULT 0",
+        "ban_reason": "TEXT",
+        "banned_at": "INTEGER",
         "first_seen": "INTEGER",
         "last_seen": "INTEGER",
     }
@@ -261,6 +267,49 @@ def get_buyer_db(buyer_wallet):
         return None
 
     return dict(row)
+
+
+def is_buyer_banned_db(buyer_wallet):
+    buyer = get_buyer_db(buyer_wallet)
+
+    if not buyer:
+        return False
+
+    return bool(buyer.get("banned", 0))
+
+
+def ban_buyer_db(buyer_wallet, reason="fraud_detected"):
+    if not buyer_wallet:
+        return None
+
+    now = int(time.time())
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    UPDATE buyers
+    SET banned = 1,
+        ban_reason = {p},
+        banned_at = {p},
+        buyer_risk_score = 1.0,
+        last_seen = {p}
+    WHERE buyer_wallet = {p}
+    """, (
+        reason,
+        now,
+        now,
+        buyer_wallet,
+    ))
+
+    conn.commit()
+
+    cur.execute(f"SELECT * FROM buyers WHERE buyer_wallet = {p}", (buyer_wallet,))
+    row = cur.fetchone()
+
+    release_conn(locals().get("conn"))
+
+    return dict(row) if row else None
 
 
 def list_buyers_db(limit=100):
@@ -745,7 +794,32 @@ def get_agents_for_service_db(service):
     return agents
 
 
+
+def is_foundation_agent_db(agent_id):
+    if not agent_id:
+        return False
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(
+        f"SELECT agent_type FROM agents WHERE agent_id = {p}",
+        (agent_id,)
+    )
+    row = cur.fetchone()
+    release_conn(conn)
+
+    if not row:
+        return False
+
+    return row_get(row, "agent_type", "seller") == "foundation"
+
+
 def update_agent_reputation_db(agent_id, success=True):
+    if is_foundation_agent_db(agent_id):
+        return None
+
     if not agent_id:
         return None
 
@@ -1101,6 +1175,15 @@ def reset_agent_trust_db(agent_id):
 
 
 def slash_agent_stake_db(agent_id, slash_ratio=0.10, reason="protocol_slash"):
+    if is_foundation_agent_db(agent_id):
+        return {
+            "agent_id": agent_id,
+            "slashed_amount": 0,
+            "remaining_stake": 0,
+            "stake_slashed_total": 0,
+            "reason": "foundation_agent_no_slash",
+        }
+
     if not agent_id:
         return None
 
@@ -1187,6 +1270,14 @@ def slash_agent_stake_db(agent_id, slash_ratio=0.10, reason="protocol_slash"):
 
 
 def compute_dynamic_stake_required_db(agent_id):
+    if is_foundation_agent_db(agent_id):
+        return {
+            "agent_id": agent_id,
+            "dynamic_stake_required": 0,
+            "stake_required": 0,
+            "reason": "foundation_agent_no_stake_required",
+        }
+
     conn = None
 
     try:
@@ -1265,6 +1356,16 @@ def compute_dynamic_stake_required_db(agent_id):
 
 
 def update_agent_volume_stats_db(agent_id, amount, honest=True):
+    if is_foundation_agent_db(agent_id):
+        return {
+            "agent_id": agent_id,
+            "volume_total": 0,
+            "honest_volume": 0,
+            "fraud_volume": 0,
+            "dynamic_stake_required": 0,
+            "reason": "foundation_agent_no_market_volume_accounting",
+        }
+
     if not agent_id:
         return None
 
@@ -1505,6 +1606,16 @@ def update_order_db(order_id, fields):
 
 
 def recompute_agent_metrics_db(agent_id):
+    if is_foundation_agent_db(agent_id):
+        return {
+            "agent_id": agent_id,
+            "reputation": None,
+            "risk_score": 0,
+            "trust_tier": "foundation",
+            "dynamic_stake_required": 0,
+            "reason": "foundation_agent_metrics_bypass",
+        }
+
     conn = get_conn()
     cur = conn.cursor()
     p = qmark()

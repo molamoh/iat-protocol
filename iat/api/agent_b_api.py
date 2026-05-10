@@ -45,6 +45,8 @@ from iat.api.db import (
     update_order_db,
     list_buyers_db,
     get_buyer_db,
+    is_buyer_banned_db,
+    ban_buyer_db,
     register_buyer_seen_db,
     update_order_buyer_wallet_db,
 )
@@ -131,6 +133,7 @@ class RegisterAgentRequest(BaseModel):
 class OrderRequest(BaseModel):
     service: str
     query: str | None = None
+    buyer_wallet: str | None = None
 
 
 class VerifyPaymentRequest(BaseModel):
@@ -474,6 +477,16 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
     print("ESCROW ENV:", os.getenv("IAT_ESCROW_WALLET"))
     if not require_admin_key(x_api_key):
         return {"status": "error", "message": "unauthorized"}
+
+    buyer_wallet = req.buyer_wallet
+
+    if buyer_wallet and is_buyer_banned_db(buyer_wallet):
+        return {
+            "status": "rejected",
+            "reason": "buyer_blacklisted",
+            "buyer_wallet": buyer_wallet,
+        }
+
     seller = select_best_seller(req.service)
 
     if seller is None:
@@ -502,6 +515,7 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
         "delivered_at": None,
         "delivery_result": None,
         "buyer_secret": str(uuid.uuid4()),
+        "buyer_wallet": buyer_wallet,
         "used": False,
     }
 
@@ -1322,6 +1336,26 @@ def buyers(limit: int = 100):
         "status": "ok",
         "count": len(list_buyers_db(limit=limit)),
         "buyers": list_buyers_db(limit=limit),
+    }
+
+
+
+@app.post("/admin/ban-buyer/{buyer_wallet}")
+def admin_ban_buyer(
+    buyer_wallet: str,
+    reason: str = "fraud_detected",
+    x_api_key: str | None = Header(default=None)
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    banned = ban_buyer_db(buyer_wallet, reason=reason)
+
+    return {
+        "status": "ok",
+        "buyer_wallet": buyer_wallet,
+        "reason": reason,
+        "buyer": banned,
     }
 
 

@@ -287,27 +287,55 @@ def ban_buyer_db(buyer_wallet, reason="fraud_detected"):
     cur = conn.cursor()
     p = qmark()
 
-    cur.execute(f"""
-    UPDATE buyers
-    SET banned = 1,
-        ban_reason = {p},
-        banned_at = {p},
-        buyer_risk_score = 1.0,
-        last_seen = {p}
-    WHERE buyer_wallet = {p}
-    """, (
-        reason,
-        now,
-        now,
-        buyer_wallet,
-    ))
+    cur.execute(f"SELECT * FROM buyers WHERE buyer_wallet = {p}", (buyer_wallet,))
+    exists = cur.fetchone()
+
+    if exists:
+        cur.execute(f"""
+        UPDATE buyers
+        SET banned = 1,
+            ban_reason = {p},
+            banned_at = {p},
+            buyer_risk_score = 1.0,
+            last_seen = {p}
+        WHERE buyer_wallet = {p}
+        """, (
+            reason,
+            now,
+            now,
+            buyer_wallet,
+        ))
+    else:
+        cur.execute(f"""
+        INSERT INTO buyers (
+            buyer_wallet,
+            orders_count,
+            claims_count,
+            false_claims_count,
+            disputes_count,
+            refunded_count,
+            buyer_risk_score,
+            banned,
+            ban_reason,
+            banned_at,
+            first_seen,
+            last_seen
+        )
+        VALUES ({p}, 0, 0, 0, 0, 0, 1.0, 1, {p}, {p}, {p}, {p})
+        """, (
+            buyer_wallet,
+            reason,
+            now,
+            now,
+            now,
+        ))
 
     conn.commit()
 
     cur.execute(f"SELECT * FROM buyers WHERE buyer_wallet = {p}", (buyer_wallet,))
     row = cur.fetchone()
 
-    release_conn(locals().get("conn"))
+    release_conn(conn)
 
     return dict(row) if row else None
 

@@ -172,6 +172,10 @@ def init_agents_table():
         "honest_volume": "REAL DEFAULT 0",
         "fraud_volume": "REAL DEFAULT 0",
         "dynamic_stake_required": "REAL DEFAULT 0",
+        "stake_status": "TEXT DEFAULT 'unstaked'",
+        "stake_tx_signature": "TEXT",
+        "stake_locked_at": "INTEGER",
+        "stake_unlock_requested_at": "INTEGER",
     }
 
     for column, col_type in agent_columns.items():

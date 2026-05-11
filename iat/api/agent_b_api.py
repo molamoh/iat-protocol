@@ -437,7 +437,14 @@ def admin_delete_agent(agent_id: str, x_api_key: str | None = Header(default=Non
     if not require_admin_key(x_api_key):
         return {"status": "error", "message": "unauthorized"}
 
-    deleted = delete_agent_db(agent_id)
+    try:
+        deleted = delete_agent_db(agent_id)
+    except Exception as e:
+        return {
+            "status": "error",
+            "agent_id": agent_id,
+            "error": str(e),
+        }
 
     if not deleted:
         return {

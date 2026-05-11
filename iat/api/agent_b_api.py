@@ -285,22 +285,54 @@ def list_services():
     }
 
 
+def compute_seller_required_stake(agent):
+    price = float(agent.get("price", 0) or 0)
+    service = agent.get("service", "")
+
+    # Base market rule:
+    # sellers must lock collateral proportional to the value they sell.
+    minimum_stake = 10.0
+    base_ratio = 0.20
+
+    # Higher-risk services can require more collateral.
+    service_risk_multiplier = {
+        "web_research": 1.0,
+        "risk_report": 1.5,
+        "trading_signal": 3.0,
+        "financial_analysis": 2.5,
+    }.get(service, 1.0)
+
+    required = max(
+        minimum_stake,
+        price * base_ratio * service_risk_multiplier,
+    )
+
+    return round(required, 6)
+
+
 def apply_seller_stake_gate(agent):
     agent_type = agent.get("agent_type", "seller")
 
     if agent_type == "foundation":
         agent["available"] = True
+        agent["stake_required"] = 0
         return agent
 
-    # External sellers must stake before they can be selected.
     stake_amount = float(agent.get("stake_amount", 0) or 0)
-    stake_required = float(agent.get("stake_required", 10) or 10)
+    protocol_required = compute_seller_required_stake(agent)
+
+    # Protocol requirement overrides seller self-declared requirement.
+    seller_declared_required = float(agent.get("stake_required", 0) or 0)
+    stake_required = max(protocol_required, seller_declared_required)
 
     agent["stake_required"] = stake_required
 
     if stake_amount < stake_required:
         agent["available"] = False
         agent["trust_tier"] = "stake_required"
+    else:
+        agent["available"] = bool(agent.get("available", True))
+        agent["trust_tier"] = agent.get("trust_tier", "staked")
 
     return agent
 

@@ -285,6 +285,25 @@ def list_services():
     }
 
 
+def compute_max_order_value(agent):
+    stake_amount = float(agent.get("stake_amount", 0) or 0)
+    reputation = float(agent.get("reputation", 0.5) or 0.5)
+
+    # Reputation multiplier
+    reputation_multiplier = max(0.25, reputation)
+
+    # Global leverage factor
+    leverage_factor = 10.0
+
+    max_value = (
+        stake_amount
+        * reputation_multiplier
+        * leverage_factor
+    )
+
+    return round(max_value, 6)
+
+
 def compute_seller_required_stake(agent):
     price = float(agent.get("price", 0) or 0)
     service = agent.get("service", "")
@@ -316,6 +335,16 @@ def apply_seller_stake_gate(agent):
     if agent_type == "foundation":
         agent["available"] = True
         agent["stake_required"] = 0
+    max_order_value = compute_max_order_value(agent)
+
+    agent["max_order_value"] = max_order_value
+
+    price = float(agent.get("price", 0) or 0)
+
+    if price > max_order_value:
+        agent["available"] = False
+        agent["trust_tier"] = "capacity_exceeded"
+
         return agent
 
     stake_amount = float(agent.get("stake_amount", 0) or 0)
@@ -333,6 +362,16 @@ def apply_seller_stake_gate(agent):
     else:
         agent["available"] = bool(agent.get("available", True))
         agent["trust_tier"] = agent.get("trust_tier", "staked")
+
+    max_order_value = compute_max_order_value(agent)
+
+    agent["max_order_value"] = max_order_value
+
+    price = float(agent.get("price", 0) or 0)
+
+    if price > max_order_value:
+        agent["available"] = False
+        agent["trust_tier"] = "capacity_exceeded"
 
     return agent
 
@@ -363,6 +402,7 @@ def agent_heartbeat(req: RegisterAgentRequest):
         "stake_required": agent.get("stake_required"),
         "timestamp": int(time.time()),
     }
+
 
 
 
@@ -1228,590 +1268,4 @@ def admin_verify_agent_stake(req: AgentStakeVerifyRequest, request: Request):
         trust_tier = "recovery"
     else:
         trust_tier = "free"
-
-    result = set_agent_trust_db(
-        req.agent_id,
-        trust_tier=trust_tier,
-        stake_amount=actual_amount,
-        stake_required=0,
-        risk_score=0,
-    )
-
-    if not result:
-        return {
-            "status": "error",
-            "message": "agent_not_found",
-            "agent_id": req.agent_id,
-        }
-
-    return {
-        "status": "ok",
-        "message": "stake_verified",
-        "agent": result,
-        "checks": checks,
-    }
-
-
-@app.post("/admin/set-agent-trust")
-def admin_set_agent_trust(req: AgentTrustUpdate, request: Request):
-    expected_key = os.getenv("IAT_ADMIN_API_KEY")
-    provided_key = request.headers.get("x-api-key")
-
-    if expected_key and provided_key != expected_key:
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
-
-    result = set_agent_trust_db(
-        req.agent_id,
-        trust_tier=req.trust_tier,
-        stake_amount=req.stake_amount,
-        stake_required=req.stake_required,
-        risk_score=req.risk_score,
-    )
-
-    if not result:
-        return {
-            "status": "error",
-            "message": "agent_not_found",
-            "agent_id": req.agent_id,
-        }
-
-    return {
-        "status": "ok",
-        "agent": result,
-    }
-
-
-@app.post("/admin/reset-agent-trust/{agent_id}")
-def admin_reset_agent_trust(agent_id: str, request: Request):
-    expected_key = os.getenv("IAT_ADMIN_API_KEY")
-    provided_key = request.headers.get("x-api-key")
-
-    if expected_key and provided_key != expected_key:
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
-
-    result = reset_agent_trust_db(agent_id)
-
-    if not result:
-        return {
-            "status": "error",
-            "message": "agent_not_found",
-            "agent_id": agent_id,
-        }
-
-    return {
-        "status": "ok",
-        "agent": result,
-    }
-
-
-@app.post("/admin/rename-agent")
-def admin_rename_agent(request: Request, old_agent_id: str, new_agent_id: str):
-    expected_key = os.getenv("IAT_ADMIN_API_KEY")
-    provided_key = request.headers.get("x-api-key")
-
-    if expected_key and provided_key != expected_key:
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
-
-    return rename_agent_db(old_agent_id, new_agent_id)
-
-
-@app.post("/admin/reactivate-agent/{agent_id}")
-def admin_reactivate_agent(agent_id: str, request: Request):
-    expected_key = os.getenv("IAT_ADMIN_API_KEY")
-    provided_key = request.headers.get("x-api-key")
-
-    if expected_key and provided_key != expected_key:
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
-
-    result = reactivate_agent_db(agent_id)
-
-    if not result:
-        return {
-            "status": "error",
-            "message": "agent_not_found",
-            "agent_id": agent_id,
-        }
-
-    return {
-        "status": "ok",
-        "agent": result,
-    }
-
-
-@app.get("/demo")
-def public_demo():
-    return {
-        "demo": "IAT Protocol Public Demo",
-        "status": "ok",
-        "description": "AI pays with IAT, multiple agents execute, best result is selected.",
-        "latest_verified_flow": {
-            "payment": "on-chain IAT payment",
-            "execution": "paid multi-call",
-            "agents_called": 3,
-            "best_result_selection": True,
-            "real_web_data": True
-        },
-        "run_locally": "PYTHONPATH=. IAT_API_URL=http://localhost:8000 python3 examples/paid_multicall_demo.py"
-    }
-
-
-
-@app.get("/transactions")
-def transactions():
-    orders = list_orders_db()
-
-    txs = []
-
-    for order_id, order in orders.items():
-        if order.get("status") != "delivered":
-            continue
-
-        delivery = order.get("delivery_result") or {}
-
-        txs.append({
-            "order_id": order_id,
-            "service": order.get("service"),
-            "query": order.get("query"),
-            "seller_id": order.get("seller_id"),
-            "seller_source": order.get("seller_source"),
-            "price_iat": order.get("price"),
-            "tx_signature": order.get("tx_signature"),
-            "delivered_at": order.get("delivered_at"),
-            "protocol_status": delivery.get("status"),
-            "agents_called": delivery.get("agents_called"),
-            "best_agent": (delivery.get("best") or {}).get("agent_id"),
-        })
-
-    return {
-        "status": "ok",
-        "count": len(txs),
-        "transactions": txs[:50],
-    }
-
-
-@app.get("/buyers")
-def buyers(limit: int = 100):
-    return {
-        "status": "ok",
-        "count": len(list_buyers_db(limit=limit)),
-        "buyers": list_buyers_db(limit=limit),
-    }
-
-
-
-@app.post("/admin/ban-buyer/{buyer_wallet}")
-def admin_ban_buyer(
-    buyer_wallet: str,
-    reason: str = "fraud_detected",
-    x_api_key: str | None = Header(default=None)
-):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
-
-    banned = ban_buyer_db(buyer_wallet, reason=reason)
-
-    return {
-        "status": "ok",
-        "buyer_wallet": buyer_wallet,
-        "reason": reason,
-        "buyer": banned,
-    }
-
-
-
-
-@app.post("/admin/unban-buyer/{buyer_wallet}")
-def admin_unban_buyer(
-    buyer_wallet: str,
-    x_api_key: str | None = Header(default=None),
-):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
-
-    buyer = unban_buyer_db(buyer_wallet)
-
-    return {
-        "status": "ok",
-        "buyer_wallet": buyer_wallet,
-        "buyer": buyer,
-    }
-
-
-@app.get("/buyers/{buyer_wallet}")
-def buyer_profile(buyer_wallet: str):
-    agent_type: str = "standard"
-    buyer = get_buyer_db(buyer_wallet)
-
-    if not buyer:
-        return {
-            "status": "not_found",
-            "buyer_wallet": buyer_wallet,
-        }
-
-    return {
-        "status": "ok",
-        "buyer": buyer,
-    }
-
-
-@app.get("/leaderboard")
-def leaderboard():
-    orders = list_orders_db()
-    agents = list_agents_db()
-
-    stats = {}
-
-    for agent in agents:
-        agent_id = agent.get("agent_id")
-        stats[agent_id] = {
-            "agent_id": agent_id,
-            "service": agent.get("service"),
-            "reputation": agent.get("reputation"),
-            "listed_price_iat": agent.get("price"),
-            "wins": 0,
-            "paid_orders": 0,
-            "revenue_iat": 0,
-            "last_active": agent.get("updated_at"),
-        }
-
-    for order_id, order in orders.items():
-        if order.get("status") != "delivered":
-            continue
-
-        seller_id = order.get("seller_id")
-        price = float(order.get("price") or 0)
-        delivery = order.get("delivery_result") or {}
-        best_agent = (delivery.get("best") or {}).get("agent_id")
-
-        if seller_id in stats:
-            stats[seller_id]["paid_orders"] += 1
-            stats[seller_id]["revenue_iat"] += price
-
-        if best_agent in stats:
-            stats[best_agent]["wins"] += 1
-
-    leaderboard_items = list(stats.values())
-
-    for item in leaderboard_items:
-        item["revenue_iat"] = round(item["revenue_iat"], 4)
-
-    leaderboard_items.sort(
-        key=lambda x: (
-            x["wins"],
-            x["paid_orders"],
-            x["reputation"] or 0,
-        ),
-        reverse=True,
-    )
-
-    return {
-        "status": "ok",
-        "count": len(leaderboard_items),
-        "leaderboard": leaderboard_items,
-    }
-
-def require_admin_key(x_api_key: str | None):
-    expected = os.getenv("IAT_ADMIN_API_KEY")
-    if not expected:
-        return True
-    return x_api_key == expected
-
-
-@app.get("/settlements")
-def settlements():
-    orders = list_orders_db()
-    rows = []
-
-    for order_id, order in orders.items():
-        if order.get("status") != "delivered":
-            continue
-
-        delivery = order.get("delivery_result") or {}
-        best = delivery.get("best") or {}
-        best_agent = best.get("agent_id")
-        seller_id = order.get("seller_id")
-
-        if not best_agent:
-            continue
-
-        rows.append({
-            "order_id": order_id,
-            "service": order.get("service"),
-            "query": order.get("query"),
-            "tx_signature": order.get("tx_signature"),
-            "payer_paid_to": "escrow_wallet" if order.get("seller_wallet") == os.getenv("IAT_ESCROW_WALLET") else seller_id,
-            "best_agent": best_agent,
-            "price_iat": order.get("price"),
-            "winner_payment_status": "payout_due" if order.get("seller_wallet") == os.getenv("IAT_ESCROW_WALLET") else ("already_paid" if best_agent == seller_id else "payout_due"),
-            "payout_due_to": best_agent if order.get("seller_wallet") == os.getenv("IAT_ESCROW_WALLET") else (None if best_agent == seller_id else best_agent),
-        })
-
-    return {
-        "status": "ok",
-        "count": len(rows),
-        "settlements": rows[:50],
-    }
-
-
-@app.post("/intent-preview")
-def intent_preview(payload: dict):
-    service = payload.get("service")
-    query = payload.get("query")
-    max_price = float(payload.get("max_price", 999999))
-    priority = payload.get("priority", "quality")
-
-    if not service:
-        return {
-            "status": "error",
-            "message": "missing service",
-        }
-
-    agents = get_agents_for_service_db(service)
-
-    bids = []
-
-    for agent in agents:
-        price = float(agent.get("price") or 999999)
-        reputation = float(agent.get("reputation") or 0.5)
-
-        if price > max_price:
-            continue
-
-        estimated_latency = 1.0 + (price / 10)
-        confidence = min(0.99, reputation + 0.05)
-
-        price_score = 1 / price if price > 0 else 0
-        latency_score = 1 / estimated_latency if estimated_latency > 0 else 0
-
-        if priority == "price":
-            score = (
-                reputation * 0.25 +
-                confidence * 0.20 +
-                price_score * 0.40 +
-                latency_score * 0.15
-            )
-        elif priority == "speed":
-            score = (
-                reputation * 0.25 +
-                confidence * 0.20 +
-                price_score * 0.15 +
-                latency_score * 0.40
-            )
-        else:
-            score = (
-                reputation * 0.35 +
-                confidence * 0.25 +
-                price_score * 0.20 +
-                latency_score * 0.20
-            )
-
-        bids.append({
-            "agent_id": agent.get("agent_id"),
-            "service": agent.get("service"),
-            "url": agent.get("url"),
-            "wallet": agent.get("wallet"),
-            "price_iat": price,
-            "reputation": reputation,
-            "confidence": round(confidence, 4),
-            "estimated_latency": round(estimated_latency, 4),
-            "score": round(score, 6),
-        })
-
-    bids.sort(key=lambda x: x["score"], reverse=True)
-
-    return {
-        "status": "ok",
-        "type": "intent_preview",
-        "intent": {
-            "service": service,
-            "query": query,
-            "max_price": max_price,
-            "priority": priority,
-        },
-        "agents_found": len(agents),
-        "bids_count": len(bids),
-        "selected": bids[:3],
-        "all_bids": bids,
-    }
-
-
-
-def payout_winner_if_escrow(order, best, agents):
-    escrow_wallet = os.getenv("IAT_ESCROW_WALLET")
-    escrow_keypair = os.getenv("IAT_ESCROW_KEYPAIR_JSON") or os.getenv("IAT_ESCROW_KEYPAIR_PATH")
-
-    if not escrow_wallet or not escrow_keypair:
-        return {
-            "winner_payment_status": "payout_due",
-            "payout_tx": None,
-            "reason": "escrow_not_configured",
-        }
-
-    if order.get("seller_wallet") != escrow_wallet:
-        return {
-            "winner_payment_status": "payout_due",
-            "payout_tx": None,
-            "reason": "buyer_did_not_pay_escrow",
-        }
-
-    best_agent_id = best.get("agent_id") if best else None
-    if not best_agent_id:
-        return {
-            "winner_payment_status": "payout_due",
-            "payout_tx": None,
-            "reason": "no_best_agent",
-        }
-
-    winner = None
-    for agent in agents:
-        if agent.get("agent_id") == best_agent_id:
-            winner = agent
-            break
-
-    if not winner:
-        return {
-            "winner_payment_status": "payout_due",
-            "payout_tx": None,
-            "reason": "winner_not_found",
-        }
-
-    winner_wallet = winner.get("wallet")
-    if not winner_wallet:
-        return {
-            "winner_payment_status": "payout_due",
-            "payout_tx": None,
-            "reason": "winner_wallet_missing",
-        }
-
-    try:
-        from iat.transfer import send_iat
-
-        payout_tx = send_iat(
-            escrow_keypair,
-            winner_wallet,
-            float(order.get("price") or 0),
-            "payout_" + order.get("order_id")
-        )
-
-        return {
-            "winner_payment_status": "paid",
-            "payout_tx": payout_tx,
-            "payout_to_agent": best_agent_id,
-            "payout_to_wallet": winner_wallet,
-        }
-
-    except Exception as e:
-        return {
-            "winner_payment_status": "payout_failed",
-            "payout_tx": None,
-            "reason": str(e),
-        }
-
-
-@app.post("/confirm-delivery")
-def confirm_delivery(order_id: str, decision: str, buyer_secret: str):
-    order = get_order_db(order_id)
-
-    if not order:
-        return {"status": "error", "message": "order not found"}
-
-    if buyer_secret != order.get("buyer_secret"):
-        return {"status": "error", "message": "unauthorized"}
-
-    if decision not in ["accept", "reject"]:
-        return {"status": "error", "message": "invalid decision"}
-
-    if decision == "accept":
-        update_order_db(order_id, {"status": "ready_to_release"})
-        return {
-            "status": "ok",
-            "message": "delivery accepted",
-            "order_id": order_id,
-            "payout_state": "ready_to_release"
-        }
-
-    if decision == "reject":
-        update_order_db(order_id, {"status": "disputed"})
-        return {
-            "status": "ok",
-            "message": "order disputed",
-            "order_id": order_id,
-            "payout_state": "disputed"
-        }
-
-
-@app.post("/release-payout")
-def release_payout(order_id: str):
-    order = get_order_db(order_id)
-
-    if not order:
-        return {"status": "error", "message": "order not found"}
-
-    if order.get("status") == "settled":
-        return {"status": "error", "message": "already_settled"}
-
-    if order.get("status") != "ready_to_release":
-        return {"status": "error", "message": "order not ready for payout"}
-
-    delivery = order.get("delivery_result") or {}
-    best = delivery.get("best") or {}
-    best_agent_id = best.get("agent_id")
-
-    if not best_agent_id:
-        return {"status": "error", "message": "no best agent"}
-
-    agents = get_agents_for_service_db(order.get("service"))
-
-    winner = None
-    for a in agents:
-        if a.get("agent_id") == best_agent_id:
-            winner = a
-            break
-
-    if not winner:
-        return {"status": "error", "message": "winner agent not found"}
-
-    escrow_key = os.getenv("IAT_ESCROW_KEYPAIR_JSON") or os.getenv("IAT_ESCROW_KEYPAIR_PATH")
-
-    if not escrow_key:
-        return {"status": "error", "message": "escrow not configured"}
-
-    try:
-        tx = send_iat(
-            escrow_key,
-            winner.get("wallet"),
-            order.get("price"),
-            order_id=order_id
-        )
-
-        update_order_db(order_id, {
-            "status": "settled",
-            "tx_signature": tx
-        })
-
-        return {
-            "status": "ok",
-            "message": "payout executed",
-            "tx": tx,
-            "paid_to": winner.get("agent_id")
-        }
-
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": "payout failed",
-            "error": str(e)
-        }
 

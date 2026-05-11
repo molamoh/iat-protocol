@@ -1247,6 +1247,72 @@ def admin_request_agent_unstake(
     }
 
 
+
+@app.post("/admin/execute-agent-unstake/{agent_id}")
+def admin_execute_agent_unstake(
+    agent_id: str,
+    x_api_key: str | None = Header(default=None),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    cooldown_seconds = 86400
+
+    agent = get_agent_db(agent_id)
+
+    if not agent:
+        return {
+            "status": "not_found",
+            "agent_id": agent_id,
+        }
+
+    if agent.get("stake_status") != "unlock_requested":
+        return {
+            "status": "rejected",
+            "reason": "unlock_not_requested",
+            "stake_status": agent.get("stake_status"),
+        }
+
+    requested_at = int(agent.get("stake_unlock_requested_at") or 0)
+    now = int(time.time())
+
+    remaining = cooldown_seconds - (now - requested_at)
+
+    if remaining > 0:
+        return {
+            "status": "cooldown_active",
+            "remaining_seconds": remaining,
+            "agent_id": agent_id,
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    pmark = qmark()
+
+    cur.execute(f"""
+    UPDATE agents
+    SET stake_status = 'unstaked',
+        stake_amount = 0,
+        available = 0,
+        updated_at = {pmark}
+    WHERE agent_id = {pmark}
+    """, (
+        now,
+        agent_id,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    updated = get_agent_db(agent_id)
+
+    return {
+        "status": "ok",
+        "message": "unstake_executed",
+        "agent": updated,
+    }
+
+
 @app.post("/admin/verify-agent-stake")
 def admin_verify_agent_stake(req: AgentStakeVerifyRequest, request: Request):
     expected_key = os.getenv("IAT_ADMIN_API_KEY")

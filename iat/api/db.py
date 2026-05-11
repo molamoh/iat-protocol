@@ -837,6 +837,33 @@ def list_agents_db():
     return agents
 
 
+
+def get_agent_db(agent_id):
+    if not agent_id:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(
+        f"SELECT * FROM agents WHERE agent_id = {p}",
+        (agent_id,),
+    )
+
+    row = cur.fetchone()
+
+    release_conn(conn)
+
+    if not row:
+        return None
+
+    agent = dict(row)
+    agent["available"] = bool(agent.get("available", 0))
+
+    return agent
+
+
 def get_agents_for_service_db(service):
     now = int(time.time())
 

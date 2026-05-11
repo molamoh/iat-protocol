@@ -298,6 +298,18 @@ def list_services():
     }
 
 
+def refresh_agent_market_gate(agent_id):
+    agent = get_agent_db(agent_id)
+
+    if not agent:
+        return None
+
+    updated_agent = apply_seller_stake_gate(agent)
+    register_agent_db(updated_agent)
+
+    return get_agent_db(agent_id)
+
+
 def compute_max_order_value(agent):
     stake_amount = float(agent.get("stake_amount", 0) or 0)
     reputation = float(agent.get("reputation", 0.5) or 0.5)
@@ -1014,12 +1026,15 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
                 reason="consensus_suspicious_agent",
             )
             if slash_info:
+                refreshed_agent = refresh_agent_market_gate(agent_id)
+
                 onchain = execute_onchain_slash(
                     agent_id,
                     slash_info.get("slashed_amount", 0),
                     req.order_id,
                 )
                 slash_info["onchain_slash"] = onchain
+                slash_info["agent_after_slash"] = refreshed_agent
                 slashing_events.append(slash_info)
         except Exception as e:
             print("Stake slashing error:", e)
@@ -1181,6 +1196,8 @@ def admin_test_slash_agent(agent_id: str, request: Request, slash_ratio: float =
         reason="admin_test_slash",
     )
 
+    refreshed_agent = refresh_agent_market_gate(agent_id)
+
     if not result:
         return {
             "status": "error",
@@ -1191,6 +1208,7 @@ def admin_test_slash_agent(agent_id: str, request: Request, slash_ratio: float =
     return {
         "status": "ok",
         "slash": result,
+        "agent_after_slash": refreshed_agent,
     }
 
 

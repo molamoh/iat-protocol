@@ -335,43 +335,31 @@ def apply_seller_stake_gate(agent):
     if agent_type == "foundation":
         agent["available"] = True
         agent["stake_required"] = 0
-    max_order_value = compute_max_order_value(agent)
-
-    agent["max_order_value"] = max_order_value
-
-    price = float(agent.get("price", 0) or 0)
-
-    if price > max_order_value:
-        agent["available"] = False
-        agent["trust_tier"] = "capacity_exceeded"
-
+        agent["max_order_value"] = None
         return agent
 
     stake_amount = float(agent.get("stake_amount", 0) or 0)
-    protocol_required = compute_seller_required_stake(agent)
 
-    # Protocol requirement overrides seller self-declared requirement.
+    protocol_required = compute_seller_required_stake(agent)
     seller_declared_required = float(agent.get("stake_required", 0) or 0)
     stake_required = max(protocol_required, seller_declared_required)
 
     agent["stake_required"] = stake_required
 
-    if stake_amount < stake_required:
-        agent["available"] = False
-        agent["trust_tier"] = "stake_required"
-    else:
-        agent["available"] = bool(agent.get("available", True))
-        agent["trust_tier"] = agent.get("trust_tier", "staked")
-
     max_order_value = compute_max_order_value(agent)
-
     agent["max_order_value"] = max_order_value
 
     price = float(agent.get("price", 0) or 0)
 
-    if price > max_order_value:
+    if stake_amount < stake_required:
+        agent["available"] = False
+        agent["trust_tier"] = "stake_required"
+    elif price > max_order_value:
         agent["available"] = False
         agent["trust_tier"] = "capacity_exceeded"
+    else:
+        agent["available"] = bool(agent.get("available", True))
+        agent["trust_tier"] = agent.get("trust_tier", "staked")
 
     return agent
 

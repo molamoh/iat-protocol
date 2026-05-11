@@ -71,6 +71,15 @@ class AgentStakeVerifyRequest(BaseModel):
 
 app = FastAPI()
 
+def require_admin_key(x_api_key):
+    expected_key = os.getenv("IAT_ADMIN_API_KEY")
+
+    if not expected_key:
+        return True
+
+    return x_api_key == expected_key
+
+
 
 def payment_wallet_for(agent_wallet):
     escrow_wallet = os.getenv("IAT_ESCROW_WALLET")

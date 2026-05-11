@@ -39,6 +39,7 @@ from iat.api.db import (
     register_agent_db,
     list_agents_db,
     delete_agent_db,
+    get_agent_db,
     get_agents_for_service_db,
     update_agent_reputation_db,
     get_network_status_db,

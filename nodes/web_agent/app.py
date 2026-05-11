@@ -211,3 +211,45 @@ def simple_search(query):
     return []
 
 
+
+
+@app.post("/execute")
+def execute(req: ExecuteRequest):
+    if not req.tx_signature and not ALLOW_UNPAID_TEST:
+        return {
+            "status": "rejected",
+            "reason": "missing_tx_signature",
+        }
+
+    query = req.query or "general search"
+    results = simple_search(query)
+
+    if not results:
+        return {
+            "status": "error",
+            "agent_id": AGENT_ID,
+            "service": SERVICE,
+            "order_id": req.order_id,
+            "tx_signature": req.tx_signature,
+            "reason": "no_search_results",
+            "data": {
+                "type": "web_research",
+                "query": query,
+                "results": [],
+                "timestamp": int(time.time()),
+            },
+        }
+
+    return {
+        "status": "delivered",
+        "agent_id": AGENT_ID,
+        "service": SERVICE,
+        "order_id": req.order_id,
+        "tx_signature": req.tx_signature,
+        "data": {
+            "type": "web_research",
+            "query": query,
+            "results": results,
+            "timestamp": int(time.time()),
+        },
+    }

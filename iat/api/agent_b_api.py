@@ -1192,6 +1192,55 @@ def admin_test_slash_agent(agent_id: str, request: Request, slash_ratio: float =
 
 
 
+
+@app.post("/admin/test-lock-agent-stake/{agent_id}")
+def admin_test_lock_agent_stake(
+    agent_id: str,
+    amount: float = 100,
+    x_api_key: str | None = Header(default=None),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    agent = get_agent_db(agent_id)
+
+    if not agent:
+        return {
+            "status": "not_found",
+            "agent_id": agent_id,
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    pmark = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    UPDATE agents
+    SET stake_status = 'locked',
+        stake_amount = {pmark},
+        stake_locked_at = {pmark},
+        updated_at = {pmark}
+    WHERE agent_id = {pmark}
+    """, (
+        amount,
+        now,
+        now,
+        agent_id,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    updated = get_agent_db(agent_id)
+
+    return {
+        "status": "ok",
+        "message": "test_stake_locked",
+        "agent": updated,
+    }
+
+
 @app.post("/admin/request-agent-unstake/{agent_id}")
 def admin_request_agent_unstake(
     agent_id: str,

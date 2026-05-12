@@ -502,6 +502,10 @@ def marketplace():
     for agent in agents:
         online = agent["available"] and (now - int(agent["updated_at"]) <= timeout)
 
+        from iat.api.multi_exec import compute_agent_market_score
+
+        market_score = compute_agent_market_score(agent)
+
         listings.append({
             "agent_id": agent["agent_id"],
             "service": agent["service"],
@@ -510,6 +514,14 @@ def marketplace():
             "price_iat": agent["price"],
             "reputation": agent["reputation"],
             "score": compute_agent_score(agent),
+            "market_score": market_score,
+            "routing_status": "eligible" if online and market_score > -999 else "not_eligible",
+            "trust_tier": agent.get("trust_tier"),
+            "stake_status": agent.get("stake_status"),
+            "stake_amount": agent.get("stake_amount"),
+            "stake_required": agent.get("stake_required"),
+            "stake_slashed_total": agent.get("stake_slashed_total"),
+            "risk_score": agent.get("risk_score"),
             "status": "online" if online else "offline",
             "source": "dynamic_registry",
             "updated_at": agent["updated_at"],
@@ -517,7 +529,7 @@ def marketplace():
 
     listings = sorted(
         listings,
-        key=lambda x: (x["service"], x["status"] != "online", -x["score"]),
+        key=lambda x: (x["service"], x["status"] != "online", -x["market_score"]),
     )
 
     return {

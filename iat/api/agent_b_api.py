@@ -703,12 +703,131 @@ def describe_buyer_delivery(service: str, prompt: str):
     return "Un résultat structuré adapté à votre demande."
 
 
+
+def detect_purchase_type(prompt: str):
+    text = (prompt or "").lower()
+
+    if any(w in text for w in ["car", "voiture", "vehicle", "occasion", "used car"]):
+        return "used_car_search"
+
+    if any(w in text for w in ["hotel", "hôtel", "travel", "trip", "stay", "paris"]):
+        return "hotel_search"
+
+    if any(w in text for w in ["restaurant", "food", "dinner", "lunch"]):
+        return "restaurant_search"
+
+    return "general_research"
+
+
+def extract_basic_requirements(prompt: str):
+    text = (prompt or "").lower()
+    requirements = {}
+
+    if "paris" in text:
+        requirements["location"] = "Paris"
+    if "lyon" in text:
+        requirements["location"] = "Lyon"
+
+    if "toyota" in text:
+        requirements["brand"] = "Toyota"
+    if "hybrid" in text or "hybride" in text:
+        requirements["fuel"] = "hybrid"
+    if "automatic" in text or "automatique" in text:
+        requirements["transmission"] = "automatic"
+
+    import re
+    amounts = re.findall(r"(\d{3,6})\s?(€|eur|euro|iat)?", text)
+    if amounts:
+        requirements["budget"] = float(amounts[0][0])
+
+    return requirements
+
+
+def buyer_missing_requirements(prompt: str, purchase_type: str):
+    known = extract_basic_requirements(prompt)
+
+    required_by_type = {
+        "used_car_search": [
+            "budget",
+            "location",
+            "fuel",
+            "max_mileage",
+            "min_year",
+            "transmission",
+            "usage",
+        ],
+        "hotel_search": [
+            "location",
+            "dates",
+            "budget",
+            "number_of_people",
+            "quality_level",
+        ],
+        "restaurant_search": [
+            "location",
+            "budget",
+            "cuisine",
+            "date_or_time",
+            "number_of_people",
+        ],
+        "general_research": [
+            "topic",
+            "depth",
+            "deadline",
+        ],
+    }
+
+    questions_by_field = {
+        "budget": "What is your maximum budget?",
+        "location": "Which city or country should we search in?",
+        "fuel": "Do you prefer petrol, diesel, hybrid, electric, or no preference?",
+        "max_mileage": "What maximum mileage do you accept?",
+        "min_year": "What is the minimum year you want?",
+        "transmission": "Do you want manual, automatic, or no preference?",
+        "usage": "What is the main use: city, family, commuting, business, or long trips?",
+        "dates": "What dates do you need?",
+        "number_of_people": "How many people is this for?",
+        "quality_level": "Do you prefer budget, balanced value, premium, or luxury?",
+        "cuisine": "What cuisine or food style do you prefer?",
+        "date_or_time": "For what date or time?",
+        "topic": "What exact topic should be researched?",
+        "depth": "Do you want a quick summary or a deep report?",
+        "deadline": "When do you need the result?",
+    }
+
+    required = required_by_type.get(purchase_type, [])
+    missing = [field for field in required if field not in known]
+
+    return {
+        "known_requirements": known,
+        "missing_requirements": missing,
+        "questions": [questions_by_field[f] for f in missing if f in questions_by_field],
+    }
+
+
 @app.post("/buyer/preview")
 def buyer_preview(req: BuyerPreviewRequest):
     if is_buyer_banned_db(req.buyer_wallet):
         return {
             "status": "rejected",
             "message": "Votre wallet n’est pas éligible pour utiliser le service actuellement.",
+        }
+
+    purchase_type = detect_purchase_type(req.prompt)
+    requirements = buyer_missing_requirements(req.prompt, purchase_type)
+
+    if requirements["missing_requirements"]:
+        return {
+            "status": "needs_clarification",
+            "protocol_language": "en",
+            "buyer_summary": {
+                "request_understood": req.prompt,
+                "detected_purchase_type": purchase_type,
+                "known_requirements": requirements["known_requirements"],
+                "missing_requirements": requirements["missing_requirements"],
+                "questions": requirements["questions"],
+                "message": "We need a few more details to recommend the best value-for-money offer.",
+            },
         }
 
     service = detect_buyer_service(req.prompt)

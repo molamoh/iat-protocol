@@ -868,7 +868,8 @@ def buyer_preview(req: BuyerPreviewRequest):
             "buyer_summary": {
                 "request_understood": req.prompt,
                 "detected_service": service,
-                "reason": "Aucune offre disponible ne respecte actuellement les critères de prix, disponibilité et qualité minimale.",
+                "intent": intent,
+                "reason": "No available offer currently matches the requested quality, price and availability constraints.",
             },
         }
 

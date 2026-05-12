@@ -15,6 +15,7 @@ from iat.onchain import (
 )
 
 from iat.api.execution_engine import select_best_agent, compute_agent_score
+from iat.api.buyer_intent import normalize_buyer_intent
 
 from iat.api.db import (
     update_agent_call_stats_db,
@@ -829,19 +830,20 @@ def buyer_preview(req: BuyerPreviewRequest):
             "message": "Votre wallet n’est pas éligible pour utiliser le service actuellement.",
         }
 
-    purchase_type = detect_purchase_type(req.prompt)
-    requirements = buyer_missing_requirements(req.prompt, purchase_type)
+    intent = normalize_buyer_intent(req.prompt)
 
-    if requirements["missing_requirements"]:
+    if intent.get("missing_requirements"):
         return {
             "status": "needs_clarification",
-            "protocol_language": "en",
+            "protocol_language": intent.get("protocol_language", "en"),
             "buyer_summary": {
                 "request_understood": req.prompt,
-                "detected_purchase_type": purchase_type,
-                "known_requirements": requirements["known_requirements"],
-                "missing_requirements": requirements["missing_requirements"],
-                "questions": requirements["questions"],
+                "detected_purchase_type": intent.get("purchase_type"),
+                "goal": intent.get("goal"),
+                "known_requirements": intent.get("requirements", {}),
+                "missing_requirements": intent.get("missing_requirements", []),
+                "questions": intent.get("questions", []),
+                "confidence": intent.get("confidence"),
                 "message": "We need a few more details to recommend the best value-for-money offer.",
             },
         }

@@ -848,7 +848,26 @@ def buyer_preview(req: BuyerPreviewRequest):
             },
         }
 
-    service = detect_buyer_service(req.prompt)
+    purchase_type = str(intent.get("purchase_type", "") or "").lower()
+
+    service_mapping = {
+        "car": "web_research",
+        "used_car": "web_research",
+        "used_car_search": "web_research",
+        "vehicle": "web_research",
+        "hotel": "web_research",
+        "hotel_search": "web_research",
+        "restaurant": "web_research",
+        "restaurant_search": "web_research",
+        "market_sentiment": "market_sentiment",
+        "risk_report": "risk_report",
+    }
+
+    service = service_mapping.get(
+        purchase_type,
+        detect_buyer_service(req.prompt),
+    )
+
     agents = get_agents_for_service_db(service)
 
     if req.max_price is not None:
@@ -869,7 +888,8 @@ def buyer_preview(req: BuyerPreviewRequest):
                 "request_understood": req.prompt,
                 "detected_service": service,
                 "intent": intent,
-                "reason": "No available offer currently matches the requested quality, price and availability constraints.",
+                "reason": "Your request was understood, but no active provider is currently available for this category under the requested constraints.",
+                "recommended_next_step": "Try a higher maximum price, broaden the criteria, or retry when more providers are available.",
             },
         }
 

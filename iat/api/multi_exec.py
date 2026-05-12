@@ -39,6 +39,9 @@ def compute_agent_market_score(agent):
     honest_volume = float(agent.get("honest_volume", 0) or 0)
     fraud_volume = float(agent.get("fraud_volume", 0) or 0)
     dynamic_stake_required = float(agent.get("dynamic_stake_required", 0) or 0)
+    stake_slashed_total = float(agent.get("stake_slashed_total", 0) or 0)
+    trust_tier = agent.get("trust_tier", "free")
+    stake_status = agent.get("stake_status", "unstaked")
 
     avg_latency = (latency_total / call_count) if call_count > 0 else None
 
@@ -80,6 +83,31 @@ def compute_agent_market_score(agent):
     adaptive_market_bonus = min(honest_rate * 0.10, 0.10)
     adaptive_fraud_penalty = min(fraud_rate * 0.60, 0.60)
 
+    # Penalize agents with previous slashing history.
+    slash_penalty = 0
+    if stake_amount > 0:
+        slash_penalty = min(stake_slashed_total / (stake_amount + stake_slashed_total + 0.001), 1.0) * 0.40
+    elif stake_slashed_total > 0:
+        slash_penalty = 0.40
+
+    # Trust tier influences routing, but cannot overpower fraud/stake penalties.
+    trust_tier_bonus = {
+        "premium": 0.20,
+        "standard": 0.10,
+        "staked": 0.08,
+        "recovery": -0.05,
+        "stake_required": -0.50,
+        "capacity_exceeded": -0.50,
+        "free": 0.0,
+    }.get(trust_tier, 0.0)
+
+    # Agents trying to unstake should not be preferred.
+    stake_status_penalty = 0
+    if stake_status == "unlock_requested":
+        stake_status_penalty = 0.75
+    elif stake_status == "unstaked" and agent_type != "foundation":
+        stake_status_penalty = 0.10
+
     score = (
         reputation * 1.5
         + success_bonus
@@ -90,8 +118,11 @@ def compute_agent_market_score(agent):
         + price_score * 0.25
         - failure_penalty
         - min(risk_score, 1.0) * 0.50
+        + trust_tier_bonus
         - stake_gap_penalty
         - adaptive_fraud_penalty
+        - slash_penalty
+        - stake_status_penalty
     )
 
     return round(score, 6)

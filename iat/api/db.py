@@ -260,6 +260,27 @@ def get_agent_delegation_db(delegation_id):
     return dict(row) if row else None
 
 
+def get_agent_delegated_stake_total_db(agent_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT COALESCE(SUM(amount), 0) AS delegated_total
+    FROM agent_delegations
+    WHERE agent_id = {p}
+      AND status = 'locked'
+    """, (agent_id,))
+
+    row = cur.fetchone()
+    release_conn(conn)
+
+    if not row:
+        return 0.0
+
+    return float(row_get(row, "delegated_total", 0) or 0)
+
+
 def list_agent_delegations_db(agent_id):
     conn = get_conn()
     cur = conn.cursor()

@@ -59,6 +59,7 @@ from iat.api.db import (
     get_agent_delegation_db,
     list_agent_delegations_db,
     list_delegator_positions_db,
+    get_agent_delegated_stake_total_db,
 )
 
 
@@ -570,6 +571,15 @@ def marketplace():
 
         market_score = compute_agent_market_score(agent)
 
+        own_stake = float(agent.get("stake_amount", 0) or 0)
+        delegated_stake_total = get_agent_delegated_stake_total_db(agent["agent_id"])
+
+        # Delegated stake is useful, but capped to avoid rented trust / cartel abuse.
+        effective_delegated_stake = min(
+            delegated_stake_total,
+            own_stake * 0.40,
+        )
+
         listings.append({
             "agent_id": agent["agent_id"],
             "service": agent["service"],
@@ -583,6 +593,9 @@ def marketplace():
             "trust_tier": agent.get("trust_tier"),
             "stake_status": agent.get("stake_status"),
             "stake_amount": agent.get("stake_amount"),
+            "delegated_stake_total": delegated_stake_total,
+            "effective_delegated_stake": effective_delegated_stake,
+            "delegated_stake_cap_ratio": 0.40,
             "stake_required": agent.get("stake_required"),
             "stake_slashed_total": agent.get("stake_slashed_total"),
             "risk_score": agent.get("risk_score"),

@@ -166,6 +166,12 @@ class OrderRequest(BaseModel):
     buyer_wallet: str | None = None
 
 
+class BuyerPreviewRequest(BaseModel):
+    buyer_wallet: str
+    prompt: str
+    max_price: float | None = None
+
+
 class VerifyPaymentRequest(BaseModel):
     order_id: str
     tx_signature: str
@@ -665,6 +671,112 @@ def get_order(order_id: str):
     return {
         "status": "ok",
         "order": order,
+    }
+
+
+
+def detect_buyer_service(prompt: str):
+    text = (prompt or "").lower()
+
+    if any(w in text for w in ["hotel", "hôtel", "paris", "voyage", "travel", "restaurant", "meilleur"]):
+        return "web_research"
+
+    if any(w in text for w in ["risk", "risque", "audit", "analyse risque"]):
+        return "risk_report"
+
+    if any(w in text for w in ["sentiment", "marché", "market", "btc", "crypto"]):
+        return "market_sentiment"
+
+    return "web_research"
+
+
+def describe_buyer_delivery(service: str, prompt: str):
+    if service == "web_research":
+        return "Une recherche structurée avec sources, comparaison, critères de qualité, liens utiles et recommandation finale."
+
+    if service == "risk_report":
+        return "Une analyse de risque structurée avec facteurs principaux, niveau de risque, justification et recommandation synthétique."
+
+    if service == "market_sentiment":
+        return "Une synthèse du sentiment de marché avec signaux dominants, biais de foule et conclusion exploitable."
+
+    return "Un résultat structuré adapté à votre demande."
+
+
+@app.post("/buyer/preview")
+def buyer_preview(req: BuyerPreviewRequest):
+    if is_buyer_banned_db(req.buyer_wallet):
+        return {
+            "status": "rejected",
+            "message": "Votre wallet n’est pas éligible pour utiliser le service actuellement.",
+        }
+
+    service = detect_buyer_service(req.prompt)
+    agents = get_agents_for_service_db(service)
+
+    if req.max_price is not None:
+        agents = [
+            a for a in agents
+            if float(a.get("price", 0) or 0) <= float(req.max_price)
+        ]
+
+    available_agents = [
+        a for a in agents
+        if bool(a.get("available", True))
+    ]
+
+    if not available_agents:
+        return {
+            "status": "no_offer_available",
+            "buyer_summary": {
+                "request_understood": req.prompt,
+                "detected_service": service,
+                "reason": "Aucune offre disponible ne respecte actuellement les critères de prix, disponibilité et qualité minimale.",
+            },
+        }
+
+    from iat.api.multi_exec import compute_agent_market_score
+
+    ranked = sorted(
+        available_agents,
+        key=lambda a: compute_agent_market_score(a) / max(float(a.get("price", 1) or 1), 0.001),
+        reverse=True,
+    )
+
+    best = ranked[0]
+
+    prices = [float(a.get("price", 0) or 0) for a in available_agents]
+
+    recommended_price = float(best.get("price", 0) or 0)
+    quality_score = round(min(max(float(best.get("reputation", 0.8) or 0.8), 0), 1), 3)
+    value_score = round(compute_agent_market_score(best) / max(recommended_price, 0.001), 6)
+
+    return {
+        "status": "preview",
+        "buyer_summary": {
+            "request_understood": req.prompt,
+            "detected_service": service,
+            "expected_delivery": describe_buyer_delivery(service, req.prompt),
+            "recommended_price_iat": recommended_price,
+            "min_price_available_iat": min(prices),
+            "max_price_available_iat": max(prices),
+            "buyer_max_price_iat": req.max_price,
+            "estimated_quality": "high" if quality_score >= 0.85 else "medium",
+            "quality_score": quality_score,
+            "value_for_money": "excellent" if value_score >= 1 else "good",
+            "estimated_delivery_time": "quelques secondes après paiement",
+        },
+        "recommendation": {
+            "why_this_offer": "Offre recommandée car elle présente le meilleur équilibre entre prix, qualité attendue, disponibilité et fiabilité.",
+            "recommended_action": "Confirmer pour créer l’ordre de paiement.",
+        },
+        "internal_next_step": {
+            "create_order_payload": {
+                "service": service,
+                "query": req.prompt,
+                "buyer_wallet": req.buyer_wallet,
+            }
+        }
     }
 
 

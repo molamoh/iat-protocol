@@ -117,6 +117,7 @@ def init_db():
     release_conn(locals().get("conn"))
     init_agents_table()
     init_buyers_table()
+    init_delegations_table()
 
 
 def init_agents_table():
@@ -188,6 +189,27 @@ def init_agents_table():
             pass
     conn.commit()
     release_conn(locals().get("conn"))
+
+
+def init_delegations_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS agent_delegations (
+        delegation_id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        delegator_wallet TEXT NOT NULL,
+        amount REAL DEFAULT 0,
+        status TEXT DEFAULT 'locked',
+        delegated_at INTEGER NOT NULL,
+        unlock_requested_at INTEGER,
+        updated_at INTEGER NOT NULL
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
 
 
 def init_buyers_table():

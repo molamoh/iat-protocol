@@ -732,10 +732,26 @@ def extract_basic_requirements(prompt: str):
         requirements["brand"] = "Toyota"
     if "hybrid" in text or "hybride" in text:
         requirements["fuel"] = "hybrid"
-    if "automatic" in text or "automatique" in text:
+    if "automatic" in text or "automatique" in text or "auto" in text:
         requirements["transmission"] = "automatic"
+    if "manual" in text or "manuelle" in text:
+        requirements["transmission"] = "manual"
+
+    if "city" in text or "ville" in text:
+        requirements["usage"] = "city"
+    if "family" in text or "famille" in text:
+        requirements["usage"] = "family"
 
     import re
+
+    km = re.findall(r"(\d{2,6})\s?(km|kilometers|kilometres)", text)
+    if km:
+        requirements["max_mileage"] = float(km[0][0])
+
+    years = re.findall(r"(20\d{2}|19\d{2})", text)
+    if years:
+        requirements["min_year"] = int(years[0])
+
     amounts = re.findall(r"(\d{3,6})\s?(€|eur|euro|iat)?", text)
     if amounts:
         requirements["budget"] = float(amounts[0][0])

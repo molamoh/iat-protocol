@@ -1241,6 +1241,7 @@ def admin_test_lock_agent_stake(
     SET stake_status = 'locked',
         stake_amount = {pmark},
         stake_locked_at = {pmark},
+        stake_unlock_requested_at = NULL,
         updated_at = {pmark}
     WHERE agent_id = {pmark}
     """, (

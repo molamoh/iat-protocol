@@ -55,6 +55,10 @@ from iat.api.db import (
     unban_buyer_db,
     register_buyer_seen_db,
     update_order_buyer_wallet_db,
+    create_agent_delegation_db,
+    get_agent_delegation_db,
+    list_agent_delegations_db,
+    list_delegator_positions_db,
 )
 
 
@@ -71,6 +75,13 @@ class AgentStakeVerifyRequest(BaseModel):
     agent_id: str
     tx_signature: str
     expected_amount: float = 0
+
+
+class DelegationRequest(BaseModel):
+    delegation_id: str
+    agent_id: str
+    delegator_wallet: str
+    amount: float
 
 
 app = FastAPI()
@@ -480,6 +491,59 @@ def admin_delete_agent(agent_id: str, x_api_key: str | None = Header(default=Non
     return {
         "status": "ok",
         "deleted_agent": deleted,
+    }
+
+
+
+@app.post("/admin/delegate-stake")
+def admin_delegate_stake(req: DelegationRequest, x_api_key: str | None = Header(default=None)):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    agent = get_agent_db(req.agent_id)
+
+    if not agent:
+        return {
+            "status": "not_found",
+            "agent_id": req.agent_id,
+        }
+
+    if req.amount <= 0:
+        return {
+            "status": "rejected",
+            "reason": "invalid_amount",
+        }
+
+    delegation = create_agent_delegation_db({
+        "delegation_id": req.delegation_id,
+        "agent_id": req.agent_id,
+        "delegator_wallet": req.delegator_wallet,
+        "amount": req.amount,
+        "status": "locked",
+    })
+
+    return {
+        "status": "ok",
+        "message": "delegation_locked",
+        "delegation": delegation,
+    }
+
+
+@app.get("/agents/{agent_id}/delegations")
+def agent_delegations(agent_id: str):
+    return {
+        "status": "ok",
+        "agent_id": agent_id,
+        "delegations": list_agent_delegations_db(agent_id),
+    }
+
+
+@app.get("/delegators/{delegator_wallet}/positions")
+def delegator_positions(delegator_wallet: str):
+    return {
+        "status": "ok",
+        "delegator_wallet": delegator_wallet,
+        "positions": list_delegator_positions_db(delegator_wallet),
     }
 
 

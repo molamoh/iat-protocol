@@ -212,6 +212,90 @@ def init_delegations_table():
     release_conn(conn)
 
 
+def create_agent_delegation_db(delegation):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    INSERT INTO agent_delegations (
+        delegation_id, agent_id, delegator_wallet, amount,
+        status, delegated_at, updated_at
+    )
+    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p})
+    """, (
+        delegation["delegation_id"],
+        delegation["agent_id"],
+        delegation["delegator_wallet"],
+        float(delegation["amount"]),
+        delegation.get("status", "locked"),
+        now,
+        now,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return get_agent_delegation_db(delegation["delegation_id"])
+
+
+def get_agent_delegation_db(delegation_id):
+    if not delegation_id:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM agent_delegations
+    WHERE delegation_id = {p}
+    """, (delegation_id,))
+
+    row = cur.fetchone()
+    release_conn(conn)
+
+    return dict(row) if row else None
+
+
+def list_agent_delegations_db(agent_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM agent_delegations
+    WHERE agent_id = {p}
+    ORDER BY updated_at DESC
+    """, (agent_id,))
+
+    rows = cur.fetchall()
+    release_conn(conn)
+
+    return [dict(r) for r in rows]
+
+
+def list_delegator_positions_db(delegator_wallet):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM agent_delegations
+    WHERE delegator_wallet = {p}
+    ORDER BY updated_at DESC
+    """, (delegator_wallet,))
+
+    rows = cur.fetchall()
+    release_conn(conn)
+
+    return [dict(r) for r in rows]
+
+
 def init_buyers_table():
     conn = get_conn()
     cur = conn.cursor()

@@ -180,6 +180,8 @@ def init_agents_table():
         "stake_tx_signature": "TEXT",
         "stake_locked_at": "INTEGER",
         "stake_unlock_requested_at": "INTEGER",
+        "capabilities": "TEXT DEFAULT '[]'",
+        "specialties": "TEXT DEFAULT '[]'",
     }
 
     for column, col_type in agent_columns.items():
@@ -1058,6 +1060,8 @@ def register_agent_db(agent):
                 stake_amount = {p},
                 stake_required = {p},
                 trust_tier = {p},
+                capabilities = {p},
+                specialties = {p},
                 updated_at = {p}
             WHERE agent_id = {p}
             """, (
@@ -1070,6 +1074,8 @@ def register_agent_db(agent):
                 float(agent.get("stake_amount", 0) or 0),
                 float(agent.get("stake_required", 0) or 0),
                 agent.get("trust_tier", "free"),
+                agent.get("capabilities", "[]"),
+                agent.get("specialties", "[]"),
                 now,
                 agent["agent_id"],
             ))
@@ -1078,9 +1084,10 @@ def register_agent_db(agent):
             INSERT INTO agents (
                 agent_id, service, url, wallet, agent_type, price, reputation, available,
                 stake_amount, stake_required, trust_tier,
+                capabilities, specialties,
                 registered_at, updated_at
             )
-            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
             """, (
                 agent["agent_id"],
                 agent["service"],
@@ -1093,6 +1100,8 @@ def register_agent_db(agent):
                 float(agent.get("stake_amount", 0) or 0),
                 float(agent.get("stake_required", 0) or 0),
                 agent.get("trust_tier", "free"),
+                agent.get("capabilities", "[]"),
+                agent.get("specialties", "[]"),
                 now,
                 now,
             ))

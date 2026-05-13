@@ -41,6 +41,8 @@ def payload():
         "price": PRICE,
         "reputation": REPUTATION,
         "available": True,
+        "capabilities": "[\"web_search\", \"product_research\", \"price_comparison\", \"buyer_research\"]",
+        "specialties": "[\"general_web\", \"consumer_products\", \"shopping_research\"]",
     }
 
 

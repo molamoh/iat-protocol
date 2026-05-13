@@ -346,6 +346,51 @@ def compute_quality(result):
     return quality * 2 + latency_score
 
 
+def build_final_buyer_delivery(best_result, all_results=None):
+    if not best_result:
+        return {
+            "status": "failed",
+            "summary": "No successful provider response was available.",
+            "final_recommendation": None,
+            "alternatives": [],
+            "confidence": 0,
+        }
+
+    data = best_result.get("data", {}) or {}
+
+    recommendations = data.get("recommendations", []) or []
+    final_recommendation = data.get("final_recommendation")
+    summary = data.get("summary") or ""
+
+    alternatives = []
+    for r in all_results or []:
+        if not r.get("success"):
+            continue
+
+        d = r.get("data", {}) or {}
+        if r.get("agent_id") == best_result.get("agent_id"):
+            continue
+
+        alternatives.append({
+            "source_agent": r.get("agent_id"),
+            "summary": d.get("summary"),
+            "final_recommendation": d.get("final_recommendation"),
+            "confidence": d.get("confidence", 0),
+        })
+
+    return {
+        "status": "success",
+        "summary": summary,
+        "recommendations": recommendations,
+        "final_recommendation": final_recommendation,
+        "alternatives": alternatives[:3],
+        "confidence": data.get("confidence", 0.5),
+        "selection_score": best_result.get("selection_score"),
+        "selection_reason": "Selected for the best balance of result quality, reliability, confidence, response speed and value.",
+        "sources": data.get("sources", []),
+    }
+
+
 def select_best_result(results):
     valid = [r for r in results if r.get("success")]
 
@@ -416,7 +461,10 @@ def select_best_result(results):
 
     scored.sort(key=lambda x: x[0], reverse=True)
 
-    return scored[0][1]
+    best = scored[0][1]
+    best["final_buyer_delivery"] = build_final_buyer_delivery(best, valid)
+
+    return best
 
 def compute_consensus(results):
     valid = [r for r in results if r.get("success")]

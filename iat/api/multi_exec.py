@@ -167,6 +167,29 @@ def select_top_agents(agents, limit=3):
 
 
 
+def normalize_agent_delivery(data):
+    if not isinstance(data, dict):
+        return {
+            "status": "error",
+            "summary": "Agent returned a non-JSON response.",
+            "recommendations": [],
+            "final_recommendation": None,
+            "confidence": 0,
+            "sources": [],
+            "raw": data,
+        }
+
+    return {
+        "status": data.get("status", "success"),
+        "summary": data.get("summary") or data.get("answer") or data.get("result") or "",
+        "recommendations": data.get("recommendations", []),
+        "final_recommendation": data.get("final_recommendation") or data.get("best") or data.get("answer"),
+        "confidence": float(data.get("confidence", 0.5) or 0.5),
+        "sources": data.get("sources", data.get("links", [])),
+        "raw": data,
+    }
+
+
 def call_agent(agent, order):
     start = time.monotonic()
 
@@ -225,7 +248,7 @@ def call_agent(agent, order):
                 "honest_volume": agent.get("honest_volume", 0),
                 "fraud_volume": agent.get("fraud_volume", 0),
                 "dynamic_stake_required": agent.get("dynamic_stake_required", 0),
-                "data": r.json(),
+                "data": normalize_agent_delivery(r.json()),
             }
 
         return {

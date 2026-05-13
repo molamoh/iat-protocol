@@ -120,6 +120,7 @@ def init_db():
     init_delegations_table()
 
     init_buyer_sessions_table()
+    init_buyer_conversation_sessions_table()
 
 
 def init_agents_table():
@@ -402,6 +403,105 @@ def get_buyer_session_db(buyer_wallet):
         return json.loads(raw)
     except Exception:
         return None
+
+
+
+def init_buyer_conversation_sessions_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS buyer_conversation_sessions (
+        session_id TEXT PRIMARY KEY,
+        buyer_wallet TEXT NOT NULL,
+        session_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+def cleanup_expired_buyer_sessions_db(ttl_seconds=300):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    cutoff = int(time.time()) - int(ttl_seconds)
+
+    cur.execute(f"""
+    DELETE FROM buyer_conversation_sessions
+    WHERE updated_at < {p}
+    """, (cutoff,))
+
+    conn.commit()
+    release_conn(conn)
+
+
+def save_buyer_conversation_session_db(session_id, buyer_wallet, session_json):
+    import json
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+    payload = json.dumps(session_json)
+
+    if USE_POSTGRES:
+        cur.execute(f"""
+        INSERT INTO buyer_conversation_sessions (
+            session_id, buyer_wallet, session_json, updated_at
+        )
+        VALUES ({p}, {p}, {p}, {p})
+        ON CONFLICT (session_id)
+        DO UPDATE SET
+            buyer_wallet = EXCLUDED.buyer_wallet,
+            session_json = EXCLUDED.session_json,
+            updated_at = EXCLUDED.updated_at
+        """, (session_id, buyer_wallet, payload, now))
+    else:
+        cur.execute(f"""
+        INSERT OR REPLACE INTO buyer_conversation_sessions (
+            session_id, buyer_wallet, session_json, updated_at
+        )
+        VALUES ({p}, {p}, {p}, {p})
+        """, (session_id, buyer_wallet, payload, now))
+
+    conn.commit()
+    release_conn(conn)
+
+
+def get_buyer_conversation_session_db(session_id, buyer_wallet, ttl_seconds=300):
+    import json
+
+    if not session_id:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    cutoff = int(time.time()) - int(ttl_seconds)
+
+    cur.execute(f"""
+    SELECT session_json, updated_at
+    FROM buyer_conversation_sessions
+    WHERE session_id = {p}
+      AND buyer_wallet = {p}
+      AND updated_at >= {p}
+    """, (session_id, buyer_wallet, cutoff))
+
+    row = cur.fetchone()
+    release_conn(conn)
+
+    if not row:
+        return None
+
+    try:
+        return json.loads(row_get(row, "session_json"))
+    except Exception:
+        return None
+
+
 
 
 def init_buyers_table():

@@ -63,6 +63,9 @@ from iat.api.db import (
     get_agent_delegated_stake_total_db,
     save_buyer_session_db,
     get_buyer_session_db,
+    save_buyer_conversation_session_db,
+    get_buyer_conversation_session_db,
+    cleanup_expired_buyer_sessions_db,
 )
 
 
@@ -173,6 +176,7 @@ class BuyerPreviewRequest(BaseModel):
     buyer_wallet: str
     prompt: str
     max_price: float | None = None
+    session_id: str | None = None
 
 
 class VerifyPaymentRequest(BaseModel):
@@ -832,7 +836,15 @@ def buyer_preview(req: BuyerPreviewRequest):
             "message": "Votre wallet n’est pas éligible pour utiliser le service actuellement.",
         }
 
-    previous_session = get_buyer_session_db(req.buyer_wallet)
+    cleanup_expired_buyer_sessions_db(ttl_seconds=300)
+
+    session_id = req.session_id or str(uuid.uuid4())
+
+    previous_session = get_buyer_conversation_session_db(
+        session_id,
+        req.buyer_wallet,
+        ttl_seconds=300,
+    )
 
     merged_prompt = req.prompt
 
@@ -853,7 +865,8 @@ New buyer message:
 
     intent = normalize_buyer_intent(merged_prompt)
 
-    save_buyer_session_db(
+    save_buyer_conversation_session_db(
+        session_id,
         req.buyer_wallet,
         {
             "goal": intent.get("goal"),
@@ -867,6 +880,8 @@ New buyer message:
         return {
             "status": "needs_clarification",
             "protocol_language": intent.get("protocol_language", "en"),
+            "session_id": session_id,
+            "session_ttl_seconds": 300,
             "buyer_summary": {
                 "request_understood": req.prompt,
                 "detected_purchase_type": intent.get("purchase_type"),
@@ -942,6 +957,8 @@ New buyer message:
 
     return {
         "status": "preview",
+        "session_id": session_id,
+        "session_ttl_seconds": 300,
         "buyer_summary": {
             "request_understood": req.prompt,
             "detected_service": service,

@@ -487,6 +487,27 @@ def admin_disable_localhost_agents(x_api_key: str | None = Header(default=None))
     }
 
 
+
+@app.post("/admin/reactivate-agent/{agent_id}")
+def admin_reactivate_agent(agent_id: str, x_api_key: str | None = Header(default=None)):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    agent = reactivate_agent_db(agent_id)
+
+    if not agent:
+        return {
+            "status": "not_found",
+            "agent_id": agent_id,
+        }
+
+    return {
+        "status": "ok",
+        "message": "agent_reactivated",
+        "agent": agent,
+    }
+
+
 @app.delete("/admin/delete-agent/{agent_id}")
 def admin_delete_agent(agent_id: str, x_api_key: str | None = Header(default=None)):
     if not require_admin_key(x_api_key):

@@ -1271,7 +1271,7 @@ def request_endpoint(payload: dict):
 
 @app.post("/multi-call-test")
 def multi_call_test(payload: dict):
-    from iat.api.multi_exec import multi_call, select_best_result, select_top_agents, select_top_agents, compute_consensus
+    from iat.api.multi_exec import multi_call, select_best_result, select_top_agents, compute_consensus
     from iat.api.db import get_agents_for_service_db
 
     service = payload.get("service")
@@ -1396,7 +1396,7 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
     paid_order = dict(order)
     paid_order["tx_signature"] = req.tx_signature
 
-    selected_agents = select_top_agents(agents, limit=3)
+    selected_agents = select_top_agents(agents, limit=3, order=order)
 
     # DEBUG ONLY: force one agent into execution when env var is set.
     # Example on Render env:

@@ -3,6 +3,67 @@ import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
+def parse_json_list(value):
+    import json
+
+    if isinstance(value, list):
+        return value
+
+    if not value:
+        return []
+
+    try:
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, list) else []
+    except Exception:
+        return []
+
+
+def infer_required_capabilities(order):
+    intent = order.get("buyer_intent") or {}
+    purchase_type = str(intent.get("purchase_type", "") or "").lower()
+    goal = str(intent.get("goal", "") or "").lower()
+    query = str(order.get("query", "") or "").lower()
+
+    text = " ".join([purchase_type, goal, query])
+
+    required = {"web_search", "buyer_research"}
+
+    if any(w in text for w in ["product", "smartphone", "phone", "laptop", "car", "vehicle", "buy", "price"]):
+        required.add("product_research")
+        required.add("price_comparison")
+
+    if any(w in text for w in ["compare", "comparison", "best value", "quality price", "value-for-money"]):
+        required.add("price_comparison")
+
+    return list(required)
+
+
+def compute_capability_match_score(agent, order):
+    capabilities = set(parse_json_list(agent.get("capabilities")))
+    specialties = set(parse_json_list(agent.get("specialties")))
+    required = set(infer_required_capabilities(order))
+
+    if not required:
+        return 0.5
+
+    capability_overlap = len(capabilities.intersection(required)) / len(required)
+
+    specialty_bonus = 0
+    intent = order.get("buyer_intent") or {}
+    text = " ".join([
+        str(intent.get("purchase_type", "")),
+        str(intent.get("goal", "")),
+        str(order.get("query", "")),
+    ]).lower()
+
+    if "product" in text or "phone" in text or "smartphone" in text or "laptop" in text:
+        if "consumer_products" in specialties or "shopping_research" in specialties:
+            specialty_bonus = 0.20
+
+    return round(min(1.0, capability_overlap + specialty_bonus), 6)
+
+
 def compute_agent_market_score(agent):
     """
     Market pre-selection score.
@@ -128,7 +189,7 @@ def compute_agent_market_score(agent):
     return round(score, 6)
 
 
-def select_top_agents(agents, limit=3):
+def select_top_agents(agents, limit=3, order=None):
     """
     Select best available agents before execution.
     This reduces cost and avoids calling disabled/bad agents.
@@ -153,13 +214,26 @@ def select_top_agents(agents, limit=3):
         reverse=True,
     )
 
+    if order:
+        ranked_sellers = sorted(
+            ranked_sellers,
+            key=lambda a: (
+                compute_capability_match_score(a, order),
+                compute_agent_market_score(a),
+            ),
+            reverse=True,
+        )
+
     selected = ranked_sellers[:limit]
 
     # If no external sellers are available, the foundation layer executes.
     if not selected and foundation_agents:
         selected = sorted(
             foundation_agents,
-            key=compute_agent_market_score,
+            key=lambda a: (
+                compute_capability_match_score(a, order or {}),
+                compute_agent_market_score(a),
+            ),
             reverse=True,
         )[:limit]
 

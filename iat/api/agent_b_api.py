@@ -170,6 +170,9 @@ class OrderRequest(BaseModel):
     service: str
     query: str | None = None
     buyer_wallet: str | None = None
+    buyer_intent: dict | None = None
+    requirements: dict | None = None
+    buyer_context: dict | None = None
 
 
 class BuyerPreviewRequest(BaseModel):
@@ -981,6 +984,14 @@ New buyer message:
                 "service": service,
                 "query": req.prompt,
                 "buyer_wallet": req.buyer_wallet,
+                "buyer_intent": intent,
+                "requirements": intent.get("requirements", {}),
+                "buyer_context": {
+                    "session_id": session_id,
+                    "protocol_language": intent.get("protocol_language", "en"),
+                    "purchase_type": intent.get("purchase_type"),
+                    "goal": intent.get("goal"),
+                },
             }
         }
     }
@@ -1030,6 +1041,9 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
         "delivery_result": None,
         "buyer_secret": str(uuid.uuid4()),
         "buyer_wallet": buyer_wallet,
+        "buyer_intent": req.buyer_intent,
+        "requirements": req.requirements,
+        "buyer_context": req.buyer_context,
         "used": False,
     }
 

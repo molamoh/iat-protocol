@@ -177,6 +177,20 @@ def call_agent(agent, order):
                 "order_id": order.get("order_id", "test"),
                 "tx_signature": order.get("tx_signature"),
                 "query": order.get("query"),
+                "service": order.get("service"),
+                "buyer_intent": order.get("buyer_intent"),
+                "requirements": order.get("requirements"),
+                "buyer_context": order.get("buyer_context"),
+                "delivery_format": {
+                    "language": "en",
+                    "mode": "buyer_friendly",
+                    "expected_schema": {
+                        "summary": "short explanation of what was found",
+                        "recommendations": "ranked options with price, quality and reason",
+                        "final_recommendation": "best final choice",
+                        "confidence": "0 to 1"
+                    }
+                }
             },
             timeout=15,
         )

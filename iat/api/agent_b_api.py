@@ -61,6 +61,8 @@ from iat.api.db import (
     list_agent_delegations_db,
     list_delegator_positions_db,
     get_agent_delegated_stake_total_db,
+    save_buyer_session_db,
+    get_buyer_session_db,
 )
 
 
@@ -830,7 +832,36 @@ def buyer_preview(req: BuyerPreviewRequest):
             "message": "Votre wallet n’est pas éligible pour utiliser le service actuellement.",
         }
 
-    intent = normalize_buyer_intent(req.prompt)
+    previous_session = get_buyer_session_db(req.buyer_wallet)
+
+    merged_prompt = req.prompt
+
+    if previous_session:
+        previous_goal = previous_session.get("goal")
+        previous_requirements = previous_session.get("requirements")
+
+        merged_prompt = f"""
+Previous buyer goal:
+{previous_goal}
+
+Previous known requirements:
+{previous_requirements}
+
+New buyer message:
+{req.prompt}
+"""
+
+    intent = normalize_buyer_intent(merged_prompt)
+
+    save_buyer_session_db(
+        req.buyer_wallet,
+        {
+            "goal": intent.get("goal"),
+            "requirements": intent.get("requirements", {}),
+            "purchase_type": intent.get("purchase_type"),
+            "updated_from_prompt": req.prompt,
+        }
+    )
 
     if intent.get("missing_requirements"):
         return {

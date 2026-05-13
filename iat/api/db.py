@@ -119,6 +119,8 @@ def init_db():
     init_buyers_table()
     init_delegations_table()
 
+    init_buyer_sessions_table()
+
 
 def init_agents_table():
     conn = get_conn()
@@ -315,6 +317,91 @@ def list_delegator_positions_db(delegator_wallet):
     release_conn(conn)
 
     return [dict(r) for r in rows]
+
+
+
+
+def init_buyer_sessions_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS buyer_sessions (
+        buyer_wallet TEXT PRIMARY KEY,
+        session_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+def save_buyer_session_db(buyer_wallet, session_json):
+    import json
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    payload = json.dumps(session_json)
+
+    if USE_POSTGRES:
+        cur.execute(f"""
+        INSERT INTO buyer_sessions (
+            buyer_wallet, session_json, updated_at
+        )
+        VALUES ({p}, {p}, {p})
+        ON CONFLICT (buyer_wallet)
+        DO UPDATE SET
+            session_json = EXCLUDED.session_json,
+            updated_at = EXCLUDED.updated_at
+        """, (
+            buyer_wallet,
+            payload,
+            now,
+        ))
+    else:
+        cur.execute(f"""
+        INSERT OR REPLACE INTO buyer_sessions (
+            buyer_wallet, session_json, updated_at
+        )
+        VALUES ({p}, {p}, {p})
+        """, (
+            buyer_wallet,
+            payload,
+            now,
+        ))
+
+    conn.commit()
+    release_conn(conn)
+
+
+def get_buyer_session_db(buyer_wallet):
+    import json
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT session_json
+    FROM buyer_sessions
+    WHERE buyer_wallet = {p}
+    """, (buyer_wallet,))
+
+    row = cur.fetchone()
+    release_conn(conn)
+
+    if not row:
+        return None
+
+    raw = row_get(row, "session_json")
+
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
 
 
 def init_buyers_table():

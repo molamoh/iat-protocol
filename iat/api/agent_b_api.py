@@ -164,6 +164,8 @@ class RegisterAgentRequest(BaseModel):
     stake_amount: float = 0
     stake_required: float = 10
     trust_tier: str = "free"
+    capabilities: str = "[]"
+    specialties: str = "[]"
 
 
 class OrderRequest(BaseModel):

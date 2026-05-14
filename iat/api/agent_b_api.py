@@ -891,6 +891,18 @@ New buyer message:
 
     intent = normalize_buyer_intent(merged_prompt)
 
+    # Merge previous requirements memory
+    if previous_session:
+        old_requirements = previous_session.get("requirements") or {}
+        new_requirements = intent.get("requirements") or {}
+
+        merged_requirements = dict(old_requirements)
+
+        for k, v in new_requirements.items():
+            merged_requirements[k] = v
+
+        intent["requirements"] = merged_requirements
+
     save_buyer_conversation_session_db(
         session_id,
         req.buyer_wallet,
@@ -902,7 +914,10 @@ New buyer message:
         }
     )
 
-    if intent.get("missing_requirements"):
+    clarification_questions = intent.get("questions") or []
+    missing_requirements = intent.get("missing_requirements") or []
+
+    if missing_requirements or clarification_questions:
         return {
             "status": "needs_clarification",
             "protocol_language": intent.get("protocol_language", "en"),
@@ -913,8 +928,8 @@ New buyer message:
                 "detected_purchase_type": intent.get("purchase_type"),
                 "goal": intent.get("goal"),
                 "known_requirements": intent.get("requirements", {}),
-                "missing_requirements": intent.get("missing_requirements", []),
-                "questions": intent.get("questions", []),
+                "missing_requirements": missing_requirements,
+                "questions": clarification_questions,
                 "confidence": intent.get("confidence"),
                 "message": "We need a few more details to recommend the best value-for-money offer.",
             },
@@ -952,6 +967,40 @@ New buyer message:
         a for a in agents
         if bool(a.get("available", True))
     ]
+
+    from iat.api.multi_exec import (
+        infer_required_capabilities,
+        compute_capability_match_score,
+        compute_specialty_match_score,
+        compute_agent_market_score,
+    )
+
+    routing_order = {
+        "query": req.prompt,
+        "buyer_intent": intent,
+        "requirements": intent.get("requirements", {}),
+    }
+
+    routing_preview = {
+        "required_capabilities": infer_required_capabilities(routing_order),
+        "top_candidate_agents": [
+            {
+                "agent_id": a.get("agent_id"),
+                "capability_score": compute_capability_match_score(a, routing_order),
+                "specialty_score": compute_specialty_match_score(a, routing_order),
+                "market_score": compute_agent_market_score(a),
+            }
+            for a in sorted(
+                available_agents,
+                key=lambda x: (
+                    compute_capability_match_score(x, routing_order),
+                    compute_specialty_match_score(x, routing_order),
+                    compute_agent_market_score(x),
+                ),
+                reverse=True,
+            )[:5]
+        ],
+    }
 
     if not available_agents:
         return {
@@ -999,9 +1048,10 @@ New buyer message:
             "estimated_delivery_time": "quelques secondes après paiement",
         },
         "recommendation": {
-            "why_this_offer": "Offre recommandée car elle présente le meilleur équilibre entre prix, qualité attendue, disponibilité et fiabilité.",
-            "recommended_action": "Confirmer pour créer l’ordre de paiement.",
+            "why_this_offer": "Offer recommended because it has the best balance between expected quality, price, availability and reliability.",
+            "recommended_action": "Confirm to create the payment order.",
         },
+        "routing_preview": routing_preview,
         "internal_next_step": {
             "create_order_payload": {
                 "service": service,

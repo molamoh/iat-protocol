@@ -106,6 +106,21 @@ def init_db():
         except Exception:
             pass
 
+    order_columns = {
+        "buyer_intent": "TEXT",
+        "requirements": "TEXT",
+        "buyer_context": "TEXT",
+    }
+
+    for column, col_type in order_columns.items():
+        try:
+            if USE_POSTGRES:
+                cur.execute(f"ALTER TABLE orders ADD COLUMN IF NOT EXISTS {column} {col_type}")
+            else:
+                cur.execute(f"ALTER TABLE orders ADD COLUMN {column} {col_type}")
+        except Exception:
+            pass
+
     cur.execute("""
     CREATE TABLE IF NOT EXISTS processed_txs (
         tx_signature TEXT PRIMARY KEY,
@@ -852,9 +867,10 @@ def create_order_db(order_id, order):
     cur.execute(f"""
     INSERT INTO orders (
         order_id, service, query, price, seller_id, seller_wallet, seller_url, seller_source,
-        buyer_secret, buyer_wallet, created_at, updated_at, status, tx_signature, delivered_at, delivery_result, used
+        buyer_secret, buyer_wallet, buyer_intent, requirements, buyer_context,
+        created_at, updated_at, status, tx_signature, delivered_at, delivery_result, used
     )
-    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
     """, (
         order_id,
         order["service"],
@@ -866,6 +882,9 @@ def create_order_db(order_id, order):
         order.get("seller_source"),
         order.get("buyer_secret"),
         order.get("buyer_wallet"),
+        json.dumps(order.get("buyer_intent")) if order.get("buyer_intent") is not None else None,
+        json.dumps(order.get("requirements")) if order.get("requirements") is not None else None,
+        json.dumps(order.get("buyer_context")) if order.get("buyer_context") is not None else None,
         order["created_at"],
         order["updated_at"],
         order["status"],
@@ -931,11 +950,12 @@ def get_order_db(order_id):
     order = dict(row)
     order["used"] = bool(order.get("used", 0))
 
-    if order.get("delivery_result"):
-        try:
-            order["delivery_result"] = json.loads(order["delivery_result"])
-        except Exception:
-            order["delivery_result"] = {"raw": order["delivery_result"], "parse_error": True}
+    for json_field in ["delivery_result", "buyer_intent", "requirements", "buyer_context"]:
+        if order.get(json_field):
+            try:
+                order[json_field] = json.loads(order[json_field])
+            except Exception:
+                order[json_field] = {"raw": order[json_field], "parse_error": True}
 
     return order
 

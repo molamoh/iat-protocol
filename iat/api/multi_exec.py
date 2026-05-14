@@ -345,39 +345,45 @@ def call_agent(agent, order):
 
         latency = max(time.monotonic() - start, 0)
 
-        if r.status_code == 200:
-            return {
-                "agent_id": agent.get("agent_id"),
-                "wallet": agent.get("wallet"),  # ✅ AJOUT
-                "success": True,
-                "latency": round(latency, 6),
-                "reputation": agent.get("reputation", 0.5),
-                "success_count": agent.get("success_count", 0),
-                "failure_count": agent.get("failure_count", 0),
-                "call_count": agent.get("call_count", 0),
-                "win_count": agent.get("win_count", 0),
-                "latency_total": agent.get("latency_total", 0),
+        base = {
+            "agent_id": agent.get("agent_id"),
+            "wallet": agent.get("wallet"),
+            "latency": round(latency, 6),
+            "reputation": agent.get("reputation", 0.5),
+            "success_count": agent.get("success_count", 0),
+            "failure_count": agent.get("failure_count", 0),
+            "call_count": agent.get("call_count", 0),
+            "win_count": agent.get("win_count", 0),
+            "latency_total": agent.get("latency_total", 0),
             "trust_tier": agent.get("trust_tier", "free"),
             "stake_amount": agent.get("stake_amount", 0),
             "stake_required": agent.get("stake_required", 0),
             "risk_score": agent.get("risk_score", 0),
-                "volume_total": agent.get("volume_total", 0),
-                "honest_volume": agent.get("honest_volume", 0),
-                "fraud_volume": agent.get("fraud_volume", 0),
-                "dynamic_stake_required": agent.get("dynamic_stake_required", 0),
-                "trust_tier": agent.get("trust_tier", "free"),
-                "stake_amount": agent.get("stake_amount", 0),
-                "stake_required": agent.get("stake_required", 0),
-                "risk_score": agent.get("risk_score", 0),
-                "volume_total": agent.get("volume_total", 0),
-                "honest_volume": agent.get("honest_volume", 0),
-                "fraud_volume": agent.get("fraud_volume", 0),
-                "dynamic_stake_required": agent.get("dynamic_stake_required", 0),
+            "volume_total": agent.get("volume_total", 0),
+            "honest_volume": agent.get("honest_volume", 0),
+            "fraud_volume": agent.get("fraud_volume", 0),
+            "dynamic_stake_required": agent.get("dynamic_stake_required", 0),
+        }
+
+        if r.status_code == 200:
+            return {
+                **base,
+                "success": True,
                 "data": normalize_agent_delivery(r.json()),
             }
 
         return {
+            **base,
+            "success": False,
+            "error": r.text,
+        }
+
+    except Exception as e:
+        latency = max(time.monotonic() - start, 0)
+
+        return {
             "agent_id": agent.get("agent_id"),
+            "wallet": agent.get("wallet"),
             "success": False,
             "latency": round(latency, 6),
             "reputation": agent.get("reputation", 0.5),
@@ -386,39 +392,16 @@ def call_agent(agent, order):
             "call_count": agent.get("call_count", 0),
             "win_count": agent.get("win_count", 0),
             "latency_total": agent.get("latency_total", 0),
-                "trust_tier": agent.get("trust_tier", "free"),
-                "stake_amount": agent.get("stake_amount", 0),
-                "stake_required": agent.get("stake_required", 0),
-                "risk_score": agent.get("risk_score", 0),
-                "volume_total": agent.get("volume_total", 0),
-                "honest_volume": agent.get("honest_volume", 0),
-                "fraud_volume": agent.get("fraud_volume", 0),
-                "dynamic_stake_required": agent.get("dynamic_stake_required", 0),
-            "error": r.text,
+            "trust_tier": agent.get("trust_tier", "free"),
+            "stake_amount": agent.get("stake_amount", 0),
+            "stake_required": agent.get("stake_required", 0),
+            "risk_score": agent.get("risk_score", 0),
+            "volume_total": agent.get("volume_total", 0),
+            "honest_volume": agent.get("honest_volume", 0),
+            "fraud_volume": agent.get("fraud_volume", 0),
+            "dynamic_stake_required": agent.get("dynamic_stake_required", 0),
+            "error": str(e),
         }
-
-    except Exception as e:
-        latency = max(time.monotonic() - start, 0)
-    return {
-        "agent_id": agent.get("agent_id"),
-        "success": False,
-        "latency": round(latency, 6),
-        "reputation": agent.get("reputation", 0.5),
-        "success_count": agent.get("success_count", 0),
-        "failure_count": agent.get("failure_count", 0),
-        "call_count": agent.get("call_count", 0),
-        "win_count": agent.get("win_count", 0),
-        "latency_total": agent.get("latency_total", 0),
-                "trust_tier": agent.get("trust_tier", "free"),
-                "stake_amount": agent.get("stake_amount", 0),
-                "stake_required": agent.get("stake_required", 0),
-                "risk_score": agent.get("risk_score", 0),
-                "volume_total": agent.get("volume_total", 0),
-                "honest_volume": agent.get("honest_volume", 0),
-                "fraud_volume": agent.get("fraud_volume", 0),
-                "dynamic_stake_required": agent.get("dynamic_stake_required", 0),
-        "error": str(e),
-    }
 
 
 def multi_call(agents, order, max_workers=5):

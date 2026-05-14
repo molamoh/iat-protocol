@@ -854,6 +854,33 @@ def buyer_missing_requirements(prompt: str, purchase_type: str):
     }
 
 
+
+def buyer_topic_changed(previous_session, new_intent):
+    if not previous_session or not new_intent:
+        return False
+
+    old_goal = str(previous_session.get("goal") or "").lower()
+    old_type = str(previous_session.get("purchase_type") or "").lower()
+
+    new_goal = str(new_intent.get("goal") or "").lower()
+    new_type = str(new_intent.get("purchase_type") or "").lower()
+
+    if not old_goal or not new_goal:
+        return False
+
+    same_type = old_type and new_type and old_type == new_type
+
+    old_tokens = set(old_goal.replace(",", " ").split())
+    new_tokens = set(new_goal.replace(",", " ").split())
+
+    overlap = len(old_tokens.intersection(new_tokens)) / max(len(old_tokens.union(new_tokens)), 1)
+
+    if not same_type and overlap < 0.20:
+        return True
+
+    return False
+
+
 @app.post("/buyer/preview")
 def buyer_preview(req: BuyerPreviewRequest):
     if is_buyer_banned_db(req.buyer_wallet):
@@ -890,6 +917,12 @@ New buyer message:
 """
 
     intent = normalize_buyer_intent(merged_prompt)
+
+    if buyer_topic_changed(previous_session, intent):
+        session_id = str(uuid.uuid4())
+        previous_session = None
+        merged_prompt = req.prompt
+        intent = normalize_buyer_intent(req.prompt)
 
     # Merge previous requirements memory
     if previous_session:

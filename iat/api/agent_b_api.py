@@ -184,22 +184,38 @@ class BuyerPreviewRequest(BaseModel):
     session_id: str | None = None
 
 
+class BuyerConfirmRequest(BaseModel):
+    service: str
+    query: str
+    buyer_wallet: str
+    buyer_intent: dict | None = None
+    requirements: dict | None = None
+    buyer_context: dict | None = None
+
+
 class VerifyPaymentRequest(BaseModel):
     order_id: str
     tx_signature: str
 
 
-def select_best_seller(service_name):
+def select_best_seller(service_name, order=None):
     dynamic_agents = get_agents_for_service_db(service_name)
 
-    # Production rule:
-    # Only dynamic registry agents are valid sellers.
-    # No static registry fallback.
-    # No factory fallback.
     if not dynamic_agents:
         return None
 
-    best_agent = select_best_agent(dynamic_agents)
+    if order:
+        from iat.api.multi_exec import select_top_agents
+
+        selected = select_top_agents(
+            dynamic_agents,
+            limit=1,
+            order=order,
+        )
+
+        best_agent = selected[0] if selected else None
+    else:
+        best_agent = select_best_agent(dynamic_agents)
 
     if not best_agent:
         return None
@@ -212,6 +228,8 @@ def select_best_seller(service_name):
         "available": best_agent["available"],
         "url": best_agent["url"],
         "source": "dynamic_registry",
+        "capabilities": best_agent.get("capabilities"),
+        "specialties": best_agent.get("specialties"),
     }
 
 
@@ -950,6 +968,30 @@ New buyer message:
     clarification_questions = intent.get("questions") or []
     missing_requirements = intent.get("missing_requirements") or []
 
+    # After merging session memory, remove missing fields already known.
+    known_requirements = intent.get("requirements") or {}
+
+    aliases = {
+        "budget": ["budget", "price", "price_range"],
+        "country/location": ["country", "location", "region"],
+        "location": ["country", "location", "region"],
+        "intended usage": ["usage", "intended_usage"],
+        "usage": ["usage", "intended_usage"],
+        "main priorities": ["priorities", "battery_life", "camera", "storage"],
+    }
+
+    filtered_missing = []
+
+    for field in missing_requirements:
+        keys = aliases.get(field, [field])
+        if not any(k in known_requirements for k in keys):
+            filtered_missing.append(field)
+
+    missing_requirements = filtered_missing
+
+    if not missing_requirements:
+        clarification_questions = []
+
     if missing_requirements or clarification_questions:
         return {
             "status": "needs_clarification",
@@ -1051,7 +1093,11 @@ New buyer message:
 
     ranked = sorted(
         available_agents,
-        key=lambda a: compute_agent_market_score(a) / max(float(a.get("price", 1) or 1), 0.001),
+        key=lambda a: (
+            compute_capability_match_score(a, routing_order),
+            compute_specialty_match_score(a, routing_order),
+            compute_agent_market_score(a) / max(float(a.get("price", 1) or 1), 0.001),
+        ),
         reverse=True,
     )
 
@@ -1103,6 +1149,21 @@ New buyer message:
     }
 
 
+
+@app.post("/buyer/confirm")
+def buyer_confirm(req: BuyerConfirmRequest):
+    order_req = OrderRequest(
+        service=req.service,
+        query=req.query,
+        buyer_wallet=req.buyer_wallet,
+        buyer_intent=req.buyer_intent,
+        requirements=req.requirements,
+        buyer_context=req.buyer_context,
+    )
+
+    return create_order(order_req)
+
+
 @app.post("/create-order")
 def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)):
     print("ESCROW ENV:", os.getenv("IAT_ESCROW_WALLET"))
@@ -1118,7 +1179,15 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
             "buyer_wallet": buyer_wallet,
         }
 
-    seller = select_best_seller(req.service)
+    routing_order = {
+        "query": req.query,
+        "service": req.service,
+        "buyer_intent": req.buyer_intent,
+        "requirements": req.requirements,
+        "buyer_context": req.buyer_context,
+    }
+
+    seller = select_best_seller(req.service, order=routing_order)
 
     if seller is None:
         return {

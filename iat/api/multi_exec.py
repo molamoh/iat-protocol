@@ -33,10 +33,59 @@ def infer_required_capabilities(order):
         required.add("product_research")
         required.add("price_comparison")
 
+    if any(w in text for w in ["travel", "hotel", "trip", "flight", "tourism", "stay"]):
+        required.add("travel_research")
+
+    if any(w in text for w in ["finance", "market", "crypto", "btc", "risk", "trading"]):
+        required.add("market_research")
+        required.add("risk_analysis")
+
     if any(w in text for w in ["compare", "comparison", "best value", "quality price", "value-for-money"]):
         required.add("price_comparison")
 
     return list(required)
+
+
+def compute_specialty_match_score(agent, order):
+    specialties = set(parse_json_list(agent.get("specialties")))
+
+    intent = order.get("buyer_intent") or {}
+    text = " ".join([
+        str(intent.get("purchase_type", "")),
+        str(intent.get("goal", "")),
+        str(order.get("query", "")),
+    ]).lower()
+
+    score = 0.0
+
+    if any(w in text for w in ["product", "phone", "smartphone", "laptop", "shopping", "buy"]):
+        if "consumer_products" in specialties:
+            score += 0.45
+        if "shopping_research" in specialties:
+            score += 0.35
+        if "price_comparison" in specialties:
+            score += 0.20
+
+    if any(w in text for w in ["travel", "hotel", "trip", "flight", "tourism"]):
+        if "travel" in specialties:
+            score += 0.45
+        if "hotels" in specialties:
+            score += 0.35
+        if "tourism" in specialties:
+            score += 0.20
+
+    if any(w in text for w in ["finance", "market", "crypto", "risk", "btc"]):
+        if "finance" in specialties:
+            score += 0.45
+        if "crypto" in specialties:
+            score += 0.35
+        if "risk" in specialties:
+            score += 0.20
+
+    if "general_web" in specialties:
+        score += 0.10
+
+    return round(min(score, 1.0), 6)
 
 
 def compute_capability_match_score(agent, order):
@@ -219,6 +268,7 @@ def select_top_agents(agents, limit=3, order=None):
             ranked_sellers,
             key=lambda a: (
                 compute_capability_match_score(a, order),
+                compute_specialty_match_score(a, order),
                 compute_agent_market_score(a),
             ),
             reverse=True,
@@ -232,6 +282,7 @@ def select_top_agents(agents, limit=3, order=None):
             foundation_agents,
             key=lambda a: (
                 compute_capability_match_score(a, order or {}),
+                compute_specialty_match_score(a, order or {}),
                 compute_agent_market_score(a),
             ),
             reverse=True,

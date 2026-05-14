@@ -47,43 +47,67 @@ def infer_required_capabilities(order):
 
 
 def compute_specialty_match_score(agent, order):
+    """
+    Generic specialty routing.
+
+    IAT must not hardcode vertical business routing.
+    The buyer request is compared against the agent's declared specialties
+    using normalized tokens and lightweight synonym expansion.
+    """
     specialties = set(parse_json_list(agent.get("specialties")))
 
     intent = order.get("buyer_intent") or {}
+    requirements = order.get("requirements") or {}
+
     text = " ".join([
         str(intent.get("purchase_type", "")),
         str(intent.get("goal", "")),
         str(order.get("query", "")),
+        " ".join(str(v) for v in requirements.values()),
     ]).lower()
+
+    normalized_text = (
+        text.replace("_", " ")
+            .replace("-", " ")
+            .replace(",", " ")
+            .replace(".", " ")
+            .replace("/", " ")
+    )
+
+    tokens = set(normalized_text.split())
+
+    specialty_aliases = {
+        "general_web": ["research", "information", "web", "search", "general"],
+        "deep_research": ["deep", "detailed", "complete", "full", "analysis", "research"],
+        "fast_research": ["quick", "fast", "summary", "brief"],
+        "budget_execution": ["cheap", "low", "budget", "affordable"],
+        "market_analysis": ["market", "analysis", "liquidity", "sentiment", "trend"],
+        "premium_analysis": ["deep", "premium", "advanced", "detailed", "professional"],
+        "risk": ["risk", "evaluation", "audit", "exposure", "danger"],
+        "finance": ["finance", "financial", "asset", "investment"],
+        "crypto": ["crypto", "btc", "bitcoin", "blockchain"],
+        "bitcoin": ["btc", "bitcoin"],
+        "market_sentiment": ["sentiment", "crowd", "market", "bias"],
+        "consumer_products": ["product", "phone", "smartphone", "laptop", "buy"],
+        "shopping_research": ["shopping", "buy", "purchase", "compare"],
+        "price_comparison": ["price", "budget", "compare", "comparison"],
+        "travel": ["travel", "trip", "flight", "tourism"],
+        "hotels": ["hotel", "hotels", "stay"],
+        "tourism": ["tourism", "visit", "vacation"],
+    }
 
     score = 0.0
 
-    if any(w in text for w in ["product", "phone", "smartphone", "laptop", "shopping", "buy"]):
-        if "consumer_products" in specialties:
-            score += 0.45
-        if "shopping_research" in specialties:
-            score += 0.35
-        if "price_comparison" in specialties:
-            score += 0.20
+    for specialty in specialties:
+        specialty_tokens = set(str(specialty).lower().replace("_", " ").split())
+        alias_tokens = set(specialty_aliases.get(specialty, []))
+        match_tokens = specialty_tokens.union(alias_tokens)
 
-    if any(w in text for w in ["travel", "hotel", "trip", "flight", "tourism"]):
-        if "travel" in specialties:
-            score += 0.45
-        if "hotels" in specialties:
-            score += 0.35
-        if "tourism" in specialties:
-            score += 0.20
-
-    if any(w in text for w in ["finance", "market", "crypto", "risk", "btc"]):
-        if "finance" in specialties:
-            score += 0.45
-        if "crypto" in specialties:
-            score += 0.35
-        if "risk" in specialties:
-            score += 0.20
+        if tokens.intersection(match_tokens):
+            score += 1.0 / max(len(specialties), 1)
 
     if "general_web" in specialties:
-        score += 0.10
+        score += 0.05
 
     return round(min(score, 1.0), 6)
 
@@ -323,7 +347,7 @@ def call_agent(agent, order):
             f"{agent['url']}/execute",
             json={
                 "order_id": order.get("order_id", "test"),
-                "tx_signature": order.get("tx_signature"),
+                "tx_signature": order.get("tx_signature") or "INTERNAL_TEST_EXECUTION",
                 "query": order.get("query"),
                 "service": order.get("service"),
                 "buyer_intent": order.get("buyer_intent"),
@@ -469,6 +493,95 @@ def build_final_buyer_delivery(best_result, all_results=None):
     recommendations = data.get("recommendations", []) or []
     final_recommendation = data.get("final_recommendation")
     summary = data.get("summary") or ""
+    sources = data.get("sources", []) or []
+
+    raw_data = data.get("raw", {}).get("data", {})
+    raw_results = raw_data.get("results", []) if isinstance(raw_data, dict) else []
+
+    usable_raw_results = []
+    for item in raw_results:
+        title = str(item.get("title", "")).strip()
+        snippet = str(item.get("snippet", "")).strip()
+        link = str(item.get("link", "")).strip()
+
+        if not title or "no results found" in title.lower():
+            continue
+        if not link:
+            continue
+
+        usable_raw_results.append({
+            "title": title,
+            "snippet": snippet,
+            "link": link,
+            "source": item.get("source"),
+        })
+
+    if usable_raw_results and not summary:
+        titles = " ".join(item["title"] for item in usable_raw_results).lower()
+        snippets = " ".join(item["snippet"] for item in usable_raw_results).lower()
+        combined = f"{titles} {snippets}"
+
+        themes = []
+
+        if any(w in combined for w in ["volatility", "volatile"]):
+            themes.append("volatility")
+        if any(w in combined for w in ["liquidity", "liquid"]):
+            themes.append("liquidity")
+        if any(w in combined for w in ["risk", "risks"]):
+            themes.append("risk")
+        if any(w in combined for w in ["technical", "trend", "moving averages", "support", "resistance"]):
+            themes.append("technical market structure")
+        if any(w in combined for w in ["macro", "m2", "global liquidity", "policy"]):
+            themes.append("macro conditions")
+
+        if themes:
+            summary = (
+                "The selected provider found relevant sources indicating that the request is mainly driven by "
+                + ", ".join(themes[:4])
+                + "."
+            )
+        else:
+            summary = "The selected provider found relevant sources matching the buyer request."
+
+    if usable_raw_results and not recommendations:
+        recommendations = [
+            {
+                "title": item["title"],
+                "reason": item["snippet"],
+                "source": item["link"],
+            }
+            for item in usable_raw_results[:5]
+        ]
+
+    if usable_raw_results and not final_recommendation:
+        combined = " ".join(
+            (item["title"] + " " + item["snippet"])
+            for item in usable_raw_results
+        ).lower()
+
+        if "bitcoin" in combined or "btc" in combined:
+            final_recommendation = (
+                "Treat BTC as a high-sensitivity market today: prioritize liquidity conditions, volatility, "
+                "technical structure, and macro risk before making any decision."
+            )
+        elif "risk" in combined:
+            final_recommendation = (
+                "Use the result as a risk-focused research base and review the strongest cited sources before acting."
+            )
+        else:
+            final_recommendation = (
+                "Use the selected result as the best available research base, supported by the cited sources."
+            )
+
+    if usable_raw_results and not sources:
+        sources = [
+            {
+                "title": item["title"],
+                "url": item["link"],
+                "source": item.get("source"),
+            }
+            for item in usable_raw_results[:5]
+        ]
 
     alternatives = []
     for r in all_results or []:
@@ -495,7 +608,7 @@ def build_final_buyer_delivery(best_result, all_results=None):
         "confidence": data.get("confidence", 0.5),
         "selection_score": best_result.get("selection_score"),
         "selection_reason": "Selected for the best balance of result quality, reliability, confidence, response speed and value.",
-        "sources": data.get("sources", []),
+        "sources": sources,
     }
 
 
@@ -516,6 +629,20 @@ def select_best_result(results):
 
     for r in valid:
         agent_id = r.get("agent_id")
+
+        raw_data = r.get("data", {}).get("raw", {}).get("data", {})
+        raw_results = raw_data.get("results", []) if isinstance(raw_data, dict) else []
+
+        no_usable_results = False
+        if not raw_results:
+            no_usable_results = True
+        elif len(raw_results) == 1:
+            first = raw_results[0] or {}
+            title = str(first.get("title", "")).lower()
+            snippet = str(first.get("snippet", "")).lower()
+            link = str(first.get("link", "")).strip()
+            if "no results found" in title or "no usable result" in snippet or not link:
+                no_usable_results = True
 
         quality_raw = compute_quality(r)
         quality_score = min(1.0, quality_raw / max_quality)
@@ -542,12 +669,15 @@ def select_best_result(results):
                 break
 
         final_score = (
-            overlap_score * 0.40 +
-            reputation_score * 0.25 +
-            quality_score * 0.20 +
+            overlap_score * 0.35 +
+            reputation_score * 0.20 +
+            quality_score * 0.30 +
             price_score * 0.10 +
             latency_score * 0.05
         )
+
+        if no_usable_results:
+            final_score = final_score * 0.01
 
         final_score = final_score * max(0.05, 1 - risk_score)
 
@@ -563,6 +693,7 @@ def select_best_result(results):
             "latency_score": round(latency_score, 4),
             "risk_score": round(risk_score, 4),
             "suspicious": agent_id in suspicious,
+            "no_usable_results": no_usable_results,
         }
 
         scored.append((final_score, r))
@@ -591,8 +722,16 @@ def compute_consensus(results):
 
     # --- BUILD AGENTS ---
     for r in valid:
-        data = r.get("data", {}).get("data", {})
-        items = data.get("results", [])
+        wrapper = r.get("data", {}) or {}
+
+        data = wrapper.get("data", {}) or {}
+
+        # Render agents often return normalized data under raw.data.
+        raw_data = wrapper.get("raw", {}).get("data", {})
+        if isinstance(raw_data, dict) and raw_data:
+            data = raw_data
+
+        items = data.get("results", []) if isinstance(data, dict) else []
 
         links = set()
         domains = set()
@@ -785,9 +924,12 @@ def compute_consensus(results):
         stake = float(agent.get("stake_amount", 0) or 0)
         required = float(agent.get("stake_required", 0) or 0)
 
-        # behavior risk overrides passive DB risk
-        # decentralized agents may legitimately use different sources.
-        if overlap < 0.20:
+        # behavior risk overrides passive DB risk.
+        # Low overlap alone is not suspicious: decentralized agents may use different sources.
+        # Penalize only clearly unusable/fake results.
+        result_validity = float(agent.get("result_validity", 0) or 0)
+
+        if result_validity <= 0:
             risk = max(risk, 0.7)
 
         if overlap == 0 and fake_penalty > 0:
@@ -874,7 +1016,10 @@ def compute_consensus(results):
     suspicious_agents = [
         agent["agent_id"]
         for agent in agent_sets
-        if agent["overlap"] < 0.5
+        if (
+            float(agent.get("effective_risk_score", agent.get("risk_score", 0)) or 0) >= 0.7
+            and float(agent.get("result_validity", 0) or 0) <= 0
+        )
     ]
 
     # --- WALLET COLLUSION DIAGNOSTIC ---

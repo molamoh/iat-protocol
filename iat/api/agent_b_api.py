@@ -96,8 +96,13 @@ app = FastAPI()
 def require_admin_key(x_api_key):
     expected_key = os.getenv("IAT_ADMIN_API_KEY")
 
+    # Security rule:
+    # If no admin key is configured, admin access must be denied by default.
     if not expected_key:
-        return True
+        return False
+
+    if not x_api_key:
+        return False
 
     return x_api_key == expected_key
 
@@ -182,6 +187,7 @@ class BuyerPreviewRequest(BaseModel):
     prompt: str
     max_price: float | None = None
     session_id: str | None = None
+    debug: bool = False
 
 
 class BuyerConfirmRequest(BaseModel):
@@ -438,20 +444,56 @@ def apply_seller_stake_gate(agent):
 
 
 @app.post("/register-agent")
-def register_agent(req: RegisterAgentRequest):
+def register_agent(req: RegisterAgentRequest, x_api_key: str | None = Header(default=None)):
     agent = req.model_dump()
+
+    if agent.get("agent_type") == "foundation":
+        if not require_admin_key(x_api_key):
+            return {
+                "status": "error",
+                "message": "unauthorized_foundation_agent_registration",
+            }
+
     agent = apply_seller_stake_gate(agent)
     register_agent_db(agent)
 
+    public_agent = {
+        "agent_id": agent.get("agent_id"),
+        "service": agent.get("service"),
+        "price": agent.get("price"),
+        "reputation": agent.get("reputation"),
+        "available": agent.get("available"),
+        "agent_type": agent.get("agent_type"),
+        "capabilities": agent.get("capabilities"),
+        "specialties": agent.get("specialties"),
+    }
+
     return {
         "status": "registered",
-        "agent": agent,
+        "agent": public_agent,
     }
 
 
 @app.post("/agent-heartbeat")
-def agent_heartbeat(req: RegisterAgentRequest):
+def agent_heartbeat(req: RegisterAgentRequest, x_api_key: str | None = Header(default=None)):
     agent = req.model_dump()
+
+    existing_agent = get_agent_db(agent.get("agent_id"))
+
+    if existing_agent and existing_agent.get("agent_type") == "foundation":
+        if not require_admin_key(x_api_key):
+            return {
+                "status": "error",
+                "message": "unauthorized_foundation_agent_update",
+            }
+
+    if agent.get("agent_type") == "foundation":
+        if not require_admin_key(x_api_key):
+            return {
+                "status": "error",
+                "message": "unauthorized_foundation_agent_registration",
+            }
+
     agent = apply_seller_stake_gate(agent)
     register_agent_db(agent)
 
@@ -606,15 +648,39 @@ def delegator_positions(delegator_wallet: str):
 
 
 @app.get("/agents")
-def list_agents():
+def list_agents(x_api_key: str | None = Header(default=None)):
+    agents = list_agents_db()
+
+    if require_admin_key(x_api_key):
+        return {
+            "status": "ok",
+            "visibility": "admin",
+            "agents": agents,
+        }
+
+    public_agents = []
+
+    for agent in agents:
+        public_agents.append({
+            "service": agent.get("service"),
+            "price_iat": agent.get("price"),
+            "reputation": agent.get("reputation"),
+            "available": agent.get("available"),
+            "agent_type": agent.get("agent_type"),
+            "capabilities": agent.get("capabilities"),
+            "specialties": agent.get("specialties"),
+            "trust_tier": agent.get("trust_tier"),
+        })
+
     return {
         "status": "ok",
-        "agents": list_agents_db(),
+        "visibility": "public",
+        "agents": public_agents,
     }
 
 
 @app.get("/marketplace")
-def marketplace():
+def marketplace(x_api_key: str | None = Header(default=None)):
     agents = list_agents_db()
     now = int(time.time())
     timeout = 120
@@ -637,11 +703,8 @@ def marketplace():
             own_stake * 0.40,
         )
 
-        listings.append({
-            "agent_id": agent["agent_id"],
+        listing = {
             "service": agent["service"],
-            "url": agent["url"],
-            "wallet": agent["wallet"],
             "price_iat": agent["price"],
             "reputation": agent["reputation"],
             "score": compute_agent_score(agent),
@@ -659,7 +722,14 @@ def marketplace():
             "status": "online" if online else "offline",
             "source": "dynamic_registry",
             "updated_at": agent["updated_at"],
-        })
+        }
+
+        if require_admin_key(x_api_key):
+            listing["agent_id"] = agent["agent_id"]
+            listing["url"] = agent["url"]
+            listing["wallet"] = agent["wallet"]
+
+        listings.append(listing)
 
     listings = sorted(
         listings,
@@ -727,17 +797,12 @@ def get_order(order_id: str):
 
 
 def detect_buyer_service(prompt: str):
-    text = (prompt or "").lower()
+    """
+    Generic marketplace service detection.
 
-    if any(w in text for w in ["hotel", "hôtel", "paris", "voyage", "travel", "restaurant", "meilleur"]):
-        return "web_research"
-
-    if any(w in text for w in ["risk", "risque", "audit", "analyse risque"]):
-        return "risk_report"
-
-    if any(w in text for w in ["sentiment", "marché", "market", "btc", "crypto"]):
-        return "market_sentiment"
-
+    IAT must not hardcode vertical business categories here.
+    Domain-specific matching belongs to capability routing and specialty routing.
+    """
     return "web_research"
 
 
@@ -971,6 +1036,31 @@ New buyer message:
     # After merging session memory, remove missing fields already known.
     known_requirements = intent.get("requirements") or {}
 
+    # Heuristic enrichment for general research clarification.
+    # The LLM may understand the request but still return empty requirements.
+    prompt_l = req.prompt.lower()
+    goal_l = str(intent.get("goal") or "").lower()
+    combined_l = f"{prompt_l} {goal_l}"
+
+    purchase_type_l = str(intent.get("purchase_type") or "").lower()
+
+    if purchase_type_l == "general_research":
+        if "topic" not in known_requirements:
+            if any(word in combined_l for word in ["btc", "bitcoin", "crypto", "liquidity", "sentiment", "risk", "market"]):
+                known_requirements["topic"] = req.prompt
+
+        if "depth" not in known_requirements:
+            if any(word in combined_l for word in ["deep", "detailed", "full", "complete", "in-depth"]):
+                known_requirements["depth"] = "deep"
+            elif any(word in combined_l for word in ["quick", "summary", "brief"]):
+                known_requirements["depth"] = "quick_summary"
+
+        if "deadline" not in known_requirements:
+            if any(word in combined_l for word in ["today", "now", "asap", "short-term", "short term"]):
+                known_requirements["deadline"] = "today"
+
+        intent["requirements"] = known_requirements
+
     aliases = {
         "budget": ["budget", "price", "price_range"],
         "country/location": ["country", "location", "region"],
@@ -1022,7 +1112,7 @@ New buyer message:
         "restaurant": "web_research",
         "restaurant_search": "web_research",
         "market_sentiment": "market_sentiment",
-        "risk_report": "risk_report",
+        "risk_report": "web_research",
     }
 
     service = service_mapping.get(
@@ -1109,45 +1199,189 @@ New buyer message:
     quality_score = round(min(max(float(best.get("reputation", 0.8) or 0.8), 0), 1), 3)
     value_score = round(compute_agent_market_score(best) / max(recommended_price, 0.001), 6)
 
-    return {
+    public_options = []
+
+    for agent in ranked[:3]:
+        agent_price = float(agent.get("price", 0) or 0)
+        agent_quality = round(min(max(float(agent.get("reputation", 0.8) or 0.8), 0), 1), 3)
+
+        public_options.append({
+            "label": "Recommended provider" if agent == best else "Alternative provider",
+            "price_iat": agent_price,
+            "estimated_quality": "high" if agent_quality >= 0.85 else "medium",
+            "quality_score": agent_quality,
+            "strengths": [
+                "Good match for the buyer request",
+                "Available now",
+                "Selected using capability, specialty, price, reputation and trust signals"
+            ],
+        })
+
+    debug_payload = None
+
+    if req.debug:
+        debug_payload = {
+            "selected_agent": best.get("agent_id"),
+            "routing_preview": routing_preview,
+            "ranked_agents": [
+                {
+                    "agent_id": a.get("agent_id"),
+                    "price": a.get("price"),
+                    "reputation": a.get("reputation"),
+                    "capability_score": compute_capability_match_score(a, routing_order),
+                    "specialty_score": compute_specialty_match_score(a, routing_order),
+                    "market_score": compute_agent_market_score(a),
+                }
+                for a in ranked[:5]
+            ]
+        }
+
+    response = {
         "status": "preview",
         "session_id": session_id,
         "session_ttl_seconds": 300,
         "buyer_summary": {
             "request_understood": req.prompt,
-            "detected_service": service,
             "expected_delivery": describe_buyer_delivery(service, req.prompt),
-            "recommended_price_iat": recommended_price,
-            "min_price_available_iat": min(prices),
-            "max_price_available_iat": max(prices),
             "buyer_max_price_iat": req.max_price,
+            "estimated_delivery_time": "A few seconds after confirmation",
+        },
+        "best_offer": {
+            "price_iat": recommended_price,
             "estimated_quality": "high" if quality_score >= 0.85 else "medium",
             "quality_score": quality_score,
             "value_for_money": "excellent" if value_score >= 1 else "good",
-            "estimated_delivery_time": "quelques secondes après paiement",
+            "why_this_offer": "This offer currently gives the best balance between request match, price, reputation, availability and reliability.",
         },
-        "recommendation": {
-            "why_this_offer": "Offer recommended because it has the best balance between expected quality, price, availability and reliability.",
-            "recommended_action": "Confirm to create the payment order.",
-        },
-        "routing_preview": routing_preview,
-        "internal_next_step": {
-            "create_order_payload": {
-                "service": service,
-                "query": req.prompt,
-                "buyer_wallet": req.buyer_wallet,
-                "buyer_intent": intent,
-                "requirements": intent.get("requirements", {}),
-                "buyer_context": {
-                    "session_id": session_id,
-                    "protocol_language": intent.get("protocol_language", "en"),
-                    "purchase_type": intent.get("purchase_type"),
-                    "goal": intent.get("goal"),
-                },
-            }
+        "available_options": public_options,
+        "next_step": {
+            "action": "confirm_order",
+            "message": "Confirm to prepare the order. Payment and delivery details will be handled by the protocol."
         }
     }
 
+    if debug_payload:
+        response["debug_routing"] = debug_payload
+
+    return response
+
+
+
+@app.post("/buyer/run-test")
+def buyer_run_test(req: BuyerPreviewRequest):
+    """
+    Buyer-facing execution test.
+
+    This endpoint is temporary for development, but its response shape is the
+    target buyer experience: no internal agent IDs, no URLs, no wallets,
+    no routing internals.
+    """
+    if is_buyer_banned_db(req.buyer_wallet):
+        return {
+            "status": "rejected",
+            "message": "This wallet is not eligible to use the service currently.",
+        }
+
+    buyer_intent = normalize_buyer_intent(req.prompt)
+    requirements = buyer_intent.get("requirements") or {}
+
+    query_l = str(req.prompt or "").lower()
+    goal_l = str(buyer_intent.get("goal") or "").lower()
+    combined_l = f"{query_l} {goal_l}"
+
+    if str(buyer_intent.get("purchase_type") or "").lower() == "general_research":
+        if "topic" not in requirements:
+            requirements["topic"] = req.prompt
+
+        if "depth" not in requirements:
+            if any(word in combined_l for word in ["deep", "detailed", "full", "complete", "in-depth"]):
+                requirements["depth"] = "deep"
+            elif any(word in combined_l for word in ["quick", "summary", "brief"]):
+                requirements["depth"] = "quick_summary"
+
+        if "deadline" not in requirements:
+            if any(word in combined_l for word in ["today", "now", "asap", "short-term", "short term"]):
+                requirements["deadline"] = "today"
+
+        buyer_intent["requirements"] = requirements
+
+    missing = []
+    for field in ["topic", "depth", "deadline"]:
+        if field not in requirements:
+            missing.append(field)
+
+    if missing:
+        questions = {
+            "topic": "What exact topic should be researched?",
+            "depth": "Do you want a quick summary or a deep report?",
+            "deadline": "When do you need the result?",
+        }
+
+        return {
+            "status": "needs_clarification",
+            "message": "A few details are needed before preparing the best result.",
+            "missing_requirements": missing,
+            "questions": [questions[m] for m in missing],
+        }
+
+    service = detect_buyer_service(req.prompt)
+
+    from iat.api.multi_exec import multi_call, select_best_result, select_top_agents
+    from iat.api.db import get_agents_for_service_db
+
+    agents = get_agents_for_service_db(service)
+
+    if req.max_price is not None:
+        agents = [
+            a for a in agents
+            if float(a.get("price", 0) or 0) <= float(req.max_price)
+        ]
+
+    order = {
+        "order_id": "buyer_run_test",
+        "query": req.prompt,
+        "service": service,
+        "tx_signature": "INTERNAL_BUYER_RUN_TEST",
+        "buyer_intent": buyer_intent,
+        "requirements": requirements,
+        "buyer_context": {
+            "protocol_language": buyer_intent.get("protocol_language", "en"),
+            "purchase_type": buyer_intent.get("purchase_type"),
+            "goal": buyer_intent.get("goal"),
+        },
+    }
+
+    selected_agents = select_top_agents(
+        agents,
+        limit=3,
+        order=order,
+    )
+
+    if not selected_agents:
+        return {
+            "status": "no_offer_available",
+            "message": "No provider is currently available for this request.",
+        }
+
+    results = multi_call(selected_agents, order)
+    best = select_best_result(results)
+
+    if not best:
+        return {
+            "status": "failed",
+            "message": "No provider could produce a usable result.",
+        }
+
+    delivery = best.get("final_buyer_delivery") or {}
+
+    return {
+        "status": delivery.get("status", "success"),
+        "summary": delivery.get("summary"),
+        "recommendations": delivery.get("recommendations", []),
+        "final_recommendation": delivery.get("final_recommendation"),
+        "confidence": delivery.get("confidence", 0.5),
+        "sources": delivery.get("sources", []),
+    }
 
 
 @app.post("/buyer/confirm")
@@ -1179,12 +1413,55 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
             "buyer_wallet": buyer_wallet,
         }
 
+    buyer_intent = req.buyer_intent
+    requirements = req.requirements
+    buyer_context = req.buyer_context
+
+    # Create-order must be independently intelligent.
+    # If called directly without preview context, normalize the buyer query here
+    # so routing is consistent with buyer/preview.
+    if not buyer_intent:
+        buyer_intent = normalize_buyer_intent(req.query)
+
+    if not requirements:
+        requirements = buyer_intent.get("requirements") or {}
+
+    # Same generic research enrichment used by buyer preview.
+    query_l = str(req.query or "").lower()
+    goal_l = str(buyer_intent.get("goal") or "").lower()
+    combined_l = f"{query_l} {goal_l}"
+    purchase_type_l = str(buyer_intent.get("purchase_type") or "").lower()
+
+    if purchase_type_l == "general_research":
+        if "topic" not in requirements:
+            if any(word in combined_l for word in ["btc", "bitcoin", "crypto", "liquidity", "sentiment", "risk", "market"]):
+                requirements["topic"] = req.query
+
+        if "depth" not in requirements:
+            if any(word in combined_l for word in ["deep", "detailed", "full", "complete", "in-depth"]):
+                requirements["depth"] = "deep"
+            elif any(word in combined_l for word in ["quick", "summary", "brief"]):
+                requirements["depth"] = "quick_summary"
+
+        if "deadline" not in requirements:
+            if any(word in combined_l for word in ["today", "now", "asap", "short-term", "short term"]):
+                requirements["deadline"] = "today"
+
+        buyer_intent["requirements"] = requirements
+
+    if not buyer_context:
+        buyer_context = {
+            "protocol_language": buyer_intent.get("protocol_language", "en"),
+            "purchase_type": buyer_intent.get("purchase_type"),
+            "goal": buyer_intent.get("goal"),
+        }
+
     routing_order = {
         "query": req.query,
         "service": req.service,
-        "buyer_intent": req.buyer_intent,
-        "requirements": req.requirements,
-        "buyer_context": req.buyer_context,
+        "buyer_intent": buyer_intent,
+        "requirements": requirements,
+        "buyer_context": buyer_context,
     }
 
     seller = select_best_seller(req.service, order=routing_order)
@@ -1216,9 +1493,9 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
         "delivery_result": None,
         "buyer_secret": str(uuid.uuid4()),
         "buyer_wallet": buyer_wallet,
-        "buyer_intent": req.buyer_intent,
-        "requirements": req.requirements,
-        "buyer_context": req.buyer_context,
+        "buyer_intent": buyer_intent,
+        "requirements": requirements,
+        "buyer_context": buyer_context,
         "used": False,
     }
 
@@ -1437,17 +1714,29 @@ def multi_call_test(payload: dict):
     order = {
         "order_id": "test",
         "query": query,
-        "service": service
+        "service": service,
+        "buyer_intent": normalize_buyer_intent(query),
     }
 
-    results = multi_call(agents, order)
+    order["requirements"] = order["buyer_intent"].get("requirements") or {}
+
+    selected_agents = select_top_agents(
+        agents,
+        limit=3,
+        order=order,
+    )
+
+    results = multi_call(selected_agents, order)
     best = select_best_result(results)
+    consensus = compute_consensus(results)
 
     return {
+        "status": "ok",
         "agents_called": len(selected_agents),
         "selected_agents": [a.get("agent_id") for a in selected_agents],
         "results": results,
-        "best": best
+        "best": best,
+        "consensus": consensus,
     }
 
 

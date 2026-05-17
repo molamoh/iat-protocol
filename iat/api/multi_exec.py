@@ -21,6 +21,28 @@ def parse_json_list(value):
 
 def infer_required_capabilities(order):
     intent = order.get("buyer_intent") or {}
+
+    groq_capabilities = intent.get("required_capabilities") or []
+
+    if isinstance(groq_capabilities, list) and groq_capabilities:
+        required = set(str(c).strip() for c in groq_capabilities if str(c).strip())
+
+        # Generic baseline for most buyer-facing autonomous tasks.
+        required.add("buyer_research")
+
+        # If the buyer asks for research/analysis and Groq did not include web_search,
+        # add it as a generic execution capability, not a vertical hardcode.
+        output_mode = str(intent.get("output_mode", "") or "").lower()
+        purchase_type = str(intent.get("purchase_type", "") or "").lower()
+        goal = str(intent.get("goal", "") or "").lower()
+        query = str(order.get("query", "") or "").lower()
+        text = " ".join([output_mode, purchase_type, goal, query])
+
+        if any(w in text for w in ["research", "analysis", "current", "latest", "today", "find", "compare"]):
+            required.add("web_search")
+
+        return list(required)
+
     purchase_type = str(intent.get("purchase_type", "") or "").lower()
     goal = str(intent.get("goal", "") or "").lower()
     query = str(order.get("query", "") or "").lower()
@@ -98,16 +120,36 @@ def compute_specialty_match_score(agent, order):
 
     score = 0.0
 
+    groq_preferred = intent.get("preferred_specialties") or []
+
+    if isinstance(groq_preferred, list) and groq_preferred:
+        preferred = set(str(s).strip().lower() for s in groq_preferred if str(s).strip())
+        direct_overlap = specialties.intersection(preferred)
+
+        if direct_overlap:
+            score += len(direct_overlap) / max(len(preferred), 1)
+
+        # Also allow alias-level matching between Groq specialties and registered specialties.
+        for specialty in specialties:
+            alias_tokens = set(specialty_aliases.get(specialty, []))
+            specialty_tokens = set(str(specialty).lower().replace("_", " ").split())
+            match_tokens = alias_tokens.union(specialty_tokens)
+
+            for preferred_item in preferred:
+                preferred_tokens = set(preferred_item.replace("_", " ").split())
+                if preferred_tokens.intersection(match_tokens):
+                    score += 0.15
+
     for specialty in specialties:
         specialty_tokens = set(str(specialty).lower().replace("_", " ").split())
         alias_tokens = set(specialty_aliases.get(specialty, []))
         match_tokens = specialty_tokens.union(alias_tokens)
 
         if tokens.intersection(match_tokens):
-            score += 1.0 / max(len(specialties), 1)
+            score += 0.5 / max(len(specialties), 1)
 
     if "general_web" in specialties:
-        score += 0.05
+        score += 0.03
 
     return round(min(score, 1.0), 6)
 
@@ -135,6 +177,72 @@ def compute_capability_match_score(agent, order):
             specialty_bonus = 0.20
 
     return round(min(1.0, capability_overlap + specialty_bonus), 6)
+
+
+def compute_agent_trust_score(agent):
+    """
+    Generic trust score for buyer-side routing.
+
+    This prepares the future seller economy:
+    - reputation
+    - success/failure history
+    - stake
+    - slashing history
+    - risk score
+    - trust tier
+
+    Returns 0.0 to 1.0.
+    """
+    reputation = float(agent.get("reputation", 0.5) or 0.5)
+    successes = int(agent.get("success_count", 0) or 0)
+    failures = int(agent.get("failure_count", 0) or 0)
+    stake_amount = float(agent.get("stake_amount", 0) or 0)
+    stake_required = float(agent.get("stake_required", 0) or 0)
+    dynamic_stake_required = float(agent.get("dynamic_stake_required", 0) or 0)
+    risk_score = float(agent.get("risk_score", 0) or 0)
+    stake_slashed_total = float(agent.get("stake_slashed_total", 0) or 0)
+    trust_tier = str(agent.get("trust_tier", "free") or "free").lower()
+    agent_type = str(agent.get("agent_type", "standard") or "standard").lower()
+
+    score = reputation * 0.45
+
+    total_results = successes + failures
+    if total_results > 0:
+        success_rate = successes / max(total_results, 1)
+        score += success_rate * 0.20
+    else:
+        score += 0.10
+
+    tier_bonus = {
+        "premium": 0.15,
+        "standard": 0.10,
+        "staked": 0.08,
+        "free": 0.03,
+        "recovery": -0.05,
+        "stake_required": -0.15,
+        "capacity_exceeded": -0.10,
+    }.get(trust_tier, 0.0)
+
+    score += tier_bonus
+
+    if agent_type == "foundation":
+        score += 0.12
+
+    effective_required = max(stake_required, dynamic_stake_required)
+
+    if effective_required > 0:
+        stake_ratio = min(stake_amount / effective_required, 1.0)
+        score += stake_ratio * 0.12
+    elif stake_amount > 0:
+        score += min(stake_amount / 1000, 1.0) * 0.08
+
+    score -= min(max(risk_score, 0), 1) * 0.25
+
+    if stake_slashed_total > 0:
+        slash_penalty = min(stake_slashed_total / (stake_amount + stake_slashed_total + 0.001), 1.0)
+        score -= slash_penalty * 0.25
+
+    return round(min(max(score, 0.0), 1.0), 6)
 
 
 def compute_agent_market_score(agent):
@@ -262,79 +370,467 @@ def compute_agent_market_score(agent):
     return round(score, 6)
 
 
+def compute_buyer_agent_score(agent, order=None):
+    """
+    Centralized buyer-side routing score.
+
+    Used by:
+    - buyer preview
+    - buyer run-test
+    - create-order
+    - future payment/execution pipeline
+
+    This keeps routing consistent across the protocol.
+    """
+    order = order or {}
+    intent = order.get("buyer_intent") or {}
+
+    strategy = str(intent.get("execution_strategy") or "balanced").lower()
+    trust_preference = str(intent.get("trust_preference") or "foundation_allowed").lower()
+    consensus_preference = str(intent.get("consensus_preference") or "standard").lower()
+
+    # Strict consensus requests require consensus-oriented routing.
+    if consensus_preference == "strict":
+        strategy = "consensus_required"
+
+    if trust_preference == "foundation_only" and agent.get("agent_type") != "foundation":
+        return -999999
+
+    capability = compute_capability_match_score(agent, order)
+    specialty = compute_specialty_match_score(agent, order)
+    market = compute_agent_market_score(agent)
+    trust = compute_agent_trust_score(agent)
+
+    try:
+        from iat.api.db import compute_agent_topic_score_db
+        routing_topics = extract_topics_from_result(
+            {"data": {
+                "entities": [],
+                "claims": [],
+                "structured_signals": {},
+                "metrics": {},
+            }},
+            order,
+        )
+        topic_score = compute_agent_topic_score_db(
+            agent.get("agent_id"),
+            routing_topics,
+        )
+    except Exception:
+        topic_score = 0.5
+
+    price = max(float(agent.get("price", 1) or 1), 0.001)
+    price_score = 1 / price
+
+    call_count = int(agent.get("call_count", 0) or 0)
+    latency_total = float(agent.get("latency_total", 0) or 0)
+    avg_latency = latency_total / call_count if call_count > 0 else 1.0
+    latency_score = min(1.0, 1 / max(avg_latency, 0.001))
+
+    market_score = market / 1000 if market > 0 else 0
+
+    premium_bonus = 0.0
+
+    preferred_specialties = set(
+        str(s).lower()
+        for s in (intent.get("preferred_specialties") or [])
+    )
+
+    agent_specialties = set(
+        str(s).lower()
+        for s in parse_json_list(agent.get("specialties"))
+    )
+
+    if strategy in ["premium", "safest", "consensus_required"]:
+        overlap = preferred_specialties.intersection(agent_specialties)
+
+        if overlap:
+            premium_bonus += min(len(overlap) * 0.12, 0.30)
+
+        if "premium_analysis" in agent_specialties:
+            premium_bonus += 0.15
+
+        if "risk" in agent_specialties:
+            premium_bonus += 0.10
+
+        if "crypto" in agent_specialties:
+            premium_bonus += 0.08
+
+        if {"premium_analysis", "risk", "crypto"}.issubset(agent_specialties):
+            premium_bonus += 0.08
+
+    if strategy == "cheapest":
+        return round(
+            capability * 0.30 +
+            specialty * 0.20 +
+            price_score * 0.35 +
+            trust * 0.10 +
+            topic_score * 0.10 +
+            market_score * 0.05,
+            6,
+        )
+
+    if strategy in ["premium", "safest"]:
+        return round(
+            capability * 0.30 +
+            specialty * 0.25 +
+            trust * 0.35 +
+            topic_score * 0.05 +
+            market_score * 0.10 +
+            premium_bonus +
+            price_score * 0.01,
+            6,
+        )
+
+    if strategy == "fastest":
+        return round(
+            capability * 0.30 +
+            specialty * 0.20 +
+            latency_score * 0.25 +
+            trust * 0.10 +
+            topic_score * 0.10 +
+            price_score * 0.10,
+            6,
+        )
+
+    if strategy == "consensus_required":
+        return round(
+            capability * 0.35 +
+            specialty * 0.25 +
+            trust * 0.25 +
+            topic_score * 0.05 +
+            market_score * 0.17 +
+            premium_bonus +
+            price_score * 0.01,
+            6,
+        )
+
+    return round(
+        capability * 0.35 +
+        specialty * 0.25 +
+        trust * 0.18 +
+        topic_score * 0.07 +
+        price_score * 0.10 +
+        market_score * 0.15,
+        6,
+    )
+
+
+def compute_required_agent_count(order=None):
+    """
+    Decide how many agents should participate in execution.
+
+    Future use:
+    - consensus security
+    - anti-fraud
+    - high-value orders
+    - premium verification
+    - decentralized arbitration
+    """
+    order = order or {}
+    intent = order.get("buyer_intent") or {}
+
+    strategy = str(intent.get("execution_strategy") or "balanced").lower()
+    consensus = str(intent.get("consensus_preference") or "standard").lower()
+    quality = str(intent.get("quality_preference") or "balanced").lower()
+    urgency = str(intent.get("urgency") or "normal").lower()
+
+    if strategy == "fastest":
+        return 1
+
+    if consensus == "none":
+        return 1
+
+    if consensus == "strict":
+        return 5
+
+    if strategy == "consensus_required":
+        return 5
+
+    if strategy in ["premium", "safest"]:
+        return 4
+
+    if quality in ["premium", "high"]:
+        return 4
+
+    if urgency == "high":
+        return 2
+
+    return 3
+
+
 def select_top_agents(agents, limit=3, order=None):
     """
     Select best available agents before execution.
-    This reduces cost and avoids calling disabled/bad agents.
-    """
-    foundation_agents = []
-    seller_agents = []
 
+    Foundation agents are NOT a fallback anymore.
+    They are protocol infrastructure and compete through the same score,
+    unless trust_preference says otherwise.
+    """
+    min_capability_match = 0.70
+
+    available = []
     for a in agents:
         if not bool(a.get("available", True)):
             continue
 
-        agent_type = a.get("agent_type", "seller")
+        if order:
+            capability_match = compute_capability_match_score(a, order)
 
-        if agent_type == "foundation":
-            foundation_agents.append(a)
-        else:
-            seller_agents.append(a)
+            if capability_match < min_capability_match:
+                continue
 
-    ranked_sellers = sorted(
-        seller_agents,
-        key=compute_agent_market_score,
+        available.append(a)
+
+    ranked = sorted(
+        available,
+        key=lambda a: compute_buyer_agent_score(a, order or {}),
         reverse=True,
     )
 
-    if order:
-        ranked_sellers = sorted(
-            ranked_sellers,
-            key=lambda a: (
-                compute_capability_match_score(a, order),
-                compute_specialty_match_score(a, order),
-                compute_agent_market_score(a),
-            ),
-            reverse=True,
-        )
+    return ranked[:limit]
 
-    selected = ranked_sellers[:limit]
 
-    # If no external sellers are available, the foundation layer executes.
-    if not selected and foundation_agents:
-        selected = sorted(
-            foundation_agents,
-            key=lambda a: (
-                compute_capability_match_score(a, order or {}),
-                compute_specialty_match_score(a, order or {}),
-                compute_agent_market_score(a),
-            ),
-            reverse=True,
-        )[:limit]
 
-    return selected
+def extract_semantic_signals_from_text(text):
+    """
+    Lightweight canonical semantic extraction.
 
+    Goal:
+    - give web agents and structured agents a shared semantic language
+    - improve consensus across heterogeneous agent outputs
+    - avoid making consensus depend only on URLs
+    """
+    text_l = str(text or "").lower()
+
+    entities = set()
+    claims = set()
+    signals = {}
+
+    entity_aliases = {
+        "BTC": ["btc", "bitcoin"],
+        "ETH": ["eth", "ethereum"],
+        "AI": ["ai", "artificial intelligence"],
+        "LLM": ["llm", "local llm", "large language model"],
+    }
+
+    for entity, aliases in entity_aliases.items():
+        if any(alias in text_l for alias in aliases):
+            entities.add(entity)
+
+    signal_keywords = {
+        "risk": ["risk", "risky", "exposure", "danger", "drawdown"],
+        "volatility": ["volatility", "volatile"],
+        "liquidity": ["liquidity", "liquid", "liquidity sweep"],
+        "leverage": ["leverage", "leveraged", "margin"],
+        "technical_structure": ["technical", "trend", "support", "resistance", "moving average"],
+        "macro": ["macro", "policy", "rates", "inflation", "m2", "global liquidity"],
+        "regulation": ["regulation", "law", "legal", "compliance", "legislation"],
+        "price": ["price", "budget", "cost", "cheap", "expensive"],
+        "performance": ["performance", "gpu", "cpu", "ram", "vram", "benchmark"],
+    }
+
+    detected = []
+
+    for signal, keywords in signal_keywords.items():
+        if any(k in text_l for k in keywords):
+            detected.append(signal)
+            signals[signal] = "detected"
+            claims.add(f"{signal}:detected")
+
+    if "bullish" in text_l or "uptrend" in text_l or "rising trend" in text_l:
+        signals["market_bias"] = "bullish"
+        claims.add("market_bias:bullish")
+
+    if "bearish" in text_l or "downtrend" in text_l or "decline" in text_l:
+        signals["market_bias"] = "bearish"
+        claims.add("market_bias:bearish")
+
+    if "high" in text_l and "risk" in text_l:
+        signals["risk_level"] = "high"
+        claims.add("risk_level:high")
+
+    if "medium" in text_l and "risk" in text_l:
+        signals["risk_level"] = "medium"
+        claims.add("risk_level:medium")
+
+    if "low" in text_l and "risk" in text_l:
+        signals["risk_level"] = "low"
+        claims.add("risk_level:low")
+
+    if detected:
+        claims.add("topics:" + ",".join(sorted(detected)))
+
+    return {
+        "entities": sorted(entities),
+        "claims": sorted(claims),
+        "structured_signals": signals,
+    }
 
 
 def normalize_agent_delivery(data):
+    """
+    Canonical multi-agent delivery schema.
+
+    Every agent output is normalized into the same structure before:
+    - consensus
+    - ranking
+    - trust scoring
+    - arbitration
+    - payment release
+    """
+
     if not isinstance(data, dict):
         return {
             "status": "error",
+            "delivery_type": "invalid",
             "summary": "Agent returned a non-JSON response.",
             "recommendations": [],
             "final_recommendation": None,
             "confidence": 0,
             "sources": [],
+            "claims": [],
+            "metrics": {},
+            "structured_signals": {},
+            "entities": [],
             "raw": data,
         }
 
+    payload = data.get("data") if isinstance(data.get("data"), dict) else data
+
+    delivery_type = str(payload.get("type") or data.get("type") or "generic").lower()
+
+    recommendations = payload.get("recommendations") or data.get("recommendations") or []
+
+    if not recommendations and isinstance(payload.get("results"), list):
+        recommendations = payload.get("results")
+
+    normalized_sources = []
+
+    for s in payload.get("results", []):
+        if isinstance(s, dict):
+            normalized_sources.append({
+                "title": s.get("title"),
+                "url": s.get("link") or s.get("url"),
+                "source": s.get("source"),
+                "snippet": s.get("snippet"),
+            })
+
+    for s in data.get("sources", []):
+        if isinstance(s, dict):
+            normalized_sources.append({
+                "title": s.get("title"),
+                "url": s.get("url"),
+                "source": s.get("source"),
+                "snippet": s.get("snippet"),
+            })
+
+    claims = []
+
+    if payload.get("recommendation"):
+        claims.append(str(payload.get("recommendation")))
+
+    if payload.get("risk_level"):
+        claims.append(f"risk_level:{payload.get('risk_level')}")
+
+    if payload.get("volatility"):
+        claims.append(f"volatility:{payload.get('volatility')}")
+
+    metrics = {}
+
+    for k in [
+        "confidence",
+        "risk_level",
+        "volatility",
+        "asset",
+        "price",
+        "score",
+        "trend",
+    ]:
+        if payload.get(k) is not None:
+            metrics[k] = payload.get(k)
+
+    structured_signals = {}
+
+    for k in [
+        "recommendation",
+        "trend",
+        "bias",
+        "market_regime",
+        "risk_level",
+    ]:
+        if payload.get(k) is not None:
+            structured_signals[k] = payload.get(k)
+
+    entities = []
+
+    for k in [
+        "asset",
+        "symbol",
+        "company",
+        "product",
+        "topic",
+    ]:
+        if payload.get(k):
+            entities.append(str(payload.get(k)))
+
+    semantic_text_parts = []
+
+    for field in [
+        payload.get("summary"),
+        payload.get("recommendation"),
+        payload.get("final_recommendation"),
+        data.get("summary"),
+        data.get("final_recommendation"),
+    ]:
+        if field:
+            semantic_text_parts.append(str(field))
+
+    for item in recommendations:
+        if isinstance(item, dict):
+            for field in ["title", "reason", "snippet"]:
+                if item.get(field):
+                    semantic_text_parts.append(str(item.get(field)))
+
+    semantic_text = " ".join(semantic_text_parts)
+
+    extracted = extract_semantic_signals_from_text(semantic_text)
+
+    claims = sorted(set(claims).union(set(extracted.get("claims", []))))
+    entities = sorted(set(entities).union(set(extracted.get("entities", []))))
+
+    structured_signals.update(
+        extracted.get("structured_signals", {})
+    )
+
     return {
         "status": data.get("status", "success"),
-        "summary": data.get("summary") or data.get("answer") or data.get("result") or "",
-        "recommendations": data.get("recommendations", []),
-        "final_recommendation": data.get("final_recommendation") or data.get("best") or data.get("answer"),
-        "confidence": float(data.get("confidence", 0.5) or 0.5),
-        "sources": data.get("sources", data.get("links", [])),
+        "delivery_type": delivery_type,
+        "summary": (
+            data.get("summary")
+            or payload.get("summary")
+            or data.get("answer")
+            or data.get("result")
+            or ""
+        ),
+        "recommendations": recommendations,
+        "final_recommendation": (
+            data.get("final_recommendation")
+            or payload.get("final_recommendation")
+            or payload.get("recommendation")
+            or data.get("best")
+            or data.get("answer")
+        ),
+        "confidence": float(
+            payload.get("confidence")
+            or data.get("confidence")
+            or 0.5
+        ),
+        "sources": normalized_sources,
+        "claims": claims,
+        "metrics": metrics,
+        "structured_signals": structured_signals,
+        "entities": entities,
         "raw": data,
     }
 
@@ -405,10 +901,14 @@ def call_agent(agent, order):
     except Exception as e:
         latency = max(time.monotonic() - start, 0)
 
+        error_text = str(e)
+        failure_type = "timeout" if "timed out" in error_text.lower() or "timeout" in error_text.lower() else "execution_error"
+
         return {
             "agent_id": agent.get("agent_id"),
             "wallet": agent.get("wallet"),
             "success": False,
+            "failure_type": failure_type,
             "latency": round(latency, 6),
             "reputation": agent.get("reputation", 0.5),
             "success_count": agent.get("success_count", 0),
@@ -424,7 +924,7 @@ def call_agent(agent, order):
             "honest_volume": agent.get("honest_volume", 0),
             "fraud_volume": agent.get("fraud_volume", 0),
             "dynamic_stake_required": agent.get("dynamic_stake_required", 0),
-            "error": str(e),
+            "error": error_text,
         }
 
 
@@ -451,6 +951,36 @@ def multi_call(agents, order, max_workers=5):
 
         for future in as_completed(futures):
             results.append(future.result())
+
+    try:
+        consensus = compute_consensus(results)
+
+        overlap_by_agent = {
+            item.get("agent_id"): float(item.get("overlap", 0) or 0)
+            for item in consensus.get("agent_overlaps", [])
+        }
+
+        from iat.api.db import update_agent_topic_stats_db
+
+        for result in results:
+            agent_id = result.get("agent_id")
+            if not agent_id:
+                continue
+
+            topics = extract_topics_from_result(result, order)
+
+            update_agent_topic_stats_db(
+                agent_id,
+                topics,
+                success=bool(result.get("success")) or result.get("failure_type") == "timeout",
+                consensus_score=float(consensus.get("score", 0) or 0),
+                overlap=overlap_by_agent.get(agent_id, 0),
+                quality=compute_quality(result) if result.get("success") else 0,
+            )
+
+    except Exception:
+        # Topic memory must never break execution.
+        pass
 
     return results
 
@@ -612,6 +1142,114 @@ def build_final_buyer_delivery(best_result, all_results=None):
     }
 
 
+def compute_consensus_strength(results):
+    """
+    Compute high-level consensus strength across successful foundation results.
+
+    This is protocol-facing trust metadata:
+    - agreement_score
+    - signal overlap
+    - shared entities / claims
+    - divergence detection
+    - confidence-weighted score
+    """
+    valid = [r for r in results if r.get("success")]
+
+    if not valid:
+        return {
+            "agreement_score": 0,
+            "signal_overlap": 0,
+            "confidence_weighted": 0,
+            "divergence_detected": True,
+            "shared_entities": [],
+            "shared_claims": [],
+            "agents_count": 0,
+        }
+
+    entity_sets = []
+    claim_sets = []
+    confidences = []
+
+    for r in valid:
+        data = r.get("data") or {}
+
+        entities = set(str(x).lower() for x in data.get("entities", []) if x)
+        claims = set(str(x).lower() for x in data.get("claims", []) if x)
+
+        structured = data.get("structured_signals") or {}
+        for k, v in structured.items():
+            claims.add(str(k).lower())
+            if v:
+                claims.add(str(v).lower())
+
+        metrics = data.get("metrics") or {}
+        for k, v in metrics.items():
+            claims.add(str(k).lower())
+            if isinstance(v, str):
+                claims.add(str(v).lower())
+
+        entity_sets.append(entities)
+        claim_sets.append(claims)
+
+        try:
+            confidences.append(float(data.get("confidence", 0.5) or 0.5))
+        except Exception:
+            confidences.append(0.5)
+
+    shared_entities = set.intersection(*entity_sets) if entity_sets else set()
+    shared_claims = set.intersection(*claim_sets) if claim_sets else set()
+
+    all_entities = set.union(*entity_sets) if entity_sets else set()
+    all_claims = set.union(*claim_sets) if claim_sets else set()
+
+    entity_overlap = (
+        len(shared_entities) / len(all_entities)
+        if all_entities else 0
+    )
+
+    claim_overlap = (
+        len(shared_claims) / len(all_claims)
+        if all_claims else 0
+    )
+
+    confidence_weighted = (
+        sum(confidences) / len(confidences)
+        if confidences else 0
+    )
+
+    signal_overlap = (
+        entity_overlap * 0.35 +
+        claim_overlap * 0.65
+    )
+
+    agreement_score = (
+        signal_overlap * 0.55 +
+        confidence_weighted * 0.45
+    )
+
+    if agreement_score >= 0.70:
+        consensus_level = "strong"
+    elif agreement_score >= 0.45:
+        consensus_level = "moderate"
+    else:
+        consensus_level = "weak"
+
+    divergence_detected = agreement_score < 0.45
+
+    return {
+        "consensus_level": consensus_level,
+        "agreement_score": round(agreement_score, 4),
+        "signal_overlap": round(signal_overlap, 4),
+        "entity_overlap": round(entity_overlap, 4),
+        "claim_overlap": round(claim_overlap, 4),
+        "confidence_weighted": round(confidence_weighted, 4),
+        "divergence_detected": divergence_detected,
+        "shared_entities": sorted(shared_entities),
+        "shared_claims": sorted(shared_claims),
+        "agents_count": len(valid),
+    }
+
+
 def select_best_result(results):
     valid = [r for r in results if r.get("success")]
 
@@ -704,6 +1342,99 @@ def select_best_result(results):
     best["final_buyer_delivery"] = build_final_buyer_delivery(best, valid)
 
     return best
+
+def extract_topics_from_result(result, order=None):
+    """
+    Extract generic semantic topics from an agent result.
+
+    Topics are not hardcoded vertical routing categories.
+    They are emergent semantic signals from:
+    - entities
+    - claims
+    - structured signals
+    - metrics
+    - buyer intent requirements
+    """
+    topics = set()
+
+    order = order or {}
+    intent = order.get("buyer_intent") or {}
+    requirements = order.get("requirements") or {}
+
+    data = result.get("data", {}) or {}
+
+    for item in data.get("entities", []) or []:
+        if item:
+            topics.add(str(item).lower())
+
+    for claim in data.get("claims", []) or []:
+        claim = str(claim or "").lower()
+        if ":" in claim:
+            topics.add(claim.split(":", 1)[0])
+        elif claim:
+            topics.add(claim[:80])
+
+    for key, value in (data.get("structured_signals", {}) or {}).items():
+        if key:
+            topics.add(str(key).lower())
+        if value and str(value).lower() not in ["detected", "true", "false", "none"]:
+            topics.add(str(value).lower())
+
+    for key, value in (data.get("metrics", {}) or {}).items():
+        if key:
+            topics.add(str(key).lower())
+        if key in ["asset", "symbol", "topic", "product", "company"] and value:
+            topics.add(str(value).lower())
+
+    for key, value in requirements.items():
+        if isinstance(value, (str, int, float)):
+            topics.add(str(value).lower())
+        elif isinstance(value, list):
+            for v in value:
+                topics.add(str(v).lower())
+
+    for item in intent.get("preferred_specialties", []) or []:
+        topics.add(str(item).lower())
+
+    for item in intent.get("required_capabilities", []) or []:
+        topics.add(str(item).lower())
+
+    noisy_topics = {
+        "topics",
+        "detected",
+        "true",
+        "false",
+        "none",
+        "premium",
+        "high",
+        "medium",
+        "low",
+        "normal",
+        "balanced",
+        "fastest",
+        "safest",
+        "cheapest",
+        "consensus_required",
+        "foundation_allowed",
+        "foundation_only",
+        "open_market",
+    }
+
+    cleaned = []
+    for topic in topics:
+        topic = topic.strip().lower()
+        if not topic:
+            continue
+        if topic in noisy_topics:
+            continue
+        if len(topic) < 2:
+            continue
+        if len(topic) > 80:
+            topic = topic[:80]
+        cleaned.append(topic)
+
+    return sorted(set(cleaned))
+
 
 def compute_consensus(results):
     valid = [r for r in results if r.get("success")]
@@ -809,6 +1540,8 @@ def compute_consensus(results):
         )
 
         result_validity = 0
+
+        # Web/search evidence
         if len(items) >= 3:
             result_validity += 0.35
         if links:
@@ -816,6 +1549,20 @@ def compute_consensus(results):
         if domains:
             result_validity += 0.20
         if title_words:
+            result_validity += 0.20
+
+        # Structured/analytic evidence
+        normalized = r.get("data", {}) or {}
+
+        if normalized.get("claims"):
+            result_validity += 0.25
+        if normalized.get("entities"):
+            result_validity += 0.15
+        if normalized.get("structured_signals"):
+            result_validity += 0.25
+        if normalized.get("metrics"):
+            result_validity += 0.25
+        if normalized.get("final_recommendation"):
             result_validity += 0.20
 
         result_validity = min(result_validity, 1.0)
@@ -829,6 +1576,43 @@ def compute_consensus(results):
 
         base_weight = rep * success_factor * failure_factor
 
+        normalized = r.get("data", {}) or {}
+
+        claims = set(
+            str(x).lower()
+            for x in normalized.get("claims", [])
+            if x
+        )
+
+        entities = set(
+            str(x).lower()
+            for x in normalized.get("entities", [])
+            if x
+        )
+
+        structured_signals = {
+            str(k).lower(): str(v).lower()
+            for k, v in (normalized.get("structured_signals", {}) or {}).items()
+        }
+
+        metrics = {
+            str(k).lower(): str(v).lower()
+            for k, v in (normalized.get("metrics", {}) or {}).items()
+        }
+
+        recommendations_text = set()
+
+        for rec in normalized.get("recommendations", []):
+            if isinstance(rec, dict):
+                for field in ["title", "reason", "snippet"]:
+                    val = rec.get(field)
+                    if val:
+                        recommendations_text.add(str(val).lower())
+
+        final_recommendation = str(
+            normalized.get("final_recommendation") or ""
+        ).lower()
+
         agent_sets.append({
             "agent_id": r.get("agent_id"),
             "wallet": r.get("wallet"),
@@ -836,9 +1620,18 @@ def compute_consensus(results):
             "stake_amount": float(r.get("stake_amount", 0) or 0),
             "stake_required": float(r.get("stake_required", 0) or 0),
             "risk_score": float(r.get("risk_score", 0) or 0),
+
             "links": links,
             "domains": domains,
             "title_words": title_words,
+
+            "claims": claims,
+            "entities": entities,
+            "structured_signals": structured_signals,
+            "metrics": metrics,
+            "recommendations_text": recommendations_text,
+            "final_recommendation": final_recommendation,
+
             "query_relevance": round(query_relevance, 4),
             "result_validity": round(result_validity, 4),
             "base_weight": base_weight,
@@ -860,30 +1653,92 @@ def compute_consensus(results):
         query_relevance = float(agent.get("query_relevance", 0) or 0)
         result_validity = float(agent.get("result_validity", 0) or 0)
 
+        claims = agent.get("claims", set())
+        entities = agent.get("entities", set())
+        structured_signals = agent.get("structured_signals", {})
+        metrics = agent.get("metrics", {})
+        recommendations_text = agent.get("recommendations_text", set())
+
         other_links = set()
         other_domains = set()
         other_title_words = set()
+        other_claims = set()
+        other_entities = set()
+        other_recommendations_text = set()
+        other_signal_pairs = set()
+        other_metric_pairs = set()
 
         for other in agent_sets:
             if other["agent_id"] != agent["agent_id"]:
                 other_links.update(other.get("links", set()))
                 other_domains.update(other.get("domains", set()))
                 other_title_words.update(other.get("title_words", set()))
+                other_claims.update(other.get("claims", set()))
+                other_entities.update(other.get("entities", set()))
+                other_recommendations_text.update(other.get("recommendations_text", set()))
+
+                other_signal_pairs.update(
+                    set((other.get("structured_signals", {}) or {}).items())
+                )
+                other_metric_pairs.update(
+                    set((other.get("metrics", {}) or {}).items())
+                )
 
         link_overlap = len(links.intersection(other_links)) / len(links) if links else 0
         domain_overlap = len(domains.intersection(other_domains)) / len(domains) if domains else 0
         title_overlap = len(title_words.intersection(other_title_words)) / len(title_words) if title_words else 0
 
+        claims_overlap = len(claims.intersection(other_claims)) / len(claims) if claims else 0
+        entities_overlap = len(entities.intersection(other_entities)) / len(entities) if entities else 0
+
+        signal_pairs = set((structured_signals or {}).items())
+        metric_pairs = set((metrics or {}).items())
+
+        signal_overlap = (
+            len(signal_pairs.intersection(other_signal_pairs)) / len(signal_pairs)
+            if signal_pairs else 0
+        )
+
+        metrics_overlap = (
+            len(metric_pairs.intersection(other_metric_pairs)) / len(metric_pairs)
+            if metric_pairs else 0
+        )
+
+        recommendation_overlap = 0
+        if recommendations_text and other_recommendations_text:
+            shared_tokens = set()
+            own_tokens = set()
+
+            for txt in recommendations_text:
+                own_tokens.update(txt.replace("-", " ").replace("_", " ").split())
+
+            for txt in other_recommendations_text:
+                shared_tokens.update(txt.replace("-", " ").replace("_", " ").split())
+
+            own_tokens = {t for t in own_tokens if len(t) >= 4}
+            shared_tokens = {t for t in shared_tokens if len(t) >= 4}
+
+            recommendation_overlap = (
+                len(own_tokens.intersection(shared_tokens)) / len(own_tokens)
+                if own_tokens else 0
+            )
+
         fake_penalty = 0
         if any("fake" in link for link in links) or any("fake" in word for word in title_words):
             fake_penalty = 0.8
 
-        # Real-world decentralized consensus:
-        # exact links matter less than semantic/result coherence.
-        overlap = (
+        web_overlap = (
             link_overlap * 0.15 +
-            domain_overlap * 0.30 +
-            title_overlap * 0.55
+            domain_overlap * 0.25 +
+            title_overlap * 0.60
+        )
+
+        semantic_overlap = (
+            claims_overlap * 0.25 +
+            entities_overlap * 0.20 +
+            signal_overlap * 0.25 +
+            metrics_overlap * 0.15 +
+            recommendation_overlap * 0.15
         )
 
         independent_quality = (
@@ -891,12 +1746,14 @@ def compute_consensus(results):
             result_validity * 0.55
         )
 
-        # Hybrid consensus:
-        # - agreement with other agents matters
-        # - but independently valid, query-relevant results must not be punished
+        # Multi-format consensus:
+        # - web agents agree through sources/titles
+        # - analytic agents agree through claims/signals/entities/metrics
+        # - high-quality independent results still count
         overlap = (
-            overlap * 0.20 +
-            independent_quality * 0.80
+            web_overlap * 0.25 +
+            semantic_overlap * 0.35 +
+            independent_quality * 0.40
         )
 
         overlap = max(0, overlap - fake_penalty)
@@ -906,6 +1763,13 @@ def compute_consensus(results):
             "link_overlap": round(link_overlap, 4),
             "domain_overlap": round(domain_overlap, 4),
             "title_overlap": round(title_overlap, 4),
+            "claims_overlap": round(claims_overlap, 4),
+            "entities_overlap": round(entities_overlap, 4),
+            "signal_overlap": round(signal_overlap, 4),
+            "metrics_overlap": round(metrics_overlap, 4),
+            "recommendation_overlap": round(recommendation_overlap, 4),
+            "web_overlap": round(web_overlap, 4),
+            "semantic_overlap": round(semantic_overlap, 4),
             "query_relevance": round(query_relevance, 4),
             "result_validity": round(result_validity, 4),
             "independent_quality": round(independent_quality, 4),

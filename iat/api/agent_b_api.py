@@ -15,7 +15,13 @@ from iat.onchain import (
 )
 
 from iat.api.execution_engine import select_best_agent, compute_agent_score
-from iat.api.buyer_intent import normalize_buyer_intent
+from iat.api.buyer_intent import (
+    normalize_buyer_intent,
+    merge_buyer_intent_with_session,
+)
+
+from iat.api.multi_exec import extract_topics_from_result
+from iat.api.db import compute_agent_topic_score_db
 
 from iat.api.db import (
     update_agent_call_stats_db,
@@ -173,6 +179,27 @@ class RegisterAgentRequest(BaseModel):
     specialties: str = "[]"
 
 
+class SellerRegisterRequest(BaseModel):
+    seller_id: str
+    business_name: str
+    service: str
+    url: str
+    wallet: str
+
+    product_description: str
+    quality_claims: str = ""
+    refund_policy: str = ""
+    delivery_terms: str = ""
+
+    capabilities: str = "[]"
+    specialties: str = "[]"
+
+    stake_amount: float = 0
+    requested_price: float = 0
+
+    proof_links: str = "[]"
+
+
 class OrderRequest(BaseModel):
     service: str
     query: str | None = None
@@ -180,6 +207,7 @@ class OrderRequest(BaseModel):
     buyer_intent: dict | None = None
     requirements: dict | None = None
     buyer_context: dict | None = None
+    locked_agent_id: str | None = None
 
 
 class BuyerPreviewRequest(BaseModel):
@@ -191,12 +219,18 @@ class BuyerPreviewRequest(BaseModel):
 
 
 class BuyerConfirmRequest(BaseModel):
-    service: str
-    query: str
     buyer_wallet: str
-    buyer_intent: dict | None = None
-    requirements: dict | None = None
-    buyer_context: dict | None = None
+    session_id: str
+    max_price: float | None = None
+    debug: bool = False
+
+
+class SellerReviewRequest(BaseModel):
+    action: str
+    verdict: str = ""
+    risk_score: float | None = None
+    trust_tier: str | None = None
+    available: bool | None = None
 
 
 class VerifyPaymentRequest(BaseModel):
@@ -207,10 +241,33 @@ class VerifyPaymentRequest(BaseModel):
 def select_best_seller(service_name, order=None):
     dynamic_agents = get_agents_for_service_db(service_name)
 
+    # Buyer-facing execution is foundation-only.
+    # External seller agents must never directly access buyers.
+    dynamic_agents = [
+        a for a in dynamic_agents
+        if str(a.get("agent_type", "")).lower() == "foundation"
+    ]
+
     if not dynamic_agents:
         return None
 
+    locked_agent_id = None
     if order:
+        locked_agent_id = (
+            order.get("locked_agent_id")
+            or order.get("selected_agent_id")
+        )
+
+    if locked_agent_id:
+        best_agent = next(
+            (
+                a for a in dynamic_agents
+                if a.get("agent_id") == locked_agent_id
+                and bool(a.get("available", True))
+            ),
+            None,
+        )
+    elif order:
         from iat.api.multi_exec import select_top_agents
 
         selected = select_top_agents(
@@ -236,6 +293,37 @@ def select_best_seller(service_name, order=None):
         "source": "dynamic_registry",
         "capabilities": best_agent.get("capabilities"),
         "specialties": best_agent.get("specialties"),
+    }
+
+
+
+def build_foundation_context(order):
+    """
+    Foundation-only trusted context builder.
+
+    Future role:
+    - web research
+    - Groq normalization
+    - source verification
+    - anti-prompt-injection filtering
+    - canonical market context
+    - consensus preparation
+
+    Seller agents must never directly access raw buyer requests.
+    """
+
+    buyer_intent = order.get("buyer_intent") or {}
+
+    return {
+        "generated_by": "iat_foundation_layer",
+        "service": order.get("service"),
+        "goal": buyer_intent.get("goal"),
+        "requirements": order.get("requirements", {}),
+        "required_capabilities": buyer_intent.get("required_capabilities", []),
+        "preferred_specialties": buyer_intent.get("preferred_specialties", []),
+        "consensus_preference": buyer_intent.get("consensus_preference"),
+        "quality_preference": buyer_intent.get("quality_preference"),
+        "trusted": True,
     }
 
 
@@ -301,14 +389,112 @@ def generate_service_result(service_name, query=None):
 
 
 def deliver_service(order, tx_signature):
+    # Buyer delivery must only be executed by foundation agents.
+    # Seller agents are never allowed to directly receive buyer requests.
+    if str(order.get("seller_source") or "") == "dynamic_registry":
+        agent = get_agent_db(order.get("seller_id"))
+        if not agent or str(agent.get("agent_type", "")).lower() != "foundation":
+            return {
+                "error": "non_foundation_buyer_delivery_blocked",
+                "message": "Buyer-facing delivery is restricted to protocol foundation agents.",
+            }
+
+    execution_mode = str(
+        order.get("execution_mode") or "foundation_direct"
+    ).lower()
+
+    # Foundation consensus execution pipeline.
+    if execution_mode == "foundation_consensus":
+        from iat.api.multi_exec import (
+            compute_required_agent_count,
+            select_top_agents,
+            multi_call,
+            select_best_result,
+            build_final_buyer_delivery,
+            compute_consensus_strength,
+        )
+
+        all_agents = get_agents_for_service_db(order.get("service"))
+
+        foundation_agents = [
+            a for a in all_agents
+            if str(a.get("agent_type", "")).lower() == "foundation"
+            and bool(a.get("available", True))
+        ]
+
+        required_count = compute_required_agent_count(order)
+
+        selected_agents = select_top_agents(
+            foundation_agents,
+            limit=required_count,
+            order=order,
+        )
+
+        results = multi_call(selected_agents, order)
+
+        consensus_strength = compute_consensus_strength(results)
+
+        best_result = select_best_result(results)
+
+        if not best_result:
+            return {
+                "error": "consensus_failed",
+                "message": "No valid consensus result produced.",
+                "execution_mode": execution_mode,
+                "agents_called": [
+                    a.get("agent_id")
+                    for a in selected_agents
+                ],
+            }
+
+        final_delivery = build_final_buyer_delivery(
+            best_result,
+            results,
+        )
+
+        return {
+            "status": "consensus_delivered",
+            "execution_mode": execution_mode,
+            "agents_called": [
+                a.get("agent_id")
+                for a in selected_agents
+            ],
+            "consensus_agents_count": len(selected_agents),
+            "consensus_strength": consensus_strength,
+            "result": final_delivery,
+        }
+
     if order.get("seller_url"):
         payload = {
             "order_id": order["order_id"],
             "tx_signature": tx_signature,
         }
 
-        if order.get("query"):
-            payload["query"] = order.get("query")
+        foundation_context = order.get("foundation_context") or build_foundation_context(order)
+        execution_context = order.get("execution_context") or {}
+
+        if not order.get("foundation_context"):
+            order["foundation_context"] = foundation_context
+            try:
+                update_order_db(order.get("order_id"), order)
+            except Exception as e:
+                print("Foundation context persistence error:", e)
+
+        payload["context"] = {
+            "service": order.get("service"),
+            "execution_mode": order.get("execution_mode", "foundation_direct"),
+            "requirements": order.get("requirements", {}),
+            "buyer_context": order.get("buyer_context", {}),
+            "foundation_context": foundation_context,
+            "execution_context": execution_context,
+        }
+
+        # Foundation agents are trusted protocol agents and may receive the buyer query.
+        # Future seller agents must receive only sanitized execution_context.
+        agent = get_agent_db(order.get("seller_id"))
+        if agent and str(agent.get("agent_type", "")).lower() == "foundation":
+            if order.get("query"):
+                payload["query"] = order.get("query")
 
         try:
             r = requests.post(
@@ -334,6 +520,137 @@ def deliver_service(order, tx_signature):
             }
 
     return generate_service_result(order["service"], query=order.get("query"))
+
+
+@app.post("/admin/seller-review/{seller_id}")
+def admin_seller_review(seller_id: str, req: SellerReviewRequest, x_api_key: str | None = Header(default=None)):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    agent = get_agent_db(seller_id)
+
+    if not agent:
+        return {
+            "status": "invalid_seller",
+            "message": "Seller not found.",
+        }
+
+    if str(agent.get("agent_type", "")).lower() != "seller":
+        return {
+            "status": "rejected",
+            "message": "Only seller agents can be reviewed through this endpoint.",
+        }
+
+    action = str(req.action or "").lower().strip()
+    now = int(time.time())
+
+    if action == "approve":
+        agent["seller_status"] = "active"
+        agent["verification_status"] = "foundation_verified"
+        agent["available"] = True if req.available is None else bool(req.available)
+        agent["foundation_verified_at"] = now
+        agent["foundation_verdict"] = req.verdict or "Approved by protocol foundation review."
+        agent["trust_tier"] = req.trust_tier or agent.get("trust_tier") or "verified"
+
+    elif action == "reject":
+        agent["seller_status"] = "rejected"
+        agent["verification_status"] = "rejected"
+        agent["available"] = False
+        agent["foundation_verified_at"] = now
+        agent["foundation_verdict"] = req.verdict or "Rejected by protocol foundation review."
+
+    elif action == "suspend":
+        agent["seller_status"] = "suspended"
+        agent["verification_status"] = agent.get("verification_status") or "unverified"
+        agent["available"] = False
+        agent["foundation_verified_at"] = now
+        agent["foundation_verdict"] = req.verdict or "Suspended by protocol foundation review."
+
+    else:
+        return {
+            "status": "error",
+            "message": "Invalid action. Use approve, reject, or suspend.",
+        }
+
+    if req.risk_score is not None:
+        agent["risk_score"] = float(req.risk_score)
+
+    # Critical security invariants:
+    # sellers never get buyer access, web access, or raw prompt access.
+    agent["buyer_access"] = 0
+    agent["web_access"] = 0
+    agent["raw_prompt_access"] = 0
+
+    register_agent_db(agent)
+
+    return {
+        "status": "seller_reviewed",
+        "seller_id": seller_id,
+        "action": action,
+        "seller_status": agent.get("seller_status"),
+        "verification_status": agent.get("verification_status"),
+        "available": bool(agent.get("available")),
+        "buyer_access": False,
+        "web_access": False,
+        "raw_prompt_access": False,
+        "foundation_verdict": agent.get("foundation_verdict"),
+    }
+
+
+@app.post("/seller/register")
+def seller_register(req: SellerRegisterRequest):
+    now = int(time.time())
+
+    seller_metadata = {
+        "business_name": req.business_name,
+        "product_description": req.product_description,
+        "quality_claims": req.quality_claims,
+        "refund_policy": req.refund_policy,
+        "delivery_terms": req.delivery_terms,
+        "proof_links": req.proof_links,
+        "requested_price": req.requested_price,
+        "registered_via": "seller_register_v2",
+        "registered_at": now,
+    }
+
+    agent = {
+        "agent_id": req.seller_id,
+        "service": req.service,
+        "url": req.url,
+        "wallet": req.wallet,
+        "price": req.requested_price,
+        "reputation": 0.5,
+        "available": False,
+        "agent_type": "seller",
+        "stake_amount": req.stake_amount,
+        "stake_required": max(10, req.requested_price * 0.2),
+        "trust_tier": "pending",
+        "capabilities": req.capabilities,
+        "specialties": req.specialties,
+        "seller_status": "pending_review",
+        "verification_status": "unverified",
+        "seller_metadata": seller_metadata,
+        "buyer_access": 0,
+        "web_access": 0,
+        "raw_prompt_access": 0,
+        "foundation_verified_at": None,
+        "foundation_verdict": None,
+    }
+
+    register_agent_db(agent)
+
+    return {
+        "status": "pending_review",
+        "seller_id": req.seller_id,
+        "message": "Seller registered. The protocol foundation layer must verify this seller before activation.",
+        "buyer_access": False,
+        "web_access": False,
+        "raw_prompt_access": False,
+        "next_step": {
+            "action": "foundation_review",
+            "message": "A foundation verification process must approve the seller before it can participate in protocol-mediated execution.",
+        },
+    }
 
 
 @app.get("/")
@@ -969,7 +1286,7 @@ def buyer_preview(req: BuyerPreviewRequest):
     if is_buyer_banned_db(req.buyer_wallet):
         return {
             "status": "rejected",
-            "message": "Votre wallet n’est pas éligible pour utiliser le service actuellement.",
+            "message": "This wallet is not eligible to use the service currently.",
         }
 
     cleanup_expired_buyer_sessions_db(ttl_seconds=300)
@@ -982,42 +1299,41 @@ def buyer_preview(req: BuyerPreviewRequest):
         ttl_seconds=300,
     )
 
-    merged_prompt = req.prompt
-
-    if previous_session:
-        previous_goal = previous_session.get("goal")
-        previous_requirements = previous_session.get("requirements")
-
-        merged_prompt = f"""
-Previous buyer goal:
-{previous_goal}
-
-Previous known requirements:
-{previous_requirements}
-
-New buyer message:
-{req.prompt}
-"""
-
-    intent = normalize_buyer_intent(merged_prompt)
+    intent = normalize_buyer_intent(
+        req.prompt,
+        previous_context=previous_session,
+    )
 
     if buyer_topic_changed(previous_session, intent):
         session_id = str(uuid.uuid4())
         previous_session = None
-        merged_prompt = req.prompt
         intent = normalize_buyer_intent(req.prompt)
 
-    # Merge previous requirements memory
-    if previous_session:
-        old_requirements = previous_session.get("requirements") or {}
-        new_requirements = intent.get("requirements") or {}
+    intent = merge_buyer_intent_with_session(
+        previous_session,
+        intent,
+        req.prompt,
+    )
 
-        merged_requirements = dict(old_requirements)
+    prompt_l = str(req.prompt or "").lower()
 
-        for k, v in new_requirements.items():
-            merged_requirements[k] = v
+    # Buyer preference correction layer.
+    # Generic: interprets quality/speed/trust/consensus language without
+    # hardcoding vertical domains.
+    if any(w in prompt_l for w in ["safest", "safe", "safety", "lowest risk", "risk-averse"]):
+        intent["execution_strategy"] = "safest"
 
-        intent["requirements"] = merged_requirements
+    if any(w in prompt_l for w in ["premium", "best quality", "highest quality", "deep"]):
+        intent["quality_preference"] = "premium"
+
+    if any(w in prompt_l for w in ["strict consensus", "strong consensus", "verified by multiple", "multi-agent consensus"]):
+        intent["consensus_preference"] = "strict"
+
+    if any(w in prompt_l for w in ["fast", "quick", "asap", "urgent"]):
+        intent["max_latency_preference"] = "fast"
+
+    if any(w in prompt_l for w in ["cheapest", "lowest price", "budget"]):
+        intent["execution_strategy"] = "cheapest"
 
     save_buyer_conversation_session_db(
         session_id,
@@ -1026,6 +1342,11 @@ New buyer message:
             "goal": intent.get("goal"),
             "requirements": intent.get("requirements", {}),
             "purchase_type": intent.get("purchase_type"),
+            "required_capabilities": intent.get("required_capabilities", []),
+            "preferred_specialties": intent.get("preferred_specialties", []),
+            "messages": intent.get("messages", []),
+            "urgency": intent.get("urgency"),
+            "quality_preference": intent.get("quality_preference"),
             "updated_from_prompt": req.prompt,
         }
     )
@@ -1083,6 +1404,23 @@ New buyer message:
         clarification_questions = []
 
     if missing_requirements or clarification_questions:
+
+        save_buyer_conversation_session_db(
+            session_id,
+            req.buyer_wallet,
+            {
+                "goal": intent.get("goal"),
+                "requirements": intent.get("requirements", {}),
+                "purchase_type": intent.get("purchase_type"),
+                "required_capabilities": intent.get("required_capabilities", []),
+                "preferred_specialties": intent.get("preferred_specialties", []),
+                "messages": intent.get("messages", []),
+                "urgency": intent.get("urgency"),
+                "quality_preference": intent.get("quality_preference"),
+                "updated_from_prompt": req.prompt,
+            }
+        )
+
         return {
             "status": "needs_clarification",
             "protocol_language": intent.get("protocol_language", "en"),
@@ -1096,7 +1434,7 @@ New buyer message:
                 "missing_requirements": missing_requirements,
                 "questions": clarification_questions,
                 "confidence": intent.get("confidence"),
-                "message": "We need a few more details to recommend the best value-for-money offer.",
+                "message": "We need a few more details to optimize routing and recommendation quality.",
             },
         }
 
@@ -1138,13 +1476,44 @@ New buyer message:
         compute_capability_match_score,
         compute_specialty_match_score,
         compute_agent_market_score,
+        compute_agent_trust_score,
+        compute_buyer_agent_score,
+        parse_json_list,
     )
+
+    buyer_context = {
+        "protocol_language": intent.get("protocol_language", "en"),
+        "purchase_type": intent.get("purchase_type"),
+        "goal": intent.get("goal"),
+    }
 
     routing_order = {
         "query": req.prompt,
+        "service": service,
         "buyer_intent": intent,
         "requirements": intent.get("requirements", {}),
+        "buyer_context": buyer_context,
     }
+
+    save_buyer_conversation_session_db(
+        session_id,
+        req.buyer_wallet,
+        {
+            "query": req.prompt,
+            "service": service,
+            "buyer_intent": intent,
+            "goal": intent.get("goal"),
+            "requirements": intent.get("requirements", {}),
+            "purchase_type": intent.get("purchase_type"),
+            "required_capabilities": intent.get("required_capabilities", []),
+            "preferred_specialties": intent.get("preferred_specialties", []),
+            "messages": intent.get("messages", []),
+            "urgency": intent.get("urgency"),
+            "quality_preference": intent.get("quality_preference"),
+            "buyer_context": buyer_context,
+            "updated_from_prompt": req.prompt,
+        }
+    )
 
     routing_preview = {
         "required_capabilities": infer_required_capabilities(routing_order),
@@ -1181,17 +1550,37 @@ New buyer message:
 
     from iat.api.multi_exec import compute_agent_market_score
 
+    strategy = str(intent.get("execution_strategy") or "balanced").lower()
+
     ranked = sorted(
         available_agents,
-        key=lambda a: (
-            compute_capability_match_score(a, routing_order),
-            compute_specialty_match_score(a, routing_order),
-            compute_agent_market_score(a) / max(float(a.get("price", 1) or 1), 0.001),
-        ),
+        key=lambda a: compute_buyer_agent_score(a, routing_order),
         reverse=True,
     )
 
     best = ranked[0]
+
+    save_buyer_conversation_session_db(
+        session_id,
+        req.buyer_wallet,
+        {
+            "query": req.prompt,
+            "service": service,
+            "buyer_intent": intent,
+            "goal": intent.get("goal"),
+            "requirements": intent.get("requirements", {}),
+            "purchase_type": intent.get("purchase_type"),
+            "required_capabilities": intent.get("required_capabilities", []),
+            "preferred_specialties": intent.get("preferred_specialties", []),
+            "messages": intent.get("messages", []),
+            "urgency": intent.get("urgency"),
+            "quality_preference": intent.get("quality_preference"),
+            "buyer_context": buyer_context,
+            "selected_agent_id": best.get("agent_id"),
+            "selected_price": float(best.get("price", 0) or 0),
+            "updated_from_prompt": req.prompt,
+        }
+    )
 
     prices = [float(a.get("price", 0) or 0) for a in available_agents]
 
@@ -1222,6 +1611,9 @@ New buyer message:
     if req.debug:
         debug_payload = {
             "selected_agent": best.get("agent_id"),
+            "intent_strategy": intent.get("execution_strategy"),
+            "intent_consensus": intent.get("consensus_preference"),
+            "intent_quality": intent.get("quality_preference"),
             "routing_preview": routing_preview,
             "ranked_agents": [
                 {
@@ -1231,6 +1623,19 @@ New buyer message:
                     "capability_score": compute_capability_match_score(a, routing_order),
                     "specialty_score": compute_specialty_match_score(a, routing_order),
                     "market_score": compute_agent_market_score(a),
+                    "topic_score": compute_agent_topic_score_db(
+                        a.get("agent_id"),
+                        extract_topics_from_result(
+                            {"data": {
+                                "entities": [],
+                                "claims": [],
+                                "structured_signals": {},
+                                "metrics": {},
+                            }},
+                            routing_order,
+                        )
+                    ),
+                    "final_routing_score": compute_buyer_agent_score(a, routing_order),
                 }
                 for a in ranked[:5]
             ]
@@ -1282,7 +1687,29 @@ def buyer_run_test(req: BuyerPreviewRequest):
             "message": "This wallet is not eligible to use the service currently.",
         }
 
-    buyer_intent = normalize_buyer_intent(req.prompt)
+    cleanup_expired_buyer_sessions_db(ttl_seconds=300)
+
+    previous_session = get_buyer_conversation_session_db(
+        req.session_id,
+        req.buyer_wallet,
+        ttl_seconds=300,
+    )
+
+    buyer_intent = normalize_buyer_intent(
+        req.prompt,
+        previous_context=previous_session,
+    )
+
+    if buyer_topic_changed(previous_session, buyer_intent):
+        previous_session = None
+        buyer_intent = normalize_buyer_intent(req.prompt)
+
+    buyer_intent = merge_buyer_intent_with_session(
+        previous_session,
+        buyer_intent,
+        req.prompt,
+    )
+
     requirements = buyer_intent.get("requirements") or {}
 
     query_l = str(req.prompt or "").lower()
@@ -1326,8 +1753,8 @@ def buyer_run_test(req: BuyerPreviewRequest):
 
     service = detect_buyer_service(req.prompt)
 
-    from iat.api.multi_exec import multi_call, select_best_result, select_top_agents
-    from iat.api.db import get_agents_for_service_db
+    from iat.api.multi_exec import multi_call, select_best_result, select_top_agents, extract_topics_from_result, compute_required_agent_count
+    from iat.api.db import get_agents_for_service_db, compute_agent_topic_score_db
 
     agents = get_agents_for_service_db(service)
 
@@ -1337,9 +1764,14 @@ def buyer_run_test(req: BuyerPreviewRequest):
             if float(a.get("price", 0) or 0) <= float(req.max_price)
         ]
 
+    full_query = buyer_intent.get("goal") or req.prompt
+
+    if requirements:
+        full_query = f"{full_query}\nRequirements: {requirements}"
+
     order = {
         "order_id": "buyer_run_test",
-        "query": req.prompt,
+        "query": full_query,
         "service": service,
         "tx_signature": "INTERNAL_BUYER_RUN_TEST",
         "buyer_intent": buyer_intent,
@@ -1353,7 +1785,7 @@ def buyer_run_test(req: BuyerPreviewRequest):
 
     selected_agents = select_top_agents(
         agents,
-        limit=3,
+        limit=compute_required_agent_count(order),
         order=order,
     )
 
@@ -1384,24 +1816,73 @@ def buyer_run_test(req: BuyerPreviewRequest):
     }
 
 
-@app.post("/buyer/confirm")
-def buyer_confirm(req: BuyerConfirmRequest):
-    order_req = OrderRequest(
-        service=req.service,
-        query=req.query,
-        buyer_wallet=req.buyer_wallet,
-        buyer_intent=req.buyer_intent,
-        requirements=req.requirements,
-        buyer_context=req.buyer_context,
+def make_buyer_order_response(order_response):
+    if not isinstance(order_response, dict):
+        return {
+            "status": "error",
+            "message": "Order could not be prepared.",
+        }
+
+    if order_response.get("status") in ["error", "rejected", "expired", "invalid_session"]:
+        return order_response
+
+    order_id = order_response.get("order_id")
+    price = order_response.get("price")
+    payment_target_value = (
+        order_response.get("seller_wallet")
+        or order_response.get("payment_target")
     )
 
-    return create_order(order_req)
+    return {
+        "status": "order_created",
+        "order_id": order_id,
+        "amount_iat": price,
+        "payment": {
+            "token": "IAT",
+            "amount": price,
+            "to": payment_target_value,
+            "memo": order_id,
+        },
+        "next_step": {
+            "action": "pay_and_verify",
+            "message": "Send the exact IAT amount to the protocol payment address, then submit the transaction signature for verification.",
+        },
+        "expires_in_seconds": ORDER_TTL,
+    }
+
+
+@app.post("/buyer/confirm")
+def buyer_confirm(req: BuyerConfirmRequest):
+    session = get_buyer_conversation_session_db(
+        req.session_id,
+        req.buyer_wallet,
+        ttl_seconds=300,
+    )
+
+    if not session:
+        return {
+            "status": "invalid_session",
+            "reason": "buyer_session_not_found",
+        }
+
+    order_req = OrderRequest(
+        service=session.get("service"),
+        query=session.get("query"),
+        buyer_wallet=req.buyer_wallet,
+        buyer_intent=session.get("buyer_intent"),
+        requirements=session.get("requirements"),
+        buyer_context=session.get("buyer_context"),
+        locked_agent_id=session.get("selected_agent_id"),
+    )
+
+    return make_buyer_order_response(create_order(order_req, internal_call=True))
+
 
 
 @app.post("/create-order")
-def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)):
+def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None), internal_call: bool = False):
     print("ESCROW ENV:", os.getenv("IAT_ESCROW_WALLET"))
-    if not require_admin_key(x_api_key):
+    if not internal_call and not require_admin_key(x_api_key):
         return {"status": "error", "message": "unauthorized"}
 
     buyer_wallet = req.buyer_wallet
@@ -1462,6 +1943,7 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
         "buyer_intent": buyer_intent,
         "requirements": requirements,
         "buyer_context": buyer_context,
+        "locked_agent_id": req.locked_agent_id,
     }
 
     seller = select_best_seller(req.service, order=routing_order)
@@ -1473,6 +1955,16 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
 
     order_id = str(uuid.uuid4())
     now = int(time.time())
+
+    consensus_preference = str(
+        (buyer_intent or {}).get("consensus_preference") or "standard"
+    ).lower()
+
+    execution_mode = (
+        "foundation_consensus"
+        if consensus_preference == "strict"
+        else "foundation_direct"
+    )
 
     order = {
         "order_id": order_id,
@@ -1496,6 +1988,13 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
         "buyer_intent": buyer_intent,
         "requirements": requirements,
         "buyer_context": buyer_context,
+        "foundation_context": {},
+        "execution_mode": execution_mode,
+        "execution_context": {
+            "service": req.service,
+            "requirements": requirements,
+            "trusted_input_only": True,
+        },
         "used": False,
     }
 
@@ -1610,10 +2109,27 @@ def verify_payment(req: VerifyPaymentRequest, x_api_key: str | None = Header(def
     if amount is None:
         amount = transfer_info.get("ui_amount_string")
 
-    amount_ok = float(amount) == float(order["price"])
+    if amount is None and transfer_info.get("amount") is not None:
+        # SPL raw amount uses token decimals. IAT has 8 decimals.
+        amount = float(transfer_info.get("amount")) / 100000000
+
+    try:
+        amount_ok = float(amount) == float(order["price"])
+    except Exception:
+        amount_ok = False
 
     memo_text = str(memo)
     memo_ok = order["order_id"] in memo_text
+
+    # Phantom-compatible mode:
+    # Some wallets do not attach a real on-chain memo instruction.
+    # In that case, payment is accepted only if receiver, mint, amount,
+    # order status and tx replay checks are valid.
+    memo_missing = memo is None or memo_text == "None"
+    memo_required = os.getenv("IAT_REQUIRE_PAYMENT_MEMO", "false").lower() == "true"
+
+    if memo_missing and not memo_required:
+        memo_ok = True
 
     if sender_ok and receiver_ok and mint_ok and amount_ok and memo_ok:
         if not deliver:
@@ -1673,6 +2189,178 @@ def verify_payment(req: VerifyPaymentRequest, x_api_key: str | None = Header(def
 
 
 
+def make_buyer_payment_response(result):
+    if not isinstance(result, dict):
+        return {
+            "status": "error",
+            "message": "Payment could not be verified.",
+        }
+
+    status = result.get("status")
+
+    if status in ["paid", "consensus_delivered"]:
+        data = result.get("data") or result.get("result") or {}
+
+        # Consensus delivery may return the buyer delivery under result.
+        if isinstance(data, dict) and data.get("status") == "consensus_delivered":
+            consensus_strength = data.get("consensus_strength")
+            delivery = data.get("result") or {}
+
+            return {
+                "status": "delivered",
+                "delivery_mode": "foundation_consensus",
+                "summary": delivery.get("summary"),
+                "recommendations": delivery.get("recommendations", []),
+                "final_recommendation": delivery.get("final_recommendation"),
+                "confidence": delivery.get("confidence", 0.5),
+                "consensus_strength": consensus_strength,
+                "consensus_agents_count": data.get("consensus_agents_count"),
+                "agents_called": data.get("agents_called", []),
+                "sources": delivery.get("sources", []),
+            }
+
+        delivery = data.get("final_buyer_delivery") if isinstance(data, dict) else None
+        consensus_strength = data.get("consensus_strength") if isinstance(data, dict) else None
+
+        if isinstance(delivery, dict):
+            return {
+                "status": "delivered",
+                "summary": delivery.get("summary"),
+                "recommendations": delivery.get("recommendations", []),
+                "final_recommendation": delivery.get("final_recommendation"),
+                "confidence": delivery.get("confidence", 0.5),
+                "consensus_strength": consensus_strength,
+                "sources": delivery.get("sources", []),
+            }
+
+        return {
+            "status": "delivered",
+            "summary": "Payment verified and service delivered.",
+            "result": data,
+        }
+
+    if status in ["invalid_order", "expired_order", "already_used"]:
+        return {
+            "status": status,
+            "message": "The order is not eligible for payment verification.",
+        }
+
+    if status in ["invalid_signature", "tx_already_processed"]:
+        return {
+            "status": status,
+            "message": "The submitted transaction cannot be accepted.",
+        }
+
+    if status == "invalid_payment":
+        return {
+            "status": "invalid_payment",
+            "message": "Payment verification failed. Please check amount, token, destination and memo.",
+        }
+
+    if status == "delivery_failed":
+        return {
+            "status": "delivery_failed",
+            "message": "Payment was verified, but delivery failed. The order should be retried or escalated.",
+        }
+
+    return {
+        "status": status or "unknown",
+        "message": "Payment verification completed with a non-standard status.",
+    }
+
+
+@app.post("/admin/test-consensus-delivery/{order_id}")
+def admin_test_consensus_delivery(order_id: str, x_api_key: str | None = Header(default=None)):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    order = get_order_db(order_id)
+
+    if not order:
+        return {
+            "status": "invalid_order",
+        }
+
+    result = deliver_service(order, "DEV_TEST_TX")
+
+    return {
+        "status": "ok",
+        "order_id": order_id,
+        "execution_mode": order.get("execution_mode"),
+        "result": result,
+    }
+
+
+@app.post("/admin/debug-consensus-raw/{order_id}")
+def admin_debug_consensus_raw(order_id: str, x_api_key: str | None = Header(default=None)):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    order = get_order_db(order_id)
+
+    if not order:
+        return {
+            "status": "invalid_order",
+        }
+
+    from iat.api.multi_exec import (
+        select_top_agents,
+        multi_call,
+    )
+
+    agents = get_agents_for_service_db(order.get("service"))
+
+    selected_agents = select_top_agents(
+        agents,
+        limit=2,
+        order=order,
+    )
+
+    results = multi_call(selected_agents, order)
+
+    return {
+        "status": "ok",
+        "selected_agents": [
+            a.get("agent_id")
+            for a in selected_agents
+        ],
+        "raw_results": results,
+    }
+
+
+@app.post("/admin/test-buyer-consensus/{order_id}")
+def admin_test_buyer_consensus(order_id: str, x_api_key: str | None = Header(default=None)):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    order = get_order_db(order_id)
+
+    if not order:
+        return {
+            "status": "invalid_order",
+        }
+
+    result = deliver_service(order, "DEV_TEST_TX")
+
+    wrapped = {
+        "status": "paid",
+        "data": result,
+    }
+
+    return make_buyer_payment_response(wrapped)
+
+
+@app.post("/buyer/verify-payment")
+def buyer_verify_payment(req: VerifyPaymentRequest):
+    result = verify_payment(
+        req,
+        x_api_key=os.getenv("IAT_ADMIN_API_KEY"),
+        deliver=True,
+    )
+
+    return make_buyer_payment_response(result)
+
+
 @app.post("/request")
 def request_endpoint(payload: dict):
     query = payload.get("query") or payload.get("input")
@@ -1700,8 +2388,8 @@ def request_endpoint(payload: dict):
 
 @app.post("/multi-call-test")
 def multi_call_test(payload: dict):
-    from iat.api.multi_exec import multi_call, select_best_result, select_top_agents, compute_consensus
-    from iat.api.db import get_agents_for_service_db
+    from iat.api.multi_exec import multi_call, select_best_result, select_top_agents, extract_topics_from_result, compute_required_agent_count, compute_consensus
+    from iat.api.db import get_agents_for_service_db, compute_agent_topic_score_db
 
     service = payload.get("service")
     query = payload.get("query")
@@ -1722,7 +2410,7 @@ def multi_call_test(payload: dict):
 
     selected_agents = select_top_agents(
         agents,
-        limit=3,
+        limit=compute_required_agent_count(order),
         order=order,
     )
 
@@ -1832,12 +2520,16 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
     if not agents:
         return {"status": "no_agents_available"}
 
-    from iat.api.multi_exec import multi_call, select_best_result, select_top_agents
+    from iat.api.multi_exec import multi_call, select_best_result, select_top_agents, extract_topics_from_result, compute_required_agent_count
 
     paid_order = dict(order)
     paid_order["tx_signature"] = req.tx_signature
 
-    selected_agents = select_top_agents(agents, limit=3, order=order)
+    selected_agents = select_top_agents(
+        agents,
+        limit=compute_required_agent_count(order),
+        order=order,
+    )
 
     # DEBUG ONLY: force one agent into execution when env var is set.
     # Example on Render env:

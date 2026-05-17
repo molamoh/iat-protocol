@@ -1,68 +1,44 @@
-import time
 from fastapi import FastAPI
-from pydantic import BaseModel
+import time
 
 app = FastAPI()
-
-class ExecuteRequest(BaseModel):
-    order_id: str
-    tx_signature: str | None = None
-    query: str | None = None
-    service: str | None = None
-    buyer_intent: dict | None = None
-    requirements: dict | None = None
-    buyer_context: dict | None = None
-    delivery_format: dict | None = None
 
 
 @app.get("/")
 def root():
     return {
-        "status": "ok",
-        "agent": "local_product_agent"
+        "agent": "foundation_product_agent",
+        "status": "online",
     }
 
 
 @app.post("/execute")
-def execute(req: ExecuteRequest):
-    requirements = req.requirements or {}
-    brand = requirements.get("brand", "Samsung")
-    budget = requirements.get("price", {}).get("max", 500) if isinstance(requirements.get("price"), dict) else 500
-    location = requirements.get("country") or requirements.get("location") or "France"
-
-    recommendations = [
-        {
-            "rank": 1,
-            "title": f"{brand} Galaxy A55 5G",
-            "price_estimate": f"under {budget} EUR",
-            "quality_score": 0.91,
-            "value_score": 0.93,
-            "reason": "Strong balance of camera, battery life, software support and value for money.",
-            "source_url": "https://www.samsung.com/"
-        },
-        {
-            "rank": 2,
-            "title": f"{brand} Galaxy A35 5G",
-            "price_estimate": f"well under {budget} EUR",
-            "quality_score": 0.84,
-            "value_score": 0.90,
-            "reason": "Lower price, good battery life, solid daily performance.",
-            "source_url": "https://www.samsung.com/"
-        }
-    ]
+def execute(payload: dict):
+    query = payload.get("query", "")
 
     return {
-        "status": "success",
-        "agent_id": "local_product_agent",
-        "summary": f"Product research completed for {brand} smartphone in {location}.",
-        "recommendations": recommendations,
-        "final_recommendation": recommendations[0],
-        "confidence": 0.88,
-        "sources": ["https://www.samsung.com/"],
+        "status": "delivered",
+        "agent_id": "foundation_product_agent",
+        "service": "web_research",
+        "order_id": payload.get("order_id"),
+        "tx_signature": "INTERNAL_TEST_EXECUTION",
         "data": {
             "type": "product_research",
-            "query": req.query,
-            "requirements": requirements,
+            "query": query,
+            "results": [
+                {
+                    "title": "Lenovo Legion Pro 5",
+                    "price": "1499 EUR",
+                    "reason": "Strong GPU performance for AI workloads and good cooling system.",
+                    "link": "https://example.com/lenovo-legion"
+                },
+                {
+                    "title": "ASUS ROG Zephyrus G14",
+                    "price": "1450 EUR",
+                    "reason": "Portable laptop with strong AI/development capabilities.",
+                    "link": "https://example.com/asus-g14"
+                }
+            ],
             "timestamp": int(time.time())
         }
     }

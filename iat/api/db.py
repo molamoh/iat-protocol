@@ -132,6 +132,7 @@ def init_db():
     release_conn(locals().get("conn"))
     init_agents_table()
     init_buyers_table()
+    init_agent_topic_stats_table()
     init_delegations_table()
 
     init_buyer_sessions_table()
@@ -521,6 +522,33 @@ def get_buyer_conversation_session_db(session_id, buyer_wallet, ttl_seconds=300)
 
 
 
+
+def init_agent_topic_stats_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS agent_topic_stats (
+        agent_id TEXT NOT NULL,
+        topic TEXT NOT NULL,
+
+        success_count INTEGER DEFAULT 0,
+        failure_count INTEGER DEFAULT 0,
+
+        consensus_score REAL DEFAULT 0,
+        avg_overlap REAL DEFAULT 0,
+        avg_quality REAL DEFAULT 0,
+
+        last_updated INTEGER NOT NULL,
+
+        PRIMARY KEY (agent_id, topic)
+    )
+    """)
+
+    conn.commit()
+    release_conn(locals().get("conn"))
+
+
 def init_buyers_table():
     conn = get_conn()
     cur = conn.cursor()
@@ -868,9 +896,10 @@ def create_order_db(order_id, order):
     INSERT INTO orders (
         order_id, service, query, price, seller_id, seller_wallet, seller_url, seller_source,
         buyer_secret, buyer_wallet, buyer_intent, requirements, buyer_context,
+        foundation_context, execution_mode, execution_context,
         created_at, updated_at, status, tx_signature, delivered_at, delivery_result, used
     )
-    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
     """, (
         order_id,
         order["service"],
@@ -885,6 +914,9 @@ def create_order_db(order_id, order):
         json.dumps(order.get("buyer_intent")) if order.get("buyer_intent") is not None else None,
         json.dumps(order.get("requirements")) if order.get("requirements") is not None else None,
         json.dumps(order.get("buyer_context")) if order.get("buyer_context") is not None else None,
+        json.dumps(order.get("foundation_context")) if order.get("foundation_context") is not None else None,
+        order.get("execution_mode"),
+        json.dumps(order.get("execution_context")) if order.get("execution_context") is not None else None,
         order["created_at"],
         order["updated_at"],
         order["status"],
@@ -1063,10 +1095,21 @@ def register_agent_db(agent):
         current_reputation = safe_float(safe_get(exists, "reputation", 0.8), 0.8)
         requested_available = 1 if agent.get("available", True) else 0
 
+        seller_approved = (
+            str(agent.get("agent_type", "")).lower() == "seller"
+            and str(agent.get("seller_status", "")).lower() == "active"
+            and str(agent.get("verification_status", "")).lower() == "foundation_verified"
+        )
+
         # Kill rule:
         # - if already disabled, stay disabled
         # - if reputation <= 0.5, heartbeat cannot resurrect it
-        new_available = 0 if current_available == 0 or current_reputation <= 0.5 else requested_available
+        # Exception:
+        # - protocol foundation review can activate verified sellers.
+        if seller_approved:
+            new_available = requested_available
+        else:
+            new_available = 0 if current_available == 0 or current_reputation <= 0.5 else requested_available
 
         if exists:
             cur.execute(f"""
@@ -1082,6 +1125,14 @@ def register_agent_db(agent):
                 trust_tier = {p},
                 capabilities = {p},
                 specialties = {p},
+                seller_status = {p},
+                verification_status = {p},
+                seller_metadata = {p},
+                buyer_access = {p},
+                web_access = {p},
+                raw_prompt_access = {p},
+                foundation_verified_at = {p},
+                foundation_verdict = {p},
                 updated_at = {p}
             WHERE agent_id = {p}
             """, (
@@ -1096,6 +1147,14 @@ def register_agent_db(agent):
                 agent.get("trust_tier", "free"),
                 agent.get("capabilities", "[]"),
                 agent.get("specialties", "[]"),
+                agent.get("seller_status", "pending_review"),
+                agent.get("verification_status", "unverified"),
+                json.dumps(agent.get("seller_metadata", {})) if not isinstance(agent.get("seller_metadata"), str) else agent.get("seller_metadata"),
+                1 if agent.get("buyer_access") else 0,
+                1 if agent.get("web_access") else 0,
+                1 if agent.get("raw_prompt_access") else 0,
+                agent.get("foundation_verified_at"),
+                agent.get("foundation_verdict"),
                 now,
                 agent["agent_id"],
             ))
@@ -1105,9 +1164,12 @@ def register_agent_db(agent):
                 agent_id, service, url, wallet, agent_type, price, reputation, available,
                 stake_amount, stake_required, trust_tier,
                 capabilities, specialties,
+                seller_status, verification_status, seller_metadata,
+                buyer_access, web_access, raw_prompt_access,
+                foundation_verified_at, foundation_verdict,
                 registered_at, updated_at
             )
-            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
             """, (
                 agent["agent_id"],
                 agent["service"],
@@ -1122,6 +1184,14 @@ def register_agent_db(agent):
                 agent.get("trust_tier", "free"),
                 agent.get("capabilities", "[]"),
                 agent.get("specialties", "[]"),
+                agent.get("seller_status", "pending_review"),
+                agent.get("verification_status", "unverified"),
+                json.dumps(agent.get("seller_metadata", {})) if not isinstance(agent.get("seller_metadata"), str) else agent.get("seller_metadata"),
+                1 if agent.get("buyer_access") else 0,
+                1 if agent.get("web_access") else 0,
+                1 if agent.get("raw_prompt_access") else 0,
+                agent.get("foundation_verified_at"),
+                agent.get("foundation_verdict"),
                 now,
                 now,
             ))
@@ -1231,14 +1301,19 @@ def get_agents_for_service_db(service):
         url = a.get("url") or ""
         agent_id = a.get("agent_id") or ""
 
+        # Foundation agents are protocol infrastructure.
+        # They must not disappear from routing because of heartbeat staleness.
+        is_foundation = str(a.get("agent_type", "")).lower() == "foundation"
+
         is_permanent = (
-            "onrender.com" in url
+            is_foundation
+            or "onrender.com" in url
             or agent_id in permanent_agent_ids
         )
 
         timeout = permanent_timeout if is_permanent else ephemeral_timeout
 
-        if now - int(a["updated_at"]) <= timeout:
+        if is_foundation or now - int(a["updated_at"]) <= timeout:
             agents.append(a)
 
     return agents
@@ -2178,3 +2253,181 @@ def recompute_agent_metrics_db(agent_id):
         "avg_latency": round(avg_latency, 4),
     }
 
+
+def update_agent_topic_stats_db(agent_id, topics, success=True, consensus_score=0, overlap=0, quality=0):
+    if not agent_id or not topics:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    for topic in topics:
+        topic = str(topic or "").strip().lower()
+        if not topic:
+            continue
+
+        if USE_POSTGRES:
+            cur.execute(f"""
+            INSERT INTO agent_topic_stats (
+                agent_id, topic, success_count, failure_count,
+                consensus_score, avg_overlap, avg_quality, last_updated
+            )
+            VALUES (
+                {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}
+            )
+            ON CONFLICT (agent_id, topic)
+            DO UPDATE SET
+                success_count = agent_topic_stats.success_count + EXCLUDED.success_count,
+                failure_count = agent_topic_stats.failure_count + EXCLUDED.failure_count,
+                consensus_score = (
+                    agent_topic_stats.consensus_score + EXCLUDED.consensus_score
+                ) / 2,
+                avg_overlap = (
+                    agent_topic_stats.avg_overlap + EXCLUDED.avg_overlap
+                ) / 2,
+                avg_quality = (
+                    agent_topic_stats.avg_quality + EXCLUDED.avg_quality
+                ) / 2,
+                last_updated = EXCLUDED.last_updated
+            """, (
+                agent_id,
+                topic,
+                1 if success else 0,
+                0 if success else 1,
+                float(consensus_score or 0),
+                float(overlap or 0),
+                float(quality or 0),
+                now,
+            ))
+        else:
+            cur.execute(f"""
+            INSERT OR IGNORE INTO agent_topic_stats (
+                agent_id, topic, success_count, failure_count,
+                consensus_score, avg_overlap, avg_quality, last_updated
+            )
+            VALUES ({p}, {p}, 0, 0, 0, 0, 0, {p})
+            """, (agent_id, topic, now))
+
+            cur.execute(f"""
+            UPDATE agent_topic_stats
+            SET success_count = success_count + {p},
+                failure_count = failure_count + {p},
+                consensus_score = (consensus_score + {p}) / 2,
+                avg_overlap = (avg_overlap + {p}) / 2,
+                avg_quality = (avg_quality + {p}) / 2,
+                last_updated = {p}
+            WHERE agent_id = {p}
+              AND topic = {p}
+            """, (
+                1 if success else 0,
+                0 if success else 1,
+                float(consensus_score or 0),
+                float(overlap or 0),
+                float(quality or 0),
+                now,
+                agent_id,
+                topic,
+            ))
+
+    conn.commit()
+    release_conn(conn)
+    return True
+
+
+def get_agent_topic_stats_db(agent_id):
+    if not agent_id:
+        return []
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM agent_topic_stats
+    WHERE agent_id = {p}
+    ORDER BY success_count DESC, avg_overlap DESC, avg_quality DESC
+    """, (agent_id,))
+
+    rows = cur.fetchall()
+    release_conn(conn)
+
+    return [dict(r) for r in rows]
+
+def compute_agent_topic_score_db(agent_id, topics):
+    """
+    Compute historical semantic competence score for an agent.
+
+    Generic:
+    - no hardcoded verticals
+    - based only on emergent semantic memory
+    """
+    if not agent_id or not topics:
+        return 0.5
+
+    stats = get_agent_topic_stats_db(agent_id)
+
+    if not stats:
+        return 0.5
+
+    topic_map = {
+        str(x.get("topic")).lower(): x
+        for x in stats
+    }
+
+    scores = []
+
+    for topic in topics:
+        topic = str(topic or "").lower()
+
+        row = topic_map.get(topic)
+        if not row:
+            continue
+
+        success = int(row.get("success_count", 0) or 0)
+        failure = int(row.get("failure_count", 0) or 0)
+
+        total = success + failure
+
+        if total <= 0:
+            continue
+
+        # Bayesian smoothing:
+        # avoid one early failure destroying an agent's topic competence forever.
+        success_rate = (success + 1) / (total + 2)
+
+        overlap = float(row.get("avg_overlap", 0) or 0)
+        quality = float(row.get("avg_quality", 0) or 0)
+        consensus = float(row.get("consensus_score", 0) or 0)
+
+        last_updated = int(row.get("last_updated", 0) or 0)
+        age_seconds = max(0, int(time.time()) - last_updated)
+
+        # Semantic memory decay:
+        # old competence matters less over time.
+        if age_seconds <= 86400:
+            freshness = 1.0
+        elif age_seconds <= 86400 * 7:
+            freshness = 0.9
+        elif age_seconds <= 86400 * 30:
+            freshness = 0.75
+        else:
+            freshness = 0.5
+
+        score = (
+            success_rate * 0.45 +
+            overlap * 0.20 +
+            quality * 0.20 +
+            consensus * 0.15
+        )
+
+        score = score * freshness
+
+        scores.append(score)
+
+    if not scores:
+        return 0.5
+
+    return round(sum(scores) / len(scores), 4)

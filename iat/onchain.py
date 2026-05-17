@@ -47,13 +47,25 @@ def get_tx_details(tx_signature: str):
 
 
 def extract_transfer_checked_info(tx_details):
+    """
+    Extract SPL token transfer info from parsed Solana transaction.
+
+    Supports:
+    - transferChecked
+    - transfer
+
+    Phantom and wallets may use either instruction type.
+    """
     try:
         instructions = tx_details.transaction.transaction.message.instructions
 
         for inst in instructions:
             inst_str = str(inst)
 
-            if "transferChecked" in inst_str:
+            is_transfer_checked = "transferChecked" in inst_str
+            is_transfer = '"type": String("transfer")' in inst_str or "'type': 'transfer'" in inst_str
+
+            if is_transfer_checked or is_transfer:
                 raw = inst_str
 
                 def extract_between(text, start, end):
@@ -61,14 +73,18 @@ def extract_transfer_checked_info(tx_details):
                         return text.split(start, 1)[1].split(end, 1)[0]
                     return None
 
-                return {
+                info = {
                     "authority": extract_between(raw, '"authority": String("', '")'),
                     "destination": extract_between(raw, '"destination": String("', '")'),
                     "mint": extract_between(raw, '"mint": String("', '")'),
                     "source": extract_between(raw, '"source": String("', '")'),
                     "ui_amount": extract_between(raw, '"uiAmount": Number(', ')'),
                     "ui_amount_string": extract_between(raw, '"uiAmountString": String("', '")'),
+                    "amount": extract_between(raw, '"amount": String("', '")'),
+                    "instruction_type": "transferChecked" if is_transfer_checked else "transfer",
                 }
+
+                return info
 
         return None
     except Exception:

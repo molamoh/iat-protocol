@@ -5537,17 +5537,29 @@ def deactivate_adaptive_policy_db(scope, service=None):
     p = qmark()
     now = int(time.time())
 
-    cur.execute(f"""
-    UPDATE adaptive_defense_policies
-    SET active = 0,
-        updated_at = {p}
-    WHERE scope = {p}
-      AND COALESCE(service, 'global') = COALESCE({p}, 'global')
-    """, (
-        now,
-        scope,
-        service or "global",
-    ))
+    if service:
+        cur.execute(f"""
+        UPDATE adaptive_defense_policies
+        SET active = 0,
+            updated_at = {p}
+        WHERE scope = {p}
+          AND service = {p}
+        """, (
+            now,
+            scope,
+            service,
+        ))
+    else:
+        cur.execute(f"""
+        UPDATE adaptive_defense_policies
+        SET active = 0,
+            updated_at = {p}
+        WHERE scope = {p}
+          AND service IS NULL
+        """, (
+            now,
+            scope,
+        ))
 
     conn.commit()
     release_conn(conn)

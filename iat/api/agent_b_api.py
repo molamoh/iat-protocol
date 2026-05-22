@@ -4765,6 +4765,8 @@ def admin_deactivate_adaptive_policy(
             "message": "missing_scope",
         }
 
+    init_db()
+
     return deactivate_adaptive_policy_db(
         scope=scope,
         service=service,

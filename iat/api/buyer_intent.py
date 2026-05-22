@@ -359,3 +359,228 @@ def merge_buyer_intent_with_session(previous_session: dict | None, new_intent: d
         merged["preferred_specialties"].append("market_analysis")
 
     return merged
+
+def analyze_seller_risk_with_groq(seller_profile: dict):
+    api_key = os.getenv("GROQ_API_KEY")
+
+    if not api_key:
+        return {
+            "provider": "fallback",
+            "seller_risk_level": "unknown",
+            "risk_score": 0.5,
+            "recommended_action": "manual_review",
+            "reasons": ["Groq unavailable"],
+            "red_flags": [],
+            "missing_evidence": [],
+            "confidence": 0.1,
+        }
+
+    system_prompt = """
+You are the Seller Risk Analysis Engine for IAT Protocol.
+
+Your role:
+- Analyze whether a newly registered seller appears trustworthy, suspicious, fraudulent, unrealistic, or high-risk.
+- You are NOT the final authority.
+- You only produce a risk advisory for the protocol foundation layer.
+
+Analyze:
+- Seller claims
+- Business consistency
+- Wallet legitimacy signals
+- URL/domain quality
+- Product realism
+- Proof links quality
+- Refund policy realism
+- Pricing realism
+- Fraud indicators
+- Escrow-like behavior
+- Potential scam patterns
+- Potential impersonation
+- High-risk wording
+- Missing operational evidence
+
+Rules:
+- Be skeptical.
+- Prefer caution over optimism.
+- Never auto-approve.
+- Flag exaggerated claims.
+- Flag unrealistic pricing.
+- Flag suspicious wording.
+- Flag weak evidence.
+- If evidence is insufficient, recommend manual review.
+- If multiple strong red flags exist, recommend reject.
+
+Return JSON only.
+
+JSON format:
+{
+  "provider": "groq",
+  "seller_risk_level": "low|medium|high",
+  "risk_score": 0.0,
+  "recommended_action": "approve|manual_review|reject",
+  "reasons": [],
+  "red_flags": [],
+  "missing_evidence": [],
+  "confidence": 0.0
+}
+"""
+
+    user_prompt = json.dumps(
+        seller_profile,
+        ensure_ascii=False,
+        indent=2
+    )
+
+    try:
+        r = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"),
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0.1,
+                "response_format": {"type": "json_object"},
+            },
+            timeout=30,
+        )
+
+        if r.status_code != 200:
+            return {
+                "provider": "fallback",
+                "seller_risk_level": "unknown",
+                "risk_score": 0.5,
+                "recommended_action": "manual_review",
+                "reasons": [f"Groq HTTP {r.status_code}"],
+                "red_flags": [],
+                "missing_evidence": [],
+                "confidence": 0.1,
+            }
+
+        parsed = json.loads(
+            r.json()["choices"][0]["message"]["content"]
+        )
+
+        return parsed
+
+    except Exception as e:
+        return {
+            "provider": "fallback",
+            "seller_risk_level": "unknown",
+            "risk_score": 0.5,
+            "recommended_action": "manual_review",
+            "reasons": [str(e)],
+            "red_flags": [],
+            "missing_evidence": [],
+            "confidence": 0.1,
+        }
+
+
+def forecast_seller_attack_vectors_with_groq(threat_context: dict):
+    api_key = os.getenv("GROQ_API_KEY")
+
+    if not api_key:
+        return {
+            "provider": "fallback",
+            "threat_level": "unknown",
+            "predicted_attack_vectors": [],
+            "recommended_guardrails": [],
+            "confidence": 0.1,
+        }
+
+    system_prompt = """
+You are the Adversarial Threat Forecasting Engine for IAT Protocol.
+
+IAT is an AI-to-AI machine commerce protocol.
+Your task is to forecast possible future attacks before they happen.
+
+You are advisory only.
+The protocol/foundation layer makes final decisions.
+
+Analyze:
+- seller behavior
+- graph relationships
+- fingerprints
+- economic exposure
+- velocity patterns
+- consensus divergence
+- rehabilitation cycles
+- risk decay patterns
+- potential Sybil strategies
+- AI-agent manipulation strategies
+- reputation farming
+- delayed fraud / rug-pull preparation
+- prompt manipulation
+- proof forgery
+- marketplace flooding
+- fake honest volume
+- coordinated seller clusters
+
+Return JSON only:
+{
+  "provider": "groq",
+  "threat_level": "low|medium|high|critical",
+  "predicted_attack_vectors": [],
+  "recommended_guardrails": [],
+  "signals_to_monitor": [],
+  "policy_updates": [],
+  "confidence": 0.0
+}
+"""
+
+    try:
+        r = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"),
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            threat_context,
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                    },
+                ],
+                "temperature": 0.2,
+                "response_format": {"type": "json_object"},
+            },
+            timeout=30,
+        )
+
+        if r.status_code != 200:
+            return {
+                "provider": "fallback",
+                "threat_level": "unknown",
+                "predicted_attack_vectors": [],
+                "recommended_guardrails": [],
+                "signals_to_monitor": [],
+                "policy_updates": [],
+                "confidence": 0.1,
+            }
+
+        return json.loads(r.json()["choices"][0]["message"]["content"])
+
+    except Exception as e:
+        return {
+            "provider": "fallback",
+            "threat_level": "unknown",
+            "predicted_attack_vectors": [],
+            "recommended_guardrails": [],
+            "signals_to_monitor": [],
+            "policy_updates": [],
+            "error": str(e),
+            "confidence": 0.1,
+        }
+

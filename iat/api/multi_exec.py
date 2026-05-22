@@ -367,6 +367,42 @@ def compute_agent_market_score(agent):
         - stake_status_penalty
     )
 
+    # Runtime adaptive policy enforcement.
+    # Policies must create economic friction, not blind destruction.
+    try:
+        from iat.api.db import get_active_adaptive_policy_db
+
+        policy = get_active_adaptive_policy_db(
+            scope="service",
+            service=agent.get("service"),
+        ) or get_active_adaptive_policy_db(
+            scope="protocol",
+            service="global",
+        )
+
+        if policy:
+            exposure_multiplier = float(policy.get("exposure_multiplier", 1.0) or 1.0)
+            consensus_multiplier = float(policy.get("consensus_multiplier", 1.0) or 1.0)
+            min_stake_multiplier = float(policy.get("min_stake_multiplier", 1.0) or 1.0)
+
+            exposure_multiplier = max(0.10, min(exposure_multiplier, 1.50))
+            consensus_multiplier = max(1.00, min(consensus_multiplier, 3.00))
+            min_stake_multiplier = max(1.00, min(min_stake_multiplier, 5.00))
+
+            # Higher protocol risk reduces seller market exposure.
+            score *= exposure_multiplier
+
+            # When consensus is hardened, risky agents lose routing pressure.
+            score -= min(risk_score, 1.0) * (consensus_multiplier - 1.0) * 0.35
+
+            # When stake policy hardens, under-staked agents lose score.
+            if effective_required > 0 and stake_amount < effective_required * min_stake_multiplier:
+                score -= min(0.50, (min_stake_multiplier - 1.0) * 0.12)
+
+    except Exception:
+        # Adaptive policy must never break routing.
+        pass
+
     return round(score, 6)
 
 
@@ -960,7 +996,11 @@ def multi_call(agents, order, max_workers=5):
             for item in consensus.get("agent_overlaps", [])
         }
 
-        from iat.api.db import update_agent_topic_stats_db
+        from iat.api.db import (
+            update_agent_topic_stats_db,
+            update_agent_consensus_stats_db,
+            run_seller_risk_orchestration_db,
+        )
 
         for result in results:
             agent_id = result.get("agent_id")
@@ -969,14 +1009,23 @@ def multi_call(agents, order, max_workers=5):
 
             topics = extract_topics_from_result(result, order)
 
+            consensus_score = float(consensus.get("score", 0) or 0)
+
             update_agent_topic_stats_db(
                 agent_id,
                 topics,
                 success=bool(result.get("success")) or result.get("failure_type") == "timeout",
-                consensus_score=float(consensus.get("score", 0) or 0),
+                consensus_score=consensus_score,
                 overlap=overlap_by_agent.get(agent_id, 0),
                 quality=compute_quality(result) if result.get("success") else 0,
             )
+
+            update_agent_consensus_stats_db(
+                agent_id,
+                consensus_score,
+            )
+
+            run_seller_risk_orchestration_db(agent_id)
 
     except Exception:
         # Topic memory must never break execution.

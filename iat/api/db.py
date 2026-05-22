@@ -131,6 +131,8 @@ def init_db():
     conn.commit()
     release_conn(locals().get("conn"))
     init_agents_table()
+    init_sellers_table()
+    init_seller_agents_table()
     init_buyers_table()
     init_agent_topic_stats_table()
     init_delegations_table()
@@ -198,6 +200,8 @@ def init_agents_table():
         "stake_unlock_requested_at": "INTEGER",
         "capabilities": "TEXT DEFAULT '[]'",
         "specialties": "TEXT DEFAULT '[]'",
+        "seller_id": "TEXT",
+        "seller_agent_id": "TEXT",
     }
 
     for column, col_type in agent_columns.items():
@@ -210,6 +214,93 @@ def init_agents_table():
             pass
     conn.commit()
     release_conn(locals().get("conn"))
+
+
+
+def init_sellers_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS sellers (
+        seller_id TEXT PRIMARY KEY,
+        seller_name TEXT,
+        wallet TEXT NOT NULL UNIQUE,
+        email TEXT,
+        api_key TEXT,
+
+        seller_status TEXT DEFAULT 'pending',
+        verification_status TEXT DEFAULT 'unverified',
+
+        reputation REAL DEFAULT 0.5,
+        risk_score REAL DEFAULT 0,
+        trust_tier TEXT DEFAULT 'new',
+
+        total_agents INTEGER DEFAULT 0,
+        active_agents INTEGER DEFAULT 0,
+
+        max_agents_allowed INTEGER DEFAULT 1,
+
+        stake_amount REAL DEFAULT 0,
+        exposure_limit REAL DEFAULT 0,
+
+        successful_orders INTEGER DEFAULT 0,
+        failed_orders INTEGER DEFAULT 0,
+
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+
+        last_risk_review_at INTEGER,
+        last_violation_at INTEGER,
+
+        metadata TEXT DEFAULT '{}'
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+def init_seller_agents_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS seller_agents (
+        seller_agent_id TEXT PRIMARY KEY,
+
+        seller_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+
+        service TEXT NOT NULL,
+        url TEXT,
+
+        capabilities TEXT DEFAULT '[]',
+        specialties TEXT DEFAULT '[]',
+
+        seller_agent_status TEXT DEFAULT 'active',
+
+        reputation REAL DEFAULT 0.5,
+        risk_score REAL DEFAULT 0,
+
+        successful_orders INTEGER DEFAULT 0,
+        failed_orders INTEGER DEFAULT 0,
+
+        latency_avg REAL DEFAULT 0,
+        consensus_score REAL DEFAULT 0,
+
+        exposure_limit REAL DEFAULT 0,
+
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+
+        metadata TEXT DEFAULT '{}'
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
 
 
 def init_delegations_table():
@@ -899,7 +990,7 @@ def create_order_db(order_id, order):
         foundation_context, execution_mode, execution_context,
         created_at, updated_at, status, tx_signature, delivered_at, delivery_result, used
     )
-    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
     """, (
         order_id,
         order["service"],
@@ -1122,6 +1213,9 @@ def register_agent_db(agent):
                 available = {p},
                 stake_amount = {p},
                 stake_required = {p},
+                risk_score = {p},
+                dynamic_stake_required = {p},
+                max_order_value = {p},
                 trust_tier = {p},
                 capabilities = {p},
                 specialties = {p},
@@ -1133,6 +1227,8 @@ def register_agent_db(agent):
                 raw_prompt_access = {p},
                 foundation_verified_at = {p},
                 foundation_verdict = {p},
+                seller_id = {p},
+                seller_agent_id = {p},
                 updated_at = {p}
             WHERE agent_id = {p}
             """, (
@@ -1144,6 +1240,9 @@ def register_agent_db(agent):
                 new_available,
                 float(agent.get("stake_amount", 0) or 0),
                 float(agent.get("stake_required", 0) or 0),
+                float(agent.get("risk_score", 0) or 0),
+                float(agent.get("dynamic_stake_required", 0) or 0),
+                float(agent.get("max_order_value", 0) or 0),
                 agent.get("trust_tier", "free"),
                 agent.get("capabilities", "[]"),
                 agent.get("specialties", "[]"),
@@ -1155,6 +1254,8 @@ def register_agent_db(agent):
                 1 if agent.get("raw_prompt_access") else 0,
                 agent.get("foundation_verified_at"),
                 agent.get("foundation_verdict"),
+                agent.get("seller_id"),
+                agent.get("seller_agent_id"),
                 now,
                 agent["agent_id"],
             ))
@@ -1162,14 +1263,15 @@ def register_agent_db(agent):
             cur.execute(f"""
             INSERT INTO agents (
                 agent_id, service, url, wallet, agent_type, price, reputation, available,
-                stake_amount, stake_required, trust_tier,
+                stake_amount, stake_required, max_order_value, trust_tier,
                 capabilities, specialties,
                 seller_status, verification_status, seller_metadata,
                 buyer_access, web_access, raw_prompt_access,
                 foundation_verified_at, foundation_verdict,
+                seller_id, seller_agent_id,
                 registered_at, updated_at
             )
-            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+            VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
             """, (
                 agent["agent_id"],
                 agent["service"],
@@ -1181,6 +1283,7 @@ def register_agent_db(agent):
                 1 if agent.get("available", True) else 0,
                 float(agent.get("stake_amount", 0) or 0),
                 float(agent.get("stake_required", 0) or 0),
+                float(agent.get("max_order_value", 0) or 0),
                 agent.get("trust_tier", "free"),
                 agent.get("capabilities", "[]"),
                 agent.get("specialties", "[]"),
@@ -1192,6 +1295,8 @@ def register_agent_db(agent):
                 1 if agent.get("raw_prompt_access") else 0,
                 agent.get("foundation_verified_at"),
                 agent.get("foundation_verdict"),
+                agent.get("seller_id"),
+                agent.get("seller_agent_id"),
                 now,
                 now,
             ))
@@ -1275,6 +1380,1970 @@ def get_agent_db(agent_id):
     agent["available"] = bool(agent.get("available", 0))
 
     return agent
+
+
+def upsert_seller_graph_edge_db(
+    source_agent_id,
+    target_agent_id,
+    edge_type,
+    weight=0.1,
+    evidence=None,
+):
+    """
+    Persist seller relationship graph edges.
+    Used for adversarial cluster detection.
+    """
+    if not source_agent_id or not target_agent_id:
+        return None
+
+    if source_agent_id == target_agent_id:
+        return None
+
+    ordered = sorted([
+        str(source_agent_id),
+        str(target_agent_id),
+    ])
+
+    original_source_agent_id = str(source_agent_id)
+    original_target_agent_id = str(target_agent_id)
+
+    source_agent_id = ordered[0]
+    target_agent_id = ordered[1]
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    # Remove legacy/reverse duplicate edge before canonical upsert.
+    cur.execute(f"""
+    DELETE FROM seller_graph_edges
+    WHERE source_agent_id = {p}
+      AND target_agent_id = {p}
+      AND edge_type = {p}
+      AND NOT (
+          source_agent_id = {p}
+          AND target_agent_id = {p}
+      )
+    """, (
+        original_source_agent_id,
+        original_target_agent_id,
+        edge_type,
+        source_agent_id,
+        target_agent_id,
+    ))
+    cur = conn.cursor()
+    p = qmark()
+
+    now = int(time.time())
+
+    evidence_json = (
+        json.dumps(evidence)
+        if isinstance(evidence, (dict, list))
+        else str(evidence or "")
+    )
+
+    if USE_POSTGRES:
+        cur.execute(f"""
+        INSERT INTO seller_graph_edges (
+            source_agent_id,
+            target_agent_id,
+            edge_type,
+            weight,
+            evidence,
+            created_at,
+            updated_at
+        )
+        VALUES (
+            {p}, {p}, {p}, {p}, {p}, {p}, {p}
+        )
+        ON CONFLICT (
+            source_agent_id,
+            target_agent_id,
+            edge_type
+        )
+        DO UPDATE SET
+            weight = EXCLUDED.weight,
+            evidence = EXCLUDED.evidence,
+            updated_at = EXCLUDED.updated_at
+        """, (
+            source_agent_id,
+            target_agent_id,
+            edge_type,
+            float(weight or 0),
+            evidence_json,
+            now,
+            now,
+        ))
+
+    else:
+        cur.execute(f"""
+        INSERT OR REPLACE INTO seller_graph_edges (
+            source_agent_id,
+            target_agent_id,
+            edge_type,
+            weight,
+            evidence,
+            created_at,
+            updated_at
+        )
+        VALUES (
+            {p}, {p}, {p}, {p}, {p}, {p}, {p}
+        )
+        """, (
+            source_agent_id,
+            target_agent_id,
+            edge_type,
+            float(weight or 0),
+            evidence_json,
+            now,
+            now,
+        ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "source_agent_id": source_agent_id,
+        "target_agent_id": target_agent_id,
+        "edge_type": edge_type,
+        "weight": weight,
+    }
+
+
+def store_threat_forecast_db(
+    scope,
+    subject_id,
+    forecast,
+):
+    """
+    Store AI threat forecasts into protocol memory.
+    Advisory-only memory for future risk decisions.
+    """
+    if not forecast:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    threat_level = forecast.get("threat_level")
+    confidence = float(forecast.get("confidence", 0) or 0)
+    source = forecast.get("provider", "unknown")
+
+    # Do not pollute protocol memory with weak fallback forecasts.
+    if source != "groq":
+        return {
+            "status": "ignored",
+            "reason": "non_primary_provider",
+        }
+
+    if confidence < 0.5:
+        return {
+            "status": "ignored",
+            "reason": "low_confidence",
+        }
+
+    attack_vectors = forecast.get("predicted_attack_vectors") or []
+
+    if not attack_vectors:
+        return {
+            "status": "ignored",
+            "reason": "empty_forecast",
+        }
+
+    inserted = 0
+    guardrails = forecast.get("recommended_guardrails") or []
+    signals = forecast.get("signals_to_monitor") or []
+    policies = forecast.get("policy_updates") or []
+
+    max_len = max(
+        len(attack_vectors),
+        len(guardrails),
+        len(signals),
+        len(policies),
+        1,
+    )
+
+    for i in range(max_len):
+        attack_vector = attack_vectors[i] if i < len(attack_vectors) else None
+        guardrail = guardrails[i] if i < len(guardrails) else None
+        signal = signals[i] if i < len(signals) else None
+        policy = policies[i] if i < len(policies) else None
+
+        cur.execute(f"""
+        SELECT id
+        FROM threat_memory
+        WHERE scope = {p}
+          AND subject_id = {p}
+          AND status = 'active'
+          AND COALESCE(attack_vector, '') = COALESCE({p}, '')
+          AND COALESCE(recommended_guardrail, '') = COALESCE({p}, '')
+          AND COALESCE(signal_to_monitor, '') = COALESCE({p}, '')
+          AND COALESCE(policy_update, '') = COALESCE({p}, '')
+        LIMIT 1
+        """, (
+            scope,
+            subject_id,
+            attack_vector,
+            guardrail,
+            signal,
+            policy,
+        ))
+
+        existing = cur.fetchone()
+
+        if existing:
+            cur.execute(f"""
+            UPDATE threat_memory
+            SET confidence = {p},
+                threat_level = {p},
+                updated_at = {p}
+            WHERE id = {p}
+            """, (
+                confidence,
+                threat_level,
+                now,
+                row_get(existing, "id"),
+            ))
+
+            continue
+
+        cur.execute(f"""
+        INSERT INTO threat_memory (
+            scope,
+            subject_id,
+            threat_level,
+            attack_vector,
+            recommended_guardrail,
+            signal_to_monitor,
+            policy_update,
+            confidence,
+            source,
+            status,
+            created_at,
+            updated_at
+        )
+        VALUES (
+            {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}
+        )
+        """, (
+            scope,
+            subject_id,
+            threat_level,
+            attack_vector,
+            guardrail,
+            signal,
+            policy,
+            confidence,
+            source,
+            "active",
+            now,
+            now,
+        ))
+
+        inserted += 1
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "stored",
+        "scope": scope,
+        "subject_id": subject_id,
+        "inserted": inserted,
+    }
+
+
+def get_active_threat_memory_db(
+    scope=None,
+    subject_id=None,
+    limit=50,
+):
+    """
+    Retrieve active threat memory for protocol reasoning.
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    where = ["status = 'active'"]
+    params = []
+
+    if scope:
+        where.append(f"scope = {p}")
+        params.append(scope)
+
+    if subject_id:
+        where.append(f"subject_id = {p}")
+        params.append(subject_id)
+
+    query = f"""
+    SELECT *
+    FROM threat_memory
+    WHERE {' AND '.join(where)}
+    ORDER BY confidence DESC, updated_at DESC
+    LIMIT {int(limit)}
+    """
+
+    cur.execute(query, tuple(params))
+    rows = cur.fetchall()
+
+    release_conn(conn)
+
+    return [dict(r) for r in rows]
+
+
+def reinforce_threat_memory_db(
+    memory_id,
+    observed=True,
+    reason="",
+):
+    """
+    Reinforce or weaken a threat memory based on real observations.
+    """
+    if not memory_id:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    SELECT *
+    FROM threat_memory
+    WHERE id = {p}
+    """, (memory_id,))
+
+    row = cur.fetchone()
+
+    if not row:
+        release_conn(conn)
+        return {
+            "status": "not_found",
+            "memory_id": memory_id,
+        }
+
+    confidence = float(row_get(row, "confidence", 0) or 0)
+    strength = float(row_get(row, "memory_strength", 0.5) or 0.5)
+
+    times_reinforced = int(row_get(row, "times_reinforced", 0) or 0)
+    times_observed = int(row_get(row, "times_observed", 0) or 0)
+    times_false_positive = int(row_get(row, "times_false_positive", 0) or 0)
+
+    if observed:
+        confidence = min(1.0, confidence + 0.05)
+        strength = min(1.0, strength + 0.10)
+        times_reinforced += 1
+        times_observed += 1
+    else:
+        confidence = max(0.0, confidence - 0.05)
+        strength = max(0.0, strength - 0.10)
+        times_false_positive += 1
+
+    status = "active"
+
+    if strength <= 0.15 and confidence <= 0.25:
+        status = "archived"
+        archived_at = now
+    else:
+        archived_at = row_get(row, "archived_at")
+
+    cur.execute(f"""
+    UPDATE threat_memory
+    SET confidence = {p},
+        memory_strength = {p},
+        times_reinforced = {p},
+        times_observed = {p},
+        times_false_positive = {p},
+        last_validated_at = {p},
+        updated_at = {p},
+        status = {p},
+        archived_at = {p}
+    WHERE id = {p}
+    """, (
+        confidence,
+        strength,
+        times_reinforced,
+        times_observed,
+        times_false_positive,
+        now,
+        now,
+        status,
+        archived_at,
+        memory_id,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "reinforced" if observed else "weakened",
+        "memory_id": memory_id,
+        "observed": observed,
+        "confidence": confidence,
+        "memory_strength": strength,
+        "times_reinforced": times_reinforced,
+        "times_observed": times_observed,
+        "times_false_positive": times_false_positive,
+        "reason": reason,
+    }
+
+
+def propagate_threat_memory_db(memory_id, max_confidence=0.45):
+    """
+    Propagate confirmed threat memory to graph-related sellers.
+    Bounded, advisory-only, never automatic guilt transfer.
+    """
+    if not memory_id:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    SELECT *
+    FROM threat_memory
+    WHERE id = {p}
+      AND status = 'active'
+    """, (memory_id,))
+
+    memory = cur.fetchone()
+
+    if not memory:
+        release_conn(conn)
+        return {
+            "status": "not_found_or_inactive",
+            "memory_id": memory_id,
+        }
+
+    subject_id = row_get(memory, "subject_id")
+    scope = row_get(memory, "scope")
+
+    if scope != "seller" or not subject_id:
+        release_conn(conn)
+        return {
+            "status": "not_propagatable",
+            "memory_id": memory_id,
+        }
+
+    cur.execute(f"""
+    SELECT *
+    FROM seller_graph_edges
+    WHERE source_agent_id = {p}
+       OR target_agent_id = {p}
+    """, (subject_id, subject_id))
+
+    edges = cur.fetchall()
+
+    propagated = 0
+
+    for edge in edges:
+        source_id = row_get(edge, "source_agent_id")
+        target_id = row_get(edge, "target_agent_id")
+
+        related_id = target_id if source_id == subject_id else source_id
+
+        if not related_id or related_id == subject_id:
+            continue
+
+        weight = float(row_get(edge, "weight", 0) or 0)
+
+        base_confidence = float(row_get(memory, "confidence", 0) or 0)
+
+        propagated_confidence = min(
+            max_confidence,
+            round(base_confidence * weight, 6),
+        )
+
+        if propagated_confidence < 0.05:
+            continue
+
+        attack_vector = row_get(memory, "attack_vector")
+        guardrail = row_get(memory, "recommended_guardrail")
+        signal = row_get(memory, "signal_to_monitor")
+        policy = row_get(memory, "policy_update")
+
+        cur.execute(f"""
+        SELECT id
+        FROM threat_memory
+        WHERE scope = 'seller'
+          AND subject_id = {p}
+          AND status = 'active'
+          AND COALESCE(attack_vector, '') = COALESCE({p}, '')
+          AND source = 'propagated'
+        LIMIT 1
+        """, (
+            related_id,
+            attack_vector,
+        ))
+
+        exists = cur.fetchone()
+
+        if exists:
+            continue
+
+        cur.execute(f"""
+        INSERT INTO threat_memory (
+            scope,
+            subject_id,
+            threat_level,
+            attack_vector,
+            recommended_guardrail,
+            signal_to_monitor,
+            policy_update,
+            confidence,
+            source,
+            status,
+            created_at,
+            updated_at,
+            memory_strength
+        )
+        VALUES (
+            {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}
+        )
+        """, (
+            "seller",
+            related_id,
+            row_get(memory, "threat_level"),
+            attack_vector,
+            guardrail,
+            signal,
+            policy,
+            propagated_confidence,
+            "propagated",
+            "active",
+            now,
+            now,
+            min(0.4, propagated_confidence),
+        ))
+
+        propagated += 1
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "propagation_complete",
+        "memory_id": memory_id,
+        "subject_id": subject_id,
+        "edges_seen": len(edges),
+        "propagated": propagated,
+        "max_confidence": max_confidence,
+        "advisory_only": True,
+    }
+
+
+def decay_threat_memory_db(
+    scope=None,
+    subject_id=None,
+    min_age_seconds=86400,
+):
+    """
+    Decay old unreinforced threat memory.
+    Prevents stale AI forecasts from becoming permanent protocol truth.
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    where = ["status = 'active'"]
+    params = []
+
+    if scope:
+        where.append(f"scope = {p}")
+        params.append(scope)
+
+    if subject_id:
+        where.append(f"subject_id = {p}")
+        params.append(subject_id)
+
+    cur.execute(f"""
+    SELECT *
+    FROM threat_memory
+    WHERE {' AND '.join(where)}
+    """, tuple(params))
+
+    rows = cur.fetchall()
+
+    decayed = 0
+    archived = 0
+
+    for row in rows:
+        memory_id = row_get(row, "id")
+        updated_at = int(row_get(row, "updated_at", 0) or 0)
+        last_decay_at = row_get(row, "last_decay_at")
+
+        if now - updated_at < min_age_seconds:
+            continue
+
+        if last_decay_at and now - int(last_decay_at) < min_age_seconds:
+            continue
+
+        confidence = float(row_get(row, "confidence", 0) or 0)
+        strength = float(row_get(row, "memory_strength", 0.5) or 0.5)
+
+        confidence = max(0.0, round(confidence - 0.03, 6))
+        strength = max(0.0, round(strength - 0.05, 6))
+
+        status = "active"
+        archived_at = row_get(row, "archived_at")
+
+        if confidence <= 0.25 and strength <= 0.15:
+            status = "archived"
+            archived_at = now
+            archived += 1
+
+        cur.execute(f"""
+        UPDATE threat_memory
+        SET confidence = {p},
+            memory_strength = {p},
+            last_decay_at = {p},
+            updated_at = {p},
+            status = {p},
+            archived_at = {p}
+        WHERE id = {p}
+        """, (
+            confidence,
+            strength,
+            now,
+            now,
+            status,
+            archived_at,
+            memory_id,
+        ))
+
+        decayed += 1
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "decay_complete",
+        "scope": scope,
+        "subject_id": subject_id,
+        "decayed": decayed,
+        "archived": archived,
+    }
+
+
+def compute_seller_fingerprints_db(agent_id):
+    """
+    Compute normalized seller fingerprints.
+    Fingerprints are advisory signals, not automatic punishment.
+    """
+    if not agent_id:
+        return None
+
+    agent = get_agent_db(agent_id)
+
+    if not agent:
+        return None
+
+    import json
+
+    price = float(agent.get("price", 0) or 0)
+    stake_amount = float(agent.get("stake_amount", 0) or 0)
+    reputation = float(agent.get("reputation", 0) or 0)
+    risk_score = float(agent.get("risk_score", 0) or 0)
+    max_order_value = float(agent.get("max_order_value", 0) or 0)
+
+    success_count = int(agent.get("success_count", 0) or 0)
+    failure_count = int(agent.get("failure_count", 0) or 0)
+
+    honest_volume = float(agent.get("honest_volume", 0) or 0)
+    fraud_volume = float(agent.get("fraud_volume", 0) or 0)
+
+    consensus_checks = int(agent.get("consensus_checks", 0) or 0)
+    consensus_disagreements = int(agent.get("consensus_disagreements", 0) or 0)
+    consensus_disagreement_rate = float(
+        agent.get("consensus_disagreement_rate", 0) or 0
+    )
+
+    economic_fingerprint = {
+        "price_bucket": (
+            "very_high" if price >= 5000 else
+            "high" if price >= 1000 else
+            "medium" if price >= 100 else
+            "low"
+        ),
+        "stake_bucket": (
+            "high" if stake_amount >= 1000 else
+            "medium" if stake_amount >= 100 else
+            "low"
+        ),
+        "exposure_bucket": (
+            "high" if max_order_value >= 1000 else
+            "medium" if max_order_value >= 100 else
+            "low"
+        ),
+        "stake_to_price_ratio": round(
+            stake_amount / price,
+            4
+        ) if price > 0 else None,
+    }
+
+    behavior_fingerprint = {
+        "success_count": success_count,
+        "failure_count": failure_count,
+        "success_failure_ratio": round(
+            success_count / max(failure_count, 1),
+            4
+        ),
+        "risk_bucket": (
+            "critical" if risk_score >= 0.8 else
+            "high" if risk_score >= 0.5 else
+            "medium" if risk_score >= 0.25 else
+            "low"
+        ),
+        "reputation_bucket": (
+            "high" if reputation >= 0.9 else
+            "medium" if reputation >= 0.7 else
+            "low"
+        ),
+    }
+
+    timing_fingerprint = {
+        "last_success_at": agent.get("last_success_at"),
+        "last_failure_at": agent.get("last_failure_at"),
+        "last_activity_at": agent.get("last_activity_at"),
+        "risk_updated_at": agent.get("risk_updated_at"),
+    }
+
+    consensus_fingerprint = {
+        "consensus_checks": consensus_checks,
+        "consensus_disagreements": consensus_disagreements,
+        "consensus_disagreement_rate": consensus_disagreement_rate,
+        "last_consensus_score": agent.get("last_consensus_score"),
+    }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    UPDATE agents
+    SET economic_fingerprint = {p},
+        behavior_fingerprint = {p},
+        timing_fingerprint = {p},
+        consensus_fingerprint = {p},
+        fingerprint_updated_at = {p}
+    WHERE agent_id = {p}
+    """, (
+        json.dumps(economic_fingerprint),
+        json.dumps(behavior_fingerprint),
+        json.dumps(timing_fingerprint),
+        json.dumps(consensus_fingerprint),
+        now,
+        agent_id,
+    ))
+
+    seller_id = row_get(row, "seller_id")
+    seller_risk_application = None
+
+    if seller_id and divergence_detected:
+        seller_severity = min(0.35, max(0.05, 1.0 - consensus_score))
+
+        seller_risk_application = apply_seller_risk_event_db(
+            seller_id=seller_id,
+            event_type="consensus_failure",
+            severity=seller_severity,
+            reason=json.dumps({
+                "agent_id": agent_id,
+                "seller_agent_id": row_get(row, "seller_agent_id"),
+                "consensus_score": consensus_score,
+                "disagreement_rate": disagreement_rate,
+            }),
+        )
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "agent_id": agent_id,
+        "economic_fingerprint": economic_fingerprint,
+        "behavior_fingerprint": behavior_fingerprint,
+        "timing_fingerprint": timing_fingerprint,
+        "consensus_fingerprint": consensus_fingerprint,
+        "fingerprint_updated_at": now,
+    }
+
+
+def compute_fingerprint_similarity_score(fp_a, fp_b):
+    """
+    Multi-signal fingerprint similarity engine.
+    Requires multiple behavioral dimensions before creating suspicion.
+    Advisory-only.
+    """
+    if not fp_a or not fp_b:
+        return {
+            "similarity_score": 0.0,
+            "matches": [],
+            "matched_dimensions": [],
+            "dimension_count": 0,
+        }
+
+    import json
+
+    def parse(value):
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except Exception:
+                return {}
+        return {}
+
+    fp_a = parse(fp_a)
+    fp_b = parse(fp_b)
+
+    weights = {
+        "economic_fingerprint": 0.20,
+        "behavior_fingerprint": 0.35,
+        "consensus_fingerprint": 0.30,
+        "timing_fingerprint": 0.15,
+    }
+
+    total_score = 0.0
+    matches = []
+    matched_dimensions = []
+
+    for dimension, dimension_weight in weights.items():
+        a = parse(fp_a.get(dimension))
+        b = parse(fp_b.get(dimension))
+
+        if not a or not b:
+            continue
+
+        local_matches = 0
+        local_total = 0
+
+        for subkey, av in a.items():
+            bv = b.get(subkey)
+
+            if av is None or bv is None:
+                continue
+
+            local_total += 1
+
+            if av == bv:
+                local_matches += 1
+                matches.append(f"{dimension}.{subkey}")
+
+        if local_total <= 0:
+            continue
+
+        ratio = local_matches / local_total
+
+        if ratio >= 0.5:
+            matched_dimensions.append(dimension)
+
+        total_score += ratio * dimension_weight
+
+    total_score = round(min(total_score, 1.0), 4)
+
+    # Require multiple dimensions before suspicion.
+    if len(matched_dimensions) < 2:
+        total_score = round(total_score * 0.35, 4)
+
+    return {
+        "similarity_score": total_score,
+        "matches": matches[:25],
+        "matched_dimensions": matched_dimensions,
+        "dimension_count": len(matched_dimensions),
+        "advisory_only": True,
+    }
+
+
+def enrich_seller_graph_db(agent_id):
+    """
+    Automatically enrich seller graph with deterministic relationship signals.
+    Advisory-only. No automatic punishment.
+    """
+    if not agent_id:
+        return None
+
+    target = get_agent_db(agent_id)
+
+    if not target:
+        return None
+
+    fingerprints = compute_seller_fingerprints_db(agent_id)
+    related = find_related_sellers_db(agent_id)
+
+    edges_created = 0
+
+    for related_seller in related.get("related_sellers", []):
+        other_id = related_seller.get("agent_id")
+
+        if not other_id:
+            continue
+
+        matches = related_seller.get("matches", []) or []
+
+        for match in matches:
+            weight = {
+                "same_wallet": 0.20,
+                "same_url_host": 0.15,
+                "same_business_name": 0.10,
+                "same_proof_links": 0.20,
+            }.get(match, 0.05)
+
+            result = upsert_seller_graph_edge_db(
+                agent_id,
+                other_id,
+                match,
+                weight=weight,
+                evidence={
+                    "source": "enrich_seller_graph_db",
+                    "match": match,
+                },
+            )
+
+            if result:
+                edges_created += 1
+
+    all_agents = list_agents_db()
+
+    for other in all_agents:
+        other_id = other.get("agent_id")
+
+        if not other_id or other_id == agent_id:
+            continue
+
+        other_fp = compute_seller_fingerprints_db(other_id)
+
+        similarity = compute_fingerprint_similarity_score(
+            fingerprints,
+            other_fp,
+        )
+
+        similarity_score = float(
+            similarity.get("similarity_score", 0)
+            or 0
+        )
+
+        dimension_count = int(
+            similarity.get("dimension_count", 0)
+            or 0
+        )
+
+        if similarity_score < 0.10 or dimension_count < 2:
+            continue
+
+        matches = similarity.get("matches", [])
+
+        result = upsert_seller_graph_edge_db(
+            agent_id,
+            other_id,
+            "fingerprint_similarity",
+            weight=min(0.45, similarity_score),
+            evidence={
+                "source": "fingerprint_similarity_engine",
+                "similarity_score": similarity_score,
+                "matches": matches[:10],
+            },
+        )
+
+        if result:
+            edges_created += 1
+
+    graph = build_seller_graph_context_db(agent_id)
+
+    return {
+        "status": "graph_enriched",
+        "agent_id": agent_id,
+        "fingerprints": fingerprints,
+        "related_count": related.get("related_count", 0),
+        "edges_created": edges_created,
+        "graph": graph,
+        "advisory_only": True,
+    }
+
+
+def build_seller_graph_context_db(agent_id):
+    """
+    Build seller relationship graph context.
+    Used for adversarial cluster analysis.
+    """
+    if not agent_id:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT
+        source_agent_id,
+        target_agent_id,
+        edge_type,
+        weight,
+        evidence,
+        updated_at
+    FROM seller_graph_edges
+    WHERE source_agent_id = {p}
+       OR target_agent_id = {p}
+    ORDER BY weight DESC, updated_at DESC
+    """, (
+        agent_id,
+        agent_id,
+    ))
+
+    rows = cur.fetchall()
+
+    release_conn(conn)
+
+    edges = []
+
+    related_agents = set()
+
+    total_weight = 0.0
+
+    for row in rows:
+        edge = dict(row)
+
+        try:
+            edge["evidence"] = json.loads(
+                edge.get("evidence") or "{}"
+            )
+        except Exception:
+            pass
+
+        edges.append(edge)
+
+        total_weight += float(
+            edge.get("weight", 0) or 0
+        )
+
+        src = edge.get("source_agent_id")
+        dst = edge.get("target_agent_id")
+
+        if src and src != agent_id:
+            related_agents.add(src)
+
+        if dst and dst != agent_id:
+            related_agents.add(dst)
+
+    cluster_risk = min(
+        1.0,
+        round(total_weight / 10.0, 4)
+    )
+
+    return {
+        "agent_id": agent_id,
+        "edge_count": len(edges),
+        "related_agent_count": len(related_agents),
+        "cluster_risk_score": cluster_risk,
+        "related_agents": sorted(list(related_agents)),
+        "edges": edges,
+    }
+
+
+def record_adaptive_policy_event_db(
+    policy_id,
+    scope,
+    service,
+    event_type,
+    old_policy=None,
+    new_policy=None,
+    reason=None,
+    source="protocol",
+):
+    """
+    Record adaptive policy lifecycle events for auditability.
+    """
+    old_policy = old_policy or {}
+    new_policy = new_policy or {}
+
+    def multipliers(policy):
+        return {
+            "min_stake_multiplier": policy.get("min_stake_multiplier"),
+            "consensus_multiplier": policy.get("consensus_multiplier"),
+            "escrow_delay_multiplier": policy.get("escrow_delay_multiplier"),
+            "exposure_multiplier": policy.get("exposure_multiplier"),
+            "decay_multiplier": policy.get("decay_multiplier"),
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    INSERT INTO adaptive_policy_events (
+        policy_id,
+        scope,
+        service,
+        event_type,
+        old_risk_level,
+        new_risk_level,
+        old_confidence,
+        new_confidence,
+        old_multipliers,
+        new_multipliers,
+        reason,
+        source,
+        created_at
+    )
+    VALUES (
+        {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}
+    )
+    """, (
+        policy_id,
+        scope,
+        service,
+        event_type,
+        old_policy.get("risk_level"),
+        new_policy.get("risk_level"),
+        old_policy.get("confidence"),
+        new_policy.get("confidence"),
+        json.dumps(multipliers(old_policy)),
+        json.dumps(multipliers(new_policy)),
+        json.dumps(reason) if isinstance(reason, (dict, list)) else str(reason or ""),
+        source,
+        now,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "policy_event_recorded",
+        "policy_id": policy_id,
+        "event_type": event_type,
+    }
+
+
+def get_active_adaptive_policy_db(
+    scope,
+    service=None,
+):
+    """
+    Retrieve active adaptive defense policy.
+    Service-specific policy first, then global fallback.
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    SELECT *
+    FROM adaptive_defense_policies
+    WHERE scope = {p}
+      AND active = 1
+      AND (expires_at IS NULL OR expires_at > {p})
+      AND (
+            service = {p}
+            OR service IS NULL
+          )
+    ORDER BY
+        CASE WHEN service = {p} THEN 0 ELSE 1 END,
+        confidence DESC,
+        updated_at DESC
+    LIMIT 1
+    """, (
+        scope,
+        now,
+        service,
+        service,
+    ))
+
+    row = cur.fetchone()
+
+    release_conn(conn)
+
+    if not row:
+        return None
+
+    policy = dict(row)
+
+    try:
+        policy["activation_reason"] = json.loads(
+            policy.get("activation_reason") or "{}"
+        )
+    except Exception:
+        pass
+
+    return policy
+
+
+def compute_adaptive_defense_policy_db(
+    scope,
+    service=None,
+    cluster=None,
+    threat_memory=None,
+):
+    """
+    Compute adaptive defense policy from live protocol intelligence.
+    Advisory-only policy hardening.
+    """
+    import uuid
+
+    cluster = cluster or {}
+    threat_memory = threat_memory or []
+
+    cluster_risk = float(
+        cluster.get("cluster_risk_score", 0)
+        or 0
+    )
+
+    coordination = float(
+        cluster.get("coordination_probability", 0)
+        or 0
+    )
+
+    high_threats = [
+        m for m in threat_memory
+        if str(m.get("threat_level", "")).lower() in ["high", "critical"]
+    ]
+
+    threat_density = min(
+        1.0,
+        len(high_threats) / 10,
+    )
+
+    combined_risk = min(
+        1.0,
+        round(
+            (cluster_risk * 0.40)
+            + (coordination * 0.35)
+            + (threat_density * 0.25),
+            6,
+        ),
+    )
+
+    if combined_risk >= 0.75:
+        risk_level = "critical"
+        min_stake_multiplier = 2.0
+        consensus_multiplier = 2.0
+        escrow_delay_multiplier = 1.75
+        exposure_multiplier = 0.35
+        decay_multiplier = 0.50
+
+    elif combined_risk >= 0.50:
+        risk_level = "high"
+        min_stake_multiplier = 1.5
+        consensus_multiplier = 1.5
+        escrow_delay_multiplier = 1.35
+        exposure_multiplier = 0.55
+        decay_multiplier = 0.70
+
+    elif combined_risk >= 0.25:
+        risk_level = "medium"
+        min_stake_multiplier = 1.2
+        consensus_multiplier = 1.2
+        escrow_delay_multiplier = 1.15
+        exposure_multiplier = 0.75
+        decay_multiplier = 0.85
+
+    else:
+        risk_level = "low"
+        min_stake_multiplier = 1.0
+        consensus_multiplier = 1.0
+        escrow_delay_multiplier = 1.0
+        exposure_multiplier = 1.0
+        decay_multiplier = 1.0
+
+    # Protocol safety floors/ceilings.
+    # Prevent autonomous policy overreaction or underreaction.
+    min_stake_multiplier = min(max(min_stake_multiplier, 1.0), 3.0)
+    consensus_multiplier = min(max(consensus_multiplier, 1.0), 3.0)
+    escrow_delay_multiplier = min(max(escrow_delay_multiplier, 1.0), 3.0)
+    exposure_multiplier = min(max(exposure_multiplier, 0.20), 1.0)
+    decay_multiplier = min(max(decay_multiplier, 0.30), 1.0)
+
+    policy_id = f"policy:{scope}:{service or 'global'}"
+
+    activation_reason = {
+        "combined_risk": combined_risk,
+        "cluster_risk": cluster_risk,
+        "coordination_probability": coordination,
+        "high_threat_count": len(high_threats),
+        "threat_density": threat_density,
+    }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    old_policy = get_active_adaptive_policy_db(
+        scope=scope,
+        service=service,
+    )
+
+    if USE_POSTGRES:
+        cur.execute(f"""
+        INSERT INTO adaptive_defense_policies (
+            policy_id,
+            scope,
+            service,
+            risk_level,
+            min_stake_multiplier,
+            consensus_multiplier,
+            escrow_delay_multiplier,
+            exposure_multiplier,
+            decay_multiplier,
+            activation_reason,
+            confidence,
+            source,
+            active,
+            created_at,
+            updated_at
+        )
+        VALUES (
+            {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}
+        )
+        ON CONFLICT (policy_id)
+        DO UPDATE SET
+            risk_level = EXCLUDED.risk_level,
+            min_stake_multiplier = EXCLUDED.min_stake_multiplier,
+            consensus_multiplier = EXCLUDED.consensus_multiplier,
+            escrow_delay_multiplier = EXCLUDED.escrow_delay_multiplier,
+            exposure_multiplier = EXCLUDED.exposure_multiplier,
+            decay_multiplier = EXCLUDED.decay_multiplier,
+            activation_reason = EXCLUDED.activation_reason,
+            confidence = EXCLUDED.confidence,
+            active = EXCLUDED.active,
+            updated_at = EXCLUDED.updated_at
+        """, (
+            policy_id,
+            scope,
+            service,
+            risk_level,
+            min_stake_multiplier,
+            consensus_multiplier,
+            escrow_delay_multiplier,
+            exposure_multiplier,
+            decay_multiplier,
+            json.dumps(activation_reason),
+            combined_risk,
+            "protocol_adaptive_engine",
+            1,
+            now,
+            now,
+        ))
+
+    else:
+        cur.execute(f"""
+        INSERT OR REPLACE INTO adaptive_defense_policies (
+            policy_id,
+            scope,
+            service,
+            risk_level,
+            min_stake_multiplier,
+            consensus_multiplier,
+            escrow_delay_multiplier,
+            exposure_multiplier,
+            decay_multiplier,
+            activation_reason,
+            confidence,
+            source,
+            active,
+            created_at,
+            updated_at
+        )
+        VALUES (
+            {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}
+        )
+        """, (
+            policy_id,
+            scope,
+            service,
+            risk_level,
+            min_stake_multiplier,
+            consensus_multiplier,
+            escrow_delay_multiplier,
+            exposure_multiplier,
+            decay_multiplier,
+            json.dumps(activation_reason),
+            combined_risk,
+            "protocol_adaptive_engine",
+            1,
+            now,
+            now,
+        ))
+
+    conn.commit()
+    release_conn(conn)
+
+    new_policy = {
+        "risk_level": risk_level,
+        "confidence": combined_risk,
+        "min_stake_multiplier": min_stake_multiplier,
+        "consensus_multiplier": consensus_multiplier,
+        "escrow_delay_multiplier": escrow_delay_multiplier,
+        "exposure_multiplier": exposure_multiplier,
+        "decay_multiplier": decay_multiplier,
+    }
+
+    event_type = "policy_created" if not old_policy else "policy_updated"
+
+    if old_policy and old_policy.get("risk_level") != risk_level:
+        event_type = "risk_level_changed"
+
+    record_adaptive_policy_event_db(
+        policy_id=policy_id,
+        scope=scope,
+        service=service,
+        event_type=event_type,
+        old_policy=old_policy,
+        new_policy=new_policy,
+        reason=activation_reason,
+        source="protocol_adaptive_engine",
+    )
+
+    return {
+        "status": "adaptive_policy_computed",
+        "policy_id": policy_id,
+        "scope": scope,
+        "service": service,
+        "risk_level": risk_level,
+        "combined_risk": combined_risk,
+        "multipliers": {
+            "min_stake_multiplier": min_stake_multiplier,
+            "consensus_multiplier": consensus_multiplier,
+            "escrow_delay_multiplier": escrow_delay_multiplier,
+            "exposure_multiplier": exposure_multiplier,
+            "decay_multiplier": decay_multiplier,
+        },
+        "activation_reason": activation_reason,
+        "advisory_only": True,
+    }
+
+
+def detect_seller_cluster_db(agent_id):
+    """
+    Detect emerging seller clusters from graph edges and threat memory.
+    Advisory only. No automatic punishment.
+    """
+    if not agent_id:
+        return None
+
+    graph = build_seller_graph_context_db(agent_id)
+
+    if not graph:
+        return None
+
+    members = set(graph.get("related_agents", []) or [])
+    members.add(agent_id)
+
+    edges = graph.get("edges", []) or []
+
+    edge_count = len(edges)
+    member_count = len(members)
+
+    weights = [
+        float(e.get("weight", 0) or 0)
+        for e in edges
+    ]
+
+    average_edge_weight = (
+        sum(weights) / len(weights)
+        if weights else 0
+    )
+
+    strongest_edge_weight = (
+        max(weights)
+        if weights else 0
+    )
+
+    threat_memory_count = 0
+
+    for member in members:
+        memories = get_active_threat_memory_db(
+            scope="seller",
+            subject_id=member,
+            limit=100,
+        )
+        threat_memory_count += len(memories)
+
+    coordination_probability = min(
+        1.0,
+        round(
+            (
+                (average_edge_weight * 0.45)
+                + (strongest_edge_weight * 0.35)
+                + (min(threat_memory_count, 10) / 10 * 0.20)
+            ),
+            6,
+        ),
+    )
+
+    cluster_risk_score = min(
+        1.0,
+        round(
+            (
+                graph.get("cluster_risk_score", 0) * 0.40
+                + coordination_probability * 0.60
+            ),
+            6,
+        ),
+    )
+
+    cluster_id = f"cluster:{agent_id}"
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    if USE_POSTGRES:
+        cur.execute(f"""
+        INSERT INTO seller_clusters (
+            cluster_id,
+            root_agent_id,
+            member_count,
+            edge_count,
+            cluster_risk_score,
+            coordination_probability,
+            average_edge_weight,
+            strongest_edge_weight,
+            threat_memory_count,
+            status,
+            created_at,
+            updated_at
+        )
+        VALUES (
+            {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}
+        )
+        ON CONFLICT (cluster_id)
+        DO UPDATE SET
+            member_count = EXCLUDED.member_count,
+            edge_count = EXCLUDED.edge_count,
+            cluster_risk_score = EXCLUDED.cluster_risk_score,
+            coordination_probability = EXCLUDED.coordination_probability,
+            average_edge_weight = EXCLUDED.average_edge_weight,
+            strongest_edge_weight = EXCLUDED.strongest_edge_weight,
+            threat_memory_count = EXCLUDED.threat_memory_count,
+            updated_at = EXCLUDED.updated_at
+        """, (
+            cluster_id,
+            agent_id,
+            member_count,
+            edge_count,
+            cluster_risk_score,
+            coordination_probability,
+            average_edge_weight,
+            strongest_edge_weight,
+            threat_memory_count,
+            "active",
+            now,
+            now,
+        ))
+
+    else:
+        cur.execute(f"""
+        INSERT OR REPLACE INTO seller_clusters (
+            cluster_id,
+            root_agent_id,
+            member_count,
+            edge_count,
+            cluster_risk_score,
+            coordination_probability,
+            average_edge_weight,
+            strongest_edge_weight,
+            threat_memory_count,
+            status,
+            created_at,
+            updated_at
+        )
+        VALUES (
+            {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}
+        )
+        """, (
+            cluster_id,
+            agent_id,
+            member_count,
+            edge_count,
+            cluster_risk_score,
+            coordination_probability,
+            average_edge_weight,
+            strongest_edge_weight,
+            threat_memory_count,
+            "active",
+            now,
+            now,
+        ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "cluster_detected",
+        "cluster_id": cluster_id,
+        "root_agent_id": agent_id,
+        "members": sorted(list(members)),
+        "member_count": member_count,
+        "edge_count": edge_count,
+        "cluster_risk_score": cluster_risk_score,
+        "coordination_probability": coordination_probability,
+        "average_edge_weight": round(average_edge_weight, 6),
+        "strongest_edge_weight": strongest_edge_weight,
+        "threat_memory_count": threat_memory_count,
+        "advisory_only": True,
+    }
+
+
+def record_cluster_snapshot_db(
+    cluster,
+    snapshot_reason="periodic",
+    source="protocol",
+):
+    """
+    Store historical cluster state for evolution forecasting.
+    """
+    if not cluster:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    members = cluster.get("members", []) or []
+
+    # Edges are not always returned directly in cluster.
+    graph = build_seller_graph_context_db(
+        cluster.get("root_agent_id")
+    )
+
+    edges = graph.get("edges", []) if graph else []
+
+    cur.execute(f"""
+    INSERT INTO cluster_snapshots (
+        cluster_id,
+        root_agent_id,
+        member_count,
+        edge_count,
+        cluster_risk_score,
+        coordination_probability,
+        average_edge_weight,
+        strongest_edge_weight,
+        threat_memory_count,
+        members_json,
+        edges_json,
+        snapshot_reason,
+        source,
+        created_at
+    )
+    VALUES (
+        {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}
+    )
+    """, (
+        cluster.get("cluster_id"),
+        cluster.get("root_agent_id"),
+        int(cluster.get("member_count", 0) or 0),
+        int(cluster.get("edge_count", 0) or 0),
+        float(cluster.get("cluster_risk_score", 0) or 0),
+        float(cluster.get("coordination_probability", 0) or 0),
+        float(cluster.get("average_edge_weight", 0) or 0),
+        float(cluster.get("strongest_edge_weight", 0) or 0),
+        int(cluster.get("threat_memory_count", 0) or 0),
+        json.dumps(members),
+        json.dumps(edges),
+        snapshot_reason,
+        source,
+        now,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "cluster_snapshot_recorded",
+        "cluster_id": cluster.get("cluster_id"),
+        "root_agent_id": cluster.get("root_agent_id"),
+        "member_count": cluster.get("member_count"),
+        "edge_count": cluster.get("edge_count"),
+        "created_at": now,
+    }
+
+
+def compute_cluster_forecast_db(
+    cluster_id,
+    limit=20,
+):
+    """
+    Forecast cluster evolution from historical snapshots.
+    Advisory-only predictive risk.
+    """
+    if not cluster_id:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM cluster_snapshots
+    WHERE cluster_id = {p}
+    ORDER BY created_at DESC
+    LIMIT {p}
+    """, (
+        cluster_id,
+        int(limit),
+    ))
+
+    rows = cur.fetchall()
+    release_conn(conn)
+
+    snapshots = [dict(r) for r in rows]
+
+    if not snapshots:
+        return {
+            "status": "no_snapshots",
+            "cluster_id": cluster_id,
+        }
+
+    latest = snapshots[0]
+    oldest = snapshots[-1]
+
+    time_delta = max(
+        1,
+        int(latest.get("created_at", 0) or 0)
+        - int(oldest.get("created_at", 0) or 0),
+    )
+
+    member_delta = (
+        int(latest.get("member_count", 0) or 0)
+        - int(oldest.get("member_count", 0) or 0)
+    )
+
+    edge_delta = (
+        int(latest.get("edge_count", 0) or 0)
+        - int(oldest.get("edge_count", 0) or 0)
+    )
+
+    risk_delta = (
+        float(latest.get("cluster_risk_score", 0) or 0)
+        - float(oldest.get("cluster_risk_score", 0) or 0)
+    )
+
+    coordination_delta = (
+        float(latest.get("coordination_probability", 0) or 0)
+        - float(oldest.get("coordination_probability", 0) or 0)
+    )
+
+    growth_velocity = round(member_delta / time_delta, 8)
+    edge_velocity = round(edge_delta / time_delta, 8)
+    risk_acceleration = round(risk_delta / time_delta, 8)
+    coordination_acceleration = round(coordination_delta / time_delta, 8)
+
+    latest_risk = float(
+        latest.get("cluster_risk_score", 0)
+        or 0
+    )
+
+    latest_coordination = float(
+        latest.get("coordination_probability", 0)
+        or 0
+    )
+
+    threat_memory_count = int(
+        latest.get("threat_memory_count", 0)
+        or 0
+    )
+
+    expansion_probability = min(
+        1.0,
+        round(
+            (max(growth_velocity, 0) * 1000 * 0.25)
+            + (max(edge_velocity, 0) * 1000 * 0.20)
+            + (max(risk_acceleration, 0) * 1000 * 0.20)
+            + (latest_coordination * 0.20)
+            + (min(threat_memory_count, 10) / 10 * 0.15),
+            6,
+        ),
+    )
+
+    if expansion_probability >= 0.75:
+        expansion_risk = "critical"
+    elif expansion_probability >= 0.50:
+        expansion_risk = "high"
+    elif expansion_probability >= 0.25:
+        expansion_risk = "medium"
+    else:
+        expansion_risk = "low"
+
+    recommended_countermeasures = []
+
+    if expansion_risk in ["high", "critical"]:
+        recommended_countermeasures.extend([
+            "increase_consensus_requirement",
+            "reduce_cluster_exposure",
+            "increase_minimum_stake",
+            "slow_risk_decay",
+        ])
+
+    elif expansion_risk == "medium":
+        recommended_countermeasures.extend([
+            "monitor_cluster_growth",
+            "apply_moderate_exposure_reduction",
+        ])
+
+    else:
+        recommended_countermeasures.append(
+            "continue_monitoring"
+        )
+
+    return {
+        "status": "cluster_forecast_computed",
+        "cluster_id": cluster_id,
+        "snapshot_count": len(snapshots),
+        "latest": latest,
+        "oldest": oldest,
+        "growth_velocity": growth_velocity,
+        "edge_velocity": edge_velocity,
+        "risk_acceleration": risk_acceleration,
+        "coordination_acceleration": coordination_acceleration,
+        "expansion_probability": expansion_probability,
+        "expansion_risk": expansion_risk,
+        "recommended_countermeasures": recommended_countermeasures,
+        "advisory_only": True,
+    }
+
+
+def find_related_sellers_db(agent_id):
+    """
+    Advisory-only relationship discovery.
+
+    Same wallet/domain/proof/business signals are NOT automatic fraud.
+    They are context for Groq + foundation review.
+    """
+    import json
+    from urllib.parse import urlparse
+
+    target = get_agent_db(agent_id)
+
+    if not target:
+        return {
+            "agent_id": agent_id,
+            "related_count": 0,
+            "signals": [],
+            "related_sellers": [],
+        }
+
+    def safe_json(value):
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            try:
+                return json.loads(value)
+            except Exception:
+                return {}
+        return {}
+
+    def host(url):
+        try:
+            return urlparse(url or "").netloc.lower()
+        except Exception:
+            return ""
+
+    target_metadata = safe_json(target.get("seller_metadata"))
+    target_wallet = str(target.get("wallet") or "").lower()
+    target_host = host(target.get("url"))
+    target_business = str(
+        target_metadata.get("business_name")
+        or target.get("business_name")
+        or ""
+    ).strip().lower()
+    target_proofs = str(
+        target_metadata.get("proof_links")
+        or target.get("proof_links")
+        or ""
+    ).strip().lower()
+
+    signals = []
+    related = []
+
+    for other in list_agents_db():
+        if other.get("agent_id") == agent_id:
+            continue
+
+        if str(other.get("agent_type", "")).lower() != "seller":
+            continue
+
+        other_metadata = safe_json(other.get("seller_metadata"))
+
+        matches = []
+
+        other_wallet = str(other.get("wallet") or "").lower()
+        other_host = host(other.get("url"))
+        other_business = str(
+            other_metadata.get("business_name")
+            or other.get("business_name")
+            or ""
+        ).strip().lower()
+        other_proofs = str(
+            other_metadata.get("proof_links")
+            or other.get("proof_links")
+            or ""
+        ).strip().lower()
+
+        if target_wallet and target_wallet == other_wallet:
+            matches.append("same_wallet")
+
+        if target_host and target_host == other_host:
+            matches.append("same_url_host")
+
+        if target_business and target_business == other_business:
+            matches.append("same_business_name")
+
+        if target_proofs and target_proofs == other_proofs:
+            matches.append("same_proof_links")
+
+        if matches:
+            for match in matches:
+                weight = {
+                    "same_wallet": 0.20,
+                    "same_url_host": 0.15,
+                    "same_business_name": 0.10,
+                    "same_proof_links": 0.20,
+                }.get(match, 0.05)
+
+                upsert_seller_graph_edge_db(
+                    agent_id,
+                    other.get("agent_id"),
+                    match,
+                    weight=weight,
+                    evidence={
+                        "source": "find_related_sellers_db",
+                        "match": match,
+                    },
+                )
+
+            related.append({
+                "agent_id": other.get("agent_id"),
+                "service": other.get("service"),
+                "seller_status": other.get("seller_status"),
+                "verification_status": other.get("verification_status"),
+                "risk_score": other.get("risk_score"),
+                "reputation": other.get("reputation"),
+                "wallet": other.get("wallet"),
+                "url": other.get("url"),
+                "matches": matches,
+            })
+
+            for m in matches:
+                signals.append(m)
+
+    return {
+        "agent_id": agent_id,
+        "related_count": len(related),
+        "signals": sorted(list(set(signals))),
+        "related_sellers": related,
+        "advisory_only": True,
+    }
 
 
 def get_agents_for_service_db(service):
@@ -1384,12 +3453,16 @@ def update_agent_reputation_db(agent_id, success=True):
             SET reputation = {p},
                 success_count = {p},
                 failure_count = {p},
+                last_success_at = {p},
+                last_activity_at = {p},
                 updated_at = {p}
             WHERE agent_id = {p}
             """, (
                 round(new_rep, 4),
                 success_count,
                 failure_count,
+                now,
+                now,
                 now,
                 agent_id,
             ))
@@ -2224,18 +4297,24 @@ def recompute_agent_metrics_db(agent_id):
         2
     )
 
+    now = int(time.time())
+
     cur.execute(f"""
     UPDATE agents
     SET reputation = {p},
         risk_score = {p},
         trust_tier = {p},
-        dynamic_stake_required = {p}
+        dynamic_stake_required = {p},
+        risk_updated_at = {p},
+        last_activity_at = {p}
     WHERE agent_id = {p}
     """, (
         reputation,
         risk_score,
         trust_tier,
         dynamic_stake_required,
+        now,
+        now,
         agent_id,
     ))
 
@@ -2251,6 +4330,237 @@ def recompute_agent_metrics_db(agent_id):
         "success_rate": round(success_rate, 4),
         "honest_rate": round(honest_rate, 4),
         "avg_latency": round(avg_latency, 4),
+    }
+
+
+def apply_agent_risk_decay_db(agent_id, decay_reason="stable_behavior"):
+    """
+    Controlled risk recovery.
+    Risk decays slowly only after stable positive behavior.
+    """
+    if not agent_id:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    SELECT
+        risk_score,
+        last_failure_at,
+        last_consensus_checked_at,
+        last_consensus_score,
+        last_risk_decay_at,
+        risk_decay_events
+    FROM agents
+    WHERE agent_id = {p}
+    """, (agent_id,))
+
+    row = cur.fetchone()
+
+    if not row:
+        release_conn(conn)
+        return None
+
+    risk_score = float(row_get(row, "risk_score", 0) or 0)
+    last_failure_at = row_get(row, "last_failure_at")
+    last_consensus_score = float(row_get(row, "last_consensus_score", 1) or 1)
+    last_risk_decay_at = row_get(row, "last_risk_decay_at")
+    risk_decay_events = int(row_get(row, "risk_decay_events", 0) or 0)
+
+    # No decay if recent failure in last 7 days.
+    if last_failure_at and now - int(last_failure_at) < 7 * 86400:
+        release_conn(conn)
+        return {
+            "status": "blocked",
+            "reason": "recent_failure",
+            "risk_score": risk_score,
+        }
+
+    # No decay if latest consensus was weak.
+    if last_consensus_score < 0.65:
+        release_conn(conn)
+        return {
+            "status": "blocked",
+            "reason": "weak_recent_consensus",
+            "risk_score": risk_score,
+        }
+
+    # Prevent rapid repeated decay.
+    if last_risk_decay_at and now - int(last_risk_decay_at) < 24 * 3600:
+        release_conn(conn)
+        return {
+            "status": "blocked",
+            "reason": "decay_cooldown",
+            "risk_score": risk_score,
+        }
+
+    decay_amount = 0.03
+
+    new_risk = max(
+        0.05,
+        round(risk_score - decay_amount, 6),
+    )
+
+    risk_decay_events += 1
+
+    cur.execute(f"""
+    UPDATE agents
+    SET risk_score = {p},
+        risk_decay_score = COALESCE(risk_decay_score, 0) + {p},
+        risk_decay_events = {p},
+        last_risk_decay_at = {p},
+        risk_updated_at = {p},
+        last_activity_at = {p}
+    WHERE agent_id = {p}
+    """, (
+        new_risk,
+        decay_amount,
+        risk_decay_events,
+        now,
+        now,
+        now,
+        agent_id,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "risk_decay_applied",
+        "agent_id": agent_id,
+        "old_risk_score": risk_score,
+        "new_risk_score": new_risk,
+        "decay_amount": decay_amount,
+        "risk_decay_events": risk_decay_events,
+        "reason": decay_reason,
+    }
+
+
+def update_agent_consensus_stats_db(
+    agent_id,
+    consensus_score,
+):
+    """
+    Track divergence from multi-agent consensus.
+    Advisory only.
+    """
+    if not agent_id:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    now = int(time.time())
+
+    cur.execute(f"""
+    SELECT
+        consensus_checks,
+        consensus_disagreements,
+        consensus_disagreement_rate,
+        risk_score,
+        seller_id,
+        seller_agent_id
+    FROM agents
+    WHERE agent_id = {p}
+    """, (agent_id,))
+
+    row = cur.fetchone()
+
+    if not row:
+        release_conn(conn)
+        return None
+
+    checks = int(row_get(row, "consensus_checks", 0) or 0)
+    disagreements = int(
+        row_get(row, "consensus_disagreements", 0) or 0
+    )
+
+    risk_score = float(
+        row_get(row, "risk_score", 0) or 0
+    )
+
+    checks += 1
+
+    consensus_score = float(consensus_score or 0)
+
+    divergence_detected = consensus_score < 0.50
+
+    if divergence_detected:
+        disagreements += 1
+
+    disagreement_rate = (
+        disagreements / checks
+        if checks > 0 else 0
+    )
+
+    disagreement_rate = round(disagreement_rate, 6)
+
+    seller_id = row_get(row, "seller_id")
+    seller_agent_id = row_get(row, "seller_agent_id")
+    seller_risk_application = None
+
+    # Progressive economic trust penalty.
+    if disagreement_rate >= 0.75:
+        risk_score += 0.20
+
+    elif disagreement_rate >= 0.50:
+        risk_score += 0.10
+
+    elif disagreement_rate >= 0.25:
+        risk_score += 0.05
+
+    risk_score = round(min(risk_score, 1.0), 6)
+
+    cur.execute(f"""
+    UPDATE agents
+    SET consensus_checks = {p},
+        consensus_disagreements = {p},
+        consensus_disagreement_rate = {p},
+        last_consensus_score = {p},
+        last_consensus_checked_at = {p},
+        risk_score = {p}
+    WHERE agent_id = {p}
+    """, (
+        checks,
+        disagreements,
+        disagreement_rate,
+        consensus_score,
+        now,
+        risk_score,
+        agent_id,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    if seller_id and divergence_detected:
+        seller_severity = min(0.35, max(0.05, 1.0 - consensus_score))
+
+        seller_risk_application = apply_seller_risk_event_db(
+            seller_id=seller_id,
+            event_type="consensus_failure",
+            severity=seller_severity,
+            reason=json.dumps({
+                "agent_id": agent_id,
+                "seller_agent_id": seller_agent_id,
+                "consensus_score": consensus_score,
+                "disagreement_rate": disagreement_rate,
+            }),
+        )
+
+    return {
+        "agent_id": agent_id,
+        "consensus_checks": checks,
+        "consensus_disagreements": disagreements,
+        "consensus_disagreement_rate": disagreement_rate,
+        "consensus_score": consensus_score,
+        "divergence_detected": divergence_detected,
+        "risk_score": risk_score,
+        "seller_risk_application": seller_risk_application,
     }
 
 
@@ -2431,3 +4741,820 @@ def compute_agent_topic_score_db(agent_id, topics):
         return 0.5
 
     return round(sum(scores) / len(scores), 4)
+
+
+def create_seller_db(seller):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    metadata = seller.get("metadata", "{}")
+    if not isinstance(metadata, str):
+        metadata = json.dumps(metadata)
+
+    cur.execute(f"""
+    INSERT INTO sellers (
+        seller_id, seller_name, wallet, email, api_key,
+        seller_status, verification_status,
+        reputation, risk_score, trust_tier,
+        total_agents, active_agents, max_agents_allowed,
+        stake_amount, exposure_limit,
+        successful_orders, failed_orders,
+        created_at, updated_at,
+        metadata
+    )
+    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+    """, (
+        seller["seller_id"],
+        seller.get("seller_name"),
+        seller["wallet"],
+        seller.get("email"),
+        seller.get("api_key"),
+        seller.get("seller_status", "pending"),
+        seller.get("verification_status", "unverified"),
+        float(seller.get("reputation", 0.5) or 0.5),
+        float(seller.get("risk_score", 0) or 0),
+        seller.get("trust_tier", "new"),
+        int(seller.get("total_agents", 0) or 0),
+        int(seller.get("active_agents", 0) or 0),
+        int(seller.get("max_agents_allowed", 1) or 1),
+        float(seller.get("stake_amount", 0) or 0),
+        float(seller.get("exposure_limit", 0) or 0),
+        int(seller.get("successful_orders", 0) or 0),
+        int(seller.get("failed_orders", 0) or 0),
+        now,
+        now,
+        metadata,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return get_seller_db(seller["seller_id"])
+
+
+def get_seller_db(seller_id):
+    if not seller_id:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM sellers
+    WHERE seller_id = {p}
+    """, (seller_id,))
+
+    row = cur.fetchone()
+    release_conn(conn)
+
+    return dict(row) if row else None
+
+
+def get_seller_by_wallet_db(wallet):
+    if not wallet:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM sellers
+    WHERE wallet = {p}
+    """, (wallet,))
+
+    row = cur.fetchone()
+    release_conn(conn)
+
+    return dict(row) if row else None
+
+
+def list_sellers_db(limit=100):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    limit = int(limit or 100)
+
+    cur.execute(f"""
+    SELECT *
+    FROM sellers
+    ORDER BY updated_at DESC
+    LIMIT {limit}
+    """)
+
+    rows = cur.fetchall()
+    release_conn(conn)
+
+    return [dict(r) for r in rows]
+
+
+def count_active_seller_agents_db(seller_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT COUNT(*) AS active_count
+    FROM seller_agents
+    WHERE seller_id = {p}
+      AND seller_agent_status = 'active'
+    """, (seller_id,))
+
+    row = cur.fetchone()
+    release_conn(conn)
+
+    return int(row_get(row, "active_count", 0) or 0)
+
+
+def can_seller_add_agent_db(seller_id):
+    seller = get_seller_db(seller_id)
+    if not seller:
+        return {
+            "allowed": False,
+            "reason": "seller_not_found",
+            "active_agents": 0,
+            "max_agents_allowed": 0,
+        }
+
+    active_agents = count_active_seller_agents_db(seller_id)
+    max_agents_allowed = int(seller.get("max_agents_allowed", 1) or 1)
+
+    if active_agents >= max_agents_allowed:
+        return {
+            "allowed": False,
+            "reason": "seller_agent_limit_reached",
+            "active_agents": active_agents,
+            "max_agents_allowed": max_agents_allowed,
+        }
+
+    if seller.get("seller_status") not in ("active", "pending"):
+        return {
+            "allowed": False,
+            "reason": "seller_status_not_allowed",
+            "active_agents": active_agents,
+            "max_agents_allowed": max_agents_allowed,
+            "seller_status": seller.get("seller_status"),
+        }
+
+    return {
+        "allowed": True,
+        "reason": "allowed",
+        "active_agents": active_agents,
+        "max_agents_allowed": max_agents_allowed,
+    }
+
+
+def create_seller_agent_db(seller_agent):
+    seller_id = seller_agent["seller_id"]
+
+    permission = can_seller_add_agent_db(seller_id)
+    if not permission.get("allowed"):
+        return {
+            "status": "error",
+            "message": permission.get("reason"),
+            "details": permission,
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    capabilities = seller_agent.get("capabilities", "[]")
+    if not isinstance(capabilities, str):
+        capabilities = json.dumps(capabilities)
+
+    specialties = seller_agent.get("specialties", "[]")
+    if not isinstance(specialties, str):
+        specialties = json.dumps(specialties)
+
+    metadata = seller_agent.get("metadata", "{}")
+    if not isinstance(metadata, str):
+        metadata = json.dumps(metadata)
+
+    cur.execute(f"""
+    INSERT INTO seller_agents (
+        seller_agent_id, seller_id, agent_id,
+        service, url,
+        capabilities, specialties,
+        seller_agent_status,
+        reputation, risk_score,
+        successful_orders, failed_orders,
+        latency_avg, consensus_score,
+        exposure_limit,
+        created_at, updated_at,
+        metadata
+    )
+    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+    """, (
+        seller_agent["seller_agent_id"],
+        seller_id,
+        seller_agent["agent_id"],
+        seller_agent["service"],
+        seller_agent.get("url"),
+        capabilities,
+        specialties,
+        seller_agent.get("seller_agent_status", "active"),
+        float(seller_agent.get("reputation", 0.5) or 0.5),
+        float(seller_agent.get("risk_score", 0) or 0),
+        int(seller_agent.get("successful_orders", 0) or 0),
+        int(seller_agent.get("failed_orders", 0) or 0),
+        float(seller_agent.get("latency_avg", 0) or 0),
+        float(seller_agent.get("consensus_score", 0) or 0),
+        float(seller_agent.get("exposure_limit", 0) or 0),
+        now,
+        now,
+        metadata,
+    ))
+
+    cur.execute(f"""
+    UPDATE sellers
+    SET total_agents = total_agents + 1,
+        active_agents = active_agents + 1,
+        updated_at = {p}
+    WHERE seller_id = {p}
+    """, (now, seller_id))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "seller_agent": get_seller_agent_db(seller_agent["seller_agent_id"]),
+    }
+
+
+def get_seller_agent_db(seller_agent_id):
+    if not seller_agent_id:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM seller_agents
+    WHERE seller_agent_id = {p}
+    """, (seller_agent_id,))
+
+    row = cur.fetchone()
+    release_conn(conn)
+
+    return dict(row) if row else None
+
+
+def list_seller_agents_db(seller_id, limit=100):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    limit = int(limit or 100)
+
+    cur.execute(f"""
+    SELECT *
+    FROM seller_agents
+    WHERE seller_id = {p}
+    ORDER BY updated_at DESC
+    LIMIT {limit}
+    """, (seller_id,))
+
+    rows = cur.fetchall()
+    release_conn(conn)
+
+    return [dict(r) for r in rows]
+
+
+def apply_seller_risk_event_db(
+    seller_id,
+    event_type="generic_risk",
+    severity=0.1,
+    reason=None,
+):
+    seller = get_seller_db(seller_id)
+    if not seller:
+        return {
+            "status": "error",
+            "message": "seller_not_found",
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    current_risk = float(seller.get("risk_score", 0) or 0)
+    current_max_agents = int(seller.get("max_agents_allowed", 1) or 1)
+    current_exposure = float(seller.get("exposure_limit", 0) or 0)
+
+    severity = max(0.0, min(float(severity or 0), 1.0))
+
+    # Defensive but not paranoid:
+    # most signals should add friction, not instantly kill seller capacity.
+    event_weights = {
+        "generic_risk": 0.25,
+        "scam_suspicion": 0.35,
+        "failed_delivery": 0.30,
+        "consensus_failure": 0.25,
+        "cluster_risk": 0.30,
+        "threat_memory_sync": 0.40,
+        "fake_volume": 0.45,
+        "fraud_signal": 0.60,
+        "manual_review": 0.50,
+        "confirmed_fraud": 1.00,
+    }
+
+    event_weight = event_weights.get(str(event_type), 0.25)
+
+    trust_tier = str(seller.get("trust_tier", "new") or "new").lower()
+
+    trust_resistance = {
+        "new": 1.00,
+        "free": 1.00,
+        "basic": 0.90,
+        "trusted": 0.70,
+        "verified": 0.60,
+        "foundation_verified": 0.50,
+    }.get(trust_tier, 1.00)
+
+    # Risk naturally decays slightly at each review to avoid permanent death spirals.
+    decay_factor = 0.92
+
+    adjusted_severity = severity * event_weight * trust_resistance
+
+    # Only confirmed fraud can produce a full emergency jump.
+    if event_type != "confirmed_fraud":
+        adjusted_severity = min(adjusted_severity, 0.30)
+
+    new_risk = min(1.0, (current_risk * decay_factor) + adjusted_severity)
+
+    new_max_agents = current_max_agents
+
+    if new_risk >= 0.85:
+        new_status = "restricted"
+        new_max_agents = 1
+        new_exposure = 0
+    elif new_risk >= 0.65:
+        new_status = "limited"
+        new_max_agents = max(1, min(current_max_agents, 2))
+        new_exposure = current_exposure * 0.25
+    elif new_risk >= 0.35:
+        new_status = "watchlist"
+        new_max_agents = max(1, current_max_agents - 1)
+        new_exposure = current_exposure * 0.5
+    else:
+        new_status = seller.get("seller_status", "pending")
+        new_exposure = current_exposure
+
+    cur.execute(f"""
+    UPDATE sellers
+    SET risk_score = {p},
+        seller_status = {p},
+        max_agents_allowed = {p},
+        exposure_limit = {p},
+        last_violation_at = {p},
+        last_risk_review_at = {p},
+        updated_at = {p}
+    WHERE seller_id = {p}
+    """, (
+        new_risk,
+        new_status,
+        new_max_agents,
+        new_exposure,
+        now,
+        now,
+        now,
+        seller_id,
+    ))
+
+    active_agents = count_active_seller_agents_db(seller_id)
+
+    if active_agents > new_max_agents:
+        excess = active_agents - new_max_agents
+
+        cur.execute(f"""
+        SELECT seller_agent_id
+        FROM seller_agents
+        WHERE seller_id = {p}
+          AND seller_agent_status = 'active'
+        ORDER BY risk_score DESC, failed_orders DESC, updated_at ASC
+        LIMIT {excess}
+        """, (seller_id,))
+
+        rows = cur.fetchall()
+        agent_ids_to_limit = [row_get(r, "seller_agent_id") for r in rows]
+
+        for seller_agent_id in agent_ids_to_limit:
+            cur.execute(f"""
+            UPDATE seller_agents
+            SET seller_agent_status = 'limited',
+                exposure_limit = 0,
+                updated_at = {p}
+            WHERE seller_agent_id = {p}
+            """, (now, seller_agent_id))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "event_type": event_type,
+        "reason": reason,
+        "old_risk_score": current_risk,
+        "new_risk_score": new_risk,
+        "old_max_agents_allowed": current_max_agents,
+        "new_max_agents_allowed": new_max_agents,
+        "new_seller_status": new_status,
+        "new_exposure_limit": new_exposure,
+    }
+
+
+def sync_seller_risk_from_threat_memory_db(
+    seller_id,
+    auto_apply=True,
+):
+    """
+    Convert active threat memories into seller risk signals.
+
+    This is one of the first bridges between:
+    threat intelligence
+    graph intelligence
+    adaptive sanctions
+    seller exposure governance
+    """
+
+    if not seller_id:
+        return {
+            "status": "error",
+            "message": "missing_seller_id",
+        }
+
+    memories = get_active_threat_memory_db(
+        scope="seller",
+        subject_id=seller_id,
+        limit=100,
+    )
+
+    if not memories:
+        return {
+            "status": "ok",
+            "seller_id": seller_id,
+            "threat_memories": 0,
+            "aggregated_risk": 0,
+            "action_taken": False,
+        }
+
+    total_weight = 0.0
+    weighted_score = 0.0
+
+    attack_vectors = []
+    guardrails = []
+
+    for memory in memories:
+        confidence = float(memory.get("confidence", 0) or 0)
+        strength = float(memory.get("memory_strength", 0.5) or 0.5)
+
+        threat_level = str(
+            memory.get("threat_level", "medium")
+        ).lower()
+
+        level_weight = {
+            "low": 0.25,
+            "medium": 0.5,
+            "high": 0.8,
+            "critical": 1.0,
+        }.get(threat_level, 0.5)
+
+        score = (
+            confidence * 0.45
+            + strength * 0.35
+            + level_weight * 0.20
+        )
+
+        weighted_score += score
+        total_weight += 1.0
+
+        attack_vector = memory.get("attack_vector")
+        if attack_vector:
+            attack_vectors.append(attack_vector)
+
+        guardrail = memory.get("recommended_guardrail")
+        if guardrail:
+            guardrails.append(guardrail)
+
+    aggregated_risk = round(
+        min(1.0, weighted_score / max(total_weight, 1.0)),
+        4,
+    )
+
+    severity = aggregated_risk
+
+    result = None
+
+    if auto_apply and severity >= 0.15:
+        result = apply_seller_risk_event_db(
+            seller_id=seller_id,
+            event_type="threat_memory_sync",
+            severity=severity,
+            reason=json.dumps({
+                "attack_vectors": attack_vectors[:10],
+                "guardrails": guardrails[:10],
+                "threat_memory_count": len(memories),
+            }),
+        )
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "threat_memories": len(memories),
+        "aggregated_risk": aggregated_risk,
+        "severity": severity,
+        "attack_vectors": attack_vectors[:10],
+        "guardrails": guardrails[:10],
+        "action_taken": result is not None,
+        "risk_application": result,
+    }
+
+
+def reset_test_seller_risk_db(seller_id):
+    """
+    DEV/TEST ONLY.
+    Reset seller risk state after local experiments.
+    Do not expose publicly without admin protection.
+    """
+    if not seller_id:
+        return {"status": "error", "message": "missing_seller_id"}
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    UPDATE sellers
+    SET risk_score = 0,
+        seller_status = 'pending',
+        max_agents_allowed = 1,
+        exposure_limit = 0,
+        last_violation_at = NULL,
+        last_risk_review_at = {p},
+        updated_at = {p}
+    WHERE seller_id = {p}
+    """, (now, now, seller_id))
+
+    cur.execute(f"""
+    UPDATE seller_agents
+    SET seller_agent_status = 'active',
+        updated_at = {p}
+    WHERE seller_id = {p}
+    """, (now, seller_id))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "message": "seller risk reset for dev/test",
+    }
+
+
+def reset_test_agent_consensus_db(agent_id):
+    """
+    DEV/TEST ONLY.
+    Reset agent consensus/risk state after local experiments.
+    """
+    if not agent_id:
+        return {"status": "error", "message": "missing_agent_id"}
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    UPDATE agents
+    SET consensus_checks = 0,
+        consensus_disagreements = 0,
+        consensus_disagreement_rate = 0,
+        last_consensus_score = NULL,
+        last_consensus_checked_at = NULL,
+        risk_score = 0,
+        updated_at = {p}
+    WHERE agent_id = {p}
+    """, (now, agent_id))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "agent_id": agent_id,
+        "message": "agent consensus/risk reset for dev/test",
+    }
+
+
+def sync_cluster_risk_to_seller_governance_db(agent_id):
+    """
+    Bridge cluster intelligence into seller governance.
+
+    Cluster intelligence remains advisory, but when risk is persistent/enough,
+    it adds progressive governance friction instead of immediate punishment.
+    """
+    if not agent_id:
+        return {"status": "error", "message": "missing_agent_id"}
+
+    cluster = detect_seller_cluster_db(agent_id)
+
+    if not cluster:
+        return {
+            "status": "ok",
+            "agent_id": agent_id,
+            "message": "no_cluster_detected",
+            "action_taken": False,
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT seller_id, seller_agent_id
+    FROM agents
+    WHERE agent_id = {p}
+    """, (agent_id,))
+
+    row = cur.fetchone()
+    release_conn(conn)
+
+    seller_id = row_get(row, "seller_id") if row else None
+    seller_agent_id = row_get(row, "seller_agent_id") if row else None
+
+    if not seller_id:
+        return {
+            "status": "ok",
+            "agent_id": agent_id,
+            "cluster": cluster,
+            "message": "agent_not_linked_to_seller",
+            "action_taken": False,
+        }
+
+    cluster_risk = float(cluster.get("cluster_risk_score", 0) or 0)
+    coordination = float(cluster.get("coordination_probability", 0) or 0)
+    threat_memory_count = int(cluster.get("threat_memory_count", 0) or 0)
+    member_count = int(cluster.get("member_count", 0) or 0)
+
+    # Soft evidence score. Cluster alone should not destroy seller capacity.
+    severity = (
+        cluster_risk * 0.35
+        + coordination * 0.30
+        + min(threat_memory_count, 10) / 10 * 0.20
+        + min(member_count, 10) / 10 * 0.15
+    )
+
+    severity = round(min(0.60, max(0.0, severity)), 4)
+
+    # Require meaningful signal before applying governance friction.
+    if severity < 0.20:
+        return {
+            "status": "ok",
+            "agent_id": agent_id,
+            "seller_id": seller_id,
+            "cluster": cluster,
+            "severity": severity,
+            "message": "cluster_signal_below_governance_threshold",
+            "action_taken": False,
+        }
+
+    application = apply_seller_risk_event_db(
+        seller_id=seller_id,
+        event_type="cluster_risk",
+        severity=severity,
+        reason=json.dumps({
+            "agent_id": agent_id,
+            "seller_agent_id": seller_agent_id,
+            "cluster_id": cluster.get("cluster_id"),
+            "cluster_risk_score": cluster_risk,
+            "coordination_probability": coordination,
+            "threat_memory_count": threat_memory_count,
+            "member_count": member_count,
+        }),
+    )
+
+    return {
+        "status": "ok",
+        "agent_id": agent_id,
+        "seller_id": seller_id,
+        "cluster": cluster,
+        "severity": severity,
+        "action_taken": True,
+        "risk_application": application,
+    }
+
+
+def run_seller_risk_orchestration_db(agent_id):
+    """
+    Central seller risk orchestration layer.
+
+    Bridges:
+    - threat memory
+    - cluster intelligence
+    - seller governance
+    - future adaptive defense / exposure / escrow logic
+
+    Philosophy:
+    - observe first
+    - apply progressive friction
+    - avoid protocol self-destruction
+    """
+    if not agent_id:
+        return {"status": "error", "message": "missing_agent_id"}
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT seller_id, seller_agent_id
+    FROM agents
+    WHERE agent_id = {p}
+    """, (agent_id,))
+
+    row = cur.fetchone()
+    release_conn(conn)
+
+    seller_id = row_get(row, "seller_id") if row else None
+    seller_agent_id = row_get(row, "seller_agent_id") if row else None
+
+    if not seller_id:
+        return {
+            "status": "ok",
+            "agent_id": agent_id,
+            "message": "agent_not_linked_to_seller",
+            "action_taken": False,
+        }
+
+    threat_sync = sync_seller_risk_from_threat_memory_db(
+        seller_id=seller_id,
+        auto_apply=True,
+    )
+
+    cluster_sync = sync_cluster_risk_to_seller_governance_db(
+        agent_id=agent_id,
+    )
+
+    seller = get_seller_db(seller_id)
+
+    return {
+        "status": "ok",
+        "agent_id": agent_id,
+        "seller_id": seller_id,
+        "seller_agent_id": seller_agent_id,
+        "threat_memory_sync": threat_sync,
+        "cluster_sync": cluster_sync,
+        "seller_state": {
+            "risk_score": seller.get("risk_score") if seller else None,
+            "seller_status": seller.get("seller_status") if seller else None,
+            "max_agents_allowed": seller.get("max_agents_allowed") if seller else None,
+            "exposure_limit": seller.get("exposure_limit") if seller else None,
+            "trust_tier": seller.get("trust_tier") if seller else None,
+        },
+    }
+
+
+def deactivate_adaptive_policy_db(scope, service=None):
+    """
+    Admin/dev utility.
+    Deactivate an adaptive policy so test policies do not keep influencing routing.
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    UPDATE adaptive_defense_policies
+    SET active = 0,
+        updated_at = {p}
+    WHERE scope = {p}
+      AND COALESCE(service, 'global') = COALESCE({p}, 'global')
+    """, (
+        now,
+        scope,
+        service or "global",
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "scope": scope,
+        "service": service or "global",
+        "message": "adaptive policy deactivated",
+    }

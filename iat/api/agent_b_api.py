@@ -1,3 +1,4 @@
+import json
 import os
 import time
 import uuid
@@ -18,6 +19,8 @@ from iat.api.execution_engine import select_best_agent, compute_agent_score
 from iat.api.buyer_intent import (
     normalize_buyer_intent,
     merge_buyer_intent_with_session,
+    analyze_seller_risk_with_groq,
+    forecast_seller_attack_vectors_with_groq,
 )
 
 from iat.api.multi_exec import extract_topics_from_result
@@ -25,6 +28,8 @@ from iat.api.db import compute_agent_topic_score_db
 
 from iat.api.db import (
     update_agent_call_stats_db,
+    update_agent_consensus_stats_db,
+    apply_agent_risk_decay_db,
     reactivate_agent_db,
     rename_agent_db,
     set_agent_trust_db,
@@ -47,6 +52,22 @@ from iat.api.db import (
     list_agents_db,
     delete_agent_db,
     get_agent_db,
+    find_related_sellers_db,
+    build_seller_graph_context_db,
+    enrich_seller_graph_db,
+    detect_seller_cluster_db,
+    record_cluster_snapshot_db,
+    compute_cluster_forecast_db,
+    run_seller_risk_orchestration_db,
+    deactivate_adaptive_policy_db,
+    compute_adaptive_defense_policy_db,
+    get_active_adaptive_policy_db,
+    compute_seller_fingerprints_db,
+    store_threat_forecast_db,
+    get_active_threat_memory_db,
+    reinforce_threat_memory_db,
+    decay_threat_memory_db,
+    propagate_threat_memory_db,
     get_conn,
     release_conn,
     qmark,
@@ -223,6 +244,30 @@ class BuyerConfirmRequest(BaseModel):
     session_id: str
     max_price: float | None = None
     debug: bool = False
+
+
+class InternalSellerSuccessRequest(BaseModel):
+    order_reference: str | None = None
+    amount_iat: float = 0
+    quality_score: float = 1.0
+
+
+class InternalSellerResultVerifyRequest(BaseModel):
+    order_reference: str | None = None
+    service: str
+    result: dict
+
+
+class InternalSellerExecuteRequest(BaseModel):
+    order_reference: str | None = None
+    service: str
+    execution_context: dict
+    foundation_context: dict | None = None
+
+
+class SellerRehabilitationRequest(BaseModel):
+    verdict: str = ""
+    available: bool = True
 
 
 class SellerReviewRequest(BaseModel):
@@ -522,6 +567,1561 @@ def deliver_service(order, tx_signature):
     return generate_service_result(order["service"], query=order.get("query"))
 
 
+
+
+
+@app.post("/internal/seller/apply-risk-decay/{seller_id}")
+def apply_seller_risk_decay(
+    seller_id: str,
+    payload: dict | None = None,
+    x_api_key: str | None = Header(default=None),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    seller = get_agent_db(seller_id)
+
+    if not seller:
+        return {
+            "status": "invalid_seller",
+            "message": "Seller not found.",
+        }
+
+    payload = payload or {}
+
+    reason = str(
+        payload.get("reason", "stable_behavior")
+    )
+
+    result = apply_agent_risk_decay_db(
+        seller_id,
+        reason,
+    )
+
+    refreshed = get_agent_db(seller_id)
+
+    return {
+        "status": result.get("status"),
+        "seller_id": seller_id,
+        "reason": result.get("reason"),
+        "old_risk_score": result.get("old_risk_score"),
+        "new_risk_score": refreshed.get("risk_score"),
+        "risk_decay_events": refreshed.get("risk_decay_events"),
+    }
+
+
+@app.post("/internal/seller/record-consensus-check/{seller_id}")
+def record_seller_consensus_check(
+    seller_id: str,
+    payload: dict,
+    x_api_key: str | None = Header(default=None),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    seller = get_agent_db(seller_id)
+
+    if not seller:
+        return {
+            "status": "invalid_seller",
+            "message": "Seller not found.",
+        }
+
+    consensus_score = float(
+        payload.get("consensus_score", 0) or 0
+    )
+
+    result = update_agent_consensus_stats_db(
+        seller_id,
+        consensus_score,
+    )
+
+    refreshed = get_agent_db(seller_id)
+
+    return {
+        "status": "consensus_recorded",
+        "seller_id": seller_id,
+        "consensus_score": consensus_score,
+        "divergence_detected": result.get("divergence_detected"),
+        "consensus_checks": result.get("consensus_checks"),
+        "consensus_disagreements": result.get("consensus_disagreements"),
+        "consensus_disagreement_rate": result.get("consensus_disagreement_rate"),
+        "risk_score": refreshed.get("risk_score"),
+    }
+
+
+@app.post("/internal/seller/record-success/{seller_id}")
+def internal_record_seller_success(
+    seller_id: str,
+    req: InternalSellerSuccessRequest,
+    x_api_key: str = Header(default="")
+):
+    require_admin_key(x_api_key)
+
+    agent = get_agent_db(seller_id)
+
+    if not agent:
+        return {
+            "status": "error",
+            "message": "seller_not_found",
+        }
+
+    if str(agent.get("agent_type", "")).lower() == "foundation":
+        return {
+            "status": "blocked",
+            "message": "foundation_agents_do_not_use_growth_system",
+        }
+
+    amount = float(req.amount_iat or 0)
+
+    update_agent_reputation_db(
+        seller_id,
+        success=True
+    )
+
+    update_agent_volume_stats_db(
+        seller_id,
+        amount=amount,
+        honest=True
+    )
+
+    metrics = recompute_agent_metrics_db(seller_id)
+
+    refreshed = get_agent_db(seller_id)
+
+    target_max_order_value = compute_max_order_value(refreshed)
+
+    current_max_order_value = float(
+        agent.get("max_order_value", 0)
+        or agent.get("stake_amount", 0)
+        or 0
+    )
+
+    if current_max_order_value <= 0:
+        current_max_order_value = float(agent.get("stake_amount", 0) or 0)
+
+    growth_rate = 0.10
+
+    max_order_value = min(
+        target_max_order_value,
+        round(current_max_order_value * (1 + growth_rate), 6),
+    )
+
+    refreshed["max_order_value"] = max_order_value
+    refreshed["last_volume_total"] = refreshed.get("honest_volume", 0)
+    refreshed["last_max_order_value"] = max_order_value
+    refreshed["velocity_updated_at"] = int(time.time())
+
+    register_agent_db(refreshed)
+
+    return {
+        "status": "success_recorded",
+        "seller_id": seller_id,
+        "amount_iat": amount,
+        "reputation": metrics.get("reputation"),
+        "risk_score": metrics.get("risk_score"),
+        "trust_tier": metrics.get("trust_tier"),
+        "dynamic_stake_required": metrics.get("dynamic_stake_required"),
+        "max_order_value": max_order_value,
+        "success_count": refreshed.get("success_count"),
+        "honest_volume": refreshed.get("honest_volume"),
+    }
+
+
+@app.post("/internal/seller/verify-result/{seller_id}")
+def internal_verify_seller_result(
+    seller_id: str,
+    req: InternalSellerResultVerifyRequest,
+    x_api_key: str | None = Header(default=None),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    seller = get_agent_db(seller_id)
+
+    if not seller:
+        return {
+            "status": "invalid_seller",
+            "message": "Seller not found.",
+        }
+
+    result = req.result or {}
+
+    forbidden_patterns = [
+        "buyer_wallet",
+        "buyer_secret",
+        "payment_secret",
+        "seed_phrase",
+        "private_key",
+    ]
+
+    suspicious_hits = []
+
+    def recursive_scan(value):
+        if isinstance(value, dict):
+            for k, v in value.items():
+                recursive_scan(k)
+                recursive_scan(v)
+
+        elif isinstance(value, list):
+            for x in value:
+                recursive_scan(x)
+
+        elif isinstance(value, str):
+            lower = value.lower()
+
+            for p in forbidden_patterns:
+                if p in lower:
+                    suspicious_hits.append(p)
+
+    recursive_scan(result)
+
+    required_fields = [
+        "summary",
+        "confidence",
+    ]
+
+    missing_fields = [
+        f for f in required_fields
+        if f not in result
+    ]
+
+    score = 1.0
+
+    if missing_fields:
+        score -= 0.3
+
+    if suspicious_hits:
+        score -= 0.6
+
+    score = max(0.0, round(score, 4))
+
+    if suspicious_hits:
+        verdict = "rejected"
+
+    elif score < 0.5:
+        verdict = "suspicious"
+
+    else:
+        verdict = "accepted"
+
+    penalty_applied = False
+    new_dynamic_stake_required = None
+
+    if verdict in ["rejected", "suspicious"]:
+        penalty_applied = True
+
+        current_risk = float(seller.get("risk_score", 0) or 0)
+        current_dynamic_stake = float(
+            seller.get("dynamic_stake_required", 0)
+            or seller.get("stake_required", 0)
+            or 10
+        )
+
+        risk_increment = 0.25 if verdict == "rejected" else 0.10
+        new_risk = min(1.0, current_risk + risk_increment)
+
+        multiplier = 3.0 if verdict == "rejected" else 1.5
+        new_dynamic_stake_required = round(
+            max(current_dynamic_stake * multiplier, 10),
+            6,
+        )
+
+        seller["risk_score"] = new_risk
+        seller["dynamic_stake_required"] = new_dynamic_stake_required
+
+        current_exposure = float(
+            seller.get("max_order_value", 0)
+            or seller.get("stake_amount", 0)
+            or 0
+        )
+
+        exposure_penalty = 0.10 if verdict == "rejected" else 0.50
+
+        seller["max_order_value"] = round(
+            current_exposure * exposure_penalty,
+            6,
+        )
+
+        seller["available"] = False
+        seller["seller_status"] = "suspended"
+        seller["foundation_verdict"] = (
+            f"Seller result {verdict}. Dynamic stake increased before reactivation."
+        )
+
+        register_agent_db(seller)
+
+    return {
+        "status": "verified",
+        "seller_id": seller_id,
+        "verdict": verdict,
+        "seller_result_score": score,
+        "penalty_applied": penalty_applied,
+        "dynamic_stake_required": new_dynamic_stake_required,
+        "missing_fields": missing_fields,
+        "suspicious_hits": suspicious_hits,
+        "result_preview": {
+            "summary": result.get("summary"),
+            "confidence": result.get("confidence"),
+        }
+    }
+
+
+@app.post("/internal/seller/execute/{seller_id}")
+def internal_seller_execute(
+    seller_id: str,
+    req: InternalSellerExecuteRequest,
+    x_api_key: str | None = Header(default=None),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    seller = get_agent_db(seller_id)
+
+    if not seller:
+        return {
+            "status": "invalid_seller",
+            "message": "Seller not found.",
+        }
+
+    if str(seller.get("agent_type", "")).lower() != "seller":
+        return {
+            "status": "invalid_agent_type",
+            "message": "Only verified seller agents can be executed.",
+        }
+
+    if str(seller.get("verification_status", "")).lower() != "foundation_verified":
+        return {
+            "status": "seller_not_verified",
+            "message": "Seller is not foundation verified.",
+        }
+
+    if not seller.get("available"):
+        return {
+            "status": "seller_unavailable",
+            "message": "Seller is currently unavailable.",
+        }
+
+    execution_context = req.execution_context or {}
+
+    forbidden_fields = [
+        "buyer_prompt",
+        "raw_prompt",
+        "buyer_wallet",
+        "buyer_secret",
+        "tx_signature",
+        "payment_secret",
+    ]
+
+    leaked_fields = [
+        k for k in forbidden_fields
+        if k in execution_context
+    ]
+
+    if leaked_fields:
+        return {
+            "status": "blocked",
+            "message": "Forbidden buyer-sensitive fields detected.",
+            "forbidden_fields": leaked_fields,
+        }
+
+    sanitized_payload = {
+        "service": req.service,
+        "order_reference": req.order_reference,
+        "execution_context": execution_context,
+        "foundation_context": req.foundation_context or {},
+        "protocol_constraints": {
+            "buyer_access": False,
+            "web_access": False,
+            "raw_prompt_access": False,
+            "foundation_mediated": True,
+        }
+    }
+
+    return {
+        "status": "seller_execution_accepted",
+        "seller_id": seller_id,
+        "execution_mode": "foundation_mediated",
+        "payload": sanitized_payload,
+    }
+
+
+
+def compute_seller_velocity_risk(seller):
+    """
+    Detect suspicious economic acceleration.
+    Advisory only.
+    """
+    score = 0.0
+    reasons = []
+
+    current_volume = float(
+        seller.get("honest_volume", 0) or 0
+    )
+
+    previous_volume = float(
+        seller.get("last_volume_total", 0) or 0
+    )
+
+    current_exposure = float(
+        seller.get("max_order_value", 0) or 0
+    )
+
+    previous_exposure = float(
+        seller.get("last_max_order_value", 0) or 0
+    )
+
+    # Volume acceleration
+    if previous_volume > 0:
+        volume_growth = current_volume / previous_volume
+
+        if volume_growth >= 10:
+            score += 0.35
+            reasons.append("extreme_volume_growth")
+
+        elif volume_growth >= 5:
+            score += 0.20
+            reasons.append("high_volume_growth")
+
+        elif volume_growth >= 2:
+            score += 0.10
+            reasons.append("moderate_volume_growth")
+
+    # Exposure acceleration
+    if previous_exposure > 0:
+        exposure_growth = current_exposure / previous_exposure
+
+        if exposure_growth >= 10:
+            score += 0.40
+            reasons.append("extreme_exposure_growth")
+
+        elif exposure_growth >= 5:
+            score += 0.25
+            reasons.append("high_exposure_growth")
+
+        elif exposure_growth >= 2:
+            score += 0.10
+            reasons.append("moderate_exposure_growth")
+
+    score = round(min(score, 1.0), 4)
+
+    if score >= 0.50:
+        band = "high"
+    elif score >= 0.20:
+        band = "medium"
+    else:
+        band = "low"
+
+    return {
+        "velocity_risk_score": score,
+        "risk_band": band,
+        "reasons": reasons,
+        "advisory_only": True,
+    }
+
+
+def compute_temporal_seller_risk(seller):
+    """
+    Temporal risk layer.
+    Detects dormant accounts, recent failures, and suspicious recovery patterns.
+    Advisory only.
+    """
+    now = int(time.time())
+
+    score = 0.0
+    reasons = []
+
+    last_success_at = seller.get("last_success_at")
+    last_failure_at = seller.get("last_failure_at")
+    last_activity_at = seller.get("last_activity_at")
+
+    seller_status = str(seller.get("seller_status", "") or "").lower()
+    risk_score = float(seller.get("risk_score", 0) or 0)
+
+    if last_failure_at:
+        age = now - int(last_failure_at)
+
+        if age < 86400:
+            score += 0.30
+            reasons.append("recent_failure_24h")
+
+        elif age < 604800:
+            score += 0.15
+            reasons.append("recent_failure_7d")
+
+    if last_activity_at:
+        dormant_age = now - int(last_activity_at)
+
+        if dormant_age > 60 * 60 * 24 * 90:
+            score += 0.15
+            reasons.append("dormant_90d")
+
+        elif dormant_age > 60 * 60 * 24 * 30:
+            score += 0.08
+            reasons.append("dormant_30d")
+
+    if seller_status in ["rehabilitated", "active"] and risk_score >= 0.25:
+        score += 0.15
+        reasons.append("active_with_elevated_risk")
+
+    if seller_status in ["rejected", "suspended"]:
+        score += 0.25
+        reasons.append("currently_sanctioned")
+
+    score = round(min(score, 1.0), 4)
+
+    if score >= 0.50:
+        band = "high"
+    elif score >= 0.20:
+        band = "medium"
+    else:
+        band = "low"
+
+    return {
+        "temporal_risk_score": score,
+        "risk_band": band,
+        "reasons": reasons,
+        "advisory_only": True,
+    }
+
+
+def compute_cluster_risk_signal(seller):
+    """
+    Converts seller cluster detection into bounded local risk.
+    Advisory only.
+    """
+    seller_id = seller.get("agent_id")
+
+    cluster = detect_seller_cluster_db(seller_id)
+
+    if not cluster:
+        return {
+            "cluster_risk_signal": 0.0,
+            "risk_band": "low",
+            "reasons": [],
+            "advisory_only": True,
+        }
+
+    cluster_risk = float(
+        cluster.get("cluster_risk_score", 0)
+        or 0
+    )
+
+    coordination = float(
+        cluster.get("coordination_probability", 0)
+        or 0
+    )
+
+    member_count = int(
+        cluster.get("member_count", 0)
+        or 0
+    )
+
+    seller_status = str(seller.get("seller_status", "") or "").lower()
+    risk_score = float(seller.get("risk_score", 0) or 0)
+
+    is_directly_sanctioned = (
+        seller_status in ["rejected", "suspended"]
+        or risk_score >= 0.75
+    )
+
+    max_cluster_impact = 0.25 if is_directly_sanctioned else 0.10
+
+    score = min(
+        max_cluster_impact,
+        round((cluster_risk * 0.6) + (coordination * 0.2), 4),
+    )
+
+    reasons = []
+
+    if member_count >= 2:
+        reasons.append(f"seller_cluster_members:{member_count}")
+
+    if coordination >= 0.4:
+        reasons.append("elevated_coordination_probability")
+
+    if cluster_risk >= 0.25:
+        reasons.append("elevated_cluster_risk")
+
+    if score >= 0.18:
+        band = "high"
+    elif score >= 0.08:
+        band = "medium"
+    else:
+        band = "low"
+
+    return {
+        "cluster_risk_signal": score,
+        "risk_band": band,
+        "reasons": reasons,
+        "cluster": cluster,
+        "advisory_only": True,
+    }
+
+
+def compute_threat_memory_risk(seller):
+    """
+    Converts active threat memory into a controlled local risk signal.
+    Advisory only, explainable, and bounded.
+    """
+    seller_id = seller.get("agent_id")
+
+    memories = get_active_threat_memory_db(
+        scope="seller",
+        subject_id=seller_id,
+        limit=25,
+    )
+
+    score = 0.0
+    reasons = []
+
+    for memory in memories:
+        confidence = float(memory.get("confidence", 0) or 0)
+        strength = float(memory.get("memory_strength", 0.5) or 0.5)
+        threat_level = str(memory.get("threat_level", "") or "").lower()
+        attack_vector = memory.get("attack_vector")
+
+        source = str(memory.get("source", "") or "").lower()
+
+        min_confidence = 0.2 if source == "propagated" else 0.5
+
+        if confidence < min_confidence:
+            continue
+
+        weight = confidence * strength
+
+        if threat_level == "critical":
+            score += 0.12 * weight
+        elif threat_level == "high":
+            score += 0.08 * weight
+        elif threat_level == "medium":
+            score += 0.04 * weight
+        else:
+            score += 0.02 * weight
+
+        if attack_vector:
+            reasons.append(f"active_threat_memory:{attack_vector}")
+
+    score = round(min(score, 0.35), 4)
+
+    if score >= 0.25:
+        band = "high"
+    elif score >= 0.10:
+        band = "medium"
+    else:
+        band = "low"
+
+    return {
+        "threat_memory_risk_score": score,
+        "risk_band": band,
+        "reasons": reasons[:10],
+        "active_memory_count": len(memories),
+        "advisory_only": True,
+    }
+
+
+def compute_seller_pre_risk_score(seller, related_context=None):
+    """
+    Cheap deterministic seller risk pre-score.
+    Advisory only. Final decision remains foundation/protocol.
+    """
+    related_context = related_context or {}
+
+    score = 0.0
+    reasons = []
+
+    price = float(seller.get("price", 0) or 0)
+    stake_amount = float(seller.get("stake_amount", 0) or 0)
+    risk_score = float(seller.get("risk_score", 0) or 0)
+
+    metadata = seller.get("seller_metadata") or {}
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except Exception:
+            metadata = {}
+
+    proof_links = metadata.get("proof_links")
+    product_description = metadata.get("product_description")
+    refund_policy = metadata.get("refund_policy")
+    delivery_terms = metadata.get("delivery_terms")
+
+    if price >= 1000:
+        score += 0.15
+        reasons.append("high_price")
+
+    if price >= 5000:
+        score += 0.20
+        reasons.append("very_high_price")
+
+    if stake_amount <= 0:
+        score += 0.20
+        reasons.append("no_stake")
+
+    elif price > 0 and stake_amount / price < 0.05:
+        score += 0.15
+        reasons.append("low_stake_relative_to_price")
+
+    if not proof_links:
+        score += 0.10
+        reasons.append("missing_proof_links")
+
+    if not product_description:
+        score += 0.10
+        reasons.append("missing_product_description")
+
+    if not refund_policy:
+        score += 0.05
+        reasons.append("missing_refund_policy")
+
+    if not delivery_terms:
+        score += 0.05
+        reasons.append("missing_delivery_terms")
+
+    if risk_score >= 0.5:
+        score += 0.25
+        reasons.append("existing_high_risk_score")
+
+    related_count = int(related_context.get("related_count", 0) or 0)
+    related_sellers = related_context.get("related_sellers", []) or []
+
+    if related_count >= 3:
+        score += 0.10
+        reasons.append("many_related_sellers")
+
+    rejected_related = [
+        r for r in related_sellers
+        if str(r.get("seller_status", "")).lower() in ["rejected", "suspended"]
+    ]
+
+    if rejected_related:
+        score += 0.25
+        reasons.append("related_rejected_or_suspended_sellers")
+
+    temporal = compute_temporal_seller_risk(seller)
+
+    temporal_score = float(
+        temporal.get("temporal_risk_score", 0)
+        or 0
+    )
+
+    score += temporal_score * 0.5
+
+    reasons.extend(
+        temporal.get("reasons", [])
+    )
+
+    velocity = compute_seller_velocity_risk(seller)
+
+    velocity_score = float(
+        velocity.get("velocity_risk_score", 0)
+        or 0
+    )
+
+    score += velocity_score * 0.5
+
+    reasons.extend(
+        velocity.get("reasons", [])
+    )
+
+    threat_memory = compute_threat_memory_risk(seller)
+
+    threat_memory_score = float(
+        threat_memory.get("threat_memory_risk_score", 0)
+        or 0
+    )
+
+    score += threat_memory_score
+
+    reasons.extend(
+        threat_memory.get("reasons", [])
+    )
+
+    cluster_risk = compute_cluster_risk_signal(seller)
+
+    cluster_score = float(
+        cluster_risk.get("cluster_risk_signal", 0)
+        or 0
+    )
+
+    score += cluster_score
+
+    reasons.extend(
+        cluster_risk.get("reasons", [])
+    )
+
+    score = round(min(score, 1.0), 4)
+
+    if score >= 0.70:
+        risk_band = "high"
+    elif score >= 0.35:
+        risk_band = "medium"
+    else:
+        risk_band = "low"
+
+    return {
+        "pre_risk_score": score,
+        "risk_band": risk_band,
+        "reasons": reasons,
+        "advisory_only": True,
+    }
+
+
+
+
+@app.post("/admin/recompute-seller-fingerprints/{seller_id}")
+def recompute_seller_fingerprints(
+    seller_id: str,
+    x_api_key: str | None = Header(default=None),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    seller = get_agent_db(seller_id)
+
+    if not seller:
+        return {
+            "status": "invalid_seller",
+            "message": "Seller not found.",
+        }
+
+    fingerprints = compute_seller_fingerprints_db(
+        seller_id
+    )
+
+    refreshed = get_agent_db(seller_id)
+
+    return {
+        "status": "fingerprints_recomputed",
+        "seller_id": seller_id,
+        "fingerprints": fingerprints,
+        "fingerprint_updated_at": refreshed.get(
+            "fingerprint_updated_at"
+        ),
+    }
+
+
+
+
+
+@app.post("/internal/threat-memory/reinforce/{memory_id}")
+def reinforce_threat_memory(
+    memory_id: int,
+    observed: bool = True,
+    reason: str = "",
+    x_api_key: str | None = Header(default=None),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    result = reinforce_threat_memory_db(
+        memory_id=memory_id,
+        observed=observed,
+        reason=reason,
+    )
+
+    refresh_result = None
+
+    # Reload memory owner after reinforcement.
+    memories = get_active_threat_memory_db(
+        limit=100,
+    )
+
+    for memory in memories:
+        if int(memory.get("id", 0) or 0) == int(memory_id):
+            subject_id = memory.get("subject_id")
+            if subject_id:
+                refresh_result = refresh_adaptive_policy_for_seller(
+                    subject_id
+                )
+            break
+
+    result["adaptive_refresh"] = refresh_result
+
+    return result
+
+
+
+
+@app.post("/internal/threat-memory/propagate/{memory_id}")
+def propagate_threat_memory(
+    memory_id: int,
+    max_confidence: float = 0.45,
+    x_api_key: str | None = Header(default=None),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    result = propagate_threat_memory_db(
+        memory_id=memory_id,
+        max_confidence=max_confidence,
+    )
+
+    refresh_result = None
+
+    subject_id = result.get("subject_id")
+
+    if subject_id:
+        refresh_result = refresh_adaptive_policy_for_seller(
+            subject_id
+        )
+
+    result["adaptive_refresh"] = refresh_result
+
+    return result
+
+
+@app.post("/internal/threat-memory/decay")
+def decay_threat_memory(
+    scope: str | None = None,
+    subject_id: str | None = None,
+    min_age_seconds: int = 86400,
+    x_api_key: str | None = Header(default=None),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    result = decay_threat_memory_db(
+        scope=scope,
+        subject_id=subject_id,
+        min_age_seconds=min_age_seconds,
+    )
+
+    refresh_result = None
+
+    if subject_id:
+        refresh_result = refresh_adaptive_policy_for_seller(
+            subject_id
+        )
+
+    result["adaptive_refresh"] = refresh_result
+
+    return result
+
+
+@app.get("/admin/threat-memory")
+def admin_threat_memory(
+    scope: str | None = None,
+    subject_id: str | None = None,
+    limit: int = 50,
+    x_api_key: str | None = Header(default=None),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    memory = get_active_threat_memory_db(
+        scope=scope,
+        subject_id=subject_id,
+        limit=limit,
+    )
+
+    return {
+        "status": "ok",
+        "count": len(memory),
+        "memory": memory,
+    }
+
+
+@app.post("/admin/seller-threat-forecast/{seller_id}")
+def admin_seller_threat_forecast(
+    seller_id: str,
+    x_api_key: str | None = Header(default=None),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    seller = get_agent_db(seller_id)
+
+    if not seller:
+        return {
+            "status": "invalid_seller",
+            "message": "Seller not found.",
+        }
+
+    fingerprints = compute_seller_fingerprints_db(seller_id)
+    graph = build_seller_graph_context_db(seller_id)
+    related = find_related_sellers_db(seller_id)
+
+    active_threat_memory = get_active_threat_memory_db(
+        scope="seller",
+        subject_id=seller_id,
+        limit=25,
+    )
+
+    threat_context = {
+        "seller": seller,
+        "active_threat_memory": active_threat_memory,
+        "fingerprints": fingerprints,
+        "graph": graph,
+        "related_sellers": related,
+        "mission": "forecast_future_attack_vectors_and_guardrails",
+        "principle": "advisory_only_protocol_decides",
+    }
+
+    forecast = forecast_seller_attack_vectors_with_groq(
+        threat_context
+    )
+
+    memory_result = store_threat_forecast_db(
+        scope="seller",
+        subject_id=seller_id,
+        forecast=forecast,
+    )
+
+    seller["foundation_verdict"] = json.dumps({
+        "threat_forecast": forecast,
+        "previous_foundation_verdict": seller.get("foundation_verdict"),
+    })
+
+    register_agent_db(seller)
+
+    return {
+        "status": "threat_forecast_complete",
+        "seller_id": seller_id,
+        "forecast": forecast,
+        "memory_result": memory_result,
+    }
+
+
+
+
+
+def refresh_adaptive_policy_for_seller(seller_id):
+    """
+    Recompute graph, cluster and adaptive policy for a seller.
+    Autonomous defense refresh.
+    """
+    seller = get_agent_db(seller_id)
+
+    if not seller:
+        return {
+            "status": "invalid_seller",
+            "message": "Seller not found.",
+        }
+
+    graph_result = enrich_seller_graph_db(seller_id)
+
+    cluster = detect_seller_cluster_db(seller_id)
+
+    cluster_snapshot = record_cluster_snapshot_db(
+        cluster,
+        snapshot_reason="adaptive_policy_refresh",
+        source="refresh_adaptive_policy_for_seller",
+    )
+
+    cluster_forecast = compute_cluster_forecast_db(
+        cluster.get("cluster_id")
+    )
+
+    threat_memory = get_active_threat_memory_db(
+        scope="seller",
+        subject_id=seller_id,
+        limit=100,
+    )
+
+    policy = compute_adaptive_defense_policy_db(
+        scope="seller",
+        service=seller.get("service"),
+        cluster=cluster,
+        threat_memory=threat_memory,
+    )
+
+    return {
+        "status": "adaptive_policy_refreshed",
+        "seller_id": seller_id,
+        "graph": graph_result,
+        "cluster": cluster,
+        "cluster_snapshot": cluster_snapshot,
+        "cluster_forecast": cluster_forecast,
+        "policy": policy,
+    }
+
+
+
+@app.post("/internal/adaptive-defense/refresh/{seller_id}")
+def internal_refresh_adaptive_defense(
+    seller_id: str,
+    x_api_key: str | None = Header(default=None),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return refresh_adaptive_policy_for_seller(
+        seller_id
+    )
+
+
+@app.post("/admin/compute-adaptive-policy/{seller_id}")
+def admin_compute_adaptive_policy(
+    seller_id: str,
+    x_api_key: str | None = Header(default=None),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    seller = get_agent_db(seller_id)
+
+    if not seller:
+        return {
+            "status": "invalid_seller",
+            "message": "Seller not found.",
+        }
+
+    cluster = detect_seller_cluster_db(
+        seller_id
+    )
+
+    threat_memory = get_active_threat_memory_db(
+        scope="seller",
+        subject_id=seller_id,
+        limit=100,
+    )
+
+    result = compute_adaptive_defense_policy_db(
+        scope="seller",
+        service=seller.get("service"),
+        cluster=cluster,
+        threat_memory=threat_memory,
+    )
+
+    return result
+
+
+@app.post("/admin/detect-seller-cluster/{seller_id}")
+def admin_detect_seller_cluster(
+    seller_id: str,
+    x_api_key: str | None = Header(default=None),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    seller = get_agent_db(seller_id)
+
+    if not seller:
+        return {
+            "status": "invalid_seller",
+            "message": "Seller not found.",
+        }
+
+    result = detect_seller_cluster_db(seller_id)
+
+    return result
+
+
+@app.post("/admin/enrich-seller-graph/{seller_id}")
+def admin_enrich_seller_graph(
+    seller_id: str,
+    x_api_key: str | None = Header(default=None),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    seller = get_agent_db(seller_id)
+
+    if not seller:
+        return {
+            "status": "invalid_seller",
+            "message": "Seller not found.",
+        }
+
+    result = enrich_seller_graph_db(seller_id)
+
+    return result
+
+
+@app.get("/admin/seller-graph/{seller_id}")
+def admin_seller_graph(
+    seller_id: str,
+    x_api_key: str | None = Header(default=None),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    seller = get_agent_db(seller_id)
+
+    if not seller:
+        return {
+            "status": "invalid_seller",
+            "message": "Seller not found.",
+        }
+
+    graph = build_seller_graph_context_db(
+        seller_id
+    )
+
+    return {
+        "status": "graph_loaded",
+        "seller_id": seller_id,
+        "graph": graph,
+    }
+
+
+def apply_foundation_decision_gate(
+    seller,
+    advisory,
+    pre_risk,
+):
+    """
+    Sovereign protocol decision gate.
+    Groq is advisory only. Foundation/protocol decides final status.
+    """
+    recommendation = str(
+        advisory.get("recommended_action", "manual_review")
+    ).lower()
+
+    pre_score = float(
+        pre_risk.get("pre_risk_score", 0)
+        or advisory.get("risk_score", 0)
+        or 0
+    )
+
+    seller_status = str(
+        seller.get("seller_status", "")
+        or ""
+    ).lower()
+
+    direct_sanction = seller_status in [
+        "rejected",
+        "suspended",
+    ]
+
+    reasons = pre_risk.get("reasons", []) or []
+
+    direct_fraud_signals = [
+        r for r in reasons
+        if r in [
+            "currently_sanctioned",
+            "related_rejected_or_suspended_sellers",
+            "existing_high_risk_score",
+        ]
+    ]
+
+    if recommendation == "reject":
+        if direct_sanction:
+            return {
+                "final_action": "reject",
+                "reason": "seller_already_sanctioned",
+                "pre_risk_score": pre_score,
+                "groq_recommendation": recommendation,
+            }
+
+        if pre_score >= 0.70 and direct_fraud_signals:
+            return {
+                "final_action": "reject",
+                "reason": "high_pre_risk_with_direct_fraud_signals",
+                "pre_risk_score": pre_score,
+                "groq_recommendation": recommendation,
+            }
+
+        return {
+            "final_action": "manual_review",
+            "reason": "groq_reject_downgraded_without_strong_protocol_evidence",
+            "pre_risk_score": pre_score,
+            "groq_recommendation": recommendation,
+        }
+
+    if recommendation == "approve":
+        return {
+            "final_action": "pending_foundation_decision",
+            "reason": "groq_approve_requires_protocol_confirmation",
+            "pre_risk_score": pre_score,
+            "groq_recommendation": recommendation,
+        }
+
+    return {
+        "final_action": "manual_review",
+        "reason": "default_manual_review",
+        "pre_risk_score": pre_score,
+        "groq_recommendation": recommendation,
+    }
+
+
+@app.post("/admin/seller-risk-review/{seller_id}")
+def admin_seller_risk_review(
+    seller_id: str,
+    x_api_key: str | None = Header(default=None),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    seller = get_agent_db(seller_id)
+
+    if not seller:
+        return {
+            "status": "invalid_seller",
+            "message": "Seller not found.",
+        }
+
+    related_sellers_context = find_related_sellers_db(seller_id)
+
+    seller_metadata = seller.get("seller_metadata") or {}
+
+    if isinstance(seller_metadata, str):
+        try:
+            seller_metadata = json.loads(seller_metadata)
+        except Exception:
+            seller_metadata = {}
+
+    seller_profile = {
+        "seller_id": seller.get("agent_id"),
+        "related_sellers_context": related_sellers_context,
+        "business_name": seller_metadata.get("business_name"),
+        "service": seller.get("service"),
+        "url": seller.get("url"),
+        "wallet": seller.get("wallet"),
+        "price": seller.get("price"),
+        "stake_amount": seller.get("stake_amount"),
+        "trust_tier": seller.get("trust_tier"),
+        "seller_status": seller.get("seller_status"),
+        "verification_status": seller.get("verification_status"),
+        "risk_score": seller.get("risk_score"),
+        "reputation": seller.get("reputation"),
+        "product_description": seller_metadata.get("product_description"),
+        "quality_claims": seller_metadata.get("quality_claims"),
+        "refund_policy": seller_metadata.get("refund_policy"),
+        "delivery_terms": seller_metadata.get("delivery_terms"),
+        "proof_links": seller_metadata.get("proof_links"),
+        "requested_price": seller_metadata.get("requested_price"),
+        "capabilities": seller.get("capabilities"),
+        "specialties": seller.get("specialties"),
+        "seller_metadata": seller_metadata,
+    }
+
+    pre_risk = compute_seller_pre_risk_score(
+        seller,
+        related_sellers_context,
+    )
+
+    pre_risk_score = float(
+        pre_risk.get("pre_risk_score", 0)
+        or 0
+    )
+
+    # Scalable architecture:
+    # Cheap deterministic filters first.
+    # AI review only if needed.
+
+    if pre_risk_score < 0.25:
+        advisory = {
+            "provider": "pre_risk_engine",
+            "seller_risk_level": "low",
+            "risk_score": pre_risk_score,
+            "recommended_action": "manual_review",
+            "reasons": pre_risk.get("reasons", []),
+            "red_flags": [],
+            "missing_evidence": [],
+            "confidence": 0.95,
+            "groq_skipped": True,
+        }
+
+    else:
+        advisory = analyze_seller_risk_with_groq(
+            seller_profile
+        )
+
+        advisory["pre_risk"] = pre_risk
+
+    seller["foundation_verdict"] = json.dumps(advisory)
+
+    groq_risk_score = float(
+        advisory.get("risk_score", 0.5) or 0.5
+    )
+
+    seller["risk_score"] = groq_risk_score
+
+    foundation_decision = apply_foundation_decision_gate(
+        seller,
+        advisory,
+        pre_risk,
+    )
+
+    final_action = foundation_decision.get(
+        "final_action",
+        "manual_review",
+    )
+
+    advisory["foundation_decision"] = foundation_decision
+
+    if final_action == "reject":
+        seller["seller_status"] = "rejected"
+        seller["available"] = False
+
+    elif final_action == "manual_review":
+        seller["seller_status"] = "manual_review"
+        seller["available"] = False
+
+    else:
+        seller["seller_status"] = "pending_foundation_decision"
+        seller["available"] = False
+
+    register_agent_db(seller)
+
+    adaptive_refresh = refresh_adaptive_policy_for_seller(
+        seller_id
+    )
+
+    return {
+        "status": "risk_review_complete",
+        "seller_id": seller_id,
+        "seller_status": seller.get("seller_status"),
+        "risk_score": seller.get("risk_score"),
+        "groq_advisory": advisory,
+        "adaptive_refresh": adaptive_refresh,
+    }
+
+
+@app.post("/admin/seller-rehabilitate/{seller_id}")
+def admin_seller_rehabilitate(
+    seller_id: str,
+    req: SellerRehabilitationRequest,
+    x_api_key: str | None = Header(default=None),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    seller = get_agent_db(seller_id)
+
+    if not seller:
+        return {
+            "status": "invalid_seller",
+            "message": "Seller not found.",
+        }
+
+    if str(seller.get("agent_type", "")).lower() != "seller":
+        return {
+            "status": "invalid_agent_type",
+            "message": "Only seller agents can be rehabilitated.",
+        }
+
+    seller_status = str(seller.get("seller_status", "")).lower()
+
+    if seller_status not in ["suspended", "stake_required", "exposure_limited"]:
+        return {
+            "status": "not_eligible",
+            "message": "Seller is not currently eligible for rehabilitation.",
+            "seller_status": seller.get("seller_status"),
+        }
+
+    required_stake = float(
+        seller.get("dynamic_stake_required")
+        or seller.get("stake_required")
+        or compute_seller_required_stake(seller)
+        or 0
+    )
+
+    current_stake = float(seller.get("stake_amount", 0) or 0)
+
+    if current_stake < required_stake:
+        seller["available"] = False
+        seller["seller_status"] = "stake_required"
+        seller["foundation_verdict"] = (
+            f"Rehabilitation denied. Seller must lock at least {required_stake} IAT."
+        )
+
+        register_agent_db(seller)
+
+        return {
+            "status": "stake_required",
+            "seller_id": seller_id,
+            "stake_amount": current_stake,
+            "required_stake": required_stake,
+            "message": seller["foundation_verdict"],
+        }
+
+    # Rehabilitation rule:
+    # The seller can return, but exposure remains limited.
+    # Trust must be earned again slowly through successful executions.
+    seller["seller_status"] = "active"
+    seller["verification_status"] = "foundation_verified"
+    seller["available"] = bool(req.available)
+    seller["foundation_verified_at"] = int(time.time())
+    seller["foundation_verdict"] = (
+        req.verdict
+        or "Seller rehabilitated after satisfying elevated stake requirement."
+    )
+
+    current_exposure = float(
+        seller.get("max_order_value", 0)
+        or seller.get("stake_amount", 0)
+        or 0
+    )
+
+    # Do not restore full capacity instantly.
+    seller["max_order_value"] = round(
+        min(current_exposure, current_stake),
+        6,
+    )
+
+    seller["buyer_access"] = 0
+    seller["web_access"] = 0
+    seller["raw_prompt_access"] = 0
+
+    register_agent_db(seller)
+
+    return {
+        "status": "seller_rehabilitated",
+        "seller_id": seller_id,
+        "seller_status": seller.get("seller_status"),
+        "available": bool(seller.get("available")),
+        "stake_amount": current_stake,
+        "required_stake": required_stake,
+        "max_order_value": seller.get("max_order_value"),
+        "risk_score": seller.get("risk_score"),
+        "foundation_verdict": seller.get("foundation_verdict"),
+    }
+
+
 @app.post("/admin/seller-review/{seller_id}")
 def admin_seller_review(seller_id: str, req: SellerReviewRequest, x_api_key: str | None = Header(default=None)):
     if not require_admin_key(x_api_key):
@@ -580,6 +2180,28 @@ def admin_seller_review(seller_id: str, req: SellerReviewRequest, x_api_key: str
     agent["buyer_access"] = 0
     agent["web_access"] = 0
     agent["raw_prompt_access"] = 0
+
+    required_stake = compute_seller_required_stake(agent)
+    current_stake = float(agent.get("stake_amount", 0) or 0)
+    max_order_value = compute_max_order_value(agent)
+    requested_price = float(agent.get("price", 0) or 0)
+
+    agent["stake_required"] = required_stake
+    agent["max_order_value"] = max_order_value
+
+    if action == "approve" and current_stake < required_stake:
+        agent["available"] = False
+        agent["seller_status"] = "stake_required"
+        agent["foundation_verdict"] = (
+            f"Foundation verified, but seller must lock at least {required_stake} IAT before activation."
+        )
+
+    elif action == "approve" and requested_price > max_order_value:
+        agent["available"] = False
+        agent["seller_status"] = "exposure_limited"
+        agent["foundation_verdict"] = (
+            f"Foundation verified, but requested price {requested_price} IAT exceeds current max exposure {max_order_value} IAT."
+        )
 
     register_agent_db(agent)
 
@@ -684,42 +2306,110 @@ def refresh_agent_market_gate(agent_id):
 def compute_max_order_value(agent):
     stake_amount = float(agent.get("stake_amount", 0) or 0)
     reputation = float(agent.get("reputation", 0.5) or 0.5)
+    risk_score = float(agent.get("risk_score", 0) or 0)
 
-    # Reputation multiplier
+    trust_tier = str(agent.get("trust_tier", "free") or "free").lower()
+
+    trust_multiplier = {
+        "free": 2.0,
+        "pending": 1.0,
+        "verified": 8.0,
+        "premium": 15.0,
+        "institutional": 30.0,
+    }.get(trust_tier, 2.0)
+
     reputation_multiplier = max(0.25, reputation)
 
-    # Global leverage factor
-    leverage_factor = 10.0
+    risk_penalty = max(0.10, 1.0 - risk_score)
 
     max_value = (
         stake_amount
+        * trust_multiplier
         * reputation_multiplier
-        * leverage_factor
+        * risk_penalty
     )
+
+    policy = get_active_adaptive_policy_db(
+        scope="seller",
+        service=agent.get("service"),
+    )
+
+    if policy:
+        exposure_multiplier = float(
+            policy.get("exposure_multiplier", 1.0)
+            or 1.0
+        )
+
+        max_value *= exposure_multiplier
 
     return round(max_value, 6)
 
 
 def compute_seller_required_stake(agent):
-    price = float(agent.get("price", 0) or 0)
+    price = float(
+        agent.get("price")
+        or agent.get("requested_price")
+        or 0
+    )
+
+    seller_metadata = agent.get("seller_metadata") or {}
+
+    if isinstance(seller_metadata, str):
+        try:
+            import json
+            seller_metadata = json.loads(seller_metadata)
+        except Exception:
+            seller_metadata = {}
+
+    declared_product_value = float(
+        seller_metadata.get("product_value_iat")
+        or seller_metadata.get("estimated_value_iat")
+        or price
+        or 0
+    )
+
     service = agent.get("service", "")
 
-    # Base market rule:
-    # sellers must lock collateral proportional to the value they sell.
-    minimum_stake = 10.0
-    base_ratio = 0.20
+    risk_score = float(
+        agent.get("risk_score", 0)
+        or 0
+    )
 
-    # Higher-risk services can require more collateral.
+    trust_tier = str(agent.get("trust_tier", "free") or "free").lower()
+
+    minimum_stake = 10.0
+
+    # Capital-efficient collateral:
+    # Stake is an entry/security bond, not full insurance.
+    base_ratio = 0.05
+
     service_risk_multiplier = {
         "web_research": 1.0,
-        "risk_report": 1.5,
-        "trading_signal": 3.0,
-        "financial_analysis": 2.5,
+        "risk_report": 1.25,
+        "financial_analysis": 1.5,
+        "trading_signal": 2.5,
+        "high_value_execution": 3.0,
     }.get(service, 1.0)
+
+    trust_discount = {
+        "free": 1.0,
+        "pending": 1.25,
+        "verified": 0.75,
+        "premium": 0.50,
+        "institutional": 0.35,
+    }.get(trust_tier, 1.0)
+
+    risk_multiplier = 1.0 + (risk_score * 3.0)
+
+    economic_value = max(price, declared_product_value)
 
     required = max(
         minimum_stake,
-        price * base_ratio * service_risk_multiplier,
+        economic_value
+        * base_ratio
+        * service_risk_multiplier
+        * trust_discount
+        * risk_multiplier
     )
 
     return round(required, 6)
@@ -3045,3 +4735,37 @@ def admin_verify_agent_stake(req: AgentStakeVerifyRequest, request: Request):
     else:
         trust_tier = "free"
 
+
+
+@app.post("/internal/seller-risk/orchestrate/{agent_id}")
+def internal_orchestrate_seller_risk(
+    agent_id: str,
+    x_api_key: str | None = Header(default=None),
+):
+    require_admin_key(x_api_key)
+
+    result = run_seller_risk_orchestration_db(agent_id)
+
+    return result
+
+
+@app.post("/admin/adaptive-policy/deactivate")
+def admin_deactivate_adaptive_policy(
+    payload: dict,
+    x_api_key: str | None = Header(default=None),
+):
+    require_admin_key(x_api_key)
+
+    scope = payload.get("scope")
+    service = payload.get("service")
+
+    if not scope:
+        return {
+            "status": "error",
+            "message": "missing_scope",
+        }
+
+    return deactivate_adaptive_policy_db(
+        scope=scope,
+        service=service,
+    )

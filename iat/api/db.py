@@ -206,6 +206,14 @@ def init_agents_table():
         "max_order_value": "REAL DEFAULT 0",
         "seller_id": "TEXT",
         "seller_agent_id": "TEXT",
+        "seller_status": "TEXT DEFAULT 'pending_review'",
+        "verification_status": "TEXT DEFAULT 'unverified'",
+        "seller_metadata": "TEXT DEFAULT '{}'",
+        "buyer_access": "INTEGER DEFAULT 0",
+        "web_access": "INTEGER DEFAULT 0",
+        "raw_prompt_access": "INTEGER DEFAULT 0",
+        "foundation_verified_at": "INTEGER",
+        "foundation_verdict": "TEXT",
     }
 
     for column, col_type in agent_columns.items():

@@ -5030,3 +5030,25 @@ def admin_approve_seller_override(
         seller_id=req.seller_id,
         override_terminal=True,
     )
+
+
+@app.get("/admin/seller/{seller_id}")
+def admin_get_seller(
+    seller_id: str,
+    x_api_key: str = Header(default="")
+):
+    require_admin_key(x_api_key)
+
+    seller = get_seller_db(seller_id)
+
+    if not seller:
+        return {
+            "status": "error",
+            "message": "seller_not_found",
+            "seller_id": seller_id,
+        }
+
+    return {
+        "status": "ok",
+        "seller": seller,
+    }

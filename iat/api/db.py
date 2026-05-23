@@ -6033,7 +6033,7 @@ def create_seller_governance_event_with_cursor(
         event_type,
         reviewer,
         reason,
-        1 if override_terminal else 0,
+        bool(override_terminal) if USE_POSTGRES else (1 if override_terminal else 0),
         old_status,
         new_status,
         metadata_json,

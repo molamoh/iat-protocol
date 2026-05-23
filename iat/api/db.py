@@ -6,11 +6,16 @@ import os
 import sqlite3
 import json
 import time
+import uuid
 from pathlib import Path
 
 DB_PATH = Path("iat_protocol.db")
 DATABASE_URL = os.getenv("DATABASE_URL")
 USE_POSTGRES = bool(DATABASE_URL)
+
+def is_postgres():
+    return bool(USE_POSTGRES)
+
 
 
 from psycopg2.pool import SimpleConnectionPool
@@ -62,6 +67,10 @@ def row_get(row, key, default=None):
 
     except Exception:
         return default
+
+
+
+
 
 def qmark():
     return "%s" if USE_POSTGRES else "?"
@@ -133,6 +142,7 @@ def init_db():
     init_agents_table()
     init_sellers_table()
     init_seller_agents_table()
+    init_seller_governance_events_table()
     init_adaptive_defense_tables()
     init_buyers_table()
     init_agent_topic_stats_table()
@@ -4977,6 +4987,20 @@ def reject_seller_db(
         seller_id,
     ))
 
+    create_seller_governance_event_with_cursor(
+        cur=cur,
+        seller_id=seller_id,
+        event_type="seller_rejected",
+        reviewer=reviewer,
+        reason=reason,
+        override_terminal=False,
+        old_status="",
+        new_status="rejected",
+        metadata={
+            "verification_status": "rejected",
+        },
+    )
+
     conn.commit()
     release_conn(conn)
 
@@ -5064,6 +5088,20 @@ def approve_seller_db(
         audit_metadata,
         seller_id,
     ))
+
+    create_seller_governance_event_with_cursor(
+        cur=cur,
+        seller_id=seller_id,
+        event_type="seller_approved",
+        reviewer=reviewer,
+        reason="foundation approval",
+        override_terminal=override_terminal,
+        old_status=seller.get("seller_status"),
+        new_status="active",
+        metadata={
+            "verification_status": "foundation_verified",
+        },
+    )
 
     conn.commit()
     release_conn(conn)
@@ -5910,3 +5948,185 @@ def init_adaptive_defense_tables():
 
     conn.commit()
     release_conn(conn)
+
+
+
+def init_seller_governance_events_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    p = qmark()
+
+    if is_postgres():
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS seller_governance_events (
+            event_id TEXT PRIMARY KEY,
+            seller_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            reviewer TEXT,
+            reason TEXT,
+            override_terminal BOOLEAN DEFAULT FALSE,
+            old_status TEXT,
+            new_status TEXT,
+            metadata TEXT DEFAULT '{}',
+            created_at BIGINT NOT NULL
+        )
+        """)
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS seller_governance_events (
+            event_id TEXT PRIMARY KEY,
+            seller_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            reviewer TEXT,
+            reason TEXT,
+            override_terminal INTEGER DEFAULT 0,
+            old_status TEXT,
+            new_status TEXT,
+            metadata TEXT DEFAULT '{}',
+            created_at INTEGER NOT NULL
+        )
+        """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+
+def create_seller_governance_event_with_cursor(
+    cur,
+    seller_id,
+    event_type,
+    reviewer="foundation_protocol",
+    reason="",
+    override_terminal=False,
+    old_status="",
+    new_status="",
+    metadata=None,
+):
+    p = qmark()
+
+    event_id = "seller_event_" + str(uuid.uuid4())
+    now = int(time.time())
+
+    metadata_json = json.dumps(metadata or {})
+
+    cur.execute(f"""
+    INSERT INTO seller_governance_events (
+        event_id,
+        seller_id,
+        event_type,
+        reviewer,
+        reason,
+        override_terminal,
+        old_status,
+        new_status,
+        metadata,
+        created_at
+    ) VALUES (
+        {p}, {p}, {p}, {p}, {p},
+        {p}, {p}, {p}, {p}, {p}
+    )
+    """, (
+        event_id,
+        seller_id,
+        event_type,
+        reviewer,
+        reason,
+        1 if override_terminal else 0,
+        old_status,
+        new_status,
+        metadata_json,
+        now,
+    ))
+
+    return {
+        "status": "ok",
+        "event_id": event_id,
+    }
+
+
+
+def create_seller_governance_event_db(
+    seller_id,
+    event_type,
+    reviewer="foundation_protocol",
+    reason="",
+    override_terminal=False,
+    old_status="",
+    new_status="",
+    metadata=None,
+):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    p = qmark()
+
+    event_id = "seller_event_" + str(uuid.uuid4())
+    now = int(time.time())
+
+    metadata_json = json.dumps(metadata or {})
+
+    cur.execute(f"""
+    INSERT INTO seller_governance_events (
+        event_id,
+        seller_id,
+        event_type,
+        reviewer,
+        reason,
+        override_terminal,
+        old_status,
+        new_status,
+        metadata,
+        created_at
+    ) VALUES (
+        {p}, {p}, {p}, {p}, {p},
+        {p}, {p}, {p}, {p}, {p}
+    )
+    """, (
+        event_id,
+        seller_id,
+        event_type,
+        reviewer,
+        reason,
+        override_terminal,
+        old_status,
+        new_status,
+        metadata_json,
+        now,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "event_id": event_id,
+    }
+
+
+def list_seller_governance_events_db(
+    seller_id,
+    limit=100,
+):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM seller_governance_events
+    WHERE seller_id = {p}
+    ORDER BY created_at DESC
+    LIMIT {p}
+    """, (
+        seller_id,
+        limit,
+    ))
+
+    rows = cur.fetchall()
+
+    release_conn(conn)
+
+    return [dict(r) for r in rows]

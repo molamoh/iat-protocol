@@ -74,6 +74,7 @@ from iat.api.db import (
     approve_seller_db,
     reject_seller_db,
     list_seller_agents_db,
+    list_seller_governance_events_db,
     create_seller_api_key,
     create_seller_agent_db,
     reinforce_threat_memory_db,
@@ -5052,4 +5053,18 @@ def admin_get_seller(
     return {
         "status": "ok",
         "seller": seller,
+    }
+
+
+@app.get("/admin/seller/{seller_id}/governance-events")
+def admin_seller_governance_events(
+    seller_id: str,
+    x_api_key: str = Header(default=""),
+):
+    require_admin_key(x_api_key)
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "events": list_seller_governance_events_db(seller_id),
     }

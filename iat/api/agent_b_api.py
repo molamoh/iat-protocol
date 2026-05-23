@@ -71,6 +71,7 @@ from iat.api.db import (
     get_seller_by_api_key_db,
     authenticate_seller_api_key_db,
     approve_seller_db,
+    reject_seller_db,
     list_seller_agents_db,
     create_seller_api_key,
     create_seller_agent_db,
@@ -4994,3 +4995,21 @@ def seller_my_agents(
             seller.get("seller_id")
         ),
     }
+
+
+class SellerRejectRequest(BaseModel):
+    seller_id: str = Field(min_length=8, max_length=200)
+    reason: str = Field(default="foundation_rejected", max_length=500)
+
+
+@app.post("/admin/seller/reject")
+def admin_reject_seller(
+    req: SellerRejectRequest,
+    x_api_key: str = Header(default="")
+):
+    require_admin_key(x_api_key)
+
+    return reject_seller_db(
+        seller_id=req.seller_id,
+        reason=req.reason,
+    )

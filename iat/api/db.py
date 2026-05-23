@@ -4918,14 +4918,89 @@ def get_seller_by_api_key_db(api_key):
 
 
 
-def approve_seller_db(
+
+
+def reject_seller_db(
     seller_id,
+    reason="foundation_rejected",
     reviewer="foundation_protocol",
 ):
     if not seller_id:
         return {
             "status": "error",
             "message": "seller_id_required",
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    now = int(time.time())
+
+    cur.execute(f"""
+    UPDATE sellers
+    SET
+        seller_status = 'rejected',
+        verification_status = 'rejected',
+        updated_at = {p}
+    WHERE seller_id = {p}
+    """, (
+        now,
+        seller_id,
+    ))
+
+    cur.execute(f"""
+    UPDATE agents
+    SET
+        available = 0,
+        seller_status = 'rejected',
+        verification_status = 'rejected'
+    WHERE seller_id = {p}
+    """, (
+        seller_id,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "reviewer": reviewer,
+        "reason": reason,
+        "message": "seller_rejected_under_foundation_governance",
+    }
+
+
+def approve_seller_db(
+    seller_id,
+    reviewer="foundation_protocol",
+    override_terminal=False,
+):
+    if not seller_id:
+        return {
+            "status": "error",
+            "message": "seller_id_required",
+        }
+
+    seller = get_seller_db(seller_id)
+
+    if not seller:
+        return {
+            "status": "error",
+            "message": "seller_not_found",
+        }
+
+    if (
+        str(seller.get("seller_status", "")).lower() in ["rejected", "banned"]
+        and not override_terminal
+    ):
+        return {
+            "status": "error",
+            "message": "seller_terminal_state_requires_override",
+            "seller_id": seller_id,
+            "seller_status": seller.get("seller_status"),
+            "verification_status": seller.get("verification_status"),
         }
 
     conn = get_conn()

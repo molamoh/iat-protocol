@@ -201,6 +201,9 @@ def init_agents_table():
         "stake_unlock_requested_at": "INTEGER",
         "capabilities": "TEXT DEFAULT '[]'",
         "specialties": "TEXT DEFAULT '[]'",
+        "risk_score": "REAL DEFAULT 0",
+        "dynamic_stake_required": "REAL DEFAULT 0",
+        "max_order_value": "REAL DEFAULT 0",
         "seller_id": "TEXT",
         "seller_agent_id": "TEXT",
     }

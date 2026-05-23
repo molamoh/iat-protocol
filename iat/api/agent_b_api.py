@@ -4937,10 +4937,22 @@ def seller_register_agent(req: SellerRegisterAgentRequest):
         "specialties": json.dumps(req.specialties),
     }
 
-    register_agent_db(registered_agent)
+    try:
+        register_agent_db(registered_agent)
+        marketplace_registration = {
+            "status": "ok",
+            "message": "agent_registered_in_marketplace_registry",
+        }
+    except Exception as e:
+        marketplace_registration = {
+            "status": "error",
+            "message": "marketplace_registry_registration_failed",
+            "error": str(e),
+        }
 
     return {
         "status": "ok",
+        "marketplace_registration": marketplace_registration,
         "seller_id": seller_id,
         "seller_agent_id": seller_agent_id,
         "agent_id": req.agent_id.strip(),

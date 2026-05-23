@@ -69,6 +69,7 @@ from iat.api.db import (
     get_seller_by_wallet_db,
     get_seller_by_email_db,
     get_seller_by_api_key_db,
+    get_seller_db,
     authenticate_seller_api_key_db,
     approve_seller_db,
     reject_seller_db,

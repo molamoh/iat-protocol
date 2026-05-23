@@ -133,6 +133,7 @@ def init_db():
     init_agents_table()
     init_sellers_table()
     init_seller_agents_table()
+    init_adaptive_defense_tables()
     init_buyers_table()
     init_agent_topic_stats_table()
     init_delegations_table()
@@ -226,8 +227,18 @@ def init_sellers_table():
         seller_id TEXT PRIMARY KEY,
         seller_name TEXT,
         wallet TEXT NOT NULL UNIQUE,
-        email TEXT,
+        email TEXT NOT NULL,
+        email_verified INTEGER DEFAULT 0,
+        email_verified_at INTEGER,
         api_key TEXT,
+        api_key_created_at INTEGER,
+        last_contact_at INTEGER,
+        onboarding_completed INTEGER DEFAULT 0,
+
+        support_email TEXT,
+        website TEXT,
+        organization_name TEXT,
+        webhook_url TEXT,
 
         seller_status TEXT DEFAULT 'pending',
         verification_status TEXT DEFAULT 'unverified',
@@ -2587,6 +2598,17 @@ def compute_adaptive_defense_policy_db(
     """
     import uuid
 
+import secrets
+
+
+def create_seller_api_key():
+    """
+    Generate high-entropy seller API keys.
+    Seller keys are protocol economic credentials.
+    """
+    return "iat_sk_" + secrets.token_hex(24)
+
+
     cluster = cluster or {}
     threat_memory = threat_memory or []
 
@@ -4744,6 +4766,31 @@ def compute_agent_topic_score_db(agent_id, topics):
 
 
 def create_seller_db(seller):
+    if not seller.get("email"):
+        return {
+            "status": "error",
+            "message": "seller_email_required",
+        }
+
+    existing_wallet = get_seller_by_wallet_db(seller.get("wallet"))
+    if existing_wallet:
+        return {
+            "status": "error",
+            "message": "seller_wallet_already_registered",
+            "seller_id": existing_wallet.get("seller_id"),
+        }
+
+    existing_email = get_seller_by_email_db(seller.get("email"))
+    if existing_email:
+        return {
+            "status": "error",
+            "message": "seller_email_already_registered",
+            "seller_id": existing_email.get("seller_id"),
+        }
+
+    if not seller.get("api_key"):
+        seller["api_key"] = create_seller_api_key()
+
     conn = get_conn()
     cur = conn.cursor()
     p = qmark()
@@ -4812,6 +4859,83 @@ def get_seller_db(seller_id):
     release_conn(conn)
 
     return dict(row) if row else None
+
+
+
+
+def get_seller_by_email_db(email):
+    if not email:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(
+        f"SELECT * FROM sellers WHERE LOWER(email) = LOWER({p}) LIMIT 1",
+        (email,)
+    )
+
+    row = cur.fetchone()
+
+    release_conn(conn)
+
+    return dict(row) if row else None
+
+
+def get_seller_by_api_key_db(api_key):
+    if not api_key:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(
+        f"SELECT * FROM sellers WHERE api_key = {p} LIMIT 1",
+        (api_key,)
+    )
+
+    row = cur.fetchone()
+
+    release_conn(conn)
+
+    return dict(row) if row else None
+
+
+
+
+def authenticate_seller_api_key_db(api_key):
+    seller = get_seller_by_api_key_db(api_key)
+
+    if not seller:
+        return {
+            "status": "error",
+            "message": "invalid_api_key",
+        }
+
+    seller_status = str(
+        seller.get("seller_status", "pending")
+    ).lower()
+
+    if seller_status == "banned":
+        return {
+            "status": "error",
+            "message": "seller_banned",
+            "seller_id": seller.get("seller_id"),
+        }
+
+    if seller_status == "restricted":
+        return {
+            "status": "error",
+            "message": "seller_restricted",
+            "seller_id": seller.get("seller_id"),
+        }
+
+    return {
+        "status": "ok",
+        "seller": seller,
+    }
 
 
 def get_seller_by_wallet_db(wallet):
@@ -5570,3 +5694,47 @@ def deactivate_adaptive_policy_db(scope, service=None):
         "service": service or "global",
         "message": "adaptive policy deactivated",
     }
+
+
+def init_adaptive_defense_tables():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS adaptive_defense_policies (
+        policy_id TEXT PRIMARY KEY,
+        scope TEXT NOT NULL,
+        service TEXT,
+        risk_level TEXT DEFAULT 'low',
+        min_stake_multiplier REAL DEFAULT 1.0,
+        consensus_multiplier REAL DEFAULT 1.0,
+        escrow_delay_multiplier REAL DEFAULT 1.0,
+        exposure_multiplier REAL DEFAULT 1.0,
+        decay_multiplier REAL DEFAULT 1.0,
+        activation_reason TEXT DEFAULT '{}',
+        confidence REAL DEFAULT 0,
+        source TEXT DEFAULT 'protocol',
+        active INTEGER DEFAULT 1,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        expires_at INTEGER
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS adaptive_policy_events (
+        event_id TEXT PRIMARY KEY,
+        policy_id TEXT,
+        scope TEXT,
+        service TEXT,
+        event_type TEXT,
+        old_policy TEXT DEFAULT '{}',
+        new_policy TEXT DEFAULT '{}',
+        reason TEXT DEFAULT '{}',
+        source TEXT DEFAULT 'protocol',
+        created_at INTEGER NOT NULL
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)

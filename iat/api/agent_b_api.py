@@ -4,7 +4,7 @@ import time
 import uuid
 import requests
 from fastapi import FastAPI, Header, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr, Field
 from solders.pubkey import Pubkey
 from spl.token.instructions import get_associated_token_address
 from iat.transfer import send_iat
@@ -65,6 +65,10 @@ from iat.api.db import (
     compute_seller_fingerprints_db,
     store_threat_forecast_db,
     get_active_threat_memory_db,
+    create_seller_db,
+    get_seller_by_wallet_db,
+    get_seller_by_email_db,
+    create_seller_api_key,
     reinforce_threat_memory_db,
     decay_threat_memory_db,
     propagate_threat_memory_db,
@@ -200,7 +204,7 @@ class RegisterAgentRequest(BaseModel):
     specialties: str = "[]"
 
 
-class SellerRegisterRequest(BaseModel):
+class LegacySellerRegisterRequest(BaseModel):
     seller_id: str
     business_name: str
     service: str
@@ -2219,8 +2223,8 @@ def admin_seller_review(seller_id: str, req: SellerReviewRequest, x_api_key: str
     }
 
 
-@app.post("/seller/register")
-def seller_register(req: SellerRegisterRequest):
+@app.post("/seller/register-legacy")
+def seller_register_legacy(req: LegacySellerRegisterRequest):
     now = int(time.time())
 
     seller_metadata = {
@@ -4771,3 +4775,92 @@ def admin_deactivate_adaptive_policy(
         scope=scope,
         service=service,
     )
+
+
+class SellerRegisterRequest(BaseModel):
+    seller_name: str = Field(min_length=3, max_length=120)
+    wallet: str = Field(min_length=8, max_length=256)
+    email: EmailStr
+    organization_name: str | None = Field(default=None, max_length=120)
+    website: str | None = Field(default=None, max_length=500)
+    support_email: EmailStr | None = None
+    webhook_url: str | None = None
+    metadata: dict | None = None
+
+
+@app.post("/seller/register")
+def seller_register(req: SellerRegisterRequest):
+    init_db()
+
+    seller_name = (req.seller_name or "").strip()
+    wallet = (req.wallet or "").strip()
+    email = str(req.email).strip().lower()
+
+    if not seller_name:
+        return {
+            "status": "error",
+            "message": "seller_name_required",
+        }
+
+    if not wallet:
+        return {
+            "status": "error",
+            "message": "wallet_required",
+        }
+
+    if get_seller_by_wallet_db(wallet):
+        return {
+            "status": "error",
+            "message": "seller_wallet_already_registered",
+        }
+
+    if get_seller_by_email_db(email):
+        return {
+            "status": "error",
+            "message": "seller_email_already_registered",
+        }
+
+    seller_id = "seller_" + str(uuid.uuid4())
+    api_key = create_seller_api_key()
+
+    metadata = req.metadata or {}
+
+    metadata.update({
+        "organization_name": req.organization_name,
+        "website": req.website,
+        "support_email": str(req.support_email).lower() if req.support_email else None,
+        "webhook_url": req.webhook_url,
+    })
+
+    result = create_seller_db({
+        "seller_id": seller_id,
+        "seller_name": seller_name,
+        "wallet": wallet,
+        "email": email,
+        "api_key": api_key,
+        "seller_status": "pending",
+        "verification_status": "unverified",
+        "trust_tier": "new",
+        "max_agents_allowed": 1,
+        "metadata": metadata,
+    })
+
+    if isinstance(result, dict) and result.get("status") == "error":
+        return result
+
+    return {
+        "status": "ok",
+        "seller": {
+            "seller_id": result.get("seller_id"),
+            "seller_name": result.get("seller_name"),
+            "wallet": result.get("wallet"),
+            "email": result.get("email"),
+            "seller_status": result.get("seller_status"),
+            "verification_status": result.get("verification_status"),
+            "trust_tier": result.get("trust_tier"),
+            "max_agents_allowed": result.get("max_agents_allowed"),
+            "exposure_limit": result.get("exposure_limit"),
+        },
+        "api_key": result.get("api_key"),
+        "message": "seller_registered_pending_protocol_review",
+    }

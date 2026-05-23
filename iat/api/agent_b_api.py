@@ -5013,3 +5013,20 @@ def admin_reject_seller(
         seller_id=req.seller_id,
         reason=req.reason,
     )
+
+class SellerApproveOverrideRequest(BaseModel):
+    seller_id: str = Field(min_length=8, max_length=200)
+    reason: str = Field(min_length=10, max_length=500)
+
+
+@app.post("/admin/seller/approve-override")
+def admin_approve_seller_override(
+    req: SellerApproveOverrideRequest,
+    x_api_key: str = Header(default="")
+):
+    require_admin_key(x_api_key)
+
+    return approve_seller_db(
+        seller_id=req.seller_id,
+        override_terminal=True,
+    )

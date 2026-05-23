@@ -4960,6 +4960,23 @@ def reject_seller_db(
         seller_id,
     ))
 
+    audit_metadata = json.dumps({
+        "event": "seller_rejected",
+        "reviewer": reviewer,
+        "reason": reason,
+        "timestamp": now,
+    })
+
+    cur.execute(f"""
+    UPDATE sellers
+    SET
+        metadata = {p}
+    WHERE seller_id = {p}
+    """, (
+        audit_metadata,
+        seller_id,
+    ))
+
     conn.commit()
     release_conn(conn)
 
@@ -5031,6 +5048,23 @@ def approve_seller_db(
         seller_id,
     ))
 
+    audit_metadata = json.dumps({
+        "event": "seller_approved",
+        "reviewer": reviewer,
+        "override_terminal": override_terminal,
+        "timestamp": now,
+    })
+
+    cur.execute(f"""
+    UPDATE sellers
+    SET
+        metadata = {p}
+    WHERE seller_id = {p}
+    """, (
+        audit_metadata,
+        seller_id,
+    ))
+
     conn.commit()
     release_conn(conn)
 
@@ -5038,6 +5072,7 @@ def approve_seller_db(
         "status": "ok",
         "seller_id": seller_id,
         "reviewer": reviewer,
+        "override_terminal": override_terminal,
         "message": "seller_approved_under_foundation_governance",
     }
 

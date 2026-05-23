@@ -29,7 +29,7 @@ def get_conn():
         if pool is None:
             pool = SimpleConnectionPool(
                 1,
-                1,
+                10,
                 DATABASE_URL,
                 cursor_factory=RealDictCursor
             )

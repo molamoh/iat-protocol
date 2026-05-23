@@ -4905,6 +4905,57 @@ def get_seller_by_api_key_db(api_key):
 
 
 
+
+
+def approve_seller_db(
+    seller_id,
+    reviewer="foundation_protocol",
+):
+    if not seller_id:
+        return {
+            "status": "error",
+            "message": "seller_id_required",
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    now = int(time.time())
+
+    cur.execute(f"""
+    UPDATE sellers
+    SET
+        seller_status = 'active',
+        verification_status = 'foundation_verified',
+        updated_at = {p}
+    WHERE seller_id = {p}
+    """, (
+        now,
+        seller_id,
+    ))
+
+    cur.execute(f"""
+    UPDATE agents
+    SET
+        available = 1,
+        trust_tier = 'verified'
+    WHERE seller_id = {p}
+    """, (
+        seller_id,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "reviewer": reviewer,
+        "message": "seller_approved_under_foundation_governance",
+    }
+
+
 def authenticate_seller_api_key_db(api_key):
     seller = get_seller_by_api_key_db(api_key)
 

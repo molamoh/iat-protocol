@@ -68,7 +68,12 @@ from iat.api.db import (
     create_seller_db,
     get_seller_by_wallet_db,
     get_seller_by_email_db,
+    get_seller_by_api_key_db,
+    authenticate_seller_api_key_db,
+    approve_seller_db,
+    list_seller_agents_db,
     create_seller_api_key,
+    create_seller_agent_db,
     reinforce_threat_memory_db,
     decay_threat_memory_db,
     propagate_threat_memory_db,
@@ -4863,4 +4868,117 @@ def seller_register(req: SellerRegisterRequest):
         },
         "api_key": result.get("api_key"),
         "message": "seller_registered_pending_protocol_review",
+    }
+
+
+class SellerRegisterAgentRequest(BaseModel):
+    api_key: str = Field(min_length=16, max_length=200)
+    agent_id: str = Field(min_length=3, max_length=120)
+    service: str = Field(min_length=3, max_length=120)
+    url: str = Field(min_length=8, max_length=500)
+    wallet: str | None = Field(default=None, max_length=256)
+    price: float = 1.0
+    capabilities: list[str] = []
+    specialties: list[str] = []
+    metadata: dict | None = None
+
+
+@app.post("/seller/register-agent")
+def seller_register_agent(req: SellerRegisterAgentRequest):
+    init_db()
+
+    auth = authenticate_seller_api_key_db(req.api_key)
+
+    if auth.get("status") != "ok":
+        return auth
+
+    seller = auth["seller"]
+
+    seller_id = seller["seller_id"]
+    seller_agent_id = "seller_agent_" + str(uuid.uuid4())
+
+    result = create_seller_agent_db({
+        "seller_agent_id": seller_agent_id,
+        "seller_id": seller_id,
+        "agent_id": req.agent_id.strip(),
+        "service": req.service.strip(),
+        "url": req.url.strip(),
+        "capabilities": req.capabilities,
+        "specialties": req.specialties,
+        "metadata": req.metadata or {},
+    })
+
+    if result.get("status") != "ok":
+        return result
+
+    seller_status = seller.get("seller_status", "pending")
+    verification_status = seller.get("verification_status", "unverified")
+
+    # Seller agents are registered into the legacy marketplace,
+    # but they must not become buyer-routable until protocol verification.
+    is_protocol_verified = (
+        str(seller_status).lower() == "active"
+        and str(verification_status).lower() == "foundation_verified"
+    )
+
+    registered_agent = {
+        "agent_id": req.agent_id.strip(),
+        "service": req.service.strip(),
+        "url": req.url.strip(),
+        "wallet": req.wallet or seller.get("wallet"),
+        "agent_type": "seller",
+        "price": float(req.price or 1.0),
+        "available": is_protocol_verified,
+        "seller_status": seller_status,
+        "verification_status": verification_status,
+        "seller_id": seller_id,
+        "seller_agent_id": seller_agent_id,
+        "capabilities": json.dumps(req.capabilities),
+        "specialties": json.dumps(req.specialties),
+    }
+
+    register_agent_db(registered_agent)
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "seller_agent_id": seller_agent_id,
+        "agent_id": req.agent_id.strip(),
+        "message": "seller_agent_registered_under_protocol_governance",
+    }
+
+
+class SellerApprovalRequest(BaseModel):
+    seller_id: str = Field(min_length=8, max_length=200)
+
+
+@app.post("/admin/seller/approve")
+def admin_approve_seller(
+    req: SellerApprovalRequest,
+    x_api_key: str = Header(default="")
+):
+    require_admin_key(x_api_key)
+
+    return approve_seller_db(req.seller_id)
+
+
+@app.get("/seller/my-agents")
+def seller_my_agents(
+    api_key: str,
+):
+    auth = authenticate_seller_api_key_db(api_key)
+
+    if auth.get("status") != "ok":
+        return auth
+
+    seller = auth["seller"]
+
+    return {
+        "status": "ok",
+        "seller_id": seller.get("seller_id"),
+        "seller_status": seller.get("seller_status"),
+        "verification_status": seller.get("verification_status"),
+        "agents": list_seller_agents_db(
+            seller.get("seller_id")
+        ),
     }

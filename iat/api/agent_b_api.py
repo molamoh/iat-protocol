@@ -79,6 +79,7 @@ from iat.api.db import (
     list_seller_governance_events_db,
     create_seller_api_key,
     create_seller_agent_db,
+    update_seller_agent_runtime_status_db,
     reinforce_threat_memory_db,
     decay_threat_memory_db,
     propagate_threat_memory_db,
@@ -5217,4 +5218,27 @@ def admin_seller_risk_event(
         event_type=req.event_type,
         severity=req.severity,
         reason=req.reason,
+    )
+
+
+
+class AdminSellerAgentRuntimeUpdateRequest(BaseModel):
+    seller_agent_id: str = Field(min_length=8, max_length=200)
+    runtime_validation_status: str = Field(default="unknown", max_length=80)
+    runtime_health_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    runtime_latency: float = Field(default=0.0, ge=0.0)
+
+
+@app.post("/admin/seller-agent/runtime-status")
+def admin_seller_agent_runtime_status(
+    req: AdminSellerAgentRuntimeUpdateRequest,
+    x_api_key: str = Header(default="")
+):
+    require_admin_key(x_api_key)
+
+    return update_seller_agent_runtime_status_db(
+        seller_agent_id=req.seller_agent_id,
+        runtime_validation_status=req.runtime_validation_status,
+        runtime_health_score=req.runtime_health_score,
+        runtime_latency=req.runtime_latency,
     )

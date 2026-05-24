@@ -5378,6 +5378,125 @@ def get_seller_agent_db(seller_agent_id):
     return dict(row) if row else None
 
 
+
+
+
+def update_seller_agent_runtime_status_db(
+    seller_agent_id,
+    runtime_validation_status,
+    runtime_health_score,
+    runtime_latency=0,
+    disable_if_unhealthy=True,
+):
+    if not seller_agent_id:
+        return {
+            "status": "error",
+            "message": "seller_agent_id_required",
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    runtime_health_score = max(
+        0.0,
+        min(float(runtime_health_score or 0), 1.0),
+    )
+
+    runtime_validation_status = str(
+        runtime_validation_status or "unknown"
+    )
+
+    seller_agent_status = None
+
+    if disable_if_unhealthy:
+        if runtime_validation_status in ["dead", "quarantined"]:
+            seller_agent_status = "disabled"
+        elif runtime_validation_status in ["degraded", "unstable"]:
+            seller_agent_status = "limited"
+
+    if seller_agent_status:
+        cur.execute(f"""
+        UPDATE seller_agents
+        SET runtime_validation_status = {p},
+            runtime_health_score = {p},
+            runtime_latency = {p},
+            runtime_last_checked_at = {p},
+            seller_agent_status = {p},
+            updated_at = {p}
+        WHERE seller_agent_id = {p}
+        """, (
+            runtime_validation_status,
+            runtime_health_score,
+            float(runtime_latency or 0),
+            now,
+            seller_agent_status,
+            now,
+            seller_agent_id,
+        ))
+    else:
+        cur.execute(f"""
+        UPDATE seller_agents
+        SET runtime_validation_status = {p},
+            runtime_health_score = {p},
+            runtime_latency = {p},
+            runtime_last_checked_at = {p},
+            updated_at = {p}
+        WHERE seller_agent_id = {p}
+        """, (
+            runtime_validation_status,
+            runtime_health_score,
+            float(runtime_latency or 0),
+            now,
+            now,
+            seller_agent_id,
+        ))
+
+    cur.execute(f"""
+    SELECT agent_id, seller_id
+    FROM seller_agents
+    WHERE seller_agent_id = {p}
+    """, (seller_agent_id,))
+
+    row = cur.fetchone()
+    agent_id = row_get(row, "agent_id") if row else None
+    seller_id = row_get(row, "seller_id") if row else None
+
+    if agent_id:
+        marketplace_available = 1
+
+        if runtime_validation_status in ["dead", "quarantined", "degraded", "unstable"]:
+            marketplace_available = 0
+
+        cur.execute(f"""
+        UPDATE agents
+        SET available = {p},
+            risk_score = MAX(COALESCE(risk_score, 0), {p}),
+            updated_at = {p}
+        WHERE agent_id = {p}
+        """, (
+            marketplace_available,
+            1.0 - runtime_health_score,
+            now,
+            agent_id,
+        ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "seller_agent_id": seller_agent_id,
+        "seller_id": seller_id,
+        "agent_id": agent_id,
+        "runtime_validation_status": runtime_validation_status,
+        "runtime_health_score": runtime_health_score,
+        "runtime_latency": float(runtime_latency or 0),
+        "marketplace_available": bool(agent_id and runtime_validation_status not in ["dead", "quarantined", "degraded", "unstable"]),
+    }
+
+
 def list_seller_agents_db(seller_id, limit=100):
     conn = get_conn()
     cur = conn.cursor()

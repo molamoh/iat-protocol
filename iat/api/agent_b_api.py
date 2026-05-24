@@ -3,6 +3,7 @@ import os
 import time
 import uuid
 import requests
+from urllib.parse import urlparse
 from fastapi import FastAPI, Header, Request
 from pydantic import BaseModel, EmailStr, Field
 from solders.pubkey import Pubkey
@@ -4875,6 +4876,117 @@ def seller_register(req: SellerRegisterRequest):
     }
 
 
+
+
+
+def validate_seller_runtime(url):
+    """
+    Validate seller runtime before protocol integration.
+
+    Sellers never interact directly with buyers.
+    Therefore seller runtimes become part of the
+    protocol execution surface.
+    """
+
+    if not url:
+        return {
+            "status": "error",
+            "message": "missing_runtime_url",
+        }
+
+    parsed = urlparse(url)
+
+    hostname = str(parsed.hostname or "").lower()
+
+    blocked_hosts = [
+        "localhost",
+        "127.0.0.1",
+        "0.0.0.0",
+    ]
+
+    blocked_prefixes = [
+        "10.",
+        "192.168.",
+        "172.16.",
+        "172.17.",
+        "172.18.",
+        "172.19.",
+    ]
+
+    if hostname in blocked_hosts:
+        return {
+            "status": "error",
+            "message": "localhost_runtime_not_allowed",
+        }
+
+    for prefix in blocked_prefixes:
+        if hostname.startswith(prefix):
+            return {
+                "status": "error",
+                "message": "private_network_runtime_not_allowed",
+            }
+
+    if parsed.scheme not in ["http", "https"]:
+        return {
+            "status": "error",
+            "message": "invalid_runtime_scheme",
+        }
+
+    try:
+        started = time.time()
+
+        response = requests.get(
+            url,
+            timeout=5,
+        )
+
+        latency = round(time.time() - started, 3)
+
+        if response.status_code >= 500:
+            return {
+                "status": "error",
+                "message": "runtime_server_error",
+                "http_status": response.status_code,
+            }
+
+        content_type = str(
+            response.headers.get("content-type", "")
+        ).lower()
+
+        runtime_health_score = 1.0
+
+        if latency > 3:
+            runtime_health_score -= 0.35
+        elif latency > 1.5:
+            runtime_health_score -= 0.15
+
+        if "application/json" not in content_type:
+            runtime_health_score -= 0.25
+
+        runtime_health_score = max(
+            0.0,
+            min(runtime_health_score, 1.0),
+        )
+
+        return {
+            "status": "ok",
+            "runtime_validation_status": "validated",
+            "runtime_latency": latency,
+            "runtime_health_score": runtime_health_score,
+            "http_status": response.status_code,
+            "content_type": content_type,
+        }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": "runtime_validation_failed",
+            "error": str(e),
+        }
+
+
+
+
 class SellerRegisterAgentRequest(BaseModel):
     api_key: str = Field(min_length=16, max_length=200)
     agent_id: str = Field(min_length=3, max_length=120)
@@ -4900,6 +5012,14 @@ def seller_register_agent(req: SellerRegisterAgentRequest):
 
     seller_id = seller["seller_id"]
     seller_agent_id = "seller_agent_" + str(uuid.uuid4())
+
+    runtime_validation = validate_seller_runtime(
+        req.url.strip()
+    )
+
+    if runtime_validation.get("status") != "ok":
+        return runtime_validation
+
 
     result = create_seller_agent_db({
         "seller_agent_id": seller_agent_id,

@@ -5469,18 +5469,32 @@ def update_seller_agent_runtime_status_db(
         if runtime_validation_status in ["dead", "quarantined", "degraded", "unstable"]:
             marketplace_available = 0
 
-        cur.execute(f"""
-        UPDATE agents
-        SET available = {p},
-            risk_score = MAX(COALESCE(risk_score, 0), {p}),
-            updated_at = {p}
-        WHERE agent_id = {p}
-        """, (
-            marketplace_available,
-            1.0 - runtime_health_score,
-            now,
-            agent_id,
-        ))
+        if is_postgres():
+            cur.execute(f"""
+            UPDATE agents
+            SET available = {p},
+                risk_score = GREATEST(COALESCE(risk_score, 0), {p}),
+                updated_at = {p}
+            WHERE agent_id = {p}
+            """, (
+                marketplace_available,
+                1.0 - runtime_health_score,
+                now,
+                agent_id,
+            ))
+        else:
+            cur.execute(f"""
+            UPDATE agents
+            SET available = {p},
+                risk_score = MAX(COALESCE(risk_score, 0), {p}),
+                updated_at = {p}
+            WHERE agent_id = {p}
+            """, (
+                marketplace_available,
+                1.0 - runtime_health_score,
+                now,
+                agent_id,
+            ))
 
     conn.commit()
     release_conn(conn)

@@ -5363,6 +5363,82 @@ def list_seller_agents_db(seller_id, limit=100):
     return [dict(r) for r in rows]
 
 
+
+
+def apply_seller_dynamic_exposure_control_with_cursor(
+    cur,
+    seller_id,
+    seller_status,
+    risk_score,
+    exposure_limit,
+    reason="dynamic_exposure_control",
+):
+    p = qmark()
+    now = int(time.time())
+
+    risk_score = max(0.0, min(float(risk_score or 0), 1.0))
+    exposure_limit = max(0.0, float(exposure_limit or 0))
+
+    if risk_score >= 0.85 or seller_status in ["restricted", "rejected", "banned"]:
+        agent_available = 0
+        agent_exposure = 0
+        routing_tier = "blocked"
+
+    elif risk_score >= 0.65 or seller_status == "limited":
+        agent_available = 0
+        agent_exposure = exposure_limit * 0.25
+        routing_tier = "limited"
+
+    elif risk_score >= 0.35 or seller_status == "watchlist":
+        agent_available = 0
+        agent_exposure = exposure_limit * 0.50
+        routing_tier = "watchlist"
+
+    else:
+        agent_available = 1 if seller_status == "active" else 0
+        agent_exposure = exposure_limit
+        routing_tier = "normal" if agent_available else "pending"
+
+    cur.execute(f"""
+    UPDATE seller_agents
+    SET
+        exposure_limit = {p},
+        updated_at = {p}
+    WHERE seller_id = {p}
+    """, (
+        agent_exposure,
+        now,
+        seller_id,
+    ))
+
+    cur.execute(f"""
+    UPDATE agents
+    SET
+        available = {p},
+        seller_status = {p},
+        risk_score = {p},
+        max_order_value = {p}
+    WHERE seller_id = {p}
+    """, (
+        agent_available,
+        seller_status,
+        risk_score,
+        agent_exposure,
+        seller_id,
+    ))
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "seller_status": seller_status,
+        "risk_score": risk_score,
+        "agent_available": bool(agent_available),
+        "agent_exposure_limit": agent_exposure,
+        "routing_tier": routing_tier,
+        "reason": reason,
+    }
+
+
 def apply_seller_risk_event_db(
     seller_id,
     event_type="generic_risk",
@@ -5527,6 +5603,15 @@ def apply_seller_risk_event_db(
                 agent_id,
             ))
 
+    exposure_control = apply_seller_dynamic_exposure_control_with_cursor(
+        cur=cur,
+        seller_id=seller_id,
+        seller_status=new_status,
+        risk_score=new_risk,
+        exposure_limit=new_exposure,
+        reason=str(reason or event_type),
+    )
+
     create_seller_governance_event_with_cursor(
         cur=cur,
         seller_id=seller_id,
@@ -5547,6 +5632,7 @@ def apply_seller_risk_event_db(
             "old_exposure_limit": current_exposure,
             "new_exposure_limit": new_exposure,
             "limited_agent_ids": limited_agent_ids,
+            "exposure_control": exposure_control,
         },
     )
 

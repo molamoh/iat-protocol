@@ -5415,8 +5415,10 @@ def update_seller_agent_runtime_status_db(
             seller_agent_status = "disabled"
         elif runtime_validation_status in ["degraded", "unstable"]:
             seller_agent_status = "limited"
+        elif runtime_validation_status == "validated" and runtime_health_score >= 0.75:
+            seller_agent_status = "active"
 
-    if seller_agent_status:
+    if seller_agent_status is not None:
         cur.execute(f"""
         UPDATE seller_agents
         SET runtime_validation_status = {p},
@@ -5464,10 +5466,10 @@ def update_seller_agent_runtime_status_db(
     seller_id = row_get(row, "seller_id") if row else None
 
     if agent_id:
-        marketplace_available = 1
-
-        if runtime_validation_status in ["dead", "quarantined", "degraded", "unstable"]:
-            marketplace_available = 0
+        marketplace_available = 1 if (
+            runtime_validation_status == "validated"
+            and runtime_health_score >= 0.75
+        ) else 0
 
         if is_postgres():
             cur.execute(f"""
@@ -5478,7 +5480,9 @@ def update_seller_agent_runtime_status_db(
             WHERE agent_id = {p}
             """, (
                 marketplace_available,
-                1.0 - runtime_health_score,
+                marketplace_available,
+                max(0.0, 1.0 - runtime_health_score),
+                max(0.0, 1.0 - runtime_health_score),
                 now,
                 agent_id,
             ))
@@ -5486,12 +5490,23 @@ def update_seller_agent_runtime_status_db(
             cur.execute(f"""
             UPDATE agents
             SET available = {p},
-                risk_score = MAX(COALESCE(risk_score, 0), {p}),
+                risk_score = CASE
+                    WHEN {p} = 1 THEN MIN(
+                        COALESCE(risk_score, 0),
+                        {p}
+                    )
+                    ELSE MAX(
+                        COALESCE(risk_score, 0),
+                        {p}
+                    )
+                END,
                 updated_at = {p}
             WHERE agent_id = {p}
             """, (
                 marketplace_available,
-                1.0 - runtime_health_score,
+                marketplace_available,
+                max(0.0, 1.0 - runtime_health_score),
+                max(0.0, 1.0 - runtime_health_score),
                 now,
                 agent_id,
             ))

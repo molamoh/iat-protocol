@@ -6448,8 +6448,9 @@ def list_seller_governance_events_db(
 def list_runtime_monitored_seller_agents_db(limit=100):
     conn = get_conn()
     cur = conn.cursor()
+    p = qmark()
 
-    cur.execute("""
+    cur.execute(f"""
     SELECT seller_agent_id,
            seller_id,
            agent_id,
@@ -6460,8 +6461,8 @@ def list_runtime_monitored_seller_agents_db(limit=100):
     FROM seller_agents
     WHERE seller_agent_status IN ('active', 'limited')
     ORDER BY updated_at ASC
-    LIMIT ?
-    """, (limit,))
+    LIMIT {p}
+    """, (int(limit or 100),))
 
     rows = cur.fetchall()
     release_conn(conn)

@@ -650,7 +650,15 @@ def select_top_agents(agents, limit=3, order=None):
         if order:
             capability_match = compute_capability_match_score(a, order)
 
-            if capability_match < min_capability_match:
+            agent_type = str(a.get("agent_type", "") or "").lower()
+            capabilities = parse_json_list(a.get("capabilities"))
+
+            # Foundation agents are protocol infrastructure.
+            # If legacy cloud records lack explicit capabilities, do not exclude them.
+            if (
+                capability_match < min_capability_match
+                and not (agent_type == "foundation" and not capabilities)
+            ):
                 continue
 
         available.append(a)

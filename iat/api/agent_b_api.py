@@ -5020,6 +5020,8 @@ def seller_register_agent(req: SellerRegisterAgentRequest):
     if runtime_validation.get("status") != "ok":
         return runtime_validation
 
+    runtime_validation["runtime_last_checked_at"] = int(time.time())
+
 
     result = create_seller_agent_db({
         "seller_agent_id": seller_agent_id,
@@ -5029,6 +5031,10 @@ def seller_register_agent(req: SellerRegisterAgentRequest):
         "url": req.url.strip(),
         "capabilities": req.capabilities,
         "specialties": req.specialties,
+        "runtime_validation_status": runtime_validation.get("runtime_validation_status"),
+        "runtime_health_score": runtime_validation.get("runtime_health_score"),
+        "runtime_latency": runtime_validation.get("runtime_latency"),
+        "runtime_last_checked_at": runtime_validation.get("runtime_last_checked_at"),
         "metadata": req.metadata or {},
     })
 

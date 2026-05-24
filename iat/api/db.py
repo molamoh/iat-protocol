@@ -142,6 +142,7 @@ def init_db():
     init_agents_table()
     init_sellers_table()
     init_seller_agents_table()
+    ensure_seller_agent_runtime_columns()
     init_seller_governance_events_table()
     init_adaptive_defense_tables()
     init_buyers_table()
@@ -293,6 +294,27 @@ def init_sellers_table():
     release_conn(conn)
 
 
+def ensure_seller_agent_runtime_columns():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    columns = {
+        "runtime_validation_status": "TEXT DEFAULT 'unknown'",
+        "runtime_health_score": "REAL DEFAULT 0",
+        "runtime_latency": "REAL DEFAULT 0",
+        "runtime_last_checked_at": "INTEGER",
+    }
+
+    for column, definition in columns.items():
+        try:
+            cur.execute(f"ALTER TABLE seller_agents ADD COLUMN {column} {definition}")
+        except Exception:
+            pass
+
+    conn.commit()
+    release_conn(conn)
+
+
 def init_seller_agents_table():
     conn = get_conn()
     cur = conn.cursor()
@@ -322,6 +344,11 @@ def init_seller_agents_table():
         consensus_score REAL DEFAULT 0,
 
         exposure_limit REAL DEFAULT 0,
+
+        runtime_validation_status TEXT DEFAULT 'unknown',
+        runtime_health_score REAL DEFAULT 0,
+        runtime_latency REAL DEFAULT 0,
+        runtime_last_checked_at INTEGER,
 
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
@@ -5281,10 +5308,14 @@ def create_seller_agent_db(seller_agent):
         successful_orders, failed_orders,
         latency_avg, consensus_score,
         exposure_limit,
+        runtime_validation_status,
+        runtime_health_score,
+        runtime_latency,
+        runtime_last_checked_at,
         created_at, updated_at,
         metadata
     )
-    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
     """, (
         seller_agent["seller_agent_id"],
         seller_id,
@@ -5301,6 +5332,10 @@ def create_seller_agent_db(seller_agent):
         float(seller_agent.get("latency_avg", 0) or 0),
         float(seller_agent.get("consensus_score", 0) or 0),
         float(seller_agent.get("exposure_limit", 0) or 0),
+        seller_agent.get("runtime_validation_status", "unknown"),
+        float(seller_agent.get("runtime_health_score", 0) or 0),
+        float(seller_agent.get("runtime_latency", 0) or 0),
+        int(seller_agent.get("runtime_last_checked_at", now) or now),
         now,
         now,
         metadata,

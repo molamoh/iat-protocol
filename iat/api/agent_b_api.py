@@ -4944,10 +4944,10 @@ def validate_seller_runtime(url):
 
         latency = round(time.time() - started, 3)
 
-        if response.status_code >= 500:
+        if response.status_code != 200:
             return {
                 "status": "error",
-                "message": "runtime_server_error",
+                "message": "runtime_invalid_http_status",
                 "http_status": response.status_code,
             }
 
@@ -4963,7 +4963,12 @@ def validate_seller_runtime(url):
             runtime_health_score -= 0.15
 
         if "application/json" not in content_type:
-            runtime_health_score -= 0.25
+            return {
+                "status": "error",
+                "message": "runtime_invalid_content_type",
+                "http_status": response.status_code,
+                "content_type": content_type,
+            }
 
         runtime_health_score = max(
             0.0,

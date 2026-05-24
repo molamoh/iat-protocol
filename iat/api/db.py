@@ -51,8 +51,8 @@ def release_conn(conn):
             pool.putconn(conn)
         else:
             conn.close()
-    except Exception:
-        pass
+    except Exception as e:
+        print("DB_RELEASE_ERROR:", type(e).__name__, str(e), flush=True)
 
 
 def row_get(row, key, default=None):
@@ -5465,13 +5465,29 @@ def apply_seller_risk_event_db(
         seller_id,
     ))
 
-    active_agents = count_active_seller_agents_db(seller_id)
+    cur.execute(f"""
+    SELECT COUNT(*) AS active_count
+    FROM seller_agents
+    WHERE seller_id = {p}
+      AND seller_agent_status = 'active'
+    """, (
+        seller_id,
+    ))
+
+    active_row = cur.fetchone()
+
+    active_agents = int(
+        row_get(active_row, "active_count", 0)
+        if active_row else 0
+    )
+
+    limited_agent_ids = []
 
     if active_agents > new_max_agents:
         excess = active_agents - new_max_agents
 
         cur.execute(f"""
-        SELECT seller_agent_id
+        SELECT seller_agent_id, agent_id
         FROM seller_agents
         WHERE seller_id = {p}
           AND seller_agent_status = 'active'
@@ -5480,9 +5496,18 @@ def apply_seller_risk_event_db(
         """, (seller_id,))
 
         rows = cur.fetchall()
-        agent_ids_to_limit = [row_get(r, "seller_agent_id") for r in rows]
+        limited_agent_ids = [
+            row_get(r, "seller_agent_id")
+            for r in rows
+        ]
 
-        for seller_agent_id in agent_ids_to_limit:
+        marketplace_agent_ids = [
+            row_get(r, "agent_id")
+            for r in rows
+            if row_get(r, "agent_id")
+        ]
+
+        for seller_agent_id in limited_agent_ids:
             cur.execute(f"""
             UPDATE seller_agents
             SET seller_agent_status = 'limited',
@@ -5490,6 +5515,40 @@ def apply_seller_risk_event_db(
                 updated_at = {p}
             WHERE seller_agent_id = {p}
             """, (now, seller_agent_id))
+
+        for agent_id in marketplace_agent_ids:
+            cur.execute(f"""
+            UPDATE agents
+            SET available = 0,
+                seller_status = {p}
+            WHERE agent_id = {p}
+            """, (
+                new_status,
+                agent_id,
+            ))
+
+    create_seller_governance_event_with_cursor(
+        cur=cur,
+        seller_id=seller_id,
+        event_type="seller_risk_event",
+        reviewer="adaptive_risk_engine",
+        reason=str(reason or event_type),
+        override_terminal=False,
+        old_status=seller.get("seller_status"),
+        new_status=new_status,
+        metadata={
+            "risk_event_type": event_type,
+            "old_risk_score": current_risk,
+            "new_risk_score": new_risk,
+            "severity": severity,
+            "adjusted_severity": adjusted_severity,
+            "old_max_agents_allowed": current_max_agents,
+            "new_max_agents_allowed": new_max_agents,
+            "old_exposure_limit": current_exposure,
+            "new_exposure_limit": new_exposure,
+            "limited_agent_ids": limited_agent_ids,
+        },
+    )
 
     conn.commit()
     release_conn(conn)
@@ -5955,38 +6014,20 @@ def init_seller_governance_events_table():
     conn = get_conn()
     cur = conn.cursor()
 
-    p = qmark()
-
-    if is_postgres():
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS seller_governance_events (
-            event_id TEXT PRIMARY KEY,
-            seller_id TEXT NOT NULL,
-            event_type TEXT NOT NULL,
-            reviewer TEXT,
-            reason TEXT,
-            override_terminal BOOLEAN DEFAULT FALSE,
-            old_status TEXT,
-            new_status TEXT,
-            metadata TEXT DEFAULT '{}',
-            created_at BIGINT NOT NULL
-        )
-        """)
-    else:
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS seller_governance_events (
-            event_id TEXT PRIMARY KEY,
-            seller_id TEXT NOT NULL,
-            event_type TEXT NOT NULL,
-            reviewer TEXT,
-            reason TEXT,
-            override_terminal INTEGER DEFAULT 0,
-            old_status TEXT,
-            new_status TEXT,
-            metadata TEXT DEFAULT '{}',
-            created_at INTEGER NOT NULL
-        )
-        """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS seller_governance_events (
+        event_id TEXT PRIMARY KEY,
+        seller_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        reviewer TEXT,
+        reason TEXT,
+        override_terminal BOOLEAN DEFAULT FALSE,
+        old_status TEXT,
+        new_status TEXT,
+        metadata TEXT DEFAULT '{}',
+        created_at BIGINT NOT NULL
+    )
+    """)
 
     conn.commit()
     release_conn(conn)
@@ -6004,12 +6045,14 @@ def create_seller_governance_event_with_cursor(
     new_status="",
     metadata=None,
 ):
+
     p = qmark()
 
     event_id = "seller_event_" + str(uuid.uuid4())
     now = int(time.time())
 
     metadata_json = json.dumps(metadata or {})
+
 
     cur.execute(f"""
     INSERT INTO seller_governance_events (
@@ -6033,12 +6076,13 @@ def create_seller_governance_event_with_cursor(
         event_type,
         reviewer,
         reason,
-        bool(override_terminal) if USE_POSTGRES else (1 if override_terminal else 0),
+        bool(override_terminal),
         old_status,
         new_status,
         metadata_json,
         now,
     ))
+
 
     return {
         "status": "ok",

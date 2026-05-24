@@ -76,6 +76,7 @@ from iat.api.db import (
     reject_seller_db,
     apply_seller_risk_event_db,
     list_seller_agents_db,
+    list_runtime_monitored_seller_agents_db,
     list_seller_governance_events_db,
     create_seller_api_key,
     create_seller_agent_db,
@@ -5242,3 +5243,55 @@ def admin_seller_agent_runtime_status(
         runtime_health_score=req.runtime_health_score,
         runtime_latency=req.runtime_latency,
     )
+
+
+@app.post("/internal/runtime/heartbeat-scan")
+def internal_runtime_heartbeat_scan(
+    x_api_key: str = Header(default="")
+):
+    require_admin_key(x_api_key)
+
+    agents = list_runtime_monitored_seller_agents_db()
+
+    results = []
+
+    for agent in agents:
+        runtime = validate_seller_runtime(agent.get("url"))
+
+        if runtime.get("status") == "ok":
+            runtime_status = "validated"
+
+            health_score = float(
+                runtime.get("runtime_health_score", 0) or 0
+            )
+
+            latency = float(
+                runtime.get("runtime_latency", 0) or 0
+            )
+        else:
+            runtime_status = "dead"
+            health_score = 0.0
+            latency = 0.0
+
+        update_result = update_seller_agent_runtime_status_db(
+            seller_agent_id=agent.get("seller_agent_id"),
+            runtime_validation_status=runtime_status,
+            runtime_health_score=health_score,
+            runtime_latency=latency,
+        )
+
+        results.append({
+            "seller_agent_id": agent.get("seller_agent_id"),
+            "agent_id": agent.get("agent_id"),
+            "url": agent.get("url"),
+            "runtime_probe": runtime,
+            "update_result": update_result,
+        })
+
+    return {
+        "status": "ok",
+        "agents_scanned": len(results),
+        "results": results,
+    }
+
+

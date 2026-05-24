@@ -6443,3 +6443,29 @@ def list_seller_governance_events_db(
     release_conn(conn)
 
     return [dict(r) for r in rows]
+
+
+def list_runtime_monitored_seller_agents_db(limit=100):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    SELECT seller_agent_id,
+           seller_id,
+           agent_id,
+           url,
+           runtime_validation_status,
+           runtime_health_score,
+           seller_agent_status
+    FROM seller_agents
+    WHERE seller_agent_status IN ('active', 'limited')
+    ORDER BY updated_at ASC
+    LIMIT ?
+    """, (limit,))
+
+    rows = cur.fetchall()
+    release_conn(conn)
+
+    return [dict(r) for r in rows]
+
+

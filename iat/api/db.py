@@ -5471,18 +5471,29 @@ def update_seller_agent_runtime_status_db(
             and runtime_health_score >= 0.75
         ) else 0
 
+        target_risk = max(0.0, 1.0 - runtime_health_score)
+
         if is_postgres():
             cur.execute(f"""
             UPDATE agents
             SET available = {p},
-                risk_score = GREATEST(COALESCE(risk_score, 0), {p}),
+                risk_score = CASE
+                    WHEN {p} = 1 THEN LEAST(
+                        COALESCE(risk_score, 0),
+                        {p}
+                    )
+                    ELSE GREATEST(
+                        COALESCE(risk_score, 0),
+                        {p}
+                    )
+                END,
                 updated_at = {p}
             WHERE agent_id = {p}
             """, (
                 marketplace_available,
                 marketplace_available,
-                max(0.0, 1.0 - runtime_health_score),
-                max(0.0, 1.0 - runtime_health_score),
+                target_risk,
+                target_risk,
                 now,
                 agent_id,
             ))
@@ -5505,8 +5516,8 @@ def update_seller_agent_runtime_status_db(
             """, (
                 marketplace_available,
                 marketplace_available,
-                max(0.0, 1.0 - runtime_health_score),
-                max(0.0, 1.0 - runtime_health_score),
+                target_risk,
+                target_risk,
                 now,
                 agent_id,
             ))

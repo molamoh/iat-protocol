@@ -73,6 +73,7 @@ from iat.api.db import (
     authenticate_seller_api_key_db,
     approve_seller_db,
     reject_seller_db,
+    apply_seller_risk_event_db,
     list_seller_agents_db,
     list_seller_governance_events_db,
     create_seller_api_key,
@@ -5068,3 +5069,26 @@ def admin_seller_governance_events(
         "seller_id": seller_id,
         "events": list_seller_governance_events_db(seller_id),
     }
+
+
+
+class AdminSellerRiskEventRequest(BaseModel):
+    seller_id: str = Field(min_length=8, max_length=200)
+    event_type: str = Field(default="manual_review", min_length=3, max_length=120)
+    severity: float = Field(default=0.1, ge=0.0, le=1.0)
+    reason: str = Field(default="admin seller risk event", min_length=5, max_length=500)
+
+
+@app.post("/admin/seller/risk-event")
+def admin_seller_risk_event(
+    req: AdminSellerRiskEventRequest,
+    x_api_key: str = Header(default="")
+):
+    require_admin_key(x_api_key)
+
+    return apply_seller_risk_event_db(
+        seller_id=req.seller_id,
+        event_type=req.event_type,
+        severity=req.severity,
+        reason=req.reason,
+    )

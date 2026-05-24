@@ -595,6 +595,43 @@ def compute_required_agent_count(order=None):
     return 3
 
 
+
+
+
+def compute_cluster_diversity_penalty(candidate, already_selected):
+    """
+    Internal IAT routing firewall.
+
+    Buyers never contact sellers directly.
+    This protects protocol/foundation execution from:
+    - same-seller domination
+    - sybil clusters
+    - coordinated consensus manipulation
+    """
+
+    candidate_wallet = str(candidate.get("seller_wallet") or candidate.get("wallet") or "")
+    candidate_seller = str(candidate.get("seller_id") or "")
+    candidate_cluster = str(candidate.get("cluster_id") or "")
+
+    penalty = 0.0
+
+    for existing in already_selected:
+        existing_wallet = str(existing.get("seller_wallet") or existing.get("wallet") or "")
+        existing_seller = str(existing.get("seller_id") or "")
+        existing_cluster = str(existing.get("cluster_id") or "")
+
+        if candidate_seller and existing_seller and candidate_seller == existing_seller:
+            penalty += 0.60
+
+        if candidate_wallet and existing_wallet and candidate_wallet == existing_wallet:
+            penalty += 0.80
+
+        if candidate_cluster and existing_cluster and candidate_cluster == existing_cluster:
+            penalty += 0.45
+
+    return min(penalty, 0.95)
+
+
 def select_top_agents(agents, limit=3, order=None):
     """
     Select best available agents before execution.
@@ -624,7 +661,34 @@ def select_top_agents(agents, limit=3, order=None):
         reverse=True,
     )
 
-    return ranked[:limit]
+    selected = []
+
+    for candidate in ranked:
+        base_score = compute_buyer_agent_score(candidate, order or {})
+
+        diversity_penalty = compute_cluster_diversity_penalty(
+            candidate,
+            selected,
+        )
+
+        final_score = base_score * (1.0 - diversity_penalty)
+
+        candidate["_routing_base_score"] = round(base_score, 6)
+        candidate["_routing_diversity_penalty"] = round(diversity_penalty, 6)
+        candidate["_routing_final_score"] = round(final_score, 6)
+
+        if diversity_penalty >= 0.80:
+            continue
+
+        selected.append(candidate)
+
+        selected = sorted(
+            selected,
+            key=lambda a: a.get("_routing_final_score", 0),
+            reverse=True,
+        )[:limit]
+
+    return selected
 
 
 

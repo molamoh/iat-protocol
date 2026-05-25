@@ -144,6 +144,7 @@ def init_db():
     init_seller_agents_table()
     ensure_seller_agent_runtime_columns()
     init_seller_governance_events_table()
+    init_seller_containment_events_table()
     init_adaptive_defense_tables()
     init_buyers_table()
     init_agent_topic_stats_table()
@@ -6358,6 +6359,28 @@ def init_adaptive_defense_tables():
 
 
 
+
+
+def init_seller_containment_events_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS seller_containment_events (
+        containment_event_id TEXT PRIMARY KEY,
+        seller_id TEXT,
+        seller_status TEXT,
+        quarantined_agents INTEGER DEFAULT 0,
+        trigger_source TEXT,
+        created_at INTEGER
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+
 def init_seller_governance_events_table():
     conn = get_conn()
     cur = conn.cursor()
@@ -6560,42 +6583,16 @@ def evaluate_seller_runtime_containment_db(seller_id):
 
     conn = get_conn()
     cur = conn.cursor()
-    p = qmark()
 
-    cur.execute(f"""
-    SELECT COUNT(*) AS quarantined_count
-    FROM seller_agents
-    WHERE seller_id = {p}
-      AND runtime_validation_status = 'quarantined'
-    """, (seller_id,))
-
-    row = cur.fetchone()
-
-    quarantined_count = int(
-        row_get(row, "quarantined_count", 0) or 0
-    )
-
-    seller_status = "contained" if quarantined_count >= 3 else "pending"
-
-    cur.execute(f"""
-    UPDATE sellers
-    SET seller_status = {p}
-    WHERE seller_id = {p}
-    """, (
-        seller_status,
+    result = evaluate_seller_runtime_containment_with_cursor(
+        cur,
         seller_id,
-    ))
+    )
 
     conn.commit()
     release_conn(conn)
 
-    return {
-        "status": "ok",
-        "seller_id": seller_id,
-        "seller_status": seller_status,
-        "quarantined_agents": quarantined_count,
-    }
-
+    return result
 
 
 
@@ -6662,11 +6659,59 @@ def evaluate_seller_runtime_containment_with_cursor(cur, seller_id):
                 seller_id,
             ))
 
+        create_seller_containment_event_with_cursor(
+            cur=cur,
+            seller_id=seller_id,
+            seller_status=seller_status,
+            quarantined_agents=quarantined_count,
+            trigger_source="runtime_quarantine_threshold",
+        )
+
     return {
         "status": "ok",
         "seller_id": seller_id,
         "seller_status": seller_status,
         "quarantined_agents": quarantined_count,
+    }
+
+
+
+
+def create_seller_containment_event_with_cursor(
+    cur,
+    seller_id,
+    seller_status,
+    quarantined_agents,
+    trigger_source="runtime_containment_engine",
+):
+    p = qmark()
+
+    event_id = "seller_containment_" + str(uuid.uuid4())
+    now = int(time.time())
+
+    cur.execute(f"""
+    INSERT INTO seller_containment_events (
+        containment_event_id,
+        seller_id,
+        seller_status,
+        quarantined_agents,
+        trigger_source,
+        created_at
+    ) VALUES (
+        {p}, {p}, {p}, {p}, {p}, {p}
+    )
+    """, (
+        event_id,
+        seller_id,
+        seller_status,
+        int(quarantined_agents or 0),
+        trigger_source,
+        now,
+    ))
+
+    return {
+        "status": "ok",
+        "containment_event_id": event_id,
     }
 
 

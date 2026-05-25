@@ -303,6 +303,8 @@ def ensure_seller_agent_runtime_columns():
         "runtime_health_score": "REAL DEFAULT 0",
         "runtime_latency": "REAL DEFAULT 0",
         "runtime_last_checked_at": "INTEGER",
+        "runtime_failure_count": "INTEGER DEFAULT 0",
+        "runtime_quarantine_until": "INTEGER",
     }
 
     for column, definition in columns.items():
@@ -349,6 +351,8 @@ def init_seller_agents_table():
         runtime_health_score REAL DEFAULT 0,
         runtime_latency REAL DEFAULT 0,
         runtime_last_checked_at INTEGER,
+        runtime_failure_count INTEGER DEFAULT 0,
+        runtime_quarantine_until INTEGER,
 
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
@@ -5410,6 +5414,31 @@ def update_seller_agent_runtime_status_db(
 
     seller_agent_status = None
 
+    quarantine_until = None
+
+    cur.execute(f"""
+    SELECT runtime_failure_count
+    FROM seller_agents
+    WHERE seller_agent_id = {p}
+    """, (seller_agent_id,))
+
+    existing_runtime_row = cur.fetchone()
+    current_runtime_failure_count = int(
+        row_get(existing_runtime_row, "runtime_failure_count", 0) or 0
+    )
+
+    new_runtime_failure_count = current_runtime_failure_count
+
+    if runtime_validation_status in ["dead", "quarantined"]:
+        new_runtime_failure_count = current_runtime_failure_count + 1
+    elif runtime_validation_status == "validated":
+        new_runtime_failure_count = max(0, current_runtime_failure_count - 1)
+
+    if new_runtime_failure_count >= 3:
+        runtime_validation_status = "quarantined"
+        quarantine_until = now + 3600
+
+
     if disable_if_unhealthy:
         if runtime_validation_status in ["dead", "quarantined"]:
             seller_agent_status = "disabled"
@@ -5425,6 +5454,8 @@ def update_seller_agent_runtime_status_db(
             runtime_health_score = {p},
             runtime_latency = {p},
             runtime_last_checked_at = {p},
+            runtime_failure_count = {p},
+            runtime_quarantine_until = {p},
             seller_agent_status = {p},
             updated_at = {p}
         WHERE seller_agent_id = {p}
@@ -5433,6 +5464,8 @@ def update_seller_agent_runtime_status_db(
             runtime_health_score,
             float(runtime_latency or 0),
             now,
+            new_runtime_failure_count,
+            quarantine_until,
             seller_agent_status,
             now,
             seller_agent_id,
@@ -5444,6 +5477,8 @@ def update_seller_agent_runtime_status_db(
             runtime_health_score = {p},
             runtime_latency = {p},
             runtime_last_checked_at = {p},
+            runtime_failure_count = {p},
+            runtime_quarantine_until = {p},
             updated_at = {p}
         WHERE seller_agent_id = {p}
         """, (
@@ -5451,6 +5486,8 @@ def update_seller_agent_runtime_status_db(
             runtime_health_score,
             float(runtime_latency or 0),
             now,
+            new_runtime_failure_count,
+            quarantine_until,
             now,
             seller_agent_id,
         ))

@@ -6968,3 +6968,127 @@ def recompute_seller_trust_tier_db(seller_id):
     }
 
 
+
+SELLER_ALLOWED_TRANSITIONS = {
+    "pending": ["active", "rejected", "watchlist"],
+    "active": ["watchlist", "restricted", "contained", "rejected"],
+    "watchlist": ["active", "restricted", "contained", "rejected"],
+    "restricted": ["watchlist", "contained", "rejected"],
+    "contained": ["restricted", "rejected", "banned"],
+    "rejected": [],
+    "banned": [],
+}
+
+
+def validate_seller_status_transition(current_status, next_status):
+    current_status = str(current_status or "pending")
+    next_status = str(next_status or "")
+
+    allowed = SELLER_ALLOWED_TRANSITIONS.get(current_status, [])
+
+    return {
+        "allowed": next_status in allowed or next_status == current_status,
+        "current_status": current_status,
+        "next_status": next_status,
+        "allowed_transitions": allowed,
+    }
+
+
+def update_seller_status_governed_db(seller_id, next_status, reason="manual_governance"):
+    if not seller_id:
+        return {"status": "error", "message": "seller_id_required"}
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    SELECT seller_status
+    FROM sellers
+    WHERE seller_id = {p}
+    """, (seller_id,))
+
+    row = cur.fetchone()
+
+    if not row:
+        release_conn(conn)
+        return {"status": "error", "message": "seller_not_found"}
+
+    current_status = row_get(row, "seller_status", "pending")
+
+    transition = validate_seller_status_transition(
+        current_status,
+        next_status,
+    )
+
+    if not transition.get("allowed"):
+        release_conn(conn)
+        return {
+            "status": "error",
+            "message": "seller_status_transition_not_allowed",
+            "transition": transition,
+        }
+
+    cur.execute(f"""
+    UPDATE sellers
+    SET seller_status = {p},
+        last_risk_review_at = {p},
+        updated_at = {p}
+    WHERE seller_id = {p}
+    """, (
+        next_status,
+        now,
+        now,
+        seller_id,
+    ))
+
+    if next_status in ["restricted", "contained", "rejected", "banned"]:
+        cur.execute(f"""
+        UPDATE seller_agents
+        SET seller_agent_status = 'disabled',
+            updated_at = {p}
+        WHERE seller_id = {p}
+        """, (
+            now,
+            seller_id,
+        ))
+
+        if is_postgres():
+            cur.execute(f"""
+            UPDATE agents
+            SET available = 0,
+                seller_status = {p},
+                risk_score = GREATEST(COALESCE(risk_score, 0), 1.0),
+                updated_at = {p}
+            WHERE seller_id = {p}
+            """, (
+                next_status,
+                now,
+                seller_id,
+            ))
+        else:
+            cur.execute(f"""
+            UPDATE agents
+            SET available = 0,
+                seller_status = {p},
+                risk_score = MAX(COALESCE(risk_score, 0), 1.0),
+                updated_at = {p}
+            WHERE seller_id = {p}
+            """, (
+                next_status,
+                now,
+                seller_id,
+            ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "previous_status": current_status,
+        "new_status": next_status,
+        "reason": reason,
+    }
+

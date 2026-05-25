@@ -1,3 +1,42 @@
+
+
+FOUNDATION_AGENT_CAPABILITIES = {
+    "foundation_web_standard": {
+        "role": "web_research",
+        "specialty": "general_web_research",
+        "engine": "foundation_web_research",
+    },
+    "foundation_web_cheap": {
+        "role": "web_research",
+        "specialty": "fast_low_cost_research",
+        "engine": "foundation_web_research",
+    },
+    "foundation_product_agent": {
+        "role": "product_ranking",
+        "specialty": "product_comparison",
+        "engine": "foundation_product_ranking",
+    },
+    "buyer_foundation_web_research": {
+        "role": "web_research",
+        "specialty": "buyer_fallback_research",
+        "engine": "foundation_web_research",
+    },
+}
+
+
+def get_foundation_agent_profile(agent):
+    agent_id = str(agent.get("agent_id", "") or "")
+
+    return FOUNDATION_AGENT_CAPABILITIES.get(
+        agent_id,
+        {
+            "role": agent.get("service", "foundation"),
+            "specialty": "generic_foundation_execution",
+            "engine": "foundation_generic",
+        },
+    )
+
+
 import time
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -957,7 +996,192 @@ def normalize_agent_delivery(data):
     }
 
 
+
+
+def is_foundation_agent(agent):
+    agent_type = str(agent.get("agent_type", "") or "").lower()
+    agent_id = str(agent.get("agent_id", "") or "").lower()
+
+    return (
+        agent_type == "foundation"
+        or agent_id.startswith("buyer_foundation_")
+        or agent_id.startswith("foundation_")
+    )
+
+
+
+
+def foundation_web_research_engine(agent, order, profile):
+    query = order.get("query") or ""
+
+    return {
+        "delivery_type": "foundation_web_research",
+        "summary": (
+            "Foundation web research engine processed the buyer request "
+            "inside the protocol execution layer."
+        ),
+        "recommendations": [],
+        "final_recommendation": (
+            f"Foundation web research result for query: {query}"
+        ),
+        "confidence": 0.70,
+        "sources": [],
+        "claims": [
+            {
+                "claim": "Request handled by internal foundation web research engine.",
+                "confidence": 0.70,
+            }
+        ],
+        "metrics": {
+            "foundation_engine_confidence": 0.70,
+        },
+        "structured_signals": {
+            "engine": profile.get("engine"),
+            "role": profile.get("role"),
+            "specialty": profile.get("specialty"),
+        },
+        "entities": [],
+        "raw": {
+            "query": query,
+            "execution_layer": "foundation_internal",
+            "engine": profile.get("engine"),
+        },
+    }
+
+
+def foundation_product_ranking_engine(agent, order, profile):
+    query = order.get("query") or ""
+
+    return {
+        "delivery_type": "foundation_product_ranking",
+        "summary": (
+            "Foundation product ranking engine processed the buyer request "
+            "inside the protocol execution layer."
+        ),
+        "recommendations": [],
+        "final_recommendation": (
+            f"Foundation product ranking result for query: {query}"
+        ),
+        "confidence": 0.70,
+        "sources": [],
+        "claims": [
+            {
+                "claim": "Request handled by internal foundation product ranking engine.",
+                "confidence": 0.70,
+            }
+        ],
+        "metrics": {
+            "foundation_engine_confidence": 0.70,
+        },
+        "structured_signals": {
+            "engine": profile.get("engine"),
+            "role": profile.get("role"),
+            "specialty": profile.get("specialty"),
+        },
+        "entities": [],
+        "raw": {
+            "query": query,
+            "execution_layer": "foundation_internal",
+            "engine": profile.get("engine"),
+        },
+    }
+
+
+def foundation_generic_engine(agent, order, profile):
+    query = order.get("query") or ""
+
+    return {
+        "delivery_type": "foundation_generic",
+        "summary": (
+            "Generic foundation engine handled the request internally."
+        ),
+        "recommendations": [],
+        "final_recommendation": (
+            f"Generic foundation result for query: {query}"
+        ),
+        "confidence": 0.60,
+        "sources": [],
+        "claims": [],
+        "metrics": {
+            "foundation_engine_confidence": 0.60,
+        },
+        "structured_signals": {
+            "engine": profile.get("engine"),
+            "role": profile.get("role"),
+            "specialty": profile.get("specialty"),
+        },
+        "entities": [],
+        "raw": {
+            "query": query,
+            "execution_layer": "foundation_internal",
+            "engine": profile.get("engine"),
+        },
+    }
+
+
+def route_foundation_engine(agent, order):
+    profile = get_foundation_agent_profile(agent)
+    engine = profile.get("engine")
+
+    if engine == "foundation_web_research":
+        return foundation_web_research_engine(agent, order, profile)
+
+    if engine == "foundation_product_ranking":
+        return foundation_product_ranking_engine(agent, order, profile)
+
+    return foundation_generic_engine(agent, order, profile)
+
+
+
+def execute_foundation_agent_internal(agent, order):
+    start = time.monotonic()
+    latency = 0.0
+
+    try:
+        data = route_foundation_engine(agent, order)
+
+        latency = max(time.monotonic() - start, 0)
+
+        return {
+            "agent_id": agent.get("agent_id"),
+            "wallet": agent.get("wallet"),
+            "latency": round(latency, 6),
+            "reputation": agent.get("reputation", 0.95),
+            "success_count": agent.get("success_count", 0),
+            "failure_count": agent.get("failure_count", 0),
+            "call_count": agent.get("call_count", 0),
+            "win_count": agent.get("win_count", 0),
+            "latency_total": agent.get("latency_total", 0.0),
+            "trust_tier": agent.get("trust_tier", "free"),
+            "stake_amount": agent.get("stake_amount", 0.0),
+            "stake_required": agent.get("stake_required", 0.0),
+            "risk_score": agent.get("risk_score", 0.0),
+            "volume_total": agent.get("volume_total", 0.0),
+            "honest_volume": agent.get("honest_volume", 0.0),
+            "fraud_volume": agent.get("fraud_volume", 0.0),
+            "dynamic_stake_required": agent.get("dynamic_stake_required", 0.0),
+            "success": True,
+            "data": data,
+        }
+
+    except Exception as e:
+        latency = max(time.monotonic() - start, 0)
+
+        return {
+            "agent_id": agent.get("agent_id"),
+            "wallet": agent.get("wallet"),
+            "latency": round(latency, 6),
+            "reputation": agent.get("reputation", 0.95),
+            "success": False,
+            "error": str(e),
+        }
+
+
+
 def call_agent(agent, order):
+    if is_foundation_agent(agent):
+        return execute_foundation_agent_internal(agent, order)
+
     start = time.monotonic()
 
     try:
@@ -1068,7 +1292,7 @@ def multi_call(agents, order, max_workers=5):
         futures = [
             executor.submit(call_agent, agent, order)
             for agent in agents
-            if agent.get("url")
+            if agent.get("url") or is_foundation_agent(agent)
         ]
 
         for future in as_completed(futures):

@@ -5420,3 +5420,26 @@ def admin_seller_recompute_trust(
     )
 
 
+
+
+class AdminSellerStatusUpdateRequest(BaseModel):
+    seller_id: str = Field(min_length=3, max_length=200)
+    next_status: str = Field(min_length=3, max_length=50)
+    reason: str = "manual_governance"
+
+
+@app.post("/admin/seller/update-status")
+def admin_seller_update_status(
+    req: AdminSellerStatusUpdateRequest,
+    x_api_key: str = Header(default="")
+):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import update_seller_status_governed_db
+
+    return update_seller_status_governed_db(
+        seller_id=req.seller_id,
+        next_status=req.next_status,
+        reason=req.reason,
+    )
+

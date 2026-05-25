@@ -674,6 +674,20 @@ def select_top_agents(agents, limit=3, order=None):
     for candidate in ranked:
         base_score = compute_buyer_agent_score(candidate, order or {})
 
+        routing_modifier_data = compute_seller_routing_modifier(candidate)
+
+        if not routing_modifier_data.get("allowed", True):
+            continue
+
+        routing_modifier = float(
+            routing_modifier_data.get("modifier", 0) or 0
+        )
+
+        base_score += routing_modifier
+
+        candidate["_seller_routing_modifier"] = round(routing_modifier, 6)
+        candidate["_seller_routing_reason"] = routing_modifier_data.get("reason")
+
         diversity_penalty = compute_cluster_diversity_penalty(
             candidate,
             selected,
@@ -2096,4 +2110,46 @@ def compute_consensus(results):
         "suspicious_agents": suspicious_agents,
         "collusion_flags": collusion_flags,
     }
+
+
+
+def compute_seller_routing_modifier(agent):
+    seller_status = str(agent.get("seller_status", "") or "").lower()
+    trust_tier = str(agent.get("trust_tier", "") or "").lower()
+
+    risk_score = float(agent.get("risk_score", 0) or 0)
+    containment_count = int(agent.get("containment_count", 0) or 0)
+    economic_penalty_level = int(agent.get("economic_penalty_level", 0) or 0)
+
+    if seller_status in ["contained", "banned", "rejected"]:
+        return {
+            "allowed": False,
+            "modifier": -999,
+            "reason": "seller_status_blocked",
+        }
+
+    modifier = 0.0
+
+    if trust_tier == "premium":
+        modifier += 0.12
+    elif trust_tier == "trusted":
+        modifier += 0.08
+    elif trust_tier == "new":
+        modifier += 0.0
+    elif trust_tier == "restricted":
+        modifier -= 0.25
+
+    if seller_status in ["watchlist", "restricted"]:
+        modifier -= 0.25
+
+    modifier -= min(risk_score * 0.35, 0.35)
+    modifier -= min(containment_count * 0.15, 0.45)
+    modifier -= min(economic_penalty_level * 0.10, 0.50)
+
+    return {
+        "allowed": True,
+        "modifier": round(modifier, 6),
+        "reason": "seller_routing_modifier_applied",
+    }
+
 

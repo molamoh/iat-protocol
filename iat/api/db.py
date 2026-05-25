@@ -6868,3 +6868,103 @@ def list_seller_risk_dashboard_db(limit=100):
     }
 
 
+
+
+def recompute_seller_trust_tier_db(seller_id):
+    if not seller_id:
+        return {
+            "status": "error",
+            "message": "seller_id_required",
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    SELECT seller_id,
+           risk_score,
+           successful_orders,
+           containment_count,
+           economic_penalty_level,
+           seller_status
+    FROM sellers
+    WHERE seller_id = {p}
+    """, (seller_id,))
+
+    row = cur.fetchone()
+
+    if not row:
+        release_conn(conn)
+        return {
+            "status": "error",
+            "message": "seller_not_found",
+            "seller_id": seller_id,
+        }
+
+    risk_score = float(row_get(row, "risk_score", 0) or 0)
+    successful_orders = int(row_get(row, "successful_orders", 0) or 0)
+    containment_count = int(row_get(row, "containment_count", 0) or 0)
+    economic_penalty_level = int(row_get(row, "economic_penalty_level", 0) or 0)
+    seller_status = str(row_get(row, "seller_status", "pending") or "pending")
+
+    trust_tier = "new"
+    max_agents_allowed = 1
+    exposure_limit = 0
+
+    if seller_status in ["contained", "restricted", "rejected", "banned"]:
+        trust_tier = "restricted"
+        max_agents_allowed = 1
+        exposure_limit = 0
+    elif containment_count >= 3 or economic_penalty_level >= 3:
+        trust_tier = "restricted"
+        max_agents_allowed = 1
+        exposure_limit = 0
+    elif successful_orders >= 100 and risk_score < 0.1 and containment_count == 0:
+        trust_tier = "premium"
+        max_agents_allowed = 10
+        exposure_limit = 1000
+    elif successful_orders >= 25 and risk_score < 0.2 and containment_count == 0:
+        trust_tier = "trusted"
+        max_agents_allowed = 5
+        exposure_limit = 250
+    else:
+        trust_tier = "new"
+        max_agents_allowed = 1
+        exposure_limit = 0
+
+    cur.execute(f"""
+    UPDATE sellers
+    SET trust_tier = {p},
+        max_agents_allowed = {p},
+        exposure_limit = {p},
+        last_risk_review_at = {p},
+        updated_at = {p}
+    WHERE seller_id = {p}
+    """, (
+        trust_tier,
+        max_agents_allowed,
+        exposure_limit,
+        now,
+        now,
+        seller_id,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "seller_status": seller_status,
+        "trust_tier": trust_tier,
+        "risk_score": risk_score,
+        "successful_orders": successful_orders,
+        "containment_count": containment_count,
+        "economic_penalty_level": economic_penalty_level,
+        "max_agents_allowed": max_agents_allowed,
+        "exposure_limit": exposure_limit,
+    }
+
+

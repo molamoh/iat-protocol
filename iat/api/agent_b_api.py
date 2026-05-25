@@ -5400,3 +5400,23 @@ def admin_seller_risk_dashboard(
     )
 
 
+
+
+class AdminSellerTrustRecomputeRequest(BaseModel):
+    seller_id: str = Field(min_length=3, max_length=200)
+
+
+@app.post("/admin/seller/recompute-trust")
+def admin_seller_recompute_trust(
+    req: AdminSellerTrustRecomputeRequest,
+    x_api_key: str = Header(default="")
+):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import recompute_seller_trust_tier_db
+
+    return recompute_seller_trust_tier_db(
+        seller_id=req.seller_id
+    )
+
+

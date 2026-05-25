@@ -3,6 +3,7 @@ import os
 import time
 import uuid
 import requests
+import threading
 from urllib.parse import urlparse
 from fastapi import FastAPI, Header, Request
 from pydantic import BaseModel, EmailStr, Field
@@ -5298,5 +5299,70 @@ def internal_runtime_heartbeat_scan(
         "agents_scanned": len(results),
         "results": results,
     }
+
+
+
+
+def runtime_heartbeat_governance_loop():
+    while True:
+        try:
+            agents = list_runtime_monitored_seller_agents_db()
+
+            for agent in agents:
+                runtime = validate_seller_runtime(
+                    agent.get("url")
+                )
+
+                if runtime.get("status") == "ok":
+                    runtime_status = "validated"
+
+                    health_score = float(
+                        runtime.get(
+                            "runtime_health_score",
+                            0
+                        ) or 0
+                    )
+
+                    latency = float(
+                        runtime.get(
+                            "runtime_latency",
+                            0
+                        ) or 0
+                    )
+                else:
+                    runtime_status = "dead"
+                    health_score = 0.0
+                    latency = 0.0
+
+                update_seller_agent_runtime_status_db(
+                    seller_agent_id=agent.get(
+                        "seller_agent_id"
+                    ),
+                    runtime_validation_status=runtime_status,
+                    runtime_health_score=health_score,
+                    runtime_latency=latency,
+                )
+
+        except Exception as e:
+            print(
+                "[IAT_RUNTIME_HEARTBEAT_LOOP_ERROR]",
+                str(e)
+            )
+
+        time.sleep(60)
+
+
+@app.on_event("startup")
+def start_runtime_governance_loop():
+    thread = threading.Thread(
+        target=runtime_heartbeat_governance_loop,
+        daemon=True
+    )
+
+    thread.start()
+
+    print(
+        "[IAT] Runtime heartbeat governance loop started"
+    )
 
 

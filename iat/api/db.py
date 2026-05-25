@@ -5436,6 +5436,30 @@ def update_seller_agent_runtime_status_db(
 
     new_runtime_failure_count = current_runtime_failure_count
 
+    cur.execute(f"""
+    SELECT runtime_quarantine_until
+    FROM seller_agents
+    WHERE seller_agent_id = {p}
+    """, (seller_agent_id,))
+
+    quarantine_row = cur.fetchone()
+    current_quarantine_until = int(
+        row_get(quarantine_row, "runtime_quarantine_until", 0) or 0
+    )
+
+    quarantine_active = (
+        current_quarantine_until
+        and current_quarantine_until > now
+    )
+
+    if quarantine_active:
+        runtime_validation_status = "quarantined"
+        runtime_health_score = min(
+            float(runtime_health_score or 0),
+            0.2
+        )
+        quarantine_until = current_quarantine_until
+
     if runtime_validation_status in ["dead", "quarantined"]:
         new_runtime_failure_count = current_runtime_failure_count + 1
     elif runtime_validation_status == "validated":

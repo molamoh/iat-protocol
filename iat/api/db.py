@@ -6549,3 +6549,124 @@ def list_runtime_monitored_seller_agents_db(limit=100):
     return [dict(r) for r in rows]
 
 
+
+
+def evaluate_seller_runtime_containment_db(seller_id):
+    if not seller_id:
+        return {
+            "status": "error",
+            "message": "seller_id_required",
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT COUNT(*) AS quarantined_count
+    FROM seller_agents
+    WHERE seller_id = {p}
+      AND runtime_validation_status = 'quarantined'
+    """, (seller_id,))
+
+    row = cur.fetchone()
+
+    quarantined_count = int(
+        row_get(row, "quarantined_count", 0) or 0
+    )
+
+    seller_status = "contained" if quarantined_count >= 3 else "pending"
+
+    cur.execute(f"""
+    UPDATE sellers
+    SET seller_status = {p}
+    WHERE seller_id = {p}
+    """, (
+        seller_status,
+        seller_id,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "seller_status": seller_status,
+        "quarantined_agents": quarantined_count,
+    }
+
+
+
+
+def evaluate_seller_runtime_containment_with_cursor(cur, seller_id):
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT COUNT(*) AS quarantined_count
+    FROM seller_agents
+    WHERE seller_id = {p}
+      AND runtime_validation_status = 'quarantined'
+    """, (seller_id,))
+
+    row = cur.fetchone()
+
+    quarantined_count = int(
+        row_get(row, "quarantined_count", 0) or 0
+    )
+
+    seller_status = "contained" if quarantined_count >= 3 else "pending"
+
+    cur.execute(f"""
+    UPDATE sellers
+    SET seller_status = {p}
+    WHERE seller_id = {p}
+    """, (
+        seller_status,
+        seller_id,
+    ))
+
+    if seller_status == "contained":
+        cur.execute(f"""
+        UPDATE seller_agents
+        SET seller_agent_status = 'disabled',
+            updated_at = {p}
+        WHERE seller_id = {p}
+        """, (
+            int(time.time()),
+            seller_id,
+        ))
+
+        if is_postgres():
+            cur.execute(f"""
+            UPDATE agents
+            SET available = 0,
+                risk_score = GREATEST(COALESCE(risk_score, 0), 1.0),
+                seller_status = 'contained',
+                updated_at = {p}
+            WHERE seller_id = {p}
+            """, (
+                int(time.time()),
+                seller_id,
+            ))
+        else:
+            cur.execute(f"""
+            UPDATE agents
+            SET available = 0,
+                risk_score = MAX(COALESCE(risk_score, 0), 1.0),
+                seller_status = 'contained',
+                updated_at = {p}
+            WHERE seller_id = {p}
+            """, (
+                int(time.time()),
+                seller_id,
+            ))
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "seller_status": seller_status,
+        "quarantined_agents": quarantined_count,
+    }
+
+

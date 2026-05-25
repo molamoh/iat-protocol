@@ -6822,3 +6822,49 @@ def list_seller_containment_events_db(limit=50):
     }
 
 
+
+
+def list_seller_risk_dashboard_db(limit=100):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    limit = max(1, min(int(limit or 100), 500))
+
+    cur.execute(f"""
+    SELECT seller_id,
+           seller_name,
+           wallet,
+           email,
+           seller_status,
+           verification_status,
+           trust_tier,
+           reputation,
+           risk_score,
+           containment_count,
+           economic_penalty_level,
+           exposure_limit,
+           max_agents_allowed,
+           total_agents,
+           active_agents,
+           last_risk_review_at,
+           last_violation_at,
+           created_at,
+           updated_at
+    FROM sellers
+    ORDER BY risk_score DESC,
+             containment_count DESC,
+             updated_at DESC
+    LIMIT {p}
+    """, (limit,))
+
+    rows = [dict(r) for r in cur.fetchall()]
+
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "sellers": rows,
+    }
+
+

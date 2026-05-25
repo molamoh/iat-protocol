@@ -5251,6 +5251,24 @@ def admin_seller_agent_runtime_status(
     )
 
 
+
+
+@app.get("/admin/seller-containment-events")
+def admin_seller_containment_events(
+    limit: int = 50,
+    x_api_key: str = Header(None),
+):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import (
+        list_seller_containment_events_db,
+    )
+
+    return list_seller_containment_events_db(
+        limit=limit
+    )
+
+
 @app.post("/internal/runtime/heartbeat-scan")
 def internal_runtime_heartbeat_scan(
     x_api_key: str = Header(default="")
@@ -5363,6 +5381,22 @@ def start_runtime_governance_loop():
 
     print(
         "[IAT] Runtime heartbeat governance loop started"
+    )
+
+
+
+
+@app.get("/admin/seller-risk-dashboard")
+def admin_seller_risk_dashboard(
+    limit: int = 100,
+    x_api_key: str = Header(default="")
+):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import list_seller_risk_dashboard_db
+
+    return list_seller_risk_dashboard_db(
+        limit=limit
     )
 
 

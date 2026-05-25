@@ -141,6 +141,7 @@ def init_db():
     release_conn(locals().get("conn"))
     init_agents_table()
     init_sellers_table()
+    ensure_seller_punishment_columns()
     init_seller_agents_table()
     ensure_seller_agent_runtime_columns()
     init_seller_governance_events_table()
@@ -241,6 +242,35 @@ def init_agents_table():
 
 
 
+
+
+def ensure_seller_punishment_columns():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    columns = {
+        "containment_count": "INTEGER DEFAULT 0",
+        "economic_penalty_level": "INTEGER DEFAULT 0",
+    }
+
+    for column, definition in columns.items():
+        try:
+            if is_postgres():
+                cur.execute(
+                    f"ALTER TABLE sellers ADD COLUMN IF NOT EXISTS {column} {definition}"
+                )
+            else:
+                cur.execute(
+                    f"ALTER TABLE sellers ADD COLUMN {column} {definition}"
+                )
+        except Exception:
+            pass
+
+    conn.commit()
+    release_conn(conn)
+
+
+
 def init_sellers_table():
     conn = get_conn()
     cur = conn.cursor()
@@ -306,6 +336,8 @@ def ensure_seller_agent_runtime_columns():
         "runtime_last_checked_at": "INTEGER",
         "runtime_failure_count": "INTEGER DEFAULT 0",
         "runtime_quarantine_until": "INTEGER",
+        "containment_count": "INTEGER DEFAULT 0",
+        "economic_penalty_level": "INTEGER DEFAULT 0",
     }
 
     for column, definition in columns.items():
@@ -6645,6 +6677,11 @@ def evaluate_seller_runtime_containment_with_cursor(cur, seller_id):
         cur.execute(f"""
         UPDATE sellers
         SET risk_score = MIN(COALESCE(risk_score, 0) + 0.25, 1.0),
+            containment_count = COALESCE(containment_count, 0) + 1,
+            economic_penalty_level = MIN(
+                COALESCE(economic_penalty_level, 0) + 1,
+                5
+            ),
             exposure_limit = 0,
             max_agents_allowed = 1,
             last_violation_at = {p},

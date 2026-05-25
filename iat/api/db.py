@@ -6643,6 +6643,22 @@ def evaluate_seller_runtime_containment_with_cursor(cur, seller_id):
 
     if seller_status == "contained":
         cur.execute(f"""
+        UPDATE sellers
+        SET risk_score = MIN(COALESCE(risk_score, 0) + 0.25, 1.0),
+            exposure_limit = 0,
+            max_agents_allowed = 1,
+            last_violation_at = {p},
+            last_risk_review_at = {p},
+            updated_at = {p}
+        WHERE seller_id = {p}
+        """, (
+            int(time.time()),
+            int(time.time()),
+            int(time.time()),
+            seller_id,
+        ))
+
+        cur.execute(f"""
         UPDATE seller_agents
         SET seller_agent_status = 'disabled',
             updated_at = {p}
@@ -6730,6 +6746,42 @@ def create_seller_containment_event_with_cursor(
     return {
         "status": "ok",
         "containment_event_id": event_id,
+    }
+
+
+
+
+def list_seller_containment_events_db(limit=50):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    limit = max(1, min(int(limit or 50), 500))
+
+    if is_postgres():
+        query = f"""
+        SELECT *
+        FROM seller_containment_events
+        ORDER BY created_at DESC
+        LIMIT {p}
+        """
+    else:
+        query = f"""
+        SELECT *
+        FROM seller_containment_events
+        ORDER BY created_at DESC
+        LIMIT {p}
+        """
+
+    cur.execute(query, (limit,))
+
+    rows = [dict(r) for r in cur.fetchall()]
+
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "events": rows,
     }
 
 

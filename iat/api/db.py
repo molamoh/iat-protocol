@@ -309,7 +309,14 @@ def ensure_seller_agent_runtime_columns():
 
     for column, definition in columns.items():
         try:
-            cur.execute(f"ALTER TABLE seller_agents ADD COLUMN {column} {definition}")
+            if is_postgres():
+                cur.execute(
+                    f"ALTER TABLE seller_agents ADD COLUMN IF NOT EXISTS {column} {definition}"
+                )
+            else:
+                cur.execute(
+                    f"ALTER TABLE seller_agents ADD COLUMN {column} {definition}"
+                )
         except Exception:
             pass
 

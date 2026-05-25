@@ -6614,14 +6614,32 @@ def evaluate_seller_runtime_containment_with_cursor(cur, seller_id):
 
     seller_status = "contained" if quarantined_count >= 3 else "pending"
 
-    cur.execute(f"""
-    UPDATE sellers
-    SET seller_status = {p}
-    WHERE seller_id = {p}
-    """, (
-        seller_status,
-        seller_id,
-    ))
+    if seller_status == "contained":
+        cur.execute(f"""
+        UPDATE sellers
+        SET seller_status = {p},
+            exposure_limit = 0,
+            max_agents_allowed = 1,
+            updated_at = {p},
+            last_risk_review_at = {p}
+        WHERE seller_id = {p}
+        """, (
+            seller_status,
+            int(time.time()),
+            int(time.time()),
+            seller_id,
+        ))
+    else:
+        cur.execute(f"""
+        UPDATE sellers
+        SET seller_status = {p},
+            updated_at = {p}
+        WHERE seller_id = {p}
+        """, (
+            seller_status,
+            int(time.time()),
+            seller_id,
+        ))
 
     if seller_status == "contained":
         cur.execute(f"""

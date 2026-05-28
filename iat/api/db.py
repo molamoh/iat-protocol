@@ -145,7 +145,11 @@ def init_db():
     init_seller_agents_table()
     ensure_seller_agent_runtime_columns()
     init_seller_governance_events_table()
+    init_threat_memory_nodes_table()
+    init_adversarial_mutation_signatures_table()
     init_seller_containment_events_table()
+    init_seller_recovery_requests_table()
+    init_seller_governance_events_table()
     init_adaptive_defense_tables()
     init_buyers_table()
     init_agent_topic_stats_table()
@@ -1445,7 +1449,29 @@ def delete_agent_db(agent_id):
 def list_agents_db():
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT * FROM agents ORDER BY service, agent_id")
+
+    cur.execute("""
+    SELECT
+        agents.*,
+        tmn.memory_score AS threat_memory_score,
+        tmn.latent_risk_score AS latent_risk_score,
+        tmn.mutation_score AS mutation_score,
+        tmn.contagion_score AS contagion_score,
+        tmn.lineage_depth AS lineage_depth,
+        tmn.ancestor_risk_score AS ancestor_risk_score,
+        tmn.descendant_risk_score AS descendant_risk_score,
+        tmn.recovery_confidence AS recovery_confidence,
+        tmn.threat_entropy AS threat_entropy,
+        tmn.graph_position_score AS graph_position_score,
+        tmn.quarantine_pressure AS quarantine_pressure,
+        tmn.adaptive_trust_score AS adaptive_trust_score,
+        tmn.memory_weight AS threat_memory_weight
+    FROM agents
+    LEFT JOIN threat_memory_nodes tmn
+      ON tmn.seller_id = agents.agent_id
+    ORDER BY agents.service, agents.agent_id
+    """)
+
     rows = cur.fetchall()
     release_conn(locals().get("conn"))
 
@@ -1749,6 +1775,29 @@ def store_threat_forecast_db(
 
     conn.commit()
     release_conn(conn)
+
+    if scope == "seller" and subject_id:
+        try:
+            memories = get_active_threat_memory_db(
+                scope="seller",
+                subject_id=subject_id,
+                limit=25,
+            )
+
+            for memory in memories:
+                derive_adversarial_mutation_signatures_from_threat_memory_db(
+                    subject_id=subject_id,
+                    memory=memory,
+                )
+
+            recompute_threat_memory_node_db(subject_id)
+
+            sync_adversarial_mutation_pressure_to_memory_node_db(
+                subject_id=subject_id,
+                scope="seller",
+            )
+        except Exception:
+            pass
 
     return {
         "status": "stored",
@@ -5786,8 +5835,9 @@ def apply_seller_risk_event_db(
         "foundation_verified": 0.50,
     }.get(trust_tier, 1.00)
 
-    # Risk naturally decays slightly at each review to avoid permanent death spirals.
-    decay_factor = 0.92
+    # Risk events must not reduce risk.
+    # Decay/recovery is handled by dedicated decay/recovery flows.
+    decay_factor = 1.0
 
     adjusted_severity = severity * event_weight * trust_resistance
 
@@ -5796,6 +5846,9 @@ def apply_seller_risk_event_db(
         adjusted_severity = min(adjusted_severity, 0.30)
 
     new_risk = min(1.0, (current_risk * decay_factor) + adjusted_severity)
+
+    if event_type not in ["risk_decay", "recovery_approved", "stable_behavior"]:
+        new_risk = max(current_risk, new_risk)
 
     new_max_agents = current_max_agents
 
@@ -6487,6 +6540,32 @@ def create_seller_governance_event_with_cursor(
     ))
 
 
+    try:
+        severity = "info"
+
+        if str(new_status).lower() in ["restricted"]:
+            severity = "high"
+        elif str(new_status).lower() in ["contained", "rejected", "banned"]:
+            severity = "critical"
+        elif str(new_status).lower() in ["watchlist"]:
+            severity = "medium"
+
+        evolve_threat_memory_from_seller_event_db(
+            seller_id=seller_id,
+            event_type=event_type,
+            severity=severity,
+            metadata={
+                "old_status": old_status,
+                "new_status": new_status,
+                "reason": reason,
+                "reviewer": reviewer,
+                "source": "seller_governance_event",
+                "event_id": event_id,
+            },
+        )
+    except Exception:
+        pass
+
     return {
         "status": "ok",
         "event_id": event_id,
@@ -6507,466 +6586,22 @@ def create_seller_governance_event_db(
     conn = get_conn()
     cur = conn.cursor()
 
-    p = qmark()
-
-    event_id = "seller_event_" + str(uuid.uuid4())
-    now = int(time.time())
-
-    metadata_json = json.dumps(metadata or {})
-
-    cur.execute(f"""
-    INSERT INTO seller_governance_events (
-        event_id,
-        seller_id,
-        event_type,
-        reviewer,
-        reason,
-        override_terminal,
-        old_status,
-        new_status,
-        metadata,
-        created_at
-    ) VALUES (
-        {p}, {p}, {p}, {p}, {p},
-        {p}, {p}, {p}, {p}, {p}
-    )
-    """, (
-        event_id,
-        seller_id,
-        event_type,
-        reviewer,
-        reason,
-        override_terminal,
-        old_status,
-        new_status,
-        metadata_json,
-        now,
-    ))
-
-    conn.commit()
-    release_conn(conn)
-
-    return {
-        "status": "ok",
-        "event_id": event_id,
-    }
-
-
-def list_seller_governance_events_db(
-    seller_id,
-    limit=100,
-):
-    conn = get_conn()
-    cur = conn.cursor()
-
-    p = qmark()
-
-    cur.execute(f"""
-    SELECT *
-    FROM seller_governance_events
-    WHERE seller_id = {p}
-    ORDER BY created_at DESC
-    LIMIT {p}
-    """, (
-        seller_id,
-        limit,
-    ))
-
-    rows = cur.fetchall()
-
-    release_conn(conn)
-
-    return [dict(r) for r in rows]
-
-
-def list_runtime_monitored_seller_agents_db(limit=100):
-    conn = get_conn()
-    cur = conn.cursor()
-    p = qmark()
-
-    cur.execute(f"""
-    SELECT seller_agent_id,
-           seller_id,
-           agent_id,
-           url,
-           runtime_validation_status,
-           runtime_health_score,
-           seller_agent_status
-    FROM seller_agents
-    WHERE seller_agent_status IN ('active', 'limited')
-    ORDER BY updated_at ASC
-    LIMIT {p}
-    """, (int(limit or 100),))
-
-    rows = cur.fetchall()
-    release_conn(conn)
-
-    return [dict(r) for r in rows]
-
-
-
-
-def evaluate_seller_runtime_containment_db(seller_id):
-    if not seller_id:
-        return {
-            "status": "error",
-            "message": "seller_id_required",
-        }
-
-    conn = get_conn()
-    cur = conn.cursor()
-
-    result = evaluate_seller_runtime_containment_with_cursor(
-        cur,
-        seller_id,
+    result = create_seller_governance_event_with_cursor(
+        cur=cur,
+        seller_id=seller_id,
+        event_type=event_type,
+        reviewer=reviewer,
+        reason=reason,
+        override_terminal=override_terminal,
+        old_status=old_status,
+        new_status=new_status,
+        metadata=metadata,
     )
 
     conn.commit()
     release_conn(conn)
 
     return result
-
-
-
-def evaluate_seller_runtime_containment_with_cursor(cur, seller_id):
-    p = qmark()
-
-    cur.execute(f"""
-    SELECT COUNT(*) AS quarantined_count
-    FROM seller_agents
-    WHERE seller_id = {p}
-      AND runtime_validation_status = 'quarantined'
-    """, (seller_id,))
-
-    row = cur.fetchone()
-
-    quarantined_count = int(
-        row_get(row, "quarantined_count", 0) or 0
-    )
-
-    seller_status = "contained" if quarantined_count >= 3 else "pending"
-
-    if seller_status == "contained":
-        cur.execute(f"""
-        UPDATE sellers
-        SET seller_status = {p},
-            exposure_limit = 0,
-            max_agents_allowed = 1,
-            updated_at = {p},
-            last_risk_review_at = {p}
-        WHERE seller_id = {p}
-        """, (
-            seller_status,
-            int(time.time()),
-            int(time.time()),
-            seller_id,
-        ))
-    else:
-        cur.execute(f"""
-        UPDATE sellers
-        SET seller_status = {p},
-            updated_at = {p}
-        WHERE seller_id = {p}
-        """, (
-            seller_status,
-            int(time.time()),
-            seller_id,
-        ))
-
-    if seller_status == "contained":
-        cur.execute(f"""
-        UPDATE sellers
-        SET risk_score = MIN(COALESCE(risk_score, 0) + 0.25, 1.0),
-            containment_count = COALESCE(containment_count, 0) + 1,
-            economic_penalty_level = MIN(
-                COALESCE(economic_penalty_level, 0) + 1,
-                5
-            ),
-            exposure_limit = 0,
-            max_agents_allowed = 1,
-            last_violation_at = {p},
-            last_risk_review_at = {p},
-            updated_at = {p}
-        WHERE seller_id = {p}
-        """, (
-            int(time.time()),
-            int(time.time()),
-            int(time.time()),
-            seller_id,
-        ))
-
-        cur.execute(f"""
-        UPDATE seller_agents
-        SET seller_agent_status = 'disabled',
-            updated_at = {p}
-        WHERE seller_id = {p}
-        """, (
-            int(time.time()),
-            seller_id,
-        ))
-
-        if is_postgres():
-            cur.execute(f"""
-            UPDATE agents
-            SET available = 0,
-                risk_score = GREATEST(COALESCE(risk_score, 0), 1.0),
-                seller_status = 'contained',
-                updated_at = {p}
-            WHERE seller_id = {p}
-            """, (
-                int(time.time()),
-                seller_id,
-            ))
-        else:
-            cur.execute(f"""
-            UPDATE agents
-            SET available = 0,
-                risk_score = MAX(COALESCE(risk_score, 0), 1.0),
-                seller_status = 'contained',
-                updated_at = {p}
-            WHERE seller_id = {p}
-            """, (
-                int(time.time()),
-                seller_id,
-            ))
-
-        create_seller_containment_event_with_cursor(
-            cur=cur,
-            seller_id=seller_id,
-            seller_status=seller_status,
-            quarantined_agents=quarantined_count,
-            trigger_source="runtime_quarantine_threshold",
-        )
-
-    return {
-        "status": "ok",
-        "seller_id": seller_id,
-        "seller_status": seller_status,
-        "quarantined_agents": quarantined_count,
-    }
-
-
-
-
-def create_seller_containment_event_with_cursor(
-    cur,
-    seller_id,
-    seller_status,
-    quarantined_agents,
-    trigger_source="runtime_containment_engine",
-):
-    p = qmark()
-
-    event_id = "seller_containment_" + str(uuid.uuid4())
-    now = int(time.time())
-
-    cur.execute(f"""
-    INSERT INTO seller_containment_events (
-        containment_event_id,
-        seller_id,
-        seller_status,
-        quarantined_agents,
-        trigger_source,
-        created_at
-    ) VALUES (
-        {p}, {p}, {p}, {p}, {p}, {p}
-    )
-    """, (
-        event_id,
-        seller_id,
-        seller_status,
-        int(quarantined_agents or 0),
-        trigger_source,
-        now,
-    ))
-
-    return {
-        "status": "ok",
-        "containment_event_id": event_id,
-    }
-
-
-
-
-def list_seller_containment_events_db(limit=50):
-    conn = get_conn()
-    cur = conn.cursor()
-    p = qmark()
-
-    limit = max(1, min(int(limit or 50), 500))
-
-    if is_postgres():
-        query = f"""
-        SELECT *
-        FROM seller_containment_events
-        ORDER BY created_at DESC
-        LIMIT {p}
-        """
-    else:
-        query = f"""
-        SELECT *
-        FROM seller_containment_events
-        ORDER BY created_at DESC
-        LIMIT {p}
-        """
-
-    cur.execute(query, (limit,))
-
-    rows = [dict(r) for r in cur.fetchall()]
-
-    release_conn(conn)
-
-    return {
-        "status": "ok",
-        "events": rows,
-    }
-
-
-
-
-def list_seller_risk_dashboard_db(limit=100):
-    conn = get_conn()
-    cur = conn.cursor()
-    p = qmark()
-
-    limit = max(1, min(int(limit or 100), 500))
-
-    cur.execute(f"""
-    SELECT seller_id,
-           seller_name,
-           wallet,
-           email,
-           seller_status,
-           verification_status,
-           trust_tier,
-           reputation,
-           risk_score,
-           containment_count,
-           economic_penalty_level,
-           exposure_limit,
-           max_agents_allowed,
-           total_agents,
-           active_agents,
-           last_risk_review_at,
-           last_violation_at,
-           created_at,
-           updated_at
-    FROM sellers
-    ORDER BY risk_score DESC,
-             containment_count DESC,
-             updated_at DESC
-    LIMIT {p}
-    """, (limit,))
-
-    rows = [dict(r) for r in cur.fetchall()]
-
-    release_conn(conn)
-
-    return {
-        "status": "ok",
-        "sellers": rows,
-    }
-
-
-
-
-def recompute_seller_trust_tier_db(seller_id):
-    if not seller_id:
-        return {
-            "status": "error",
-            "message": "seller_id_required",
-        }
-
-    conn = get_conn()
-    cur = conn.cursor()
-    p = qmark()
-    now = int(time.time())
-
-    cur.execute(f"""
-    SELECT seller_id,
-           risk_score,
-           successful_orders,
-           containment_count,
-           economic_penalty_level,
-           seller_status
-    FROM sellers
-    WHERE seller_id = {p}
-    """, (seller_id,))
-
-    row = cur.fetchone()
-
-    if not row:
-        release_conn(conn)
-        return {
-            "status": "error",
-            "message": "seller_not_found",
-            "seller_id": seller_id,
-        }
-
-    risk_score = float(row_get(row, "risk_score", 0) or 0)
-    successful_orders = int(row_get(row, "successful_orders", 0) or 0)
-    containment_count = int(row_get(row, "containment_count", 0) or 0)
-    economic_penalty_level = int(row_get(row, "economic_penalty_level", 0) or 0)
-    seller_status = str(row_get(row, "seller_status", "pending") or "pending")
-
-    trust_tier = "new"
-    max_agents_allowed = 1
-    exposure_limit = 0
-
-    if seller_status in ["contained", "restricted", "rejected", "banned"]:
-        trust_tier = "restricted"
-        max_agents_allowed = 1
-        exposure_limit = 0
-    elif containment_count >= 3 or economic_penalty_level >= 3:
-        trust_tier = "restricted"
-        max_agents_allowed = 1
-        exposure_limit = 0
-    elif successful_orders >= 100 and risk_score < 0.1 and containment_count == 0:
-        trust_tier = "premium"
-        max_agents_allowed = 10
-        exposure_limit = 1000
-    elif successful_orders >= 25 and risk_score < 0.2 and containment_count == 0:
-        trust_tier = "trusted"
-        max_agents_allowed = 5
-        exposure_limit = 250
-    else:
-        trust_tier = "new"
-        max_agents_allowed = 1
-        exposure_limit = 0
-
-    cur.execute(f"""
-    UPDATE sellers
-    SET trust_tier = {p},
-        max_agents_allowed = {p},
-        exposure_limit = {p},
-        last_risk_review_at = {p},
-        updated_at = {p}
-    WHERE seller_id = {p}
-    """, (
-        trust_tier,
-        max_agents_allowed,
-        exposure_limit,
-        now,
-        now,
-        seller_id,
-    ))
-
-    conn.commit()
-    release_conn(conn)
-
-    return {
-        "status": "ok",
-        "seller_id": seller_id,
-        "seller_status": seller_status,
-        "trust_tier": trust_tier,
-        "risk_score": risk_score,
-        "successful_orders": successful_orders,
-        "containment_count": containment_count,
-        "economic_penalty_level": economic_penalty_level,
-        "max_agents_allowed": max_agents_allowed,
-        "exposure_limit": exposure_limit,
-    }
-
 
 
 SELLER_ALLOWED_TRANSITIONS = {
@@ -7081,6 +6716,26 @@ def update_seller_status_governed_db(seller_id, next_status, reason="manual_gove
                 seller_id,
             ))
 
+    create_seller_governance_event_with_cursor(
+        cur=cur,
+        seller_id=seller_id,
+        event_type="seller_status_transition",
+        reviewer="admin",
+        reason=reason,
+        override_terminal=False,
+        old_status=current_status,
+        new_status=next_status,
+        metadata={
+            "transition_source": "update_seller_status_governed_db",
+            "security_propagation": next_status in [
+                "restricted",
+                "contained",
+                "rejected",
+                "banned",
+            ],
+        },
+    )
+
     conn.commit()
     release_conn(conn)
 
@@ -7092,3 +6747,3031 @@ def update_seller_status_governed_db(seller_id, next_status, reason="manual_gove
         "reason": reason,
     }
 
+
+
+def init_seller_recovery_requests_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS seller_recovery_requests (
+        recovery_request_id TEXT PRIMARY KEY,
+        seller_id TEXT,
+        seller_status TEXT,
+        requested_status TEXT,
+        reason TEXT,
+        evidence TEXT,
+        recovery_status TEXT DEFAULT 'pending',
+        admin_decision TEXT,
+        admin_reason TEXT,
+        created_at INTEGER,
+        reviewed_at INTEGER
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+def create_seller_recovery_request_db(
+    seller_id,
+    requested_status="watchlist",
+    reason="",
+    evidence=None,
+):
+    if not seller_id:
+        return {"status": "error", "message": "seller_id_required"}
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    SELECT seller_status
+    FROM sellers
+    WHERE seller_id = {p}
+    """, (seller_id,))
+
+    row = cur.fetchone()
+
+    if not row:
+        release_conn(conn)
+        return {"status": "error", "message": "seller_not_found"}
+
+    current_status = row_get(row, "seller_status", "pending")
+
+    if current_status not in ["restricted", "contained"]:
+        release_conn(conn)
+        return {
+            "status": "error",
+            "message": "seller_not_eligible_for_recovery",
+            "seller_status": current_status,
+        }
+
+    recovery_request_id = "seller_recovery_" + str(uuid.uuid4())
+
+    cur.execute(f"""
+    INSERT INTO seller_recovery_requests (
+        recovery_request_id,
+        seller_id,
+        seller_status,
+        requested_status,
+        reason,
+        evidence,
+        recovery_status,
+        created_at
+    ) VALUES (
+        {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}
+    )
+    """, (
+        recovery_request_id,
+        seller_id,
+        current_status,
+        requested_status,
+        reason,
+        json.dumps(evidence or {}),
+        "pending",
+        now,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "recovery_request_id": recovery_request_id,
+        "seller_id": seller_id,
+        "seller_status": current_status,
+        "requested_status": requested_status,
+        "recovery_status": "pending",
+    }
+
+
+
+def decide_seller_recovery_request_db(
+    recovery_request_id,
+    decision,
+    admin_reason="",
+):
+    if not recovery_request_id:
+        return {"status": "error", "message": "recovery_request_id_required"}
+
+    decision = str(decision or "").lower()
+
+    if decision not in ["approved", "rejected"]:
+        return {
+            "status": "error",
+            "message": "invalid_recovery_decision",
+            "allowed": ["approved", "rejected"],
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    SELECT *
+    FROM seller_recovery_requests
+    WHERE recovery_request_id = {p}
+    """, (recovery_request_id,))
+
+    row = cur.fetchone()
+
+    if not row:
+        release_conn(conn)
+        return {"status": "error", "message": "recovery_request_not_found"}
+
+    request = dict(row)
+
+    if request.get("recovery_status") != "pending":
+        release_conn(conn)
+        return {
+            "status": "error",
+            "message": "recovery_request_already_reviewed",
+            "recovery_status": request.get("recovery_status"),
+        }
+
+    seller_id = request.get("seller_id")
+    requested_status = request.get("requested_status") or "watchlist"
+
+    if decision == "approved":
+        transition_result = update_seller_status_governed_db(
+            seller_id=seller_id,
+            next_status=requested_status,
+            reason="approved_recovery_request",
+        )
+
+        if transition_result.get("status") != "ok":
+            release_conn(conn)
+            return {
+                "status": "error",
+                "message": "recovery_transition_failed",
+                "transition_result": transition_result,
+            }
+
+    cur.execute(f"""
+    UPDATE seller_recovery_requests
+    SET recovery_status = {p},
+        admin_decision = {p},
+        admin_reason = {p},
+        reviewed_at = {p}
+    WHERE recovery_request_id = {p}
+    """, (
+        decision,
+        decision,
+        admin_reason,
+        now,
+        recovery_request_id,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "recovery_request_id": recovery_request_id,
+        "seller_id": seller_id,
+        "decision": decision,
+        "requested_status": requested_status,
+    }
+
+
+def list_seller_governance_events_db(seller_id=None, limit=100):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    limit = max(1, min(int(limit or 100), 500))
+
+    if seller_id:
+        cur.execute(f"""
+        SELECT *
+        FROM seller_governance_events
+        WHERE seller_id = {p}
+        ORDER BY created_at DESC
+        LIMIT {p}
+        """, (
+            seller_id,
+            limit,
+        ))
+    else:
+        cur.execute(f"""
+        SELECT *
+        FROM seller_governance_events
+        ORDER BY created_at DESC
+        LIMIT {p}
+        """, (
+            limit,
+        ))
+
+    rows = [dict(r) for r in cur.fetchall()]
+
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "events": rows,
+    }
+
+
+
+def init_seller_clusters_tables():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS seller_clusters (
+        cluster_id TEXT PRIMARY KEY,
+        root_agent_id TEXT,
+        member_count INTEGER DEFAULT 0,
+        edge_count INTEGER DEFAULT 0,
+        cluster_risk_score REAL DEFAULT 0,
+        coordination_probability REAL DEFAULT 0,
+        average_edge_weight REAL DEFAULT 0,
+        strongest_edge_weight REAL DEFAULT 0,
+        threat_memory_count INTEGER DEFAULT 0,
+        created_at INTEGER,
+        updated_at INTEGER
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS cluster_snapshots (
+        snapshot_id TEXT PRIMARY KEY,
+        cluster_id TEXT,
+        root_agent_id TEXT,
+        member_count INTEGER DEFAULT 0,
+        edge_count INTEGER DEFAULT 0,
+        cluster_risk_score REAL DEFAULT 0,
+        coordination_probability REAL DEFAULT 0,
+        average_edge_weight REAL DEFAULT 0,
+        strongest_edge_weight REAL DEFAULT 0,
+        threat_memory_count INTEGER DEFAULT 0,
+        snapshot_reason TEXT,
+        created_at INTEGER
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+
+
+def init_threat_memory_nodes_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS threat_memory_nodes (
+        seller_id TEXT PRIMARY KEY,
+        memory_score REAL DEFAULT 0,
+        latent_risk_score REAL DEFAULT 0,
+        mutation_score REAL DEFAULT 0,
+        contagion_score REAL DEFAULT 0,
+        lineage_depth INTEGER DEFAULT 0,
+        ancestor_risk_score REAL DEFAULT 0,
+        descendant_risk_score REAL DEFAULT 0,
+        recovery_confidence REAL DEFAULT 0.5,
+        threat_entropy REAL DEFAULT 0,
+        graph_position_score REAL DEFAULT 0,
+        quarantine_pressure REAL DEFAULT 0,
+        adaptive_trust_score REAL DEFAULT 0.5,
+        memory_weight REAL DEFAULT 1.0,
+        last_evolution_at INTEGER,
+        created_at INTEGER,
+        updated_at INTEGER,
+        metadata TEXT DEFAULT '{}'
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+def upsert_threat_memory_node_db(
+    seller_id,
+    memory_score=None,
+    latent_risk_score=None,
+    mutation_score=None,
+    contagion_score=None,
+    recovery_confidence=None,
+    quarantine_pressure=None,
+    adaptive_trust_score=None,
+    lineage_depth=None,
+    ancestor_risk_score=None,
+    descendant_risk_score=None,
+    graph_position_score=None,
+    metadata=None,
+):
+    if not seller_id:
+        return {"status": "error", "message": "seller_id_required"}
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    SELECT seller_id
+    FROM threat_memory_nodes
+    WHERE seller_id = {p}
+    """, (seller_id,))
+
+    exists = cur.fetchone() is not None
+
+    if not exists:
+        cur.execute(f"""
+        INSERT INTO threat_memory_nodes (
+            seller_id,
+            memory_score,
+            latent_risk_score,
+            mutation_score,
+            contagion_score,
+            recovery_confidence,
+            quarantine_pressure,
+            adaptive_trust_score,
+            lineage_depth,
+            ancestor_risk_score,
+            descendant_risk_score,
+            graph_position_score,
+            last_evolution_at,
+            created_at,
+            updated_at,
+            metadata
+        ) VALUES (
+            {p}, {p}, {p}, {p}, {p}, {p},
+            {p}, {p}, {p}, {p}, {p}, {p},
+            {p}, {p}, {p}, {p}
+        )
+        """, (
+            seller_id,
+            float(memory_score or 0),
+            float(latent_risk_score or 0),
+            float(mutation_score or 0),
+            float(contagion_score or 0),
+            float(recovery_confidence if recovery_confidence is not None else 0.5),
+            float(quarantine_pressure or 0),
+            float(adaptive_trust_score if adaptive_trust_score is not None else 0.5),
+            int(lineage_depth or 0),
+            float(ancestor_risk_score or 0),
+            float(descendant_risk_score or 0),
+            float(graph_position_score or 0),
+            now,
+            now,
+            now,
+            json.dumps(metadata or {}),
+        ))
+    else:
+        updates = []
+        values = []
+
+        fields = {
+            "memory_score": memory_score,
+            "latent_risk_score": latent_risk_score,
+            "mutation_score": mutation_score,
+            "contagion_score": contagion_score,
+            "recovery_confidence": recovery_confidence,
+            "quarantine_pressure": quarantine_pressure,
+            "adaptive_trust_score": adaptive_trust_score,
+            "lineage_depth": lineage_depth,
+            "ancestor_risk_score": ancestor_risk_score,
+            "descendant_risk_score": descendant_risk_score,
+            "graph_position_score": graph_position_score,
+        }
+
+        for field, value in fields.items():
+            if value is not None:
+                updates.append(f"{field} = {p}")
+                values.append(float(value))
+
+        if metadata is not None:
+            updates.append(f"metadata = {p}")
+            values.append(json.dumps(metadata))
+
+        updates.append(f"last_evolution_at = {p}")
+        values.append(now)
+
+        updates.append(f"updated_at = {p}")
+        values.append(now)
+
+        values.append(seller_id)
+
+        cur.execute(f"""
+        UPDATE threat_memory_nodes
+        SET {", ".join(updates)}
+        WHERE seller_id = {p}
+        """, values)
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "created": not exists,
+    }
+
+
+
+def get_threat_memory_node_db(seller_id):
+    if not seller_id:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM threat_memory_nodes
+    WHERE seller_id = {p}
+    """, (seller_id,))
+
+    row = cur.fetchone()
+    release_conn(conn)
+
+    return dict(row) if row else None
+
+
+def list_threat_memory_nodes_db(limit=100):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    limit = max(1, min(int(limit or 100), 500))
+
+    cur.execute(f"""
+    SELECT *
+    FROM threat_memory_nodes
+    ORDER BY memory_score DESC,
+             latent_risk_score DESC,
+             updated_at DESC
+    LIMIT {p}
+    """, (limit,))
+
+    rows = [dict(r) for r in cur.fetchall()]
+
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "nodes": rows,
+    }
+
+
+
+def clamp_score(value, low=0.0, high=1.0):
+    try:
+        value = float(value or 0)
+    except Exception:
+        value = 0.0
+
+    return max(low, min(value, high))
+
+
+def evolve_threat_memory_from_seller_event_db(
+    seller_id,
+    event_type,
+    severity="info",
+    metadata=None,
+):
+    if not seller_id:
+        return {"status": "error", "message": "seller_id_required"}
+
+    node = get_threat_memory_node_db(seller_id) or {}
+
+    memory_score = float(node.get("memory_score", 0) or 0)
+    latent_risk_score = float(node.get("latent_risk_score", 0) or 0)
+    mutation_score = float(node.get("mutation_score", 0) or 0)
+    contagion_score = float(node.get("contagion_score", 0) or 0)
+    recovery_confidence = float(node.get("recovery_confidence", 0.5) or 0.5)
+    quarantine_pressure = float(node.get("quarantine_pressure", 0) or 0)
+    adaptive_trust_score = float(node.get("adaptive_trust_score", 0.5) or 0.5)
+
+    severity_weight = {
+        "info": 0.02,
+        "low": 0.05,
+        "medium": 0.10,
+        "high": 0.20,
+        "critical": 0.35,
+    }.get(str(severity or "info").lower(), 0.02)
+
+    event_type = str(event_type or "").lower()
+
+    memory_score += severity_weight
+
+    if event_type in ["seller_status_transition"]:
+        new_status = str((metadata or {}).get("new_status", "")).lower()
+
+        if new_status == "watchlist":
+            latent_risk_score += 0.05
+            quarantine_pressure += 0.03
+            adaptive_trust_score -= 0.03
+        elif new_status == "restricted":
+            latent_risk_score += 0.15
+            quarantine_pressure += 0.15
+            adaptive_trust_score -= 0.10
+        elif new_status == "contained":
+            latent_risk_score += 0.25
+            quarantine_pressure += 0.25
+            mutation_score += 0.05
+            adaptive_trust_score -= 0.20
+        elif new_status in ["rejected", "banned"]:
+            latent_risk_score += 0.35
+            quarantine_pressure += 0.35
+            mutation_score += 0.10
+            adaptive_trust_score -= 0.35
+
+    elif event_type in ["recovery_request"]:
+        memory_score += 0.04
+        recovery_confidence -= 0.05
+        latent_risk_score += 0.03
+
+    elif event_type in ["recovery_approved"]:
+        recovery_confidence += 0.10
+        quarantine_pressure -= 0.08
+        adaptive_trust_score += 0.05
+
+    elif event_type in ["recovery_rejected"]:
+        recovery_confidence -= 0.15
+        latent_risk_score += 0.10
+        quarantine_pressure += 0.10
+
+    elif event_type in ["runtime_violation", "runtime_dead", "runtime_quarantine"]:
+        latent_risk_score += 0.12
+        quarantine_pressure += 0.12
+        mutation_score += 0.03
+        adaptive_trust_score -= 0.08
+
+    elif event_type in ["containment"]:
+        latent_risk_score += 0.25
+        quarantine_pressure += 0.25
+        contagion_score += 0.10
+        mutation_score += 0.08
+        adaptive_trust_score -= 0.20
+
+    updated_metadata = {
+        "last_event_type": event_type,
+        "last_severity": severity,
+        "event_metadata": metadata or {},
+    }
+
+    return upsert_threat_memory_node_db(
+        seller_id=seller_id,
+        memory_score=clamp_score(memory_score),
+        latent_risk_score=clamp_score(latent_risk_score),
+        mutation_score=clamp_score(mutation_score),
+        contagion_score=clamp_score(contagion_score),
+        recovery_confidence=clamp_score(recovery_confidence),
+        quarantine_pressure=clamp_score(quarantine_pressure),
+        adaptive_trust_score=clamp_score(adaptive_trust_score),
+        metadata=updated_metadata,
+    )
+
+
+
+def recompute_threat_memory_node_db(seller_id):
+    if not seller_id:
+        return {"status": "error", "message": "seller_id_required"}
+
+    memories = get_active_threat_memory_db(
+        scope="seller",
+        subject_id=seller_id,
+        limit=200,
+    )
+
+    memory_count = len(memories)
+
+    if memory_count == 0:
+        return upsert_threat_memory_node_db(
+            seller_id=seller_id,
+            memory_score=0,
+            latent_risk_score=0,
+            mutation_score=0,
+            contagion_score=0,
+            recovery_confidence=0.5,
+            quarantine_pressure=0,
+            adaptive_trust_score=0.5,
+            metadata={
+                "source": "recompute_threat_memory_node_db",
+                "memory_count": 0,
+            },
+        )
+
+    confidence_sum = 0.0
+    strength_sum = 0.0
+    critical_count = 0
+    propagated_count = 0
+    policy_pressure = 0
+    guardrail_pressure = 0
+    mutation_signals = 0
+
+    for m in memories:
+        confidence = float(m.get("confidence", 0) or 0)
+        strength = float(m.get("memory_strength", 0.5) or 0.5)
+        threat_level = str(m.get("threat_level", "") or "").lower()
+        source = str(m.get("source", "") or "").lower()
+
+        confidence_sum += confidence
+        strength_sum += strength
+
+        if threat_level in ["high", "critical"]:
+            critical_count += 1
+
+        if source == "propagated":
+            propagated_count += 1
+
+        if m.get("policy_update"):
+            policy_pressure += 1
+
+        if m.get("recommended_guardrail"):
+            guardrail_pressure += 1
+
+        text_blob = " ".join([
+            str(m.get("attack_vector", "") or ""),
+            str(m.get("signal_to_monitor", "") or ""),
+            str(m.get("policy_update", "") or ""),
+        ]).lower()
+
+        if any(w in text_blob for w in [
+            "mutation",
+            "evasion",
+            "sybil",
+            "collusion",
+            "fingerprint",
+            "rotating",
+            "coordinated",
+            "reputation farming",
+        ]):
+            mutation_signals += 1
+
+    avg_confidence = confidence_sum / max(memory_count, 1)
+    avg_strength = strength_sum / max(memory_count, 1)
+
+    memory_score = min(
+        1.0,
+        (memory_count / 20) * 0.25
+        + avg_confidence * 0.35
+        + avg_strength * 0.25
+        + (critical_count / max(memory_count, 1)) * 0.15,
+    )
+
+    latent_risk_score = min(
+        1.0,
+        avg_confidence * 0.35
+        + avg_strength * 0.25
+        + min(critical_count, 10) / 10 * 0.25
+        + min(policy_pressure, 10) / 10 * 0.15,
+    )
+
+    mutation_score = min(
+        1.0,
+        min(mutation_signals, 10) / 10 * 0.70
+        + min(propagated_count, 10) / 10 * 0.30,
+    )
+
+    contagion_score = min(
+        1.0,
+        min(propagated_count, 10) / 10 * 0.65
+        + min(critical_count, 10) / 10 * 0.35,
+    )
+
+    quarantine_pressure = min(
+        1.0,
+        latent_risk_score * 0.55
+        + min(guardrail_pressure, 10) / 10 * 0.25
+        + min(policy_pressure, 10) / 10 * 0.20,
+    )
+
+    recovery_confidence = max(
+        0.0,
+        min(
+            1.0,
+            0.75
+            - latent_risk_score * 0.35
+            - mutation_score * 0.20
+            - contagion_score * 0.20,
+        ),
+    )
+
+    adaptive_trust_score = max(
+        0.0,
+        min(
+            1.0,
+            0.80
+            - latent_risk_score * 0.40
+            - quarantine_pressure * 0.25
+            - mutation_score * 0.20
+            - contagion_score * 0.15,
+        ),
+    )
+
+    return upsert_threat_memory_node_db(
+        seller_id=seller_id,
+        memory_score=round(memory_score, 6),
+        latent_risk_score=round(latent_risk_score, 6),
+        mutation_score=round(mutation_score, 6),
+        contagion_score=round(contagion_score, 6),
+        recovery_confidence=round(recovery_confidence, 6),
+        quarantine_pressure=round(quarantine_pressure, 6),
+        adaptive_trust_score=round(adaptive_trust_score, 6),
+        metadata={
+            "source": "recompute_threat_memory_node_db",
+            "memory_count": memory_count,
+            "critical_count": critical_count,
+            "propagated_count": propagated_count,
+            "policy_pressure": policy_pressure,
+            "guardrail_pressure": guardrail_pressure,
+            "mutation_signals": mutation_signals,
+            "avg_confidence": round(avg_confidence, 6),
+            "avg_strength": round(avg_strength, 6),
+        },
+    )
+
+
+
+def recompute_graph_cognitive_pressure_db(agent_id):
+    if not agent_id:
+        return {"status": "error", "message": "agent_id_required"}
+
+    graph = build_seller_graph_context_db(agent_id) or {}
+    edges = graph.get("edges") or []
+
+    if not edges:
+        node = get_threat_memory_node_db(agent_id) or {}
+
+        return upsert_threat_memory_node_db(
+            seller_id=agent_id,
+            memory_score=node.get("memory_score", 0),
+            latent_risk_score=node.get("latent_risk_score", 0),
+            mutation_score=node.get("mutation_score", 0),
+            contagion_score=0,
+            recovery_confidence=node.get("recovery_confidence", 0.5),
+            quarantine_pressure=node.get("quarantine_pressure", 0),
+            adaptive_trust_score=node.get("adaptive_trust_score", 0.5),
+            metadata={
+                "source": "recompute_graph_cognitive_pressure_db",
+                "related_count": 0,
+                "graph_position_score": 0,
+                "ancestor_risk_score": 0,
+                "descendant_risk_score": 0,
+                "lineage_depth": 0,
+            },
+        )
+
+    related_ids = set()
+
+    for e in edges:
+        source_id = e.get("source_agent_id")
+        target_id = e.get("target_agent_id")
+
+        if source_id and source_id != agent_id:
+            related_ids.add(source_id)
+
+        if target_id and target_id != agent_id:
+            related_ids.add(target_id)
+
+    node = get_threat_memory_node_db(agent_id) or {}
+
+    own_memory_score = float(node.get("memory_score", 0) or 0)
+    own_latent_risk = float(node.get("latent_risk_score", 0) or 0)
+    own_mutation = float(node.get("mutation_score", 0) or 0)
+    own_recovery_confidence = float(node.get("recovery_confidence", 0.5) or 0.5)
+    own_quarantine_pressure = float(node.get("quarantine_pressure", 0) or 0)
+    own_adaptive_trust = float(node.get("adaptive_trust_score", 0.5) or 0.5)
+
+    weighted_neighbor_risk = 0.0
+    weighted_neighbor_memory = 0.0
+    weighted_neighbor_mutation = 0.0
+    total_weight = 0.0
+    high_risk_neighbors = 0
+
+    for e in edges:
+        source_id = e.get("source_agent_id")
+        target_id = e.get("target_agent_id")
+        weight = float(e.get("weight", 0) or 0)
+
+        related_id = target_id if source_id == agent_id else source_id
+
+        if not related_id or related_id == agent_id:
+            continue
+
+        related_node = get_threat_memory_node_db(related_id) or {}
+
+        neighbor_risk = float(related_node.get("latent_risk_score", 0) or 0)
+        neighbor_memory = float(related_node.get("memory_score", 0) or 0)
+        neighbor_mutation = float(related_node.get("mutation_score", 0) or 0)
+
+        weighted_neighbor_risk += neighbor_risk * weight
+        weighted_neighbor_memory += neighbor_memory * weight
+        weighted_neighbor_mutation += neighbor_mutation * weight
+        total_weight += weight
+
+        if neighbor_risk >= 0.65 or neighbor_mutation >= 0.5:
+            high_risk_neighbors += 1
+
+    if total_weight > 0:
+        ancestor_risk_score = min(1.0, weighted_neighbor_risk / total_weight)
+        descendant_risk_score = min(1.0, weighted_neighbor_memory / total_weight)
+        inherited_mutation = min(1.0, weighted_neighbor_mutation / total_weight)
+    else:
+        ancestor_risk_score = 0.0
+        descendant_risk_score = 0.0
+        inherited_mutation = 0.0
+
+    related_count = len(related_ids)
+
+    graph_position_score = min(
+        1.0,
+        min(related_count, 20) / 20 * 0.45
+        + min(total_weight, 3.0) / 3.0 * 0.35
+        + min(high_risk_neighbors, 5) / 5 * 0.20,
+    )
+
+    contagion_score = min(
+        1.0,
+        ancestor_risk_score * 0.45
+        + descendant_risk_score * 0.20
+        + inherited_mutation * 0.20
+        + min(high_risk_neighbors, 5) / 5 * 0.15,
+    )
+
+    lineage_depth = min(
+        10,
+        int(
+            min(related_count, 20) / 2
+            + min(high_risk_neighbors, 5)
+        ),
+    )
+
+    latent_risk_score = min(
+        1.0,
+        own_latent_risk * 0.70
+        + contagion_score * 0.30,
+    )
+
+    mutation_score = min(
+        1.0,
+        own_mutation * 0.75
+        + inherited_mutation * 0.25,
+    )
+
+    quarantine_pressure = min(
+        1.0,
+        own_quarantine_pressure * 0.70
+        + contagion_score * 0.20
+        + graph_position_score * 0.10,
+    )
+
+    adaptive_trust_score = max(
+        0.0,
+        min(
+            1.0,
+            own_adaptive_trust
+            - contagion_score * 0.12
+            - graph_position_score * 0.08
+            - inherited_mutation * 0.10,
+        ),
+    )
+
+    recovery_confidence = max(
+        0.0,
+        min(
+            1.0,
+            own_recovery_confidence
+            - contagion_score * 0.10
+            - high_risk_neighbors * 0.03,
+        ),
+    )
+
+    result = upsert_threat_memory_node_db(
+        seller_id=agent_id,
+        memory_score=round(own_memory_score, 6),
+        latent_risk_score=round(latent_risk_score, 6),
+        mutation_score=round(mutation_score, 6),
+        contagion_score=round(contagion_score, 6),
+        recovery_confidence=round(recovery_confidence, 6),
+        quarantine_pressure=round(quarantine_pressure, 6),
+        adaptive_trust_score=round(adaptive_trust_score, 6),
+        lineage_depth=lineage_depth,
+        ancestor_risk_score=round(ancestor_risk_score, 6),
+        descendant_risk_score=round(descendant_risk_score, 6),
+        graph_position_score=round(graph_position_score, 6),
+        metadata={
+            "source": "recompute_graph_cognitive_pressure_db",
+            "related_count": related_count,
+            "edge_count": len(edges),
+            "total_weight": round(total_weight, 6),
+            "high_risk_neighbors": high_risk_neighbors,
+            "ancestor_risk_score": round(ancestor_risk_score, 6),
+            "descendant_risk_score": round(descendant_risk_score, 6),
+            "graph_position_score": round(graph_position_score, 6),
+            "lineage_depth": lineage_depth,
+            "inherited_mutation": round(inherited_mutation, 6),
+        },
+    )
+
+    return {
+        "status": "ok",
+        "agent_id": agent_id,
+        "related_count": related_count,
+        "edge_count": len(edges),
+        "ancestor_risk_score": round(ancestor_risk_score, 6),
+        "descendant_risk_score": round(descendant_risk_score, 6),
+        "graph_position_score": round(graph_position_score, 6),
+        "contagion_score": round(contagion_score, 6),
+        "lineage_depth": lineage_depth,
+        "node_update": result,
+    }
+
+
+
+def list_runtime_monitored_seller_agents_db(limit=100):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    limit = max(1, min(int(limit or 100), 500))
+
+    cur.execute(f"""
+    SELECT *
+    FROM seller_agents
+    WHERE seller_agent_status IN ('active', 'pending')
+      AND COALESCE(runtime_validation_status, '') != 'quarantined'
+    ORDER BY updated_at DESC
+    LIMIT {p}
+    """, (limit,))
+
+    rows = [dict(r) for r in cur.fetchall()]
+    release_conn(conn)
+
+    return rows
+
+
+
+def init_adversarial_mutation_signatures_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS adversarial_mutation_signatures (
+        mutation_signature_id TEXT PRIMARY KEY,
+        scope TEXT DEFAULT 'seller',
+        subject_id TEXT,
+        mutation_signature TEXT,
+        evolution_family TEXT,
+        stealth_score REAL DEFAULT 0,
+        adaptive_complexity REAL DEFAULT 0,
+        emergence_probability REAL DEFAULT 0,
+        mutation_velocity REAL DEFAULT 0,
+        confidence REAL DEFAULT 0,
+        source TEXT DEFAULT 'protocol',
+        evidence TEXT DEFAULT '{}',
+        first_seen_at INTEGER,
+        last_seen_at INTEGER,
+        times_seen INTEGER DEFAULT 1,
+        status TEXT DEFAULT 'active'
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+def upsert_adversarial_mutation_signature_db(
+    subject_id,
+    mutation_signature,
+    evolution_family="unknown",
+    stealth_score=0,
+    adaptive_complexity=0,
+    emergence_probability=0,
+    mutation_velocity=0,
+    confidence=0.5,
+    scope="seller",
+    source="protocol",
+    evidence=None,
+):
+    if not subject_id:
+        return {"status": "error", "message": "subject_id_required"}
+
+    if not mutation_signature:
+        return {"status": "error", "message": "mutation_signature_required"}
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    SELECT *
+    FROM adversarial_mutation_signatures
+    WHERE scope = {p}
+      AND subject_id = {p}
+      AND mutation_signature = {p}
+      AND evolution_family = {p}
+      AND status = 'active'
+    LIMIT 1
+    """, (
+        scope,
+        subject_id,
+        mutation_signature,
+        evolution_family,
+    ))
+
+    existing = cur.fetchone()
+
+    if existing:
+        mutation_signature_id = row_get(existing, "mutation_signature_id")
+        times_seen = int(row_get(existing, "times_seen", 1) or 1) + 1
+
+        cur.execute(f"""
+        UPDATE adversarial_mutation_signatures
+        SET stealth_score = MAX(COALESCE(stealth_score, 0), {p}),
+            adaptive_complexity = MAX(COALESCE(adaptive_complexity, 0), {p}),
+            emergence_probability = MAX(COALESCE(emergence_probability, 0), {p}),
+            mutation_velocity = MAX(COALESCE(mutation_velocity, 0), {p}),
+            confidence = MAX(COALESCE(confidence, 0), {p}),
+            evidence = {p},
+            last_seen_at = {p},
+            times_seen = {p}
+        WHERE mutation_signature_id = {p}
+        """, (
+            float(stealth_score or 0),
+            float(adaptive_complexity or 0),
+            float(emergence_probability or 0),
+            float(mutation_velocity or 0),
+            float(confidence or 0),
+            json.dumps(evidence or {}),
+            now,
+            times_seen,
+            mutation_signature_id,
+        ))
+
+        created = False
+    else:
+        mutation_signature_id = "mutation_signature_" + str(uuid.uuid4())
+
+        cur.execute(f"""
+        INSERT INTO adversarial_mutation_signatures (
+            mutation_signature_id,
+            scope,
+            subject_id,
+            mutation_signature,
+            evolution_family,
+            stealth_score,
+            adaptive_complexity,
+            emergence_probability,
+            mutation_velocity,
+            confidence,
+            source,
+            evidence,
+            first_seen_at,
+            last_seen_at,
+            times_seen,
+            status
+        ) VALUES (
+            {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p},
+            {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}
+        )
+        """, (
+            mutation_signature_id,
+            scope,
+            subject_id,
+            mutation_signature,
+            evolution_family,
+            float(stealth_score or 0),
+            float(adaptive_complexity or 0),
+            float(emergence_probability or 0),
+            float(mutation_velocity or 0),
+            float(confidence or 0),
+            source,
+            json.dumps(evidence or {}),
+            now,
+            now,
+            1,
+            "active",
+        ))
+
+        created = True
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "mutation_signature_id": mutation_signature_id,
+        "subject_id": subject_id,
+        "created": created,
+    }
+
+
+
+def extract_adversarial_mutation_signature_from_text(text):
+    text = str(text or "").lower()
+
+    signatures = []
+
+    patterns = [
+        {
+            "keywords": ["sybil", "multiple seller", "fake sellers", "many accounts"],
+            "signature": "sybil_identity_expansion",
+            "family": "sybil_family",
+            "stealth": 0.65,
+            "complexity": 0.70,
+        },
+        {
+            "keywords": ["collusion", "coordinated", "synchronized", "cartel"],
+            "signature": "coordinated_collusion_pattern",
+            "family": "collusion_family",
+            "stealth": 0.70,
+            "complexity": 0.75,
+        },
+        {
+            "keywords": ["reputation farming", "fake reputation", "wash trading", "self dealing"],
+            "signature": "reputation_farming_loop",
+            "family": "reputation_manipulation_family",
+            "stealth": 0.78,
+            "complexity": 0.72,
+        },
+        {
+            "keywords": ["rotating endpoint", "rotating endpoints", "rotating url", "proxy", "infrastructure rotation"],
+            "signature": "rotating_runtime_infrastructure",
+            "family": "infrastructure_evasion_family",
+            "stealth": 0.82,
+            "complexity": 0.80,
+        },
+        {
+            "keywords": ["fingerprint", "fingerprint overlap", "shared fingerprint"],
+            "signature": "fingerprint_overlap_evasion",
+            "family": "fingerprint_evasion_family",
+            "stealth": 0.74,
+            "complexity": 0.68,
+        },
+        {
+            "keywords": ["recovery manipulation", "appeal abuse", "fake recovery", "rehabilitation abuse"],
+            "signature": "recovery_manipulation_attempt",
+            "family": "governance_evasion_family",
+            "stealth": 0.76,
+            "complexity": 0.66,
+        },
+        {
+            "keywords": ["latency manipulation", "timeout pattern", "selective failure", "selective failures"],
+            "signature": "runtime_behavior_manipulation",
+            "family": "runtime_evasion_family",
+            "stealth": 0.69,
+            "complexity": 0.64,
+        },
+    ]
+
+    for ptn in patterns:
+        if any(k in text for k in ptn["keywords"]):
+            signatures.append(ptn)
+
+    return signatures
+
+
+def derive_adversarial_mutation_signatures_from_threat_memory_db(
+    subject_id,
+    memory,
+):
+    if not subject_id or not memory:
+        return {
+            "status": "ignored",
+            "reason": "missing_subject_or_memory",
+        }
+
+    text_blob = " ".join([
+        str(memory.get("attack_vector", "") or ""),
+        str(memory.get("recommended_guardrail", "") or ""),
+        str(memory.get("signal_to_monitor", "") or ""),
+        str(memory.get("policy_update", "") or ""),
+    ])
+
+    extracted = extract_adversarial_mutation_signature_from_text(text_blob)
+
+    if not extracted:
+        return {
+            "status": "ignored",
+            "reason": "no_mutation_signature_detected",
+        }
+
+    confidence = float(memory.get("confidence", 0.5) or 0.5)
+
+    results = []
+
+    for item in extracted:
+        result = upsert_adversarial_mutation_signature_db(
+            subject_id=subject_id,
+            mutation_signature=item.get("signature"),
+            evolution_family=item.get("family"),
+            stealth_score=item.get("stealth", 0),
+            adaptive_complexity=item.get("complexity", 0),
+            emergence_probability=min(1.0, confidence * 0.85),
+            mutation_velocity=0.25,
+            confidence=confidence,
+            scope=str(memory.get("scope", "seller") or "seller"),
+            source="threat_memory_derivation",
+            evidence={
+                "source": "derive_adversarial_mutation_signatures_from_threat_memory_db",
+                "memory_id": memory.get("id"),
+                "text_blob": text_blob[:1000],
+            },
+        )
+        results.append(result)
+
+    return {
+        "status": "ok",
+        "subject_id": subject_id,
+        "derived": len(results),
+        "results": results,
+    }
+
+
+
+def compute_adversarial_mutation_pressure_db(subject_id, scope="seller"):
+    if not subject_id:
+        return {"status": "error", "message": "subject_id_required"}
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM adversarial_mutation_signatures
+    WHERE scope = {p}
+      AND subject_id = {p}
+      AND status = 'active'
+    """, (
+        scope,
+        subject_id,
+    ))
+
+    rows = [dict(r) for r in cur.fetchall()]
+    release_conn(conn)
+
+    if not rows:
+        return {
+            "status": "ok",
+            "subject_id": subject_id,
+            "mutation_pressure_score": 0.0,
+            "mutation_family_count": 0,
+            "dominant_evolution_family": None,
+            "signatures_seen": 0,
+        }
+
+    family_scores = {}
+    total_pressure = 0.0
+
+    for r in rows:
+        family = str(r.get("evolution_family") or "unknown")
+
+        stealth = float(r.get("stealth_score", 0) or 0)
+        complexity = float(r.get("adaptive_complexity", 0) or 0)
+        emergence = float(r.get("emergence_probability", 0) or 0)
+        velocity = float(r.get("mutation_velocity", 0) or 0)
+        confidence = float(r.get("confidence", 0) or 0)
+        times_seen = int(r.get("times_seen", 1) or 1)
+
+        repetition_factor = min(1.0, times_seen / 5)
+
+        pressure = min(
+            1.0,
+            stealth * 0.22
+            + complexity * 0.22
+            + emergence * 0.24
+            + velocity * 0.12
+            + confidence * 0.15
+            + repetition_factor * 0.05,
+        )
+
+        total_pressure += pressure
+        family_scores[family] = family_scores.get(family, 0.0) + pressure
+
+    mutation_pressure_score = min(
+        1.0,
+        total_pressure / max(len(rows), 1)
+        + min(len(family_scores), 6) / 6 * 0.12,
+    )
+
+    dominant_evolution_family = max(
+        family_scores,
+        key=family_scores.get,
+    )
+
+    return {
+        "status": "ok",
+        "subject_id": subject_id,
+        "mutation_pressure_score": round(mutation_pressure_score, 6),
+        "mutation_family_count": len(family_scores),
+        "dominant_evolution_family": dominant_evolution_family,
+        "signatures_seen": len(rows),
+        "family_scores": {
+            k: round(v, 6)
+            for k, v in family_scores.items()
+        },
+    }
+
+
+
+def sync_adversarial_mutation_pressure_to_memory_node_db(subject_id, scope="seller"):
+    if not subject_id:
+        return {"status": "error", "message": "subject_id_required"}
+
+    pressure = compute_adversarial_mutation_pressure_db(
+        subject_id=subject_id,
+        scope=scope,
+    )
+
+    if pressure.get("status") != "ok":
+        return pressure
+
+    mutation_pressure_score = float(
+        pressure.get("mutation_pressure_score", 0) or 0
+    )
+
+    node = get_threat_memory_node_db(subject_id) or {}
+
+    memory_score = float(node.get("memory_score", 0) or 0)
+    latent_risk_score = float(node.get("latent_risk_score", 0) or 0)
+    mutation_score = float(node.get("mutation_score", 0) or 0)
+    contagion_score = float(node.get("contagion_score", 0) or 0)
+    recovery_confidence = float(node.get("recovery_confidence", 0.5) or 0.5)
+    quarantine_pressure = float(node.get("quarantine_pressure", 0) or 0)
+    adaptive_trust_score = float(node.get("adaptive_trust_score", 0.5) or 0.5)
+
+    new_mutation_score = min(
+        1.0,
+        mutation_score * 0.65 + mutation_pressure_score * 0.35,
+    )
+
+    new_latent_risk_score = min(
+        1.0,
+        latent_risk_score * 0.75 + mutation_pressure_score * 0.25,
+    )
+
+    new_quarantine_pressure = min(
+        1.0,
+        quarantine_pressure * 0.75 + mutation_pressure_score * 0.25,
+    )
+
+    new_recovery_confidence = max(
+        0.0,
+        recovery_confidence - mutation_pressure_score * 0.12,
+    )
+
+    new_adaptive_trust_score = max(
+        0.0,
+        adaptive_trust_score - mutation_pressure_score * 0.15,
+    )
+
+    result = upsert_threat_memory_node_db(
+        seller_id=subject_id,
+        memory_score=round(memory_score, 6),
+        latent_risk_score=round(new_latent_risk_score, 6),
+        mutation_score=round(new_mutation_score, 6),
+        contagion_score=round(contagion_score, 6),
+        recovery_confidence=round(new_recovery_confidence, 6),
+        quarantine_pressure=round(new_quarantine_pressure, 6),
+        adaptive_trust_score=round(new_adaptive_trust_score, 6),
+        lineage_depth=node.get("lineage_depth", 0),
+        ancestor_risk_score=node.get("ancestor_risk_score", 0),
+        descendant_risk_score=node.get("descendant_risk_score", 0),
+        graph_position_score=node.get("graph_position_score", 0),
+        metadata={
+            "source": "sync_adversarial_mutation_pressure_to_memory_node_db",
+            "mutation_pressure": pressure,
+        },
+    )
+
+    return {
+        "status": "ok",
+        "subject_id": subject_id,
+        "mutation_pressure_score": round(mutation_pressure_score, 6),
+        "dominant_evolution_family": pressure.get("dominant_evolution_family"),
+        "mutation_family_count": pressure.get("mutation_family_count"),
+        "node_update": result,
+        "new_scores": {
+            "latent_risk_score": round(new_latent_risk_score, 6),
+            "mutation_score": round(new_mutation_score, 6),
+            "quarantine_pressure": round(new_quarantine_pressure, 6),
+            "recovery_confidence": round(new_recovery_confidence, 6),
+            "adaptive_trust_score": round(new_adaptive_trust_score, 6),
+        },
+    }
+
+
+
+def compute_autonomous_governance_recommendation_db(subject_id):
+    if not subject_id:
+        return {"status": "error", "message": "subject_id_required"}
+
+    node = get_threat_memory_node_db(subject_id) or {}
+
+    mutation_pressure = compute_adversarial_mutation_pressure_db(subject_id)
+
+    memory_score = float(node.get("memory_score", 0) or 0)
+    latent_risk = float(node.get("latent_risk_score", 0) or 0)
+    mutation_score = float(node.get("mutation_score", 0) or 0)
+    contagion_score = float(node.get("contagion_score", 0) or 0)
+    quarantine_pressure = float(node.get("quarantine_pressure", 0) or 0)
+    adaptive_trust = float(node.get("adaptive_trust_score", 0.5) or 0.5)
+    graph_position = float(node.get("graph_position_score", 0) or 0)
+
+    mutation_pressure_score = float(
+        mutation_pressure.get("mutation_pressure_score", 0) or 0
+    )
+
+    governance_pressure = min(
+        1.0,
+        memory_score * 0.12
+        + latent_risk * 0.22
+        + mutation_score * 0.16
+        + contagion_score * 0.16
+        + quarantine_pressure * 0.18
+        + mutation_pressure_score * 0.12
+        + graph_position * 0.04
+        + max(0.0, 0.5 - adaptive_trust) * 0.20,
+    )
+
+    if governance_pressure >= 0.82:
+        recommendation = "containment_candidate"
+        severity = "critical"
+    elif governance_pressure >= 0.68:
+        recommendation = "quarantine_review"
+        severity = "high"
+    elif governance_pressure >= 0.52:
+        recommendation = "restrict_routing"
+        severity = "medium_high"
+    elif governance_pressure >= 0.38:
+        recommendation = "require_more_stake"
+        severity = "medium"
+    elif governance_pressure >= 0.24:
+        recommendation = "reduce_exposure"
+        severity = "low_medium"
+    elif governance_pressure >= 0.12:
+        recommendation = "monitor"
+        severity = "low"
+    else:
+        recommendation = "no_action"
+        severity = "info"
+
+    return {
+        "status": "ok",
+        "subject_id": subject_id,
+        "governance_pressure": round(governance_pressure, 6),
+        "recommendation": recommendation,
+        "severity": severity,
+        "dominant_evolution_family": mutation_pressure.get(
+            "dominant_evolution_family"
+        ),
+        "mutation_family_count": mutation_pressure.get("mutation_family_count"),
+        "signals": {
+            "memory_score": round(memory_score, 6),
+            "latent_risk_score": round(latent_risk, 6),
+            "mutation_score": round(mutation_score, 6),
+            "contagion_score": round(contagion_score, 6),
+            "quarantine_pressure": round(quarantine_pressure, 6),
+            "adaptive_trust_score": round(adaptive_trust, 6),
+            "graph_position_score": round(graph_position, 6),
+            "mutation_pressure_score": round(mutation_pressure_score, 6),
+        },
+        "advisory_only": True,
+    }
+
+
+
+def record_autonomous_governance_recommendation_db(subject_id):
+    if not subject_id:
+        return {"status": "error", "message": "subject_id_required"}
+
+    recommendation = compute_autonomous_governance_recommendation_db(subject_id)
+
+    if recommendation.get("status") != "ok":
+        return recommendation
+
+    event_result = create_seller_governance_event_db(
+        seller_id=subject_id,
+        event_type="autonomous_governance_recommendation",
+        reviewer="autonomous_governance_engine",
+        reason=recommendation.get("recommendation"),
+        old_status="",
+        new_status="",
+        metadata=recommendation,
+    )
+
+    return {
+        "status": "ok",
+        "subject_id": subject_id,
+        "recommendation": recommendation,
+        "governance_event": event_result,
+    }
+
+
+
+def compute_adaptive_protocol_response_plan_db(subject_id):
+    if not subject_id:
+        return {"status": "error", "message": "subject_id_required"}
+
+    recommendation = compute_autonomous_governance_recommendation_db(
+        subject_id
+    )
+
+    if recommendation.get("status") != "ok":
+        return recommendation
+
+    governance_pressure = float(
+        recommendation.get("governance_pressure", 0) or 0
+    )
+
+    recommendation_type = str(
+        recommendation.get("recommendation", "no_action")
+    )
+
+    dominant_family = recommendation.get(
+        "dominant_evolution_family"
+    )
+
+    actions = {
+        "recommended_actions": [],
+        "economic_actions": [],
+        "routing_actions": [],
+        "monitoring_actions": [],
+        "containment_preparation": [],
+        "recovery_constraints": [],
+        "trust_degradation_strategy": [],
+    }
+
+    if recommendation_type == "monitor":
+        actions["monitoring_actions"] += [
+            "increase behavioral observation",
+            "enable graph monitoring",
+        ]
+
+    elif recommendation_type == "reduce_exposure":
+        actions["routing_actions"] += [
+            "reduce routing exposure by 15%",
+            "deprioritize low-confidence execution",
+        ]
+
+        actions["monitoring_actions"] += [
+            "increase runtime validation frequency",
+        ]
+
+    elif recommendation_type == "require_more_stake":
+        actions["economic_actions"] += [
+            "increase minimum stake requirement by 35%",
+            "increase escrow reserve requirement",
+        ]
+
+        actions["routing_actions"] += [
+            "reduce routing exposure by 20%",
+        ]
+
+        actions["monitoring_actions"] += [
+            "enable continuous graph monitoring",
+            "increase runtime behavioral verification",
+        ]
+
+        actions["trust_degradation_strategy"] += [
+            "apply progressive trust degradation",
+        ]
+
+    elif recommendation_type == "restrict_routing":
+        actions["routing_actions"] += [
+            "reduce routing exposure by 45%",
+            "block high-value task routing",
+            "limit concurrent executions",
+        ]
+
+        actions["monitoring_actions"] += [
+            "activate deep runtime inspection",
+            "enable high-frequency graph analysis",
+        ]
+
+        actions["economic_actions"] += [
+            "increase collateral requirements",
+        ]
+
+    elif recommendation_type == "quarantine_review":
+        actions["containment_preparation"] += [
+            "freeze new seller agents",
+            "prepare graph isolation",
+            "prepare containment review",
+        ]
+
+        actions["routing_actions"] += [
+            "reduce routing exposure by 75%",
+        ]
+
+        actions["monitoring_actions"] += [
+            "trigger deep adversarial inspection",
+            "monitor neighboring sellers",
+        ]
+
+        actions["economic_actions"] += [
+            "increase escrow delay",
+            "lock adaptive rewards",
+        ]
+
+    elif recommendation_type == "containment_candidate":
+        actions["containment_preparation"] += [
+            "prepare seller containment",
+            "prepare graph quarantine",
+            "prepare emergency routing isolation",
+        ]
+
+        actions["routing_actions"] += [
+            "block strategic execution access",
+            "restrict autonomous execution",
+        ]
+
+        actions["economic_actions"] += [
+            "freeze protocol incentives",
+            "increase protocol reserve protection",
+        ]
+
+        actions["monitoring_actions"] += [
+            "activate maximum runtime surveillance",
+            "enable mutation lineage analysis",
+        ]
+
+    if dominant_family == "infrastructure_evasion_family":
+        actions["monitoring_actions"] += [
+            "monitor endpoint rotation",
+            "monitor infrastructure mutation velocity",
+        ]
+
+    elif dominant_family == "sybil_family":
+        actions["monitoring_actions"] += [
+            "monitor seller identity expansion",
+            "monitor graph duplication behavior",
+        ]
+
+    elif dominant_family == "collusion_family":
+        actions["monitoring_actions"] += [
+            "monitor synchronized execution behavior",
+            "monitor coordinated routing anomalies",
+        ]
+
+    elif dominant_family == "reputation_manipulation_family":
+        actions["economic_actions"] += [
+            "reduce reputation amplification",
+            "increase reputation decay pressure",
+        ]
+
+    elif dominant_family == "fingerprint_evasion_family":
+        actions["monitoring_actions"] += [
+            "increase runtime fingerprint analysis",
+            "monitor shared infrastructure fingerprints",
+        ]
+
+    actions["recommended_actions"] = sorted(set(
+        actions["economic_actions"]
+        + actions["routing_actions"]
+        + actions["monitoring_actions"]
+        + actions["containment_preparation"]
+        + actions["recovery_constraints"]
+        + actions["trust_degradation_strategy"]
+    ))
+
+    return {
+        "status": "ok",
+        "subject_id": subject_id,
+        "governance_pressure": governance_pressure,
+        "recommendation": recommendation_type,
+        "dominant_evolution_family": dominant_family,
+        "adaptive_response_plan": actions,
+        "advisory_only": True,
+    }
+
+
+
+def simulate_protocol_response_impact_db(subject_id):
+    if not subject_id:
+        return {"status": "error", "message": "subject_id_required"}
+
+    plan = compute_adaptive_protocol_response_plan_db(subject_id)
+
+    if plan.get("status") != "ok":
+        return plan
+
+    node = get_threat_memory_node_db(subject_id) or {}
+
+    governance_pressure = float(plan.get("governance_pressure", 0) or 0)
+    recommendation = str(plan.get("recommendation", "no_action") or "no_action")
+
+    adaptive_trust = float(node.get("adaptive_trust_score", 0.5) or 0.5)
+    contagion = float(node.get("contagion_score", 0) or 0)
+    graph_position = float(node.get("graph_position_score", 0) or 0)
+    recovery_confidence = float(node.get("recovery_confidence", 0.5) or 0.5)
+    mutation_score = float(node.get("mutation_score", 0) or 0)
+    quarantine_pressure = float(node.get("quarantine_pressure", 0) or 0)
+
+    action_intensity = {
+        "no_action": 0.00,
+        "monitor": 0.10,
+        "reduce_exposure": 0.25,
+        "require_more_stake": 0.35,
+        "restrict_routing": 0.55,
+        "quarantine_review": 0.75,
+        "containment_candidate": 0.90,
+    }.get(recommendation, 0.20)
+
+    economic_impact = min(
+        1.0,
+        action_intensity * 0.55
+        + governance_pressure * 0.25
+        + mutation_score * 0.20,
+    )
+
+    routing_impact = min(
+        1.0,
+        action_intensity * 0.65
+        + quarantine_pressure * 0.25
+        + contagion * 0.10,
+    )
+
+    reputation_impact = min(
+        1.0,
+        action_intensity * 0.45
+        + governance_pressure * 0.35
+        + mutation_score * 0.20,
+    )
+
+    contagion_impact = min(
+        1.0,
+        contagion * 0.45
+        + graph_position * 0.25
+        + action_intensity * 0.30,
+    )
+
+    false_positive_risk = min(
+        1.0,
+        max(0.0, adaptive_trust - 0.45) * 0.45
+        + recovery_confidence * 0.25
+        + max(0.0, 0.45 - governance_pressure) * 0.30,
+    )
+
+    protocol_stability_risk = min(
+        1.0,
+        routing_impact * 0.35
+        + economic_impact * 0.25
+        + contagion_impact * 0.25
+        + false_positive_risk * 0.15,
+    )
+
+    action_safety_score = max(
+        0.0,
+        min(
+            1.0,
+            1.0
+            - protocol_stability_risk * 0.40
+            - false_positive_risk * 0.35
+            + governance_pressure * 0.25,
+        ),
+    )
+
+    if action_safety_score >= 0.72:
+        simulation_decision = "safe_to_execute_with_controls"
+    elif action_safety_score >= 0.50:
+        simulation_decision = "execute_cautiously"
+    elif action_safety_score >= 0.32:
+        simulation_decision = "human_review_recommended"
+    else:
+        simulation_decision = "do_not_execute"
+
+    return {
+        "status": "ok",
+        "subject_id": subject_id,
+        "recommendation": recommendation,
+        "governance_pressure": round(governance_pressure, 6),
+        "action_intensity": round(action_intensity, 6),
+        "impact": {
+            "economic_impact": round(economic_impact, 6),
+            "routing_impact": round(routing_impact, 6),
+            "reputation_impact": round(reputation_impact, 6),
+            "contagion_impact": round(contagion_impact, 6),
+            "false_positive_risk": round(false_positive_risk, 6),
+            "protocol_stability_risk": round(protocol_stability_risk, 6),
+            "action_safety_score": round(action_safety_score, 6),
+        },
+        "simulation_decision": simulation_decision,
+        "adaptive_response_plan": plan.get("adaptive_response_plan"),
+        "advisory_only": True,
+    }
+
+
+
+def record_protocol_response_simulation_db(subject_id):
+    if not subject_id:
+        return {"status": "error", "message": "subject_id_required"}
+
+    simulation = simulate_protocol_response_impact_db(subject_id)
+
+    if simulation.get("status") != "ok":
+        return simulation
+
+    event_result = create_seller_governance_event_db(
+        seller_id=subject_id,
+        event_type="protocol_response_impact_simulation",
+        reviewer="protocol_simulation_engine",
+        reason=simulation.get("simulation_decision"),
+        old_status="",
+        new_status="",
+        metadata=simulation,
+    )
+
+    return {
+        "status": "ok",
+        "subject_id": subject_id,
+        "simulation": simulation,
+        "governance_event": event_result,
+    }
+
+
+
+def authorize_protocol_response_execution_db(subject_id):
+    if not subject_id:
+        return {"status": "error", "message": "subject_id_required"}
+
+    simulation = simulate_protocol_response_impact_db(subject_id)
+
+    if simulation.get("status") != "ok":
+        return simulation
+
+    impact = simulation.get("impact") or {}
+
+    action_safety_score = float(
+        impact.get("action_safety_score", 0) or 0
+    )
+
+    false_positive_risk = float(
+        impact.get("false_positive_risk", 1) or 1
+    )
+
+    protocol_stability_risk = float(
+        impact.get("protocol_stability_risk", 1) or 1
+    )
+
+    recommendation = str(
+        simulation.get("recommendation", "no_action") or "no_action"
+    )
+
+    simulation_decision = str(
+        simulation.get("simulation_decision", "") or ""
+    )
+
+    high_impact_actions = [
+        "restrict_routing",
+        "quarantine_review",
+        "containment_candidate",
+    ]
+
+    auto_allowed = False
+    execution_mode = "advisory_only"
+    required_review = False
+    reason = "default_advisory_mode"
+
+    if recommendation == "no_action":
+        auto_allowed = True
+        execution_mode = "controlled_auto"
+        reason = "no_action_safe"
+
+    elif (
+        simulation_decision == "safe_to_execute_with_controls"
+        and action_safety_score >= 0.85
+        and false_positive_risk <= 0.20
+        and protocol_stability_risk <= 0.35
+        and recommendation not in high_impact_actions
+    ):
+        auto_allowed = True
+        execution_mode = "controlled_auto"
+        reason = "safe_low_impact_response"
+
+    elif (
+        simulation_decision in ["safe_to_execute_with_controls", "execute_cautiously"]
+        and action_safety_score >= 0.60
+        and false_positive_risk <= 0.35
+    ):
+        auto_allowed = False
+        execution_mode = "review_required"
+        required_review = True
+        reason = "requires_governance_review_before_execution"
+
+    else:
+        auto_allowed = False
+        execution_mode = "blocked"
+        required_review = True
+        reason = "execution_not_safe"
+
+    event_result = create_seller_governance_event_db(
+        seller_id=subject_id,
+        event_type="protocol_execution_gate_decision",
+        reviewer="protocol_execution_gate",
+        reason=reason,
+        old_status="",
+        new_status="",
+        metadata={
+            "simulation": simulation,
+            "auto_allowed": auto_allowed,
+            "execution_mode": execution_mode,
+            "required_review": required_review,
+            "reason": reason,
+        },
+    )
+
+    return {
+        "status": "ok",
+        "subject_id": subject_id,
+        "auto_allowed": auto_allowed,
+        "execution_mode": execution_mode,
+        "required_review": required_review,
+        "reason": reason,
+        "recommendation": recommendation,
+        "simulation_decision": simulation_decision,
+        "action_safety_score": round(action_safety_score, 6),
+        "false_positive_risk": round(false_positive_risk, 6),
+        "protocol_stability_risk": round(protocol_stability_risk, 6),
+        "governance_event": event_result,
+    }
+
+
+
+def apply_controlled_protocol_response_db(subject_id):
+    if not subject_id:
+        return {"status": "error", "message": "subject_id_required"}
+
+    gate = authorize_protocol_response_execution_db(subject_id)
+
+    if gate.get("status") != "ok":
+        return gate
+
+    if not gate.get("auto_allowed"):
+        return {
+            "status": "blocked",
+            "subject_id": subject_id,
+            "reason": gate.get("reason"),
+            "execution_mode": gate.get("execution_mode"),
+            "gate": gate,
+        }
+
+    recommendation = str(gate.get("recommendation") or "no_action")
+
+    allowed_map = {
+        "no_action": 0.0,
+        "monitor": 0.03,
+        "reduce_exposure": 0.08,
+        "require_more_stake": 0.12,
+    }
+
+    if recommendation not in allowed_map:
+        return {
+            "status": "blocked",
+            "subject_id": subject_id,
+            "reason": "recommendation_not_allowed_for_controlled_auto",
+            "recommendation": recommendation,
+            "gate": gate,
+        }
+
+    severity = allowed_map[recommendation]
+
+    if severity <= 0:
+        event_result = create_seller_governance_event_db(
+            seller_id=subject_id,
+            event_type="controlled_protocol_response_no_action",
+            reviewer="controlled_protocol_response_engine",
+            reason="no_action_required",
+            metadata={"gate": gate},
+        )
+
+        return {
+            "status": "ok",
+            "subject_id": subject_id,
+            "action_applied": "no_action",
+            "governance_event": event_result,
+            "gate": gate,
+        }
+
+    result = apply_seller_risk_event_db(
+        seller_id=subject_id,
+        event_type="controlled_protocol_response",
+        severity=severity,
+        reason=f"controlled_auto:{recommendation}",
+    )
+
+    if result.get("status") != "ok":
+        event_result = create_seller_governance_event_db(
+            seller_id=subject_id,
+            event_type="controlled_protocol_response_failed",
+            reviewer="controlled_protocol_response_engine",
+            reason=f"controlled_auto_failed:{recommendation}",
+            metadata={
+                "gate": gate,
+                "risk_event_result": result,
+                "applied_severity": severity,
+            },
+        )
+
+        return {
+            "status": "error",
+            "message": "controlled_protocol_response_failed",
+            "subject_id": subject_id,
+            "action_attempted": recommendation,
+            "severity": severity,
+            "risk_event_result": result,
+            "governance_event": event_result,
+            "gate": gate,
+        }
+
+    event_result = create_seller_governance_event_db(
+        seller_id=subject_id,
+        event_type="controlled_protocol_response_applied",
+        reviewer="controlled_protocol_response_engine",
+        reason=f"controlled_auto:{recommendation}",
+        metadata={
+            "gate": gate,
+            "risk_event_result": result,
+            "applied_severity": severity,
+        },
+    )
+
+    return {
+        "status": "ok",
+        "subject_id": subject_id,
+        "action_applied": recommendation,
+        "severity": severity,
+        "risk_event_result": result,
+        "governance_event": event_result,
+        "gate": gate,
+    }
+
+
+
+def compute_autonomous_recovery_recommendation_db(subject_id):
+    if not subject_id:
+        return {"status": "error", "message": "subject_id_required"}
+
+    node = get_threat_memory_node_db(subject_id) or {}
+
+    mutation_pressure = compute_adversarial_mutation_pressure_db(subject_id)
+
+    memory_score = float(node.get("memory_score", 0) or 0)
+    latent_risk = float(node.get("latent_risk_score", 0) or 0)
+    mutation_score = float(node.get("mutation_score", 0) or 0)
+    contagion_score = float(node.get("contagion_score", 0) or 0)
+    quarantine_pressure = float(node.get("quarantine_pressure", 0) or 0)
+    recovery_confidence = float(node.get("recovery_confidence", 0.5) or 0.5)
+    adaptive_trust = float(node.get("adaptive_trust_score", 0.5) or 0.5)
+    graph_position = float(node.get("graph_position_score", 0) or 0)
+
+    mutation_pressure_score = float(
+        mutation_pressure.get("mutation_pressure_score", 0) or 0
+    )
+
+    temporal = compute_temporal_behavior_stability_db(
+        subject_id,
+        window_days=30,
+    )
+
+    behavior_stability = float(
+        temporal.get("behavior_stability_score", 0.5) or 0.5
+    )
+    temporal_reliability = float(
+        temporal.get("temporal_reliability", 0.5) or 0.5
+    )
+    risk_volatility = float(
+        temporal.get("risk_volatility", 0) or 0
+    )
+    relapse_velocity = float(
+        temporal.get("relapse_velocity", 0) or 0
+    )
+
+    recovery_score = max(
+        0.0,
+        min(
+            1.0,
+            recovery_confidence * 0.24
+            + adaptive_trust * 0.18
+            + behavior_stability * 0.16
+            + temporal_reliability * 0.14
+            + max(0.0, 1.0 - latent_risk) * 0.10
+            + max(0.0, 1.0 - mutation_pressure_score) * 0.08
+            + max(0.0, 1.0 - contagion_score) * 0.05
+            + max(0.0, 1.0 - quarantine_pressure) * 0.05,
+        ),
+    )
+
+    residual_threat_pressure = min(
+        1.0,
+        latent_risk * 0.22
+        + mutation_score * 0.16
+        + mutation_pressure_score * 0.20
+        + contagion_score * 0.12
+        + quarantine_pressure * 0.12
+        + memory_score * 0.06
+        + risk_volatility * 0.07
+        + relapse_velocity * 0.05,
+    )
+
+    if residual_threat_pressure >= 0.70:
+        recommendation = "no_recovery"
+        severity = "high_residual_threat"
+    elif recovery_score >= 0.82 and residual_threat_pressure <= 0.25:
+        recommendation = "trusted_recovery_candidate"
+        severity = "low"
+    elif recovery_score >= 0.68 and residual_threat_pressure <= 0.40:
+        recommendation = "controlled_rehabilitation_candidate"
+        severity = "low_medium"
+    elif recovery_score >= 0.54 and residual_threat_pressure <= 0.55:
+        recommendation = "partial_rehabilitation_candidate"
+        severity = "medium"
+    elif recovery_score >= 0.42:
+        recommendation = "monitor_recovery"
+        severity = "medium_high"
+    else:
+        recommendation = "no_recovery"
+        severity = "insufficient_recovery_confidence"
+
+    return {
+        "status": "ok",
+        "subject_id": subject_id,
+        "recovery_score": round(recovery_score, 6),
+        "residual_threat_pressure": round(residual_threat_pressure, 6),
+        "recommendation": recommendation,
+        "severity": severity,
+        "dominant_evolution_family": mutation_pressure.get(
+            "dominant_evolution_family"
+        ),
+        "signals": {
+            "memory_score": round(memory_score, 6),
+            "latent_risk_score": round(latent_risk, 6),
+            "mutation_score": round(mutation_score, 6),
+            "mutation_pressure_score": round(mutation_pressure_score, 6),
+            "contagion_score": round(contagion_score, 6),
+            "quarantine_pressure": round(quarantine_pressure, 6),
+            "recovery_confidence": round(recovery_confidence, 6),
+            "adaptive_trust_score": round(adaptive_trust, 6),
+            "graph_position_score": round(graph_position, 6),
+            "behavior_stability_score": round(behavior_stability, 6),
+            "temporal_reliability": round(temporal_reliability, 6),
+            "risk_volatility": round(risk_volatility, 6),
+            "relapse_velocity": round(relapse_velocity, 6),
+        },
+        "temporal": temporal,
+        "advisory_only": True,
+    }
+
+
+
+def record_autonomous_recovery_recommendation_db(subject_id):
+    if not subject_id:
+        return {"status": "error", "message": "subject_id_required"}
+
+    recommendation = compute_autonomous_recovery_recommendation_db(subject_id)
+
+    if recommendation.get("status") != "ok":
+        return recommendation
+
+    event_result = create_seller_governance_event_db(
+        seller_id=subject_id,
+        event_type="autonomous_recovery_recommendation",
+        reviewer="autonomous_recovery_engine",
+        reason=recommendation.get("recommendation"),
+        old_status="",
+        new_status="",
+        metadata=recommendation,
+    )
+
+    return {
+        "status": "ok",
+        "subject_id": subject_id,
+        "recommendation": recommendation,
+        "governance_event": event_result,
+    }
+
+
+
+def simulate_rehabilitation_impact_db(subject_id):
+    if not subject_id:
+        return {"status": "error", "message": "subject_id_required"}
+
+    recovery = compute_autonomous_recovery_recommendation_db(subject_id)
+
+    if recovery.get("status") != "ok":
+        return recovery
+
+    node = get_threat_memory_node_db(subject_id) or {}
+
+    recovery_score = float(recovery.get("recovery_score", 0) or 0)
+    residual_threat = float(recovery.get("residual_threat_pressure", 1) or 1)
+    recommendation = str(recovery.get("recommendation", "no_recovery") or "no_recovery")
+
+    adaptive_trust = float(node.get("adaptive_trust_score", 0.5) or 0.5)
+    contagion = float(node.get("contagion_score", 0) or 0)
+    mutation_score = float(node.get("mutation_score", 0) or 0)
+    quarantine_pressure = float(node.get("quarantine_pressure", 0) or 0)
+    recovery_confidence = float(node.get("recovery_confidence", 0.5) or 0.5)
+    graph_position = float(node.get("graph_position_score", 0) or 0)
+
+    rehabilitation_intensity = {
+        "no_recovery": 0.0,
+        "monitor_recovery": 0.10,
+        "partial_rehabilitation_candidate": 0.25,
+        "controlled_rehabilitation_candidate": 0.45,
+        "trusted_recovery_candidate": 0.65,
+    }.get(recommendation, 0.0)
+
+    relapse_risk = min(
+        1.0,
+        residual_threat * 0.35
+        + mutation_score * 0.20
+        + contagion * 0.15
+        + quarantine_pressure * 0.15
+        + max(0.0, 0.45 - adaptive_trust) * 0.15,
+    )
+
+    recovery_abuse_risk = min(
+        1.0,
+        mutation_score * 0.25
+        + residual_threat * 0.25
+        + max(0.0, 0.50 - recovery_confidence) * 0.25
+        + graph_position * 0.15
+        + contagion * 0.10,
+    )
+
+    trust_restoration_impact = min(
+        1.0,
+        rehabilitation_intensity * 0.45
+        + recovery_score * 0.35
+        + recovery_confidence * 0.20,
+    )
+
+    exposure_restoration_impact = min(
+        1.0,
+        rehabilitation_intensity * 0.50
+        + recovery_score * 0.30
+        - relapse_risk * 0.20,
+    )
+
+    protocol_safety_risk = min(
+        1.0,
+        relapse_risk * 0.35
+        + recovery_abuse_risk * 0.35
+        + exposure_restoration_impact * 0.15
+        + contagion * 0.15,
+    )
+
+    rehabilitation_safety_score = max(
+        0.0,
+        min(
+            1.0,
+            recovery_score * 0.45
+            + recovery_confidence * 0.25
+            + adaptive_trust * 0.15
+            - protocol_safety_risk * 0.30
+            - recovery_abuse_risk * 0.20,
+        ),
+    )
+
+    if recommendation == "no_recovery":
+        simulation_decision = "do_not_rehabilitate"
+    elif rehabilitation_safety_score >= 0.72 and protocol_safety_risk <= 0.30:
+        simulation_decision = "safe_for_controlled_rehabilitation"
+    elif rehabilitation_safety_score >= 0.52 and protocol_safety_risk <= 0.45:
+        simulation_decision = "rehabilitate_cautiously"
+    elif rehabilitation_safety_score >= 0.35:
+        simulation_decision = "human_review_recommended"
+    else:
+        simulation_decision = "do_not_rehabilitate"
+
+    return {
+        "status": "ok",
+        "subject_id": subject_id,
+        "recommendation": recommendation,
+        "recovery_score": round(recovery_score, 6),
+        "residual_threat_pressure": round(residual_threat, 6),
+        "rehabilitation_intensity": round(rehabilitation_intensity, 6),
+        "impact": {
+            "relapse_risk": round(relapse_risk, 6),
+            "recovery_abuse_risk": round(recovery_abuse_risk, 6),
+            "trust_restoration_impact": round(trust_restoration_impact, 6),
+            "exposure_restoration_impact": round(exposure_restoration_impact, 6),
+            "protocol_safety_risk": round(protocol_safety_risk, 6),
+            "rehabilitation_safety_score": round(rehabilitation_safety_score, 6),
+        },
+        "simulation_decision": simulation_decision,
+        "advisory_only": True,
+    }
+
+
+
+def record_rehabilitation_impact_simulation_db(subject_id):
+    if not subject_id:
+        return {"status": "error", "message": "subject_id_required"}
+
+    simulation = simulate_rehabilitation_impact_db(subject_id)
+
+    if simulation.get("status") != "ok":
+        return simulation
+
+    event_result = create_seller_governance_event_db(
+        seller_id=subject_id,
+        event_type="rehabilitation_impact_simulation",
+        reviewer="rehabilitation_simulation_engine",
+        reason=simulation.get("simulation_decision"),
+        old_status="",
+        new_status="",
+        metadata=simulation,
+    )
+
+    return {
+        "status": "ok",
+        "subject_id": subject_id,
+        "simulation": simulation,
+        "governance_event": event_result,
+    }
+
+
+
+def compute_temporal_behavior_stability_db(subject_id, window_days=30):
+    if not subject_id:
+        return {"status": "error", "message": "subject_id_required"}
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    now = int(time.time())
+    window_seconds = int(window_days or 30) * 86400
+    since = now - window_seconds
+
+    cur.execute(f"""
+    SELECT *
+    FROM seller_governance_events
+    WHERE seller_id = {p}
+      AND created_at >= {p}
+    ORDER BY created_at ASC
+    """, (
+        subject_id,
+        since,
+    ))
+
+    events = [dict(r) for r in cur.fetchall()]
+    release_conn(conn)
+
+    event_count = len(events)
+
+    if event_count == 0:
+        return {
+            "status": "ok",
+            "subject_id": subject_id,
+            "window_days": window_days,
+            "behavior_stability_score": 0.5,
+            "risk_volatility": 0.0,
+            "relapse_velocity": 0.0,
+            "trust_consistency": 0.5,
+            "temporal_reliability": 0.5,
+            "event_count": 0,
+            "reason": "insufficient_temporal_history",
+            "advisory_only": True,
+        }
+
+    risk_events = 0
+    recovery_events = 0
+    containment_events = 0
+    failed_events = 0
+    simulation_events = 0
+
+    last_event_ts = None
+    event_intervals = []
+
+    for e in events:
+        event_type = str(e.get("event_type", "") or "").lower()
+        reason = str(e.get("reason", "") or "").lower()
+        created_at = int(e.get("created_at", 0) or 0)
+
+        if last_event_ts:
+            event_intervals.append(max(0, created_at - last_event_ts))
+        last_event_ts = created_at
+
+        if any(w in event_type for w in [
+            "risk",
+            "controlled_protocol_response",
+            "threat",
+            "containment",
+        ]):
+            risk_events += 1
+
+        if any(w in event_type for w in [
+            "recovery",
+            "rehabilitation",
+            "stable_behavior",
+            "risk_decay",
+        ]):
+            recovery_events += 1
+
+        if "containment" in event_type:
+            containment_events += 1
+
+        if "failed" in event_type or "failed" in reason:
+            failed_events += 1
+
+        if "simulation" in event_type:
+            simulation_events += 1
+
+    avg_interval = (
+        sum(event_intervals) / len(event_intervals)
+        if event_intervals else window_seconds
+    )
+
+    event_density = min(1.0, event_count / 20)
+    risk_density = min(1.0, risk_events / max(event_count, 1))
+    recovery_density = min(1.0, recovery_events / max(event_count, 1))
+    failure_density = min(1.0, failed_events / max(event_count, 1))
+
+    # Short intervals between many governance events imply instability.
+    interval_instability = max(
+        0.0,
+        min(1.0, 1.0 - (avg_interval / max(window_seconds, 1)))
+    )
+
+    risk_volatility = min(
+        1.0,
+        risk_density * 0.45
+        + event_density * 0.25
+        + interval_instability * 0.20
+        + failure_density * 0.10,
+    )
+
+    relapse_velocity = min(
+        1.0,
+        risk_events / max(window_days, 1) * 2.5
+        + failed_events / max(window_days, 1) * 2.0
+        + containment_events * 0.15,
+    )
+
+    trust_consistency = max(
+        0.0,
+        min(
+            1.0,
+            0.65
+            + recovery_density * 0.20
+            + simulation_events / max(event_count, 1) * 0.10
+            - risk_density * 0.30
+            - failure_density * 0.25
+            - containment_events * 0.10,
+        ),
+    )
+
+    behavior_stability_score = max(
+        0.0,
+        min(
+            1.0,
+            0.75
+            - risk_volatility * 0.35
+            - relapse_velocity * 0.25
+            + trust_consistency * 0.25
+            - event_density * 0.10,
+        ),
+    )
+
+    temporal_reliability = max(
+        0.0,
+        min(
+            1.0,
+            behavior_stability_score * 0.55
+            + trust_consistency * 0.30
+            + max(0.0, 1.0 - risk_volatility) * 0.15,
+        ),
+    )
+
+    return {
+        "status": "ok",
+        "subject_id": subject_id,
+        "window_days": window_days,
+        "behavior_stability_score": round(behavior_stability_score, 6),
+        "risk_volatility": round(risk_volatility, 6),
+        "relapse_velocity": round(relapse_velocity, 6),
+        "trust_consistency": round(trust_consistency, 6),
+        "temporal_reliability": round(temporal_reliability, 6),
+        "event_count": event_count,
+        "risk_events": risk_events,
+        "recovery_events": recovery_events,
+        "containment_events": containment_events,
+        "failed_events": failed_events,
+        "simulation_events": simulation_events,
+        "avg_event_interval_seconds": round(avg_interval, 2),
+        "advisory_only": True,
+    }
+
+
+
+def authorize_rehabilitation_execution_db(subject_id):
+    if not subject_id:
+        return {"status": "error", "message": "subject_id_required"}
+
+    simulation = simulate_rehabilitation_impact_db(subject_id)
+
+    if simulation.get("status") != "ok":
+        return simulation
+
+    impact = simulation.get("impact") or {}
+
+    rehabilitation_safety_score = float(impact.get("rehabilitation_safety_score", 0) or 0)
+    protocol_safety_risk = float(impact.get("protocol_safety_risk", 1) or 1)
+    relapse_risk = float(impact.get("relapse_risk", 1) or 1)
+    recovery_abuse_risk = float(impact.get("recovery_abuse_risk", 1) or 1)
+
+    recommendation = str(simulation.get("recommendation", "no_recovery") or "no_recovery")
+    simulation_decision = str(simulation.get("simulation_decision", "") or "")
+
+    auto_allowed = False
+    execution_mode = "advisory_only"
+    required_review = False
+    reason = "default_rehabilitation_advisory_mode"
+
+    if recommendation == "no_recovery":
+        execution_mode = "blocked"
+        required_review = True
+        reason = "no_recovery_recommended"
+
+    elif (
+        simulation_decision == "safe_for_controlled_rehabilitation"
+        and rehabilitation_safety_score >= 0.72
+        and protocol_safety_risk <= 0.30
+        and relapse_risk <= 0.35
+        and recovery_abuse_risk <= 0.30
+        and recommendation in ["partial_rehabilitation_candidate", "controlled_rehabilitation_candidate"]
+    ):
+        auto_allowed = True
+        execution_mode = "controlled_auto"
+        reason = "safe_controlled_rehabilitation"
+
+    elif (
+        simulation_decision in ["safe_for_controlled_rehabilitation", "rehabilitate_cautiously", "human_review_recommended"]
+        and rehabilitation_safety_score >= 0.45
+    ):
+        execution_mode = "review_required"
+        required_review = True
+        reason = "rehabilitation_requires_governance_review"
+
+    else:
+        execution_mode = "blocked"
+        required_review = True
+        reason = "rehabilitation_not_safe"
+
+    event_result = create_seller_governance_event_db(
+        seller_id=subject_id,
+        event_type="rehabilitation_execution_gate_decision",
+        reviewer="rehabilitation_execution_gate",
+        reason=reason,
+        old_status="",
+        new_status="",
+        metadata={
+            "simulation": simulation,
+            "auto_allowed": auto_allowed,
+            "execution_mode": execution_mode,
+            "required_review": required_review,
+            "reason": reason,
+        },
+    )
+
+    return {
+        "status": "ok",
+        "subject_id": subject_id,
+        "auto_allowed": auto_allowed,
+        "execution_mode": execution_mode,
+        "required_review": required_review,
+        "reason": reason,
+        "recommendation": recommendation,
+        "simulation_decision": simulation_decision,
+        "rehabilitation_safety_score": round(rehabilitation_safety_score, 6),
+        "protocol_safety_risk": round(protocol_safety_risk, 6),
+        "relapse_risk": round(relapse_risk, 6),
+        "recovery_abuse_risk": round(recovery_abuse_risk, 6),
+        "governance_event": event_result,
+    }
+
+
+
+
+def compute_protocol_systemic_risk_db(window_days=30):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    now = int(time.time())
+    since = now - int(window_days or 30) * 86400
+
+    cur.execute("""
+    SELECT
+        COUNT(*) AS node_count,
+        AVG(latent_risk_score) AS avg_latent_risk,
+        AVG(mutation_score) AS avg_mutation_score,
+        AVG(contagion_score) AS avg_contagion_score,
+        AVG(quarantine_pressure) AS avg_quarantine_pressure,
+        AVG(adaptive_trust_score) AS avg_adaptive_trust,
+        SUM(CASE WHEN latent_risk_score >= 0.65 THEN 1 ELSE 0 END) AS high_risk_nodes
+    FROM threat_memory_nodes
+    """)
+
+    node_row = cur.fetchone()
+
+    cur.execute("""
+    SELECT
+        COUNT(*) AS signature_count,
+        AVG(emergence_probability) AS avg_emergence_probability,
+        AVG(confidence) AS avg_mutation_confidence,
+        COUNT(DISTINCT evolution_family) AS mutation_family_count
+    FROM adversarial_mutation_signatures
+    WHERE status = 'active'
+    """)
+
+    mutation_row = cur.fetchone()
+
+    cur.execute(f"""
+    SELECT
+        COUNT(*) AS event_count,
+        SUM(CASE WHEN event_type LIKE '%risk%' THEN 1 ELSE 0 END) AS risk_event_count,
+        SUM(CASE WHEN event_type LIKE '%recovery%' OR event_type LIKE '%rehabilitation%' THEN 1 ELSE 0 END) AS recovery_event_count,
+        SUM(CASE WHEN event_type LIKE '%simulation%' THEN 1 ELSE 0 END) AS simulation_event_count,
+        SUM(CASE WHEN event_type LIKE '%failed%' THEN 1 ELSE 0 END) AS failed_event_count
+    FROM seller_governance_events
+    WHERE created_at >= {p}
+    """, (since,))
+
+    event_row = cur.fetchone()
+
+    cur.execute("""
+    SELECT
+        COUNT(*) AS cluster_count,
+        AVG(cluster_risk_score) AS avg_cluster_risk,
+        AVG(coordination_probability) AS avg_coordination_probability,
+        SUM(CASE WHEN cluster_risk_score >= 0.50 THEN 1 ELSE 0 END) AS high_risk_clusters
+    FROM seller_clusters
+    """)
+
+    cluster_row = cur.fetchone()
+
+    cur.execute(f"""
+    SELECT
+        COUNT(*) AS snapshot_count,
+        AVG(cluster_risk_score) AS avg_snapshot_cluster_risk,
+        AVG(coordination_probability) AS avg_snapshot_coordination
+    FROM cluster_snapshots
+    WHERE created_at >= {p}
+    """, (since,))
+
+    snapshot_row = cur.fetchone()
+
+    release_conn(conn)
+
+    node_count = int(row_get(node_row, "node_count", 0) or 0)
+    high_risk_nodes = int(row_get(node_row, "high_risk_nodes", 0) or 0)
+
+    avg_latent_risk = float(row_get(node_row, "avg_latent_risk", 0) or 0)
+    avg_mutation_score = float(row_get(node_row, "avg_mutation_score", 0) or 0)
+    avg_contagion_score = float(row_get(node_row, "avg_contagion_score", 0) or 0)
+    avg_quarantine_pressure = float(row_get(node_row, "avg_quarantine_pressure", 0) or 0)
+    avg_adaptive_trust = float(row_get(node_row, "avg_adaptive_trust", 0.5) or 0.5)
+
+    signature_count = int(row_get(mutation_row, "signature_count", 0) or 0)
+    mutation_family_count = int(row_get(mutation_row, "mutation_family_count", 0) or 0)
+    avg_emergence_probability = float(row_get(mutation_row, "avg_emergence_probability", 0) or 0)
+    avg_mutation_confidence = float(row_get(mutation_row, "avg_mutation_confidence", 0) or 0)
+
+    event_count = int(row_get(event_row, "event_count", 0) or 0)
+    risk_event_count = int(row_get(event_row, "risk_event_count", 0) or 0)
+    recovery_event_count = int(row_get(event_row, "recovery_event_count", 0) or 0)
+    simulation_event_count = int(row_get(event_row, "simulation_event_count", 0) or 0)
+    failed_event_count = int(row_get(event_row, "failed_event_count", 0) or 0)
+
+    cluster_count = int(row_get(cluster_row, "cluster_count", 0) or 0)
+    high_risk_clusters = int(row_get(cluster_row, "high_risk_clusters", 0) or 0)
+    avg_cluster_risk = float(row_get(cluster_row, "avg_cluster_risk", 0) or 0)
+    avg_coordination_probability = float(row_get(cluster_row, "avg_coordination_probability", 0) or 0)
+
+    snapshot_count = int(row_get(snapshot_row, "snapshot_count", 0) or 0)
+    avg_snapshot_cluster_risk = float(row_get(snapshot_row, "avg_snapshot_cluster_risk", 0) or 0)
+    avg_snapshot_coordination = float(row_get(snapshot_row, "avg_snapshot_coordination", 0) or 0)
+
+    cluster_pressure = min(
+        1.0,
+        avg_cluster_risk * 0.45
+        + avg_coordination_probability * 0.35
+        + min(high_risk_clusters, 10) / 10 * 0.20,
+    )
+
+    contagion_pressure = min(
+        1.0,
+        avg_contagion_score * 0.60
+        + min(high_risk_nodes, 20) / 20 * 0.25
+        + avg_quarantine_pressure * 0.15,
+    )
+
+    mutation_pressure = min(
+        1.0,
+        avg_mutation_score * 0.35
+        + avg_emergence_probability * 0.30
+        + avg_mutation_confidence * 0.20
+        + min(mutation_family_count, 8) / 8 * 0.15,
+    )
+
+    governance_load = min(
+        1.0,
+        min(event_count, 100) / 100 * 0.25
+        + min(risk_event_count, 50) / 50 * 0.35
+        + min(failed_event_count, 20) / 20 * 0.25
+        + min(simulation_event_count, 100) / 100 * 0.15,
+    )
+
+    recovery_load = min(
+        1.0,
+        min(recovery_event_count, 50) / 50
+    )
+
+    protocol_stability = max(
+        0.0,
+        min(
+            1.0,
+            0.75
+            + avg_adaptive_trust * 0.20
+            - cluster_pressure * 0.18
+            - contagion_pressure * 0.22
+            - mutation_pressure * 0.25
+            - governance_load * 0.15,
+        ),
+    )
+
+    systemic_risk_score = min(
+        1.0,
+        cluster_pressure * 0.22
+        + contagion_pressure * 0.24
+        + mutation_pressure * 0.24
+        + governance_load * 0.18
+        + max(0.0, 1.0 - protocol_stability) * 0.12,
+    )
+
+    if systemic_risk_score >= 0.75:
+        systemic_level = "critical"
+    elif systemic_risk_score >= 0.55:
+        systemic_level = "high"
+    elif systemic_risk_score >= 0.35:
+        systemic_level = "medium"
+    elif systemic_risk_score >= 0.18:
+        systemic_level = "low_medium"
+    else:
+        systemic_level = "low"
+
+    return {
+        "status": "ok",
+        "window_days": window_days,
+        "systemic_risk_score": round(systemic_risk_score, 6),
+        "systemic_level": systemic_level,
+        "cluster_pressure": round(cluster_pressure, 6),
+        "contagion_pressure": round(contagion_pressure, 6),
+        "mutation_pressure": round(mutation_pressure, 6),
+        "governance_load": round(governance_load, 6),
+        "recovery_load": round(recovery_load, 6),
+        "protocol_stability": round(protocol_stability, 6),
+        "counts": {
+            "node_count": node_count,
+            "high_risk_nodes": high_risk_nodes,
+            "signature_count": signature_count,
+            "mutation_family_count": mutation_family_count,
+            "event_count": event_count,
+            "risk_event_count": risk_event_count,
+            "recovery_event_count": recovery_event_count,
+            "simulation_event_count": simulation_event_count,
+            "failed_event_count": failed_event_count,
+            "cluster_count": cluster_count,
+            "high_risk_clusters": high_risk_clusters,
+            "snapshot_count": snapshot_count,
+        },
+        "averages": {
+            "avg_latent_risk": round(avg_latent_risk, 6),
+            "avg_mutation_score": round(avg_mutation_score, 6),
+            "avg_contagion_score": round(avg_contagion_score, 6),
+            "avg_quarantine_pressure": round(avg_quarantine_pressure, 6),
+            "avg_adaptive_trust": round(avg_adaptive_trust, 6),
+            "avg_emergence_probability": round(avg_emergence_probability, 6),
+            "avg_mutation_confidence": round(avg_mutation_confidence, 6),
+            "avg_cluster_risk": round(avg_cluster_risk, 6),
+            "avg_coordination_probability": round(avg_coordination_probability, 6),
+            "avg_snapshot_cluster_risk": round(avg_snapshot_cluster_risk, 6),
+            "avg_snapshot_coordination": round(avg_snapshot_coordination, 6),
+        },
+        "advisory_only": True,
+    }
+
+
+
+def compute_protocol_systemic_response_recommendation_db(window_days=30):
+    systemic = compute_protocol_systemic_risk_db(
+        window_days=window_days
+    )
+
+    if systemic.get("status") != "ok":
+        return systemic
+
+    systemic_risk = float(systemic.get("systemic_risk_score", 0) or 0)
+    cluster_pressure = float(systemic.get("cluster_pressure", 0) or 0)
+    contagion_pressure = float(systemic.get("contagion_pressure", 0) or 0)
+    mutation_pressure = float(systemic.get("mutation_pressure", 0) or 0)
+    governance_load = float(systemic.get("governance_load", 0) or 0)
+    recovery_load = float(systemic.get("recovery_load", 0) or 0)
+    protocol_stability = float(systemic.get("protocol_stability", 0.5) or 0.5)
+
+    if systemic_risk >= 0.78 or protocol_stability <= 0.25:
+        recommendation = "emergency_containment_preparation"
+        severity = "critical"
+
+    elif systemic_risk >= 0.62:
+        recommendation = "systemic_review"
+        severity = "high"
+
+    elif (
+        mutation_pressure >= 0.58
+        and systemic_risk >= 0.28
+    ):
+        recommendation = "increase_stake_pressure"
+        severity = "medium_high"
+
+    elif contagion_pressure >= 0.45 or cluster_pressure >= 0.45:
+        recommendation = "tighten_routing"
+        severity = "medium_high"
+
+    elif governance_load >= 0.50:
+        recommendation = "increase_monitoring"
+        severity = "medium"
+
+    elif recovery_load >= 0.40 and mutation_pressure >= 0.45:
+        recommendation = "slow_recovery"
+        severity = "medium"
+
+    elif systemic_risk >= 0.18:
+        recommendation = "increase_monitoring"
+        severity = "low_medium"
+
+    else:
+        recommendation = "normal_operation"
+        severity = "low"
+
+    recommended_actions = []
+
+    if recommendation == "normal_operation":
+        recommended_actions = [
+            "continue normal routing",
+            "continue periodic systemic monitoring",
+        ]
+
+    elif recommendation == "increase_monitoring":
+        recommended_actions = [
+            "increase systemic telemetry frequency",
+            "increase mutation family monitoring",
+            "increase graph refresh cadence",
+        ]
+
+    elif recommendation == "increase_stake_pressure":
+        recommended_actions = [
+            "increase minimum stake pressure for risky sellers",
+            "increase escrow reserve sensitivity",
+            "reduce reputation amplification from new sellers",
+            "monitor mutation families with higher priority",
+        ]
+
+    elif recommendation == "tighten_routing":
+        recommended_actions = [
+            "reduce routing exposure for graph-risk clusters",
+            "increase consensus requirement for risky clusters",
+            "deprioritize sellers with high contagion pressure",
+        ]
+
+    elif recommendation == "slow_recovery":
+        recommended_actions = [
+            "slow automatic rehabilitation",
+            "increase recovery review strictness",
+            "require longer stability windows before recovery",
+        ]
+
+    elif recommendation == "systemic_review":
+        recommended_actions = [
+            "trigger protocol-wide governance review",
+            "increase global stake and escrow buffers",
+            "reduce high-risk task routing",
+            "increase runtime verification frequency",
+        ]
+
+    elif recommendation == "emergency_containment_preparation":
+        recommended_actions = [
+            "prepare systemic containment controls",
+            "freeze unsafe autonomous escalation paths",
+            "prepare graph quarantine of high-risk clusters",
+            "increase protocol reserve protection",
+            "require human governance review before severe action",
+        ]
+
+    return {
+        "status": "ok",
+        "window_days": window_days,
+        "recommendation": recommendation,
+        "severity": severity,
+        "recommended_actions": recommended_actions,
+        "systemic": systemic,
+        "advisory_only": True,
+    }
+
+
+
+def record_protocol_systemic_response_recommendation_db(
+    window_days=30
+):
+    recommendation = (
+        compute_protocol_systemic_response_recommendation_db(
+            window_days=window_days
+        )
+    )
+
+    if recommendation.get("status") != "ok":
+        return recommendation
+
+    systemic = recommendation.get("systemic") or {}
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    now = int(time.time())
+
+    event_id = (
+        "systemic_event_" + str(uuid.uuid4())
+    )
+
+    cur.execute(f"""
+    INSERT INTO seller_governance_events (
+        event_id,
+        seller_id,
+        event_type,
+        severity,
+        reviewer,
+        reason,
+        metadata,
+        created_at
+    )
+    VALUES (
+        {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}
+    )
+    """, (
+        event_id,
+        "__protocol_system__",
+        "protocol_systemic_response",
+        recommendation.get("severity"),
+        "autonomous_systemic_governance_engine",
+        recommendation.get("recommendation"),
+        json.dumps({
+            "window_days": window_days,
+            "recommended_actions": recommendation.get(
+                "recommended_actions",
+                []
+            ),
+            "systemic_risk_score": systemic.get(
+                "systemic_risk_score"
+            ),
+            "systemic_level": systemic.get(
+                "systemic_level"
+            ),
+            "cluster_pressure": systemic.get(
+                "cluster_pressure"
+            ),
+            "contagion_pressure": systemic.get(
+                "contagion_pressure"
+            ),
+            "mutation_pressure": systemic.get(
+                "mutation_pressure"
+            ),
+            "governance_load": systemic.get(
+                "governance_load"
+            ),
+            "recovery_load": systemic.get(
+                "recovery_load"
+            ),
+            "protocol_stability": systemic.get(
+                "protocol_stability"
+            ),
+        }),
+        now,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "event_id": event_id,
+        "recommendation": recommendation,
+        "advisory_only": True,
+    }

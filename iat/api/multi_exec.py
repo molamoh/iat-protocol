@@ -2345,6 +2345,13 @@ def compute_seller_routing_modifier(agent):
     containment_count = int(agent.get("containment_count", 0) or 0)
     economic_penalty_level = int(agent.get("economic_penalty_level", 0) or 0)
 
+    latent_risk_score = float(agent.get("latent_risk_score", 0) or 0)
+    mutation_score = float(agent.get("mutation_score", 0) or 0)
+    contagion_score = float(agent.get("contagion_score", 0) or 0)
+    quarantine_pressure = float(agent.get("quarantine_pressure", 0) or 0)
+    graph_position_score = float(agent.get("graph_position_score", 0) or 0)
+    adaptive_trust_score = float(agent.get("adaptive_trust_score", 0.5) or 0.5)
+
     if seller_status in ["contained", "banned", "rejected"]:
         return {
             "allowed": False,
@@ -2369,6 +2376,17 @@ def compute_seller_routing_modifier(agent):
     modifier -= min(risk_score * 0.35, 0.35)
     modifier -= min(containment_count * 0.15, 0.45)
     modifier -= min(economic_penalty_level * 0.10, 0.50)
+
+    modifier -= min(latent_risk_score * 0.18, 0.18)
+    modifier -= min(mutation_score * 0.14, 0.14)
+    modifier -= min(contagion_score * 0.16, 0.16)
+    modifier -= min(quarantine_pressure * 0.20, 0.20)
+    modifier -= min(graph_position_score * 0.08, 0.08)
+
+    if adaptive_trust_score >= 0.75:
+        modifier += 0.05
+    elif adaptive_trust_score <= 0.30:
+        modifier -= 0.08
 
     return {
         "allowed": True,

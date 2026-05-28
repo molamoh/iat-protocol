@@ -602,6 +602,11 @@ def apply_seller_risk_decay(
     seller = get_agent_db(seller_id)
 
     if not seller:
+        from iat.api.db import get_seller_db
+
+        seller = get_seller_db(seller_id)
+
+    if not seller:
         return {
             "status": "invalid_seller",
             "message": "Seller not found.",
@@ -643,6 +648,11 @@ def record_seller_consensus_check(
         }
 
     seller = get_agent_db(seller_id)
+
+    if not seller:
+        from iat.api.db import get_seller_db
+
+        seller = get_seller_db(seller_id)
 
     if not seller:
         return {
@@ -764,6 +774,11 @@ def internal_verify_seller_result(
         }
 
     seller = get_agent_db(seller_id)
+
+    if not seller:
+        from iat.api.db import get_seller_db
+
+        seller = get_seller_db(seller_id)
 
     if not seller:
         return {
@@ -1639,6 +1654,11 @@ def refresh_adaptive_policy_for_seller(seller_id):
     Autonomous defense refresh.
     """
     seller = get_agent_db(seller_id)
+
+    if not seller:
+        from iat.api.db import get_seller_db
+
+        seller = get_seller_db(seller_id)
 
     if not seller:
         return {
@@ -5361,6 +5381,130 @@ def runtime_heartbeat_governance_loop():
                     runtime_latency=latency,
                 )
 
+                try:
+                    from iat.api.db import (
+                        compute_temporal_behavior_stability_db,
+                        compute_autonomous_governance_recommendation_db,
+                        compute_autonomous_recovery_recommendation_db,
+                    )
+
+                    seller_id = agent.get("seller_id")
+
+                    if seller_id:
+
+                        adaptive_refresh = refresh_adaptive_policy_for_seller(
+                            seller_id
+                        )
+
+                        temporal = compute_temporal_behavior_stability_db(
+                            seller_id,
+                            window_days=30,
+                        )
+
+                        governance = compute_autonomous_governance_recommendation_db(
+                            seller_id
+                        )
+
+                        recovery = compute_autonomous_recovery_recommendation_db(
+                            seller_id
+                        )
+
+                        print(
+                            "[IAT_AUTONOMOUS_GOVERNANCE]",
+                            {
+                                "seller_id": seller_id,
+                                "temporal_reliability": temporal.get(
+                                    "temporal_reliability"
+                                ),
+                                "governance_recommendation": governance.get(
+                                    "recommendation"
+                                ),
+                                "recovery_recommendation": recovery.get(
+                                    "recommendation"
+                                ),
+                                "cluster_id": (
+                                    adaptive_refresh.get("cluster") or {}
+                                ).get("cluster_id"),
+                                "cluster_risk_score": (
+                                    adaptive_refresh.get("cluster") or {}
+                                ).get("cluster_risk_score"),
+                                "forecast_risk": (
+                                    adaptive_refresh.get("cluster_forecast") or {}
+                                ).get("forecast_risk_score"),
+                            }
+                        )
+
+                        try:
+                            from iat.api.db import (
+                                authorize_protocol_response_execution_db,
+                                apply_controlled_protocol_response_db,
+                                get_conn,
+                                release_conn,
+                                qmark,
+                            )
+
+                            conn = get_conn()
+                            cur = conn.cursor()
+                            p = qmark()
+
+                            cur.execute(f"""
+                            SELECT created_at
+                            FROM seller_governance_events
+                            WHERE seller_id = {p}
+                              AND event_type = 'controlled_protocol_response_applied'
+                            ORDER BY created_at DESC
+                            LIMIT 1
+                            """, (
+                                seller_id,
+                            ))
+
+                            cooldown_row = cur.fetchone()
+                            release_conn(conn)
+
+                            cooldown_ok = True
+
+                            if cooldown_row:
+                                last_ts = int(
+                                    cooldown_row["created_at"]
+                                )
+
+                                if int(time.time()) - last_ts < 3600:
+                                    cooldown_ok = False
+
+                            if cooldown_ok:
+                                gate = authorize_protocol_response_execution_db(
+                                    seller_id
+                                )
+
+                                if (
+                                    gate.get("status") == "ok"
+                                    and gate.get("auto_allowed") is True
+                                    and gate.get("execution_mode") == "controlled_auto"
+                                ):
+                                    execution = apply_controlled_protocol_response_db(
+                                        seller_id
+                                    )
+
+                                    print(
+                                        "[IAT_AUTONOMOUS_SAFE_EXECUTION]",
+                                        {
+                                            "seller_id": seller_id,
+                                            "execution": execution,
+                                        }
+                                    )
+
+                        except Exception as execution_error:
+                            print(
+                                "[IAT_AUTONOMOUS_EXECUTION_ERROR]",
+                                str(execution_error)
+                            )
+
+                except Exception as cognition_error:
+                    print(
+                        "[IAT_AUTONOMOUS_COGNITION_ERROR]",
+                        str(cognition_error)
+                    )
+
         except Exception as e:
             print(
                 "[IAT_RUNTIME_HEARTBEAT_LOOP_ERROR]",
@@ -5441,5 +5585,254 @@ def admin_seller_update_status(
         seller_id=req.seller_id,
         next_status=req.next_status,
         reason=req.reason,
+    )
+
+
+
+class SellerRecoveryRequest(BaseModel):
+    api_key: str = Field(min_length=10, max_length=300)
+    requested_status: str = "watchlist"
+    reason: str = Field(default="", max_length=2000)
+    evidence: dict = {}
+
+
+@app.post("/seller/request-recovery")
+def seller_request_recovery(req: SellerRecoveryRequest):
+    auth = authenticate_seller_api_key_db(req.api_key)
+
+    if not auth:
+        return {
+            "status": "error",
+            "message": "invalid_seller_api_key",
+        }
+
+    if auth.get("status") == "ok":
+        seller_id = (auth.get("seller") or {}).get("seller_id")
+    else:
+        seller_id = auth.get("seller_id")
+
+    from iat.api.db import create_seller_recovery_request_db
+
+    return create_seller_recovery_request_db(
+        seller_id=seller_id,
+        requested_status=req.requested_status,
+        reason=req.reason,
+        evidence=req.evidence,
+    )
+
+
+
+class SellerRecoveryRequest(BaseModel):
+    api_key: str = Field(min_length=10, max_length=300)
+    requested_status: str = "watchlist"
+    reason: str = Field(default="", max_length=2000)
+    evidence: dict = {}
+
+
+@app.post("/seller/request-recovery")
+def seller_request_recovery(req: SellerRecoveryRequest):
+    seller = authenticate_seller_api_key_db(req.api_key)
+
+    if not seller:
+        return {
+            "status": "error",
+            "message": "invalid_seller_api_key",
+        }
+
+    from iat.api.db import create_seller_recovery_request_db
+
+    return create_seller_recovery_request_db(
+        seller_id=seller.get("seller_id"),
+        requested_status=req.requested_status,
+        reason=req.reason,
+        evidence=req.evidence,
+    )
+
+
+
+class AdminSellerRecoveryDecisionRequest(BaseModel):
+    recovery_request_id: str = Field(min_length=10, max_length=300)
+    decision: str = Field(min_length=6, max_length=20)
+    admin_reason: str = Field(default="", max_length=2000)
+
+
+@app.post("/admin/seller/recovery-decision")
+def admin_seller_recovery_decision(
+    req: AdminSellerRecoveryDecisionRequest,
+    x_api_key: str = Header(default="")
+):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import decide_seller_recovery_request_db
+
+    return decide_seller_recovery_request_db(
+        recovery_request_id=req.recovery_request_id,
+        decision=req.decision,
+        admin_reason=req.admin_reason,
+    )
+
+
+
+@app.get("/admin/seller-governance-events")
+def admin_seller_governance_events(
+    seller_id: str = None,
+    limit: int = 100,
+    x_api_key: str = Header(default="")
+):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import list_seller_governance_events_db
+
+    return list_seller_governance_events_db(
+        seller_id=seller_id,
+        limit=limit,
+    )
+
+
+
+@app.get("/admin/threat-memory-nodes")
+def admin_threat_memory_nodes(
+    limit: int = 100,
+    x_api_key: str = Header(default="")
+):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import list_threat_memory_nodes_db
+
+    return list_threat_memory_nodes_db(
+        limit=limit,
+    )
+
+
+
+@app.get("/admin/seller/autonomous-governance-recommendation/{seller_id}")
+def admin_seller_autonomous_governance_recommendation(
+    seller_id: str,
+    x_api_key: str = Header(default="")
+):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import compute_autonomous_governance_recommendation_db
+
+    return compute_autonomous_governance_recommendation_db(
+        seller_id
+    )
+
+
+
+@app.post("/admin/seller/record-autonomous-governance-recommendation/{seller_id}")
+def admin_record_autonomous_governance_recommendation(
+    seller_id: str,
+    x_api_key: str = Header(default="")
+):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import record_autonomous_governance_recommendation_db
+
+    return record_autonomous_governance_recommendation_db(
+        seller_id
+    )
+
+
+
+@app.get("/admin/seller/simulate-protocol-response/{seller_id}")
+def admin_simulate_protocol_response(
+    seller_id: str,
+    x_api_key: str = Header(default="")
+):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import simulate_protocol_response_impact_db
+
+    return simulate_protocol_response_impact_db(
+        seller_id
+    )
+
+
+
+@app.post("/admin/seller/record-protocol-response-simulation/{seller_id}")
+def admin_record_protocol_response_simulation(
+    seller_id: str,
+    x_api_key: str = Header(default="")
+):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import record_protocol_response_simulation_db
+
+    return record_protocol_response_simulation_db(
+        seller_id
+    )
+
+
+
+@app.get("/admin/seller/autonomous-recovery-recommendation/{seller_id}")
+def admin_autonomous_recovery_recommendation(
+    seller_id: str,
+    x_api_key: str = Header(default="")
+):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import compute_autonomous_recovery_recommendation_db
+
+    return compute_autonomous_recovery_recommendation_db(
+        seller_id
+    )
+
+
+@app.post("/admin/seller/record-autonomous-recovery-recommendation/{seller_id}")
+def admin_record_autonomous_recovery_recommendation(
+    seller_id: str,
+    x_api_key: str = Header(default="")
+):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import record_autonomous_recovery_recommendation_db
+
+    return record_autonomous_recovery_recommendation_db(
+        seller_id
+    )
+
+
+
+@app.get("/admin/seller/simulate-rehabilitation/{seller_id}")
+def admin_simulate_rehabilitation(
+    seller_id: str,
+    x_api_key: str = Header(default="")
+):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import simulate_rehabilitation_impact_db
+
+    return simulate_rehabilitation_impact_db(
+        seller_id
+    )
+
+
+@app.post("/admin/seller/record-rehabilitation-simulation/{seller_id}")
+def admin_record_rehabilitation_simulation(
+    seller_id: str,
+    x_api_key: str = Header(default="")
+):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import record_rehabilitation_impact_simulation_db
+
+    return record_rehabilitation_impact_simulation_db(
+        seller_id
+    )
+
+
+
+@app.get("/admin/seller/rehabilitation-execution-gate/{seller_id}")
+def admin_rehabilitation_execution_gate(
+    seller_id: str,
+    x_api_key: str = Header(default="")
+):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import authorize_rehabilitation_execution_db
+
+    return authorize_rehabilitation_execution_db(
+        seller_id
     )
 

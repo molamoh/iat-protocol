@@ -6573,6 +6573,80 @@ def create_seller_governance_event_with_cursor(
 
 
 
+
+
+def create_deduped_seller_governance_event_db(
+    seller_id,
+    event_type,
+    reviewer="foundation_protocol",
+    reason="",
+    override_terminal=False,
+    old_status="",
+    new_status="",
+    metadata=None,
+    dedupe_window_seconds=3600,
+):
+    if not seller_id:
+        return {"status": "error", "message": "seller_id_required"}
+
+    if not event_type:
+        return {"status": "error", "message": "event_type_required"}
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    now = int(time.time())
+    since = now - int(dedupe_window_seconds or 3600)
+
+    cur.execute(f"""
+    SELECT event_id, created_at
+    FROM seller_governance_events
+    WHERE seller_id = {p}
+      AND event_type = {p}
+      AND reason = {p}
+      AND created_at >= {p}
+    ORDER BY created_at DESC
+    LIMIT 1
+    """, (
+        seller_id,
+        event_type,
+        reason,
+        since,
+    ))
+
+    existing = cur.fetchone()
+
+    if existing:
+        release_conn(conn)
+        return {
+            "status": "deduped",
+            "event_id": row_get(existing, "event_id"),
+            "seller_id": seller_id,
+            "event_type": event_type,
+            "reason": reason,
+            "dedupe_window_seconds": dedupe_window_seconds,
+        }
+
+    result = create_seller_governance_event_with_cursor(
+        cur=cur,
+        seller_id=seller_id,
+        event_type=event_type,
+        reviewer=reviewer,
+        reason=reason,
+        override_terminal=override_terminal,
+        old_status=old_status,
+        new_status=new_status,
+        metadata=metadata,
+    )
+
+    conn.commit()
+    release_conn(conn)
+
+    result["deduped"] = False
+    return result
+
+
 def create_seller_governance_event_db(
     seller_id,
     event_type,
@@ -8668,7 +8742,7 @@ def authorize_protocol_response_execution_db(subject_id):
         required_review = True
         reason = "execution_not_safe"
 
-    event_result = create_seller_governance_event_db(
+    event_result = create_deduped_seller_governance_event_db(
         seller_id=subject_id,
         event_type="protocol_execution_gate_decision",
         reviewer="protocol_execution_gate",
@@ -8682,6 +8756,7 @@ def authorize_protocol_response_execution_db(subject_id):
             "required_review": required_review,
             "reason": reason,
         },
+        dedupe_window_seconds=900,
     )
 
     return {
@@ -8752,6 +8827,43 @@ def apply_controlled_protocol_response_db(subject_id):
             "status": "ok",
             "subject_id": subject_id,
             "action_applied": "no_action",
+            "governance_event": event_result,
+            "gate": gate,
+        }
+
+    safety = can_execute_autonomous_action_db(
+        subject_id=subject_id,
+        action_type=recommendation,
+        window_seconds=3600,
+        max_subject_actions=1,
+        max_global_actions=20,
+        action_severity=severity,
+        max_subject_severity_budget=0.25,
+        max_global_severity_budget=2.0,
+    )
+
+    if safety.get("status") != "ok" or not safety.get("allowed"):
+        event_result = create_deduped_seller_governance_event_db(
+            seller_id=subject_id,
+            event_type="controlled_protocol_response_safety_blocked",
+            reviewer="autonomous_execution_safety_layer",
+            reason=safety.get("reason", "autonomous_execution_blocked"),
+            metadata={
+                "gate": gate,
+                "safety": safety,
+                "recommendation": recommendation,
+                "severity": severity,
+            },
+            dedupe_window_seconds=3600,
+        )
+
+        return {
+            "status": "blocked",
+            "message": "autonomous_execution_safety_blocked",
+            "subject_id": subject_id,
+            "recommendation": recommendation,
+            "severity": severity,
+            "safety": safety,
             "governance_event": event_result,
             "gate": gate,
         }
@@ -9701,38 +9813,12 @@ def record_protocol_systemic_response_recommendation_db(
 
     systemic = recommendation.get("systemic") or {}
 
-    conn = get_conn()
-    cur = conn.cursor()
-    p = qmark()
-
-    now = int(time.time())
-
-    event_id = (
-        "systemic_event_" + str(uuid.uuid4())
-    )
-
-    cur.execute(f"""
-    INSERT INTO seller_governance_events (
-        event_id,
-        seller_id,
-        event_type,
-        severity,
-        reviewer,
-        reason,
-        metadata,
-        created_at
-    )
-    VALUES (
-        {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}
-    )
-    """, (
-        event_id,
-        "__protocol_system__",
-        "protocol_systemic_response",
-        recommendation.get("severity"),
-        "autonomous_systemic_governance_engine",
-        recommendation.get("recommendation"),
-        json.dumps({
+    event_result = create_deduped_seller_governance_event_db(
+        seller_id="__protocol_system__",
+        event_type="protocol_systemic_response",
+        reviewer="autonomous_systemic_governance_engine",
+        reason=recommendation.get("recommendation"),
+        metadata={
             "window_days": window_days,
             "recommended_actions": recommendation.get(
                 "recommended_actions",
@@ -9762,16 +9848,399 @@ def record_protocol_systemic_response_recommendation_db(
             "protocol_stability": systemic.get(
                 "protocol_stability"
             ),
-        }),
-        now,
-    ))
-
-    conn.commit()
-    release_conn(conn)
+            "severity": recommendation.get("severity"),
+        },
+        dedupe_window_seconds=1800,
+    )
 
     return {
         "status": "ok",
-        "event_id": event_id,
+        "event": event_result,
+        "event_id": event_result.get("event_id"),
         "recommendation": recommendation,
+        "advisory_only": True,
+    }
+
+
+
+def can_execute_autonomous_action_db(
+    subject_id,
+    action_type,
+    window_seconds=3600,
+    max_subject_actions=1,
+    max_global_actions=20,
+    action_severity=0.0,
+    max_subject_severity_budget=0.25,
+    max_global_severity_budget=2.0,
+):
+    if not subject_id:
+        return {"status": "error", "message": "subject_id_required"}
+
+    action_type = str(action_type or "").strip()
+
+    if not action_type:
+        return {"status": "error", "message": "action_type_required"}
+
+    threat_mode = compute_threat_correlated_execution_mode_db(subject_id)
+
+    if threat_mode.get("status") != "ok":
+        return threat_mode
+
+    execution_mode = threat_mode.get("execution_mode")
+    threat_severity = threat_mode.get("severity")
+
+    # True confirmed threat must not be slowed by anti-loop damping.
+    if execution_mode in ["emergency_block", "aggressive_containment"]:
+        return {
+            "status": "ok",
+            "allowed": True,
+            "subject_id": subject_id,
+            "action_type": action_type,
+            "threat_mode": threat_mode,
+            "reason": "high_threat_overrides_autonomy_dampening",
+        }
+
+    # Weak/noisy signals should be dampened more strictly.
+    if execution_mode == "dampened_autonomy":
+        max_subject_actions = min(int(max_subject_actions or 1), 1)
+        max_global_actions = min(int(max_global_actions or 20), 5)
+        max_subject_severity_budget = min(
+            float(max_subject_severity_budget or 0.25),
+            0.10,
+        )
+        max_global_severity_budget = min(
+            float(max_global_severity_budget or 2.0),
+            0.50,
+        )
+
+    # Credible threat keeps normal bounded autonomy.
+    elif execution_mode in ["controlled_restriction", "enhanced_surveillance"]:
+        max_subject_actions = min(int(max_subject_actions or 1), 1)
+        max_global_actions = min(int(max_global_actions or 20), 20)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    now = int(time.time())
+    since = now - int(window_seconds or 3600)
+
+    cur.execute(f"""
+    SELECT COUNT(*) AS count
+    FROM seller_governance_events
+    WHERE seller_id = {p}
+      AND event_type = 'controlled_protocol_response_applied'
+      AND reason = {p}
+      AND created_at >= {p}
+    """, (
+        subject_id,
+        f"controlled_auto:{action_type}",
+        since,
+    ))
+
+    subject_row = cur.fetchone()
+    subject_count = int(row_get(subject_row, "count", 0) or 0)
+
+    cur.execute(f"""
+    SELECT COUNT(*) AS count
+    FROM seller_governance_events
+    WHERE event_type = 'controlled_protocol_response_applied'
+      AND created_at >= {p}
+    """, (
+        since,
+    ))
+
+    global_row = cur.fetchone()
+    global_count = int(row_get(global_row, "count", 0) or 0)
+
+    cur.execute(f"""
+    SELECT metadata
+    FROM seller_governance_events
+    WHERE seller_id = {p}
+      AND event_type = 'controlled_protocol_response_applied'
+      AND created_at >= {p}
+    """, (
+        subject_id,
+        since,
+    ))
+
+    subject_severity_sum = 0.0
+
+    for row in cur.fetchall():
+        try:
+            metadata = json.loads(row_get(row, "metadata", "{}") or "{}")
+            subject_severity_sum += float(
+                metadata.get("applied_severity", 0) or 0
+            )
+        except Exception:
+            pass
+
+    cur.execute(f"""
+    SELECT metadata
+    FROM seller_governance_events
+    WHERE event_type = 'controlled_protocol_response_applied'
+      AND created_at >= {p}
+    """, (
+        since,
+    ))
+
+    global_severity_sum = 0.0
+
+    for row in cur.fetchall():
+        try:
+            metadata = json.loads(row_get(row, "metadata", "{}") or "{}")
+            global_severity_sum += float(
+                metadata.get("applied_severity", 0) or 0
+            )
+        except Exception:
+            pass
+
+    release_conn(conn)
+
+    action_severity = max(
+        0.0,
+        min(float(action_severity or 0), 1.0)
+    )
+
+    projected_subject_severity = (
+        subject_severity_sum + action_severity
+    )
+
+    projected_global_severity = (
+        global_severity_sum + action_severity
+    )
+
+    if subject_count >= int(max_subject_actions or 1):
+        return {
+            "status": "blocked",
+            "reason": "subject_action_cooldown",
+            "subject_id": subject_id,
+            "action_type": action_type,
+            "subject_count": subject_count,
+            "window_seconds": window_seconds,
+        }
+
+    if global_count >= int(max_global_actions or 20):
+        return {
+            "status": "blocked",
+            "reason": "global_autonomous_execution_count_budget_exhausted",
+            "subject_id": subject_id,
+            "action_type": action_type,
+            "global_count": global_count,
+            "window_seconds": window_seconds,
+        }
+
+    if projected_subject_severity > float(max_subject_severity_budget or 0.25):
+        return {
+            "status": "blocked",
+            "reason": "subject_autonomous_severity_budget_exhausted",
+            "subject_id": subject_id,
+            "action_type": action_type,
+            "action_severity": action_severity,
+            "subject_severity_sum": round(subject_severity_sum, 6),
+            "projected_subject_severity": round(projected_subject_severity, 6),
+            "max_subject_severity_budget": max_subject_severity_budget,
+            "window_seconds": window_seconds,
+        }
+
+    if projected_global_severity > float(max_global_severity_budget or 2.0):
+        return {
+            "status": "blocked",
+            "reason": "global_autonomous_severity_budget_exhausted",
+            "subject_id": subject_id,
+            "action_type": action_type,
+            "action_severity": action_severity,
+            "global_severity_sum": round(global_severity_sum, 6),
+            "projected_global_severity": round(projected_global_severity, 6),
+            "max_global_severity_budget": max_global_severity_budget,
+            "window_seconds": window_seconds,
+        }
+
+    return {
+        "status": "ok",
+        "allowed": True,
+        "subject_id": subject_id,
+        "action_type": action_type,
+        "action_severity": action_severity,
+        "subject_count": subject_count,
+        "global_count": global_count,
+        "subject_severity_sum": round(subject_severity_sum, 6),
+        "global_severity_sum": round(global_severity_sum, 6),
+        "projected_subject_severity": round(projected_subject_severity, 6),
+        "projected_global_severity": round(projected_global_severity, 6),
+        "max_subject_severity_budget": max_subject_severity_budget,
+        "max_global_severity_budget": max_global_severity_budget,
+        "window_seconds": window_seconds,
+        "threat_mode": threat_mode,
+    }
+
+
+
+def compute_threat_correlated_execution_mode_db(subject_id):
+    if not subject_id:
+        return {"status": "error", "message": "subject_id_required"}
+
+    seller = get_seller_db(subject_id) or {}
+    node = get_threat_memory_node_db(subject_id) or {}
+    mutation = compute_adversarial_mutation_pressure_db(subject_id)
+    cluster = detect_seller_cluster_db(subject_id)
+
+    memories = get_active_threat_memory_db(
+        scope="seller",
+        subject_id=subject_id,
+        limit=50,
+    )
+
+    seller_status = str(seller.get("seller_status", "") or "").lower()
+    risk_score = float(seller.get("risk_score", 0) or 0)
+
+    memory_score = float(node.get("memory_score", 0) or 0)
+    latent_risk = float(node.get("latent_risk_score", 0) or 0)
+    contagion_score = float(node.get("contagion_score", 0) or 0)
+    quarantine_pressure = float(node.get("quarantine_pressure", 0) or 0)
+    adaptive_trust = float(node.get("adaptive_trust_score", 0.5) or 0.5)
+
+    mutation_pressure = float(
+        mutation.get("mutation_pressure_score", 0) or 0
+    )
+
+    cluster_risk = float(
+        cluster.get("cluster_risk_score", 0) or 0
+    ) if cluster else 0.0
+
+    coordination = float(
+        cluster.get("coordination_probability", 0) or 0
+    ) if cluster else 0.0
+
+    max_confidence = 0.0
+    critical_count = 0
+    high_count = 0
+    confirmed_like_count = 0
+
+    for m in memories:
+        confidence = float(m.get("confidence", 0) or 0)
+        threat_level = str(m.get("threat_level", "") or "").lower()
+        attack_vector = str(m.get("attack_vector", "") or "").lower()
+
+        max_confidence = max(max_confidence, confidence)
+
+        if threat_level == "critical":
+            critical_count += 1
+
+        if threat_level in ["high", "critical"]:
+            high_count += 1
+
+        if any(w in attack_vector for w in [
+            "confirmed fraud",
+            "fraud",
+            "scam",
+            "steal",
+            "theft",
+            "buyer harm",
+            "malicious",
+        ]):
+            confirmed_like_count += 1
+
+    threat_certainty_score = min(
+        1.0,
+        max_confidence * 0.30
+        + memory_score * 0.16
+        + latent_risk * 0.16
+        + mutation_pressure * 0.16
+        + cluster_risk * 0.10
+        + quarantine_pressure * 0.08
+        + min(high_count, 5) / 5 * 0.04,
+    )
+
+    threat_intensity_score = min(
+        1.0,
+        risk_score * 0.18
+        + latent_risk * 0.18
+        + mutation_pressure * 0.20
+        + contagion_score * 0.12
+        + quarantine_pressure * 0.14
+        + cluster_risk * 0.10
+        + coordination * 0.08,
+    )
+
+    if (
+        seller_status in ["banned", "rejected", "contained"]
+        or confirmed_like_count >= 2
+        or (
+            critical_count >= 1
+            and max_confidence >= 0.85
+        )
+    ):
+        execution_mode = "emergency_block"
+        severity = "critical"
+        reason = "confirmed_or_critical_threat"
+
+    elif (
+        threat_certainty_score >= 0.78
+        and threat_intensity_score >= 0.70
+    ):
+        execution_mode = "aggressive_containment"
+        severity = "high"
+        reason = "high_certainty_high_intensity_threat"
+
+    elif (
+        threat_certainty_score >= 0.62
+        and (
+            mutation_pressure >= 0.60
+            or cluster_risk >= 0.55
+            or quarantine_pressure >= 0.60
+        )
+    ):
+        execution_mode = "controlled_restriction"
+        severity = "medium_high"
+        reason = "correlated_mutation_or_cluster_threat"
+
+    elif (
+        threat_certainty_score >= 0.45
+        or threat_intensity_score >= 0.45
+        or seller_status in ["watchlist", "restricted"]
+    ):
+        execution_mode = "enhanced_surveillance"
+        severity = "medium"
+        reason = "credible_but_not_confirmed_threat"
+
+    elif (
+        max_confidence < 0.55
+        and threat_intensity_score < 0.35
+        and adaptive_trust >= 0.45
+    ):
+        execution_mode = "dampened_autonomy"
+        severity = "low"
+        reason = "weak_signal_prevent_autonomous_overreaction"
+
+    else:
+        execution_mode = "normal_autonomy"
+        severity = "low_medium"
+        reason = "normal_bounded_autonomy"
+
+    return {
+        "status": "ok",
+        "subject_id": subject_id,
+        "execution_mode": execution_mode,
+        "severity": severity,
+        "reason": reason,
+        "threat_certainty_score": round(threat_certainty_score, 6),
+        "threat_intensity_score": round(threat_intensity_score, 6),
+        "signals": {
+            "seller_status": seller_status,
+            "risk_score": round(risk_score, 6),
+            "memory_score": round(memory_score, 6),
+            "latent_risk_score": round(latent_risk, 6),
+            "mutation_pressure_score": round(mutation_pressure, 6),
+            "contagion_score": round(contagion_score, 6),
+            "quarantine_pressure": round(quarantine_pressure, 6),
+            "adaptive_trust_score": round(adaptive_trust, 6),
+            "cluster_risk_score": round(cluster_risk, 6),
+            "coordination_probability": round(coordination, 6),
+            "max_threat_confidence": round(max_confidence, 6),
+            "critical_memory_count": critical_count,
+            "high_memory_count": high_count,
+            "confirmed_like_count": confirmed_like_count,
+        },
         "advisory_only": True,
     }

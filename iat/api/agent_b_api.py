@@ -110,6 +110,10 @@ from iat.api.db import (
     save_buyer_conversation_session_db,
     get_buyer_conversation_session_db,
     cleanup_expired_buyer_sessions_db,
+    create_seller_catalog_item_db,
+    list_seller_catalog_items_db,
+    create_seller_agent_factory_request_db,
+    list_seller_agent_factory_requests_db,
 )
 
 
@@ -236,6 +240,47 @@ class LegacySellerRegisterRequest(BaseModel):
     requested_price: float = 0
 
     proof_links: str = "[]"
+
+
+class SellerCatalogItemRequest(BaseModel):
+    item_type: str
+    category: str
+    title: str
+    description: str
+
+    service_type: str | None = None
+    sku: str | None = None
+
+    unit_price: float = 0
+    currency: str = "IAT"
+
+    stock_quantity: float = 0
+    capacity_per_day: float = 0
+    capacity_per_order: float = 0
+
+    availability_status: str = "draft"
+
+    delivery_terms: str = ""
+    refund_policy: str = ""
+    warranty_terms: str = ""
+    quality_claims: str = ""
+
+    source_documents: list | str = []
+    proof_links: list | str = []
+
+    metadata: dict | str = {}
+
+
+class SellerAgentFactoryRequest(BaseModel):
+    catalog_item_id: str
+    requested_agent_name: str | None = None
+    requested_prompt: str
+
+    requested_agent_count: int = 1
+    requested_specializations: list | str = []
+    factory_plan: dict | str = {}
+
+    metadata: dict | str = {}
 
 
 class OrderRequest(BaseModel):
@@ -4874,7 +4919,7 @@ def seller_register(req: SellerRegisterRequest):
         "seller_status": "pending",
         "verification_status": "unverified",
         "trust_tier": "new",
-        "max_agents_allowed": 1,
+        "max_agents_allowed": 5,
         "metadata": metadata,
     })
 
@@ -5120,6 +5165,147 @@ def seller_register_agent(req: SellerRegisterAgentRequest):
 
 class SellerApprovalRequest(BaseModel):
     seller_id: str = Field(min_length=8, max_length=200)
+
+
+
+def get_authenticated_seller_from_header(x_seller_api_key):
+    if not x_seller_api_key:
+        return None
+    return get_seller_by_api_key_db(x_seller_api_key)
+
+
+@app.post("/seller/catalog/items")
+def seller_create_catalog_item(
+    req: SellerCatalogItemRequest,
+    x_seller_api_key: str | None = Header(default=None),
+):
+    seller = get_authenticated_seller_from_header(x_seller_api_key)
+    if not seller:
+        return {
+            "status": "error",
+            "message": "seller_auth_required",
+        }
+
+    if seller.get("seller_status") in ["banned", "rejected", "contained"]:
+        return {
+            "status": "error",
+            "message": "seller_not_allowed",
+            "seller_status": seller.get("seller_status"),
+        }
+
+    result = create_seller_catalog_item_db({
+        "seller_id": seller["seller_id"],
+        "item_type": req.item_type,
+        "category": req.category,
+        "title": req.title,
+        "description": req.description,
+        "service_type": req.service_type,
+        "sku": req.sku,
+        "unit_price": req.unit_price,
+        "currency": req.currency,
+        "stock_quantity": req.stock_quantity,
+        "capacity_per_day": req.capacity_per_day,
+        "capacity_per_order": req.capacity_per_order,
+        "availability_status": req.availability_status,
+        "delivery_terms": req.delivery_terms,
+        "refund_policy": req.refund_policy,
+        "warranty_terms": req.warranty_terms,
+        "quality_claims": req.quality_claims,
+        "source_documents": req.source_documents,
+        "proof_links": req.proof_links,
+        "metadata": req.metadata,
+    })
+
+    return result
+
+
+@app.get("/seller/catalog/items")
+def seller_list_catalog_items(
+    x_seller_api_key: str | None = Header(default=None),
+):
+    seller = get_authenticated_seller_from_header(x_seller_api_key)
+    if not seller:
+        return {
+            "status": "error",
+            "message": "seller_auth_required",
+        }
+
+    return {
+        "status": "ok",
+        "seller_id": seller["seller_id"],
+        "items": list_seller_catalog_items_db(seller["seller_id"]),
+    }
+
+
+@app.post("/seller/agent-factory/requests")
+def seller_create_agent_factory_request(
+    req: SellerAgentFactoryRequest,
+    x_seller_api_key: str | None = Header(default=None),
+):
+    seller = get_authenticated_seller_from_header(x_seller_api_key)
+    if not seller:
+        return {
+            "status": "error",
+            "message": "seller_auth_required",
+        }
+
+    if seller.get("seller_status") in ["banned", "rejected", "contained"]:
+        return {
+            "status": "error",
+            "message": "seller_not_allowed",
+            "seller_status": seller.get("seller_status"),
+        }
+
+    requested_agent_count = int(req.requested_agent_count or 1)
+
+    if requested_agent_count < 1:
+        return {
+            "status": "error",
+            "message": "requested_agent_count_invalid",
+        }
+
+    if requested_agent_count > int(seller.get("max_agents_allowed", 5) or 5):
+        return {
+            "status": "error",
+            "message": "requested_agent_count_exceeds_seller_limit",
+            "requested_agent_count": requested_agent_count,
+            "max_agents_allowed": seller.get("max_agents_allowed"),
+        }
+
+    result = create_seller_agent_factory_request_db({
+        "seller_id": seller["seller_id"],
+        "catalog_item_id": req.catalog_item_id,
+        "requested_agent_name": req.requested_agent_name,
+        "requested_prompt": req.requested_prompt,
+        "requested_agent_count": requested_agent_count,
+        "requested_specializations": req.requested_specializations,
+        "factory_plan": req.factory_plan,
+        "factory_status": "requested",
+        "sandbox_status": "not_started",
+        "simulation_status": "not_started",
+        "governance_status": "pending",
+        "metadata": req.metadata,
+    })
+
+    return result
+
+
+@app.get("/seller/agent-factory/requests")
+def seller_list_agent_factory_requests(
+    x_seller_api_key: str | None = Header(default=None),
+):
+    seller = get_authenticated_seller_from_header(x_seller_api_key)
+    if not seller:
+        return {
+            "status": "error",
+            "message": "seller_auth_required",
+        }
+
+    return {
+        "status": "ok",
+        "seller_id": seller["seller_id"],
+        "requests": list_seller_agent_factory_requests_db(seller["seller_id"]),
+    }
 
 
 @app.post("/admin/seller/approve")

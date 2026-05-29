@@ -144,6 +144,9 @@ def init_db():
     ensure_seller_punishment_columns()
     init_seller_agents_table()
     ensure_seller_agent_runtime_columns()
+    init_seller_catalog_items_table()
+    init_seller_inventory_events_table()
+    init_seller_agent_factory_requests_table()
     init_seller_governance_events_table()
     init_threat_memory_nodes_table()
     init_adversarial_mutation_signatures_table()
@@ -307,7 +310,7 @@ def init_sellers_table():
         total_agents INTEGER DEFAULT 0,
         active_agents INTEGER DEFAULT 0,
 
-        max_agents_allowed INTEGER DEFAULT 1,
+        max_agents_allowed INTEGER DEFAULT 5,
 
         stake_amount REAL DEFAULT 0,
         exposure_limit REAL DEFAULT 0,
@@ -324,6 +327,38 @@ def init_sellers_table():
         metadata TEXT DEFAULT '{}'
     )
     """)
+
+    seller_columns = {
+        "email_verified": "INTEGER DEFAULT 0",
+        "email_verified_at": "INTEGER",
+        "api_key_created_at": "INTEGER",
+        "last_contact_at": "INTEGER",
+        "onboarding_completed": "INTEGER DEFAULT 0",
+        "support_email": "TEXT",
+        "website": "TEXT",
+        "organization_name": "TEXT",
+        "webhook_url": "TEXT",
+        "kyc_status": "TEXT DEFAULT 'not_provided'",
+        "business_verification_status": "TEXT DEFAULT 'not_provided'",
+        "tax_verification_status": "TEXT DEFAULT 'not_provided'",
+        "trust_score": "REAL DEFAULT 0",
+        "runtime_health_score": "REAL DEFAULT 0",
+    }
+
+    for column, definition in seller_columns.items():
+        try:
+            if USE_POSTGRES:
+                cur.execute(f"ALTER TABLE sellers ADD COLUMN IF NOT EXISTS {column} {definition}")
+            else:
+                cur.execute(f"ALTER TABLE sellers ADD COLUMN {column} {definition}")
+        except Exception:
+            pass
+
+    cur.execute(f'''
+    UPDATE sellers
+    SET max_agents_allowed = 5
+    WHERE max_agents_allowed IS NULL OR max_agents_allowed < 5
+    ''')
 
     conn.commit()
     release_conn(conn)
@@ -407,6 +442,434 @@ def init_seller_agents_table():
 
     conn.commit()
     release_conn(conn)
+
+
+
+
+def init_seller_catalog_items_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS seller_catalog_items (
+        catalog_item_id TEXT PRIMARY KEY,
+        seller_id TEXT NOT NULL,
+
+        item_type TEXT NOT NULL,
+        category TEXT NOT NULL,
+        title TEXT NOT NULL,
+        description TEXT NOT NULL,
+
+        service_type TEXT,
+        sku TEXT,
+
+        unit_price REAL DEFAULT 0,
+        currency TEXT DEFAULT 'IAT',
+
+        stock_quantity REAL DEFAULT 0,
+        capacity_per_day REAL DEFAULT 0,
+        capacity_per_order REAL DEFAULT 0,
+
+        availability_status TEXT DEFAULT 'draft',
+
+        delivery_terms TEXT DEFAULT '',
+        refund_policy TEXT DEFAULT '',
+        warranty_terms TEXT DEFAULT '',
+        quality_claims TEXT DEFAULT '',
+
+        source_documents TEXT DEFAULT '[]',
+        proof_links TEXT DEFAULT '[]',
+
+        verification_status TEXT DEFAULT 'unverified',
+        risk_score REAL DEFAULT 0,
+        trust_score REAL DEFAULT 0,
+
+        agent_creation_status TEXT DEFAULT 'not_requested',
+        linked_seller_agent_id TEXT,
+
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+
+        metadata TEXT DEFAULT '{}'
+    )
+    """)
+
+    columns = {
+        "catalog_item_id": "TEXT",
+        "seller_id": "TEXT",
+        "item_type": "TEXT",
+        "category": "TEXT",
+        "title": "TEXT",
+        "description": "TEXT",
+        "service_type": "TEXT",
+        "sku": "TEXT",
+        "unit_price": "REAL DEFAULT 0",
+        "currency": "TEXT DEFAULT 'IAT'",
+        "stock_quantity": "REAL DEFAULT 0",
+        "capacity_per_day": "REAL DEFAULT 0",
+        "capacity_per_order": "REAL DEFAULT 0",
+        "availability_status": "TEXT DEFAULT 'draft'",
+        "delivery_terms": "TEXT DEFAULT ''",
+        "refund_policy": "TEXT DEFAULT ''",
+        "warranty_terms": "TEXT DEFAULT ''",
+        "quality_claims": "TEXT DEFAULT ''",
+        "source_documents": "TEXT DEFAULT '[]'",
+        "proof_links": "TEXT DEFAULT '[]'",
+        "verification_status": "TEXT DEFAULT 'unverified'",
+        "risk_score": "REAL DEFAULT 0",
+        "trust_score": "REAL DEFAULT 0",
+        "agent_creation_status": "TEXT DEFAULT 'not_requested'",
+        "linked_seller_agent_id": "TEXT",
+        "created_at": "INTEGER",
+        "updated_at": "INTEGER",
+        "metadata": "TEXT DEFAULT '{}'",
+    }
+
+    for column, definition in columns.items():
+        try:
+            if USE_POSTGRES:
+                cur.execute(f"ALTER TABLE seller_catalog_items ADD COLUMN IF NOT EXISTS {column} {definition}")
+            else:
+                cur.execute(f"ALTER TABLE seller_catalog_items ADD COLUMN {column} {definition}")
+        except Exception:
+            pass
+
+    conn.commit()
+    release_conn(conn)
+
+
+def init_seller_inventory_events_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS seller_inventory_events (
+        inventory_event_id TEXT PRIMARY KEY,
+        catalog_item_id TEXT NOT NULL,
+        seller_id TEXT NOT NULL,
+
+        event_type TEXT NOT NULL,
+        quantity_delta REAL DEFAULT 0,
+        capacity_delta REAL DEFAULT 0,
+
+        previous_stock_quantity REAL DEFAULT 0,
+        new_stock_quantity REAL DEFAULT 0,
+
+        previous_capacity_per_day REAL DEFAULT 0,
+        new_capacity_per_day REAL DEFAULT 0,
+
+        reason TEXT DEFAULT '',
+        created_at INTEGER NOT NULL,
+
+        metadata TEXT DEFAULT '{}'
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+def init_seller_agent_factory_requests_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS seller_agent_factory_requests (
+        factory_request_id TEXT PRIMARY KEY,
+        seller_id TEXT NOT NULL,
+        catalog_item_id TEXT NOT NULL,
+
+        requested_agent_name TEXT,
+        requested_prompt TEXT NOT NULL,
+
+        requested_agent_count INTEGER DEFAULT 1,
+        requested_specializations TEXT DEFAULT '[]',
+        factory_plan TEXT DEFAULT '{}',
+
+        factory_status TEXT DEFAULT 'draft',
+        sandbox_status TEXT DEFAULT 'not_started',
+        simulation_status TEXT DEFAULT 'not_started',
+        governance_status TEXT DEFAULT 'pending',
+
+        generated_agent_id TEXT,
+        generated_seller_agent_id TEXT,
+
+        risk_score REAL DEFAULT 0,
+        trust_score REAL DEFAULT 0,
+
+        rejection_reason TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+
+        metadata TEXT DEFAULT '{}'
+    )
+    """)
+
+    columns = {
+        "requested_agent_count": "INTEGER DEFAULT 1",
+        "requested_specializations": "TEXT DEFAULT '[]'",
+        "factory_plan": "TEXT DEFAULT '{}'",
+    }
+
+    for column, definition in columns.items():
+        try:
+            if USE_POSTGRES:
+                cur.execute(f"ALTER TABLE seller_agent_factory_requests ADD COLUMN IF NOT EXISTS {column} {definition}")
+            else:
+                cur.execute(f"ALTER TABLE seller_agent_factory_requests ADD COLUMN {column} {definition}")
+        except Exception:
+            pass
+
+    conn.commit()
+    release_conn(conn)
+
+
+def create_seller_catalog_item_db(item):
+    seller_id = item.get("seller_id")
+    if not seller_id:
+        return {"status": "error", "message": "seller_id_required"}
+
+    item_type = str(item.get("item_type") or "").lower()
+    if item_type not in ["service", "product"]:
+        return {"status": "error", "message": "invalid_item_type"}
+
+    required = ["category", "title", "description"]
+    for field in required:
+        if not item.get(field):
+            return {"status": "error", "message": f"{field}_required"}
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    catalog_item_id = item.get("catalog_item_id") or str(uuid.uuid4())
+
+    source_documents = item.get("source_documents", "[]")
+    if not isinstance(source_documents, str):
+        source_documents = json.dumps(source_documents)
+
+    proof_links = item.get("proof_links", "[]")
+    if not isinstance(proof_links, str):
+        proof_links = json.dumps(proof_links)
+
+    metadata = item.get("metadata", "{}")
+    if not isinstance(metadata, str):
+        metadata = json.dumps(metadata)
+
+    cur.execute(f"""
+    INSERT INTO seller_catalog_items (
+        catalog_item_id, seller_id,
+        item_type, category, title, description,
+        service_type, sku,
+        unit_price, currency,
+        stock_quantity, capacity_per_day, capacity_per_order,
+        availability_status,
+        delivery_terms, refund_policy, warranty_terms, quality_claims,
+        source_documents, proof_links,
+        verification_status, risk_score, trust_score,
+        agent_creation_status, linked_seller_agent_id,
+        created_at, updated_at,
+        metadata
+    )
+    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+    """, (
+        catalog_item_id,
+        seller_id,
+        item_type,
+        item.get("category"),
+        item.get("title"),
+        item.get("description"),
+        item.get("service_type"),
+        item.get("sku"),
+        float(item.get("unit_price", 0) or 0),
+        item.get("currency", "IAT"),
+        float(item.get("stock_quantity", 0) or 0),
+        float(item.get("capacity_per_day", 0) or 0),
+        float(item.get("capacity_per_order", 0) or 0),
+        item.get("availability_status", "draft"),
+        item.get("delivery_terms", ""),
+        item.get("refund_policy", ""),
+        item.get("warranty_terms", ""),
+        item.get("quality_claims", ""),
+        source_documents,
+        proof_links,
+        item.get("verification_status", "unverified"),
+        float(item.get("risk_score", 0) or 0),
+        float(item.get("trust_score", 0) or 0),
+        item.get("agent_creation_status", "not_requested"),
+        item.get("linked_seller_agent_id"),
+        now,
+        now,
+        metadata,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "catalog_item": get_seller_catalog_item_db(catalog_item_id),
+    }
+
+
+def get_seller_catalog_item_db(catalog_item_id):
+    if not catalog_item_id:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM seller_catalog_items
+    WHERE catalog_item_id = {p}
+    """, (catalog_item_id,))
+
+    row = cur.fetchone()
+    release_conn(conn)
+
+    return dict(row) if row else None
+
+
+def list_seller_catalog_items_db(seller_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM seller_catalog_items
+    WHERE seller_id = {p}
+    ORDER BY created_at DESC
+    """, (seller_id,))
+
+    rows = cur.fetchall()
+    release_conn(conn)
+
+    return [dict(row) for row in rows]
+
+
+def create_seller_agent_factory_request_db(request_data):
+    seller_id = request_data.get("seller_id")
+    catalog_item_id = request_data.get("catalog_item_id")
+
+    if not seller_id:
+        return {"status": "error", "message": "seller_id_required"}
+
+    if not catalog_item_id:
+        return {"status": "error", "message": "catalog_item_id_required"}
+
+    catalog_item = get_seller_catalog_item_db(catalog_item_id)
+    if not catalog_item:
+        return {"status": "error", "message": "catalog_item_not_found"}
+
+    if catalog_item.get("seller_id") != seller_id:
+        return {"status": "error", "message": "catalog_item_seller_mismatch"}
+
+    if not request_data.get("requested_prompt"):
+        return {"status": "error", "message": "requested_prompt_required"}
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    factory_request_id = request_data.get("factory_request_id") or str(uuid.uuid4())
+
+    metadata = request_data.get("metadata", "{}")
+    if not isinstance(metadata, str):
+        metadata = json.dumps(metadata)
+
+    cur.execute(f"""
+    INSERT INTO seller_agent_factory_requests (
+        factory_request_id, seller_id, catalog_item_id,
+        requested_agent_name, requested_prompt,
+        requested_agent_count, requested_specializations, factory_plan,
+        factory_status, sandbox_status, simulation_status, governance_status,
+        generated_agent_id, generated_seller_agent_id,
+        risk_score, trust_score,
+        rejection_reason,
+        created_at, updated_at,
+        metadata
+    )
+    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+    """, (
+        factory_request_id,
+        seller_id,
+        catalog_item_id,
+        request_data.get("requested_agent_name"),
+        request_data.get("requested_prompt"),
+        int(request_data.get("requested_agent_count", 1) or 1),
+        json.dumps(request_data.get("requested_specializations", [])) if not isinstance(request_data.get("requested_specializations", []), str) else request_data.get("requested_specializations", "[]"),
+        json.dumps(request_data.get("factory_plan", {})) if not isinstance(request_data.get("factory_plan", {}), str) else request_data.get("factory_plan", "{}"),
+        request_data.get("factory_status", "draft"),
+        request_data.get("sandbox_status", "not_started"),
+        request_data.get("simulation_status", "not_started"),
+        request_data.get("governance_status", "pending"),
+        request_data.get("generated_agent_id"),
+        request_data.get("generated_seller_agent_id"),
+        float(request_data.get("risk_score", 0) or 0),
+        float(request_data.get("trust_score", 0) or 0),
+        request_data.get("rejection_reason"),
+        now,
+        now,
+        metadata,
+    ))
+
+    cur.execute(f"""
+    UPDATE seller_catalog_items
+    SET agent_creation_status = {p},
+        updated_at = {p}
+    WHERE catalog_item_id = {p}
+    """, ("requested", now, catalog_item_id))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "factory_request": get_seller_agent_factory_request_db(factory_request_id),
+    }
+
+
+def get_seller_agent_factory_request_db(factory_request_id):
+    if not factory_request_id:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM seller_agent_factory_requests
+    WHERE factory_request_id = {p}
+    """, (factory_request_id,))
+
+    row = cur.fetchone()
+    release_conn(conn)
+
+    return dict(row) if row else None
+
+
+def list_seller_agent_factory_requests_db(seller_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM seller_agent_factory_requests
+    WHERE seller_id = {p}
+    ORDER BY created_at DESC
+    """, (seller_id,))
+
+    rows = cur.fetchall()
+    release_conn(conn)
+
+    return [dict(row) for row in rows]
 
 
 
@@ -4966,7 +5429,7 @@ def create_seller_db(seller):
         seller.get("trust_tier", "new"),
         int(seller.get("total_agents", 0) or 0),
         int(seller.get("active_agents", 0) or 0),
-        int(seller.get("max_agents_allowed", 1) or 1),
+        int(seller.get("max_agents_allowed", 5) or 5),
         float(seller.get("stake_amount", 0) or 0),
         float(seller.get("exposure_limit", 0) or 0),
         int(seller.get("successful_orders", 0) or 0),
@@ -5336,7 +5799,7 @@ def can_seller_add_agent_db(seller_id):
         }
 
     active_agents = count_active_seller_agents_db(seller_id)
-    max_agents_allowed = int(seller.get("max_agents_allowed", 1) or 1)
+    max_agents_allowed = int(seller.get("max_agents_allowed", 5) or 5)
 
     if active_agents >= max_agents_allowed:
         return {
@@ -5802,7 +6265,7 @@ def apply_seller_risk_event_db(
     now = int(time.time())
 
     current_risk = float(seller.get("risk_score", 0) or 0)
-    current_max_agents = int(seller.get("max_agents_allowed", 1) or 1)
+    current_max_agents = int(seller.get("max_agents_allowed", 5) or 5)
     current_exposure = float(seller.get("exposure_limit", 0) or 0)
 
     severity = max(0.0, min(float(severity or 0), 1.0))

@@ -148,6 +148,7 @@ def init_db():
     init_seller_inventory_events_table()
     init_seller_agent_factory_requests_table()
     init_seller_agent_sandbox_runs_table()
+    init_seller_agent_simulation_runs_table()
     init_seller_governance_events_table()
     init_threat_memory_nodes_table()
     init_adversarial_mutation_signatures_table()
@@ -967,6 +968,298 @@ def run_seller_agent_sandbox_review_db(factory_request_id):
         "manual_review_checks": manual_review_checks,
         "event": event_result,
         "sandbox_run": get_seller_agent_sandbox_run_db(sandbox_run_id),
+        "factory_request": get_seller_agent_factory_request_db(factory_request_id),
+    }
+
+
+
+
+def init_seller_agent_simulation_runs_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS seller_agent_simulation_runs (
+        simulation_run_id TEXT PRIMARY KEY,
+        factory_request_id TEXT NOT NULL,
+        seller_id TEXT NOT NULL,
+        catalog_item_id TEXT NOT NULL,
+        simulation_status TEXT DEFAULT 'queued',
+        simulation_risk_score REAL DEFAULT 0,
+        simulation_trust_score REAL DEFAULT 0,
+        simulation_report TEXT DEFAULT '{}',
+        governance_recommendation TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        metadata TEXT DEFAULT '{}'
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+def get_seller_agent_simulation_run_db(simulation_run_id):
+    if not simulation_run_id:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM seller_agent_simulation_runs
+    WHERE simulation_run_id = {p}
+    """, (simulation_run_id,))
+
+    row = cur.fetchone()
+    release_conn(conn)
+
+    return dict(row) if row else None
+
+
+def run_seller_agent_simulation_review_db(factory_request_id):
+    if not factory_request_id:
+        return {"status": "error", "message": "factory_request_id_required"}
+
+    factory_request = get_seller_agent_factory_request_db(factory_request_id)
+    if not factory_request:
+        return {"status": "error", "message": "factory_request_not_found"}
+
+    if str(factory_request.get("sandbox_status") or "").lower() != "passed":
+        return {
+            "status": "error",
+            "message": "factory_request_not_passed_sandbox",
+            "factory_request_id": factory_request_id,
+            "sandbox_status": factory_request.get("sandbox_status"),
+        }
+
+    seller = get_seller_db(factory_request.get("seller_id"))
+    catalog_item = get_seller_catalog_item_db(factory_request.get("catalog_item_id"))
+
+    if not seller:
+        return {"status": "error", "message": "seller_not_found"}
+
+    if not catalog_item:
+        return {"status": "error", "message": "catalog_item_not_found"}
+
+    requested_specializations = _safe_json_loads(factory_request.get("requested_specializations"), [])
+    factory_plan = _safe_json_loads(factory_request.get("factory_plan"), {})
+
+    requested_prompt = str(factory_request.get("requested_prompt") or "")
+    lowered_prompt = requested_prompt.lower()
+    requested_agent_count = int(factory_request.get("requested_agent_count", 1) or 1)
+
+    item_type = str(catalog_item.get("item_type") or "").lower()
+    category = str(catalog_item.get("category") or "").lower()
+
+    risk = 0
+    trust = 0
+    passed = []
+    failed = []
+    manual = []
+
+    if category:
+        trust += 5
+        passed.append("category_defined")
+    else:
+        risk += 20
+        failed.append("category_missing")
+
+    if item_type in ["service", "product"]:
+        trust += 5
+        passed.append("item_type_valid")
+    else:
+        risk += 30
+        failed.append("item_type_invalid")
+
+    if isinstance(requested_specializations, list) and requested_specializations:
+        trust += 10
+        passed.append("specializations_declared")
+    else:
+        risk += 10
+        manual.append("specializations_missing")
+
+    forbidden_patterns = [
+        "contact buyer directly",
+        "contact the buyer directly",
+        "direct buyer access",
+        "raw buyer prompt",
+        "bypass foundation",
+        "bypass iat",
+        "bypass the protocol",
+        "external payment",
+        "off-platform payment",
+        "wallet direct payment",
+        "buyer email",
+        "buyer phone",
+    ]
+
+    for pattern in forbidden_patterns:
+        if pattern in lowered_prompt:
+            risk += 30
+            failed.append(f"authority_violation:{pattern}")
+
+    if "foundation" in lowered_prompt or "iat" in lowered_prompt:
+        trust += 10
+        passed.append("protocol_authority_acknowledged")
+    else:
+        risk += 10
+        manual.append("protocol_authority_not_explicit")
+
+    capacity_per_day = float(catalog_item.get("capacity_per_day", 0) or 0)
+    stock_quantity = float(catalog_item.get("stock_quantity", 0) or 0)
+    unit_price = float(catalog_item.get("unit_price", 0) or 0)
+
+    if item_type == "service":
+        if capacity_per_day > 0:
+            trust += 10
+            passed.append("service_capacity_defined")
+        else:
+            risk += 25
+            failed.append("service_capacity_missing")
+
+        if requested_agent_count > 0 and capacity_per_day > 0 and capacity_per_day / requested_agent_count < 1:
+            risk += 20
+            manual.append("capacity_per_agent_too_low")
+
+    if item_type == "product":
+        if stock_quantity > 0:
+            trust += 10
+            passed.append("product_stock_defined")
+        else:
+            risk += 25
+            failed.append("product_stock_missing")
+
+    if unit_price > 0:
+        trust += 5
+        passed.append("unit_price_defined")
+    else:
+        risk += 20
+        failed.append("unit_price_missing")
+
+    if isinstance(factory_plan, dict) and factory_plan.get("requires_simulation") is True:
+        trust += 5
+        passed.append("factory_plan_requires_simulation")
+    else:
+        risk += 10
+        manual.append("factory_plan_missing_simulation_requirement")
+
+    risk = max(0, min(100, int(risk)))
+    trust = max(0, min(100, int(trust)))
+
+    if failed and risk > 50:
+        simulation_status = "failed"
+        recommendation = "reject_before_generation"
+        next_factory_status = "simulation_failed"
+        event_type = "factory_simulation_failed"
+    elif risk > 25 or manual:
+        simulation_status = "manual_review"
+        recommendation = "manual_simulation_review"
+        next_factory_status = "simulation_manual_review"
+        event_type = "factory_simulation_manual_review"
+    else:
+        simulation_status = "passed"
+        recommendation = "ready_for_generation"
+        next_factory_status = "ready_for_generation"
+        event_type = "factory_simulation_passed"
+
+    report = {
+        "factory_request_id": factory_request_id,
+        "seller_id": seller.get("seller_id"),
+        "catalog_item_id": catalog_item.get("catalog_item_id"),
+        "requested_agent_count": requested_agent_count,
+        "requested_specializations": requested_specializations,
+        "factory_plan": factory_plan,
+        "simulation_risk_score": risk,
+        "simulation_trust_score": trust,
+        "passed_checks": passed,
+        "failed_checks": failed,
+        "manual_review_checks": manual,
+        "governance_recommendation": recommendation,
+    }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+    simulation_run_id = str(uuid.uuid4())
+
+    cur.execute(f"""
+    INSERT INTO seller_agent_simulation_runs (
+        simulation_run_id, factory_request_id, seller_id, catalog_item_id,
+        simulation_status, simulation_risk_score, simulation_trust_score,
+        simulation_report, governance_recommendation,
+        created_at, updated_at, metadata
+    )
+    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+    """, (
+        simulation_run_id,
+        factory_request_id,
+        seller.get("seller_id"),
+        catalog_item.get("catalog_item_id"),
+        simulation_status,
+        risk,
+        trust,
+        json.dumps(report),
+        recommendation,
+        now,
+        now,
+        "{}",
+    ))
+
+    cur.execute(f"""
+    UPDATE seller_agent_factory_requests
+    SET simulation_status = {p},
+        factory_status = {p},
+        updated_at = {p}
+    WHERE factory_request_id = {p}
+    """, (
+        simulation_status,
+        next_factory_status,
+        now,
+        factory_request_id,
+    ))
+
+    cur.execute(f"""
+    UPDATE seller_catalog_items
+    SET agent_creation_status = {p},
+        updated_at = {p}
+    WHERE catalog_item_id = {p}
+    """, (
+        next_factory_status,
+        now,
+        catalog_item.get("catalog_item_id"),
+    ))
+
+    event_result = create_seller_governance_event_with_cursor(
+        cur=cur,
+        seller_id=seller.get("seller_id"),
+        event_type=event_type,
+        reviewer="iat_factory_simulation_engine",
+        reason=recommendation,
+        old_status=str(factory_request.get("simulation_status") or "queued"),
+        new_status=simulation_status,
+        metadata=report,
+    )
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "simulation_run_id": simulation_run_id,
+        "factory_request_id": factory_request_id,
+        "simulation_status": simulation_status,
+        "simulation_risk_score": risk,
+        "simulation_trust_score": trust,
+        "governance_recommendation": recommendation,
+        "passed_checks": passed,
+        "failed_checks": failed,
+        "manual_review_checks": manual,
+        "event": event_result,
+        "simulation_run": get_seller_agent_simulation_run_db(simulation_run_id),
         "factory_request": get_seller_agent_factory_request_db(factory_request_id),
     }
 

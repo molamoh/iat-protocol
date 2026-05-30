@@ -114,6 +114,7 @@ from iat.api.db import (
     list_seller_catalog_items_db,
     create_seller_agent_factory_request_db,
     list_seller_agent_factory_requests_db,
+    run_seller_agent_factory_review_db,
 )
 
 
@@ -5306,6 +5307,21 @@ def seller_list_agent_factory_requests(
         "seller_id": seller["seller_id"],
         "requests": list_seller_agent_factory_requests_db(seller["seller_id"]),
     }
+
+
+
+@app.post("/admin/seller-agent-factory/review/{factory_request_id}")
+def admin_review_seller_agent_factory_request(
+    factory_request_id: str,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return run_seller_agent_factory_review_db(factory_request_id)
 
 
 @app.post("/admin/seller/approve")

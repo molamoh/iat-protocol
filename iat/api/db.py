@@ -873,6 +873,318 @@ def list_seller_agent_factory_requests_db(seller_id):
 
 
 
+def _safe_json_loads(value, fallback):
+    if value is None:
+        return fallback
+
+    if isinstance(value, (dict, list)):
+        return value
+
+    try:
+        return json.loads(value)
+    except Exception:
+        return fallback
+
+
+def run_seller_agent_factory_review_db(factory_request_id):
+    if not factory_request_id:
+        return {
+            "status": "error",
+            "message": "factory_request_id_required",
+        }
+
+    factory_request = get_seller_agent_factory_request_db(factory_request_id)
+    if not factory_request:
+        return {
+            "status": "error",
+            "message": "factory_request_not_found",
+        }
+
+    seller = get_seller_db(factory_request.get("seller_id"))
+    if not seller:
+        return {
+            "status": "error",
+            "message": "seller_not_found",
+            "factory_request_id": factory_request_id,
+        }
+
+    catalog_item = get_seller_catalog_item_db(factory_request.get("catalog_item_id"))
+    if not catalog_item:
+        return {
+            "status": "error",
+            "message": "catalog_item_not_found",
+            "factory_request_id": factory_request_id,
+        }
+
+    requested_agent_count = int(factory_request.get("requested_agent_count", 1) or 1)
+    max_agents_allowed = int(seller.get("max_agents_allowed", 5) or 5)
+    active_agents = int(seller.get("active_agents", 0) or 0)
+
+    seller_status = str(seller.get("seller_status") or "pending").lower()
+    seller_verification_status = str(seller.get("verification_status") or "unverified").lower()
+    catalog_verification_status = str(catalog_item.get("verification_status") or "unverified").lower()
+    catalog_availability_status = str(catalog_item.get("availability_status") or "draft").lower()
+
+    risk_score = 0
+    trust_score = 0
+    risk_reasons = []
+    trust_reasons = []
+
+    # Seller lifecycle risk
+    if seller_status not in ["active"]:
+        risk_score += 20
+        risk_reasons.append("seller_not_active")
+    else:
+        trust_score += 15
+        trust_reasons.append("seller_active")
+
+    if seller_status in ["watchlist", "limited", "restricted"]:
+        risk_score += 20
+        risk_reasons.append("seller_restricted_state")
+
+    if seller_status in ["rejected", "banned", "contained"]:
+        risk_score += 80
+        risk_reasons.append("seller_terminal_or_contained_state")
+
+    # Seller verification trust
+    if seller_verification_status in ["verified", "foundation_verified"]:
+        trust_score += 20
+        trust_reasons.append("seller_verified")
+    else:
+        risk_score += 15
+        risk_reasons.append("seller_not_verified")
+
+    if int(seller.get("email_verified", 0) or 0) == 1:
+        trust_score += 5
+        trust_reasons.append("email_verified")
+    else:
+        risk_score += 5
+        risk_reasons.append("email_not_verified")
+
+    if str(seller.get("kyc_status") or "not_provided").lower() in ["verified", "approved"]:
+        trust_score += 10
+        trust_reasons.append("kyc_verified")
+    else:
+        risk_score += 5
+        risk_reasons.append("kyc_not_verified")
+
+    if str(seller.get("business_verification_status") or "not_provided").lower() in ["verified", "approved"]:
+        trust_score += 10
+        trust_reasons.append("business_verified")
+    else:
+        risk_score += 5
+        risk_reasons.append("business_not_verified")
+
+    if str(seller.get("tax_verification_status") or "not_provided").lower() in ["verified", "approved"]:
+        trust_score += 5
+        trust_reasons.append("tax_verified")
+
+    # Catalog risk/trust
+    if catalog_verification_status in ["verified", "foundation_verified"]:
+        trust_score += 15
+        trust_reasons.append("catalog_verified")
+    else:
+        risk_score += 10
+        risk_reasons.append("catalog_not_verified")
+
+    if catalog_availability_status in ["active", "available"]:
+        trust_score += 5
+        trust_reasons.append("catalog_available")
+    elif catalog_availability_status in ["draft", "paused"]:
+        risk_score += 5
+        risk_reasons.append("catalog_not_active")
+    else:
+        risk_score += 10
+        risk_reasons.append("catalog_unavailable_or_unknown")
+
+    # Agent capacity risk
+    remaining_capacity = max_agents_allowed - active_agents
+    if requested_agent_count > remaining_capacity:
+        risk_score += 30
+        risk_reasons.append("requested_agents_exceed_remaining_capacity")
+
+    if requested_agent_count > max_agents_allowed:
+        risk_score += 40
+        risk_reasons.append("requested_agents_exceed_max_allowed")
+
+    if requested_agent_count <= 0:
+        risk_score += 100
+        risk_reasons.append("invalid_requested_agent_count")
+
+    if requested_agent_count > 1:
+        risk_score += min(10, requested_agent_count * 2)
+        risk_reasons.append("multi_agent_factory_request")
+
+    # Economic sanity
+    unit_price = float(catalog_item.get("unit_price", 0) or 0)
+    if unit_price <= 0:
+        risk_score += 10
+        risk_reasons.append("missing_or_zero_unit_price")
+    else:
+        trust_score += 5
+        trust_reasons.append("unit_price_defined")
+
+    capacity_per_day = float(catalog_item.get("capacity_per_day", 0) or 0)
+    stock_quantity = float(catalog_item.get("stock_quantity", 0) or 0)
+    item_type = str(catalog_item.get("item_type") or "").lower()
+
+    if item_type == "service" and capacity_per_day <= 0:
+        risk_score += 10
+        risk_reasons.append("service_capacity_missing")
+
+    if item_type == "product" and stock_quantity <= 0:
+        risk_score += 10
+        risk_reasons.append("product_stock_missing")
+
+    # Bound scores.
+    risk_score = max(0, min(100, int(risk_score)))
+    trust_score = max(0, min(100, int(trust_score)))
+
+    if risk_score <= 20 and trust_score >= 40:
+        governance_status = "approved_for_sandbox"
+        factory_status = "governance_approved"
+        sandbox_status = "queued"
+        simulation_status = "waiting_for_sandbox"
+        event_type = "factory_governance_approved"
+        recommendation = "queue_sandbox"
+    elif risk_score <= 50:
+        governance_status = "manual_review"
+        factory_status = "manual_review_required"
+        sandbox_status = "not_started"
+        simulation_status = "not_started"
+        event_type = "factory_governance_manual_review"
+        recommendation = "manual_review"
+    else:
+        governance_status = "rejected"
+        factory_status = "governance_rejected"
+        sandbox_status = "blocked"
+        simulation_status = "blocked"
+        event_type = "factory_governance_rejected"
+        recommendation = "reject"
+
+    review_metadata = {
+        "factory_request_id": factory_request_id,
+        "seller_id": seller.get("seller_id"),
+        "catalog_item_id": catalog_item.get("catalog_item_id"),
+        "requested_agent_count": requested_agent_count,
+        "max_agents_allowed": max_agents_allowed,
+        "active_agents": active_agents,
+        "remaining_capacity": remaining_capacity,
+        "risk_score": risk_score,
+        "trust_score": trust_score,
+        "risk_reasons": risk_reasons,
+        "trust_reasons": trust_reasons,
+        "recommendation": recommendation,
+    }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    UPDATE seller_agent_factory_requests
+    SET factory_status = {p},
+        sandbox_status = {p},
+        simulation_status = {p},
+        governance_status = {p},
+        risk_score = {p},
+        trust_score = {p},
+        rejection_reason = {p},
+        updated_at = {p}
+    WHERE factory_request_id = {p}
+    """, (
+        factory_status,
+        sandbox_status,
+        simulation_status,
+        governance_status,
+        risk_score,
+        trust_score,
+        "factory_governance_rejected" if governance_status == "rejected" else None,
+        now,
+        factory_request_id,
+    ))
+
+    if governance_status == "approved_for_sandbox":
+        cur.execute(f"""
+        UPDATE seller_catalog_items
+        SET agent_creation_status = {p},
+            risk_score = {p},
+            trust_score = {p},
+            updated_at = {p}
+        WHERE catalog_item_id = {p}
+        """, (
+            "approved_for_sandbox",
+            risk_score,
+            trust_score,
+            now,
+            catalog_item.get("catalog_item_id"),
+        ))
+    elif governance_status == "manual_review":
+        cur.execute(f"""
+        UPDATE seller_catalog_items
+        SET agent_creation_status = {p},
+            risk_score = {p},
+            trust_score = {p},
+            updated_at = {p}
+        WHERE catalog_item_id = {p}
+        """, (
+            "manual_review",
+            risk_score,
+            trust_score,
+            now,
+            catalog_item.get("catalog_item_id"),
+        ))
+    elif governance_status == "rejected":
+        cur.execute(f"""
+        UPDATE seller_catalog_items
+        SET agent_creation_status = {p},
+            risk_score = {p},
+            trust_score = {p},
+            updated_at = {p}
+        WHERE catalog_item_id = {p}
+        """, (
+            "factory_rejected",
+            risk_score,
+            trust_score,
+            now,
+            catalog_item.get("catalog_item_id"),
+        ))
+
+    event_result = create_seller_governance_event_with_cursor(
+        cur=cur,
+        seller_id=seller.get("seller_id"),
+        event_type=event_type,
+        reviewer="iat_factory_governance_engine",
+        reason=recommendation,
+        old_status=str(factory_request.get("governance_status") or "pending"),
+        new_status=governance_status,
+        metadata=review_metadata,
+    )
+
+    conn.commit()
+    release_conn(conn)
+
+    updated_request = get_seller_agent_factory_request_db(factory_request_id)
+
+    return {
+        "status": "ok",
+        "factory_request_id": factory_request_id,
+        "governance_status": governance_status,
+        "factory_status": factory_status,
+        "sandbox_status": sandbox_status,
+        "simulation_status": simulation_status,
+        "risk_score": risk_score,
+        "trust_score": trust_score,
+        "recommendation": recommendation,
+        "risk_reasons": risk_reasons,
+        "trust_reasons": trust_reasons,
+        "event": event_result,
+        "factory_request": updated_request,
+    }
+
+
+
 def init_delegations_table():
     conn = get_conn()
     cur = conn.cursor()

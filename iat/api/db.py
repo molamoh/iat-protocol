@@ -147,6 +147,7 @@ def init_db():
     init_seller_catalog_items_table()
     init_seller_inventory_events_table()
     init_seller_agent_factory_requests_table()
+    init_seller_agent_sandbox_runs_table()
     init_seller_governance_events_table()
     init_threat_memory_nodes_table()
     init_adversarial_mutation_signatures_table()
@@ -622,6 +623,353 @@ def init_seller_agent_factory_requests_table():
 
     conn.commit()
     release_conn(conn)
+
+
+
+def init_seller_agent_sandbox_runs_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS seller_agent_sandbox_runs (
+        sandbox_run_id TEXT PRIMARY KEY,
+        factory_request_id TEXT NOT NULL,
+        seller_id TEXT NOT NULL,
+        catalog_item_id TEXT NOT NULL,
+
+        sandbox_status TEXT DEFAULT 'queued',
+
+        sandbox_risk_score REAL DEFAULT 0,
+        sandbox_trust_score REAL DEFAULT 0,
+
+        sandbox_report TEXT DEFAULT '{}',
+        governance_recommendation TEXT,
+
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+
+        metadata TEXT DEFAULT '{}'
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+def get_latest_seller_agent_sandbox_run_db(factory_request_id):
+    if not factory_request_id:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM seller_agent_sandbox_runs
+    WHERE factory_request_id = {p}
+    ORDER BY created_at DESC
+    LIMIT 1
+    """, (factory_request_id,))
+
+    row = cur.fetchone()
+    release_conn(conn)
+
+    return dict(row) if row else None
+
+
+def get_seller_agent_sandbox_run_db(sandbox_run_id):
+    if not sandbox_run_id:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM seller_agent_sandbox_runs
+    WHERE sandbox_run_id = {p}
+    """, (sandbox_run_id,))
+
+    row = cur.fetchone()
+    release_conn(conn)
+
+    return dict(row) if row else None
+
+
+def run_seller_agent_sandbox_review_db(factory_request_id):
+    if not factory_request_id:
+        return {
+            "status": "error",
+            "message": "factory_request_id_required",
+        }
+
+    factory_request = get_seller_agent_factory_request_db(factory_request_id)
+    if not factory_request:
+        return {
+            "status": "error",
+            "message": "factory_request_not_found",
+        }
+
+    if str(factory_request.get("governance_status") or "").lower() != "approved_for_sandbox":
+        return {
+            "status": "error",
+            "message": "factory_request_not_approved_for_sandbox",
+            "factory_request_id": factory_request_id,
+            "governance_status": factory_request.get("governance_status"),
+            "sandbox_status": factory_request.get("sandbox_status"),
+        }
+
+    seller = get_seller_db(factory_request.get("seller_id"))
+    if not seller:
+        return {
+            "status": "error",
+            "message": "seller_not_found",
+            "factory_request_id": factory_request_id,
+        }
+
+    catalog_item = get_seller_catalog_item_db(factory_request.get("catalog_item_id"))
+    if not catalog_item:
+        return {
+            "status": "error",
+            "message": "catalog_item_not_found",
+            "factory_request_id": factory_request_id,
+        }
+
+    requested_specializations = _safe_json_loads(
+        factory_request.get("requested_specializations"),
+        [],
+    )
+
+    factory_plan = _safe_json_loads(
+        factory_request.get("factory_plan"),
+        {},
+    )
+
+    requested_prompt = str(factory_request.get("requested_prompt") or "")
+    requested_agent_count = int(factory_request.get("requested_agent_count", 1) or 1)
+
+    sandbox_risk_score = 0
+    sandbox_trust_score = 0
+    failed_checks = []
+    passed_checks = []
+    manual_review_checks = []
+
+    # Required state checks.
+    if str(seller.get("seller_status") or "").lower() == "active":
+        sandbox_trust_score += 10
+        passed_checks.append("seller_active")
+    else:
+        sandbox_risk_score += 30
+        failed_checks.append("seller_not_active")
+
+    if str(seller.get("verification_status") or "").lower() in ["verified", "foundation_verified"]:
+        sandbox_trust_score += 10
+        passed_checks.append("seller_verified")
+    else:
+        sandbox_risk_score += 20
+        failed_checks.append("seller_not_verified")
+
+    if str(catalog_item.get("verification_status") or "").lower() in ["verified", "foundation_verified"]:
+        sandbox_trust_score += 10
+        passed_checks.append("catalog_verified")
+    else:
+        sandbox_risk_score += 20
+        failed_checks.append("catalog_not_verified")
+
+    if str(catalog_item.get("availability_status") or "").lower() in ["active", "available"]:
+        sandbox_trust_score += 10
+        passed_checks.append("catalog_available")
+    else:
+        sandbox_risk_score += 15
+        failed_checks.append("catalog_not_available")
+
+    # Factory request integrity checks.
+    if requested_prompt.strip():
+        sandbox_trust_score += 5
+        passed_checks.append("prompt_present")
+    else:
+        sandbox_risk_score += 40
+        failed_checks.append("prompt_missing")
+
+    if requested_agent_count > 0:
+        sandbox_trust_score += 5
+        passed_checks.append("requested_agent_count_valid")
+    else:
+        sandbox_risk_score += 50
+        failed_checks.append("requested_agent_count_invalid")
+
+    if isinstance(requested_specializations, list) and len(requested_specializations) > 0:
+        sandbox_trust_score += 5
+        passed_checks.append("specializations_present")
+    else:
+        sandbox_risk_score += 10
+        manual_review_checks.append("specializations_missing")
+
+    if isinstance(factory_plan, dict) and factory_plan.get("requires_sandbox") is True:
+        sandbox_trust_score += 5
+        passed_checks.append("factory_plan_requires_sandbox")
+    else:
+        sandbox_risk_score += 10
+        manual_review_checks.append("factory_plan_missing_sandbox_requirement")
+
+    # Prompt safety checks.
+    lowered_prompt = requested_prompt.lower()
+    forbidden_patterns = [
+        "contact buyer directly",
+        "contact the buyer directly",
+        "bypass foundation",
+        "bypass iat",
+        "bypass the protocol",
+        "direct buyer access",
+        "raw buyer prompt",
+        "outside iat",
+        "external payment",
+        "off-platform payment",
+    ]
+
+    for pattern in forbidden_patterns:
+        if pattern in lowered_prompt:
+            sandbox_risk_score += 25
+            failed_checks.append(f"forbidden_prompt_pattern:{pattern}")
+
+    # Seller agents must remain narrow.
+    if requested_agent_count > int(seller.get("max_agents_allowed", 5) or 5):
+        sandbox_risk_score += 50
+        failed_checks.append("requested_agent_count_exceeds_max_allowed")
+
+    # Bound scores.
+    sandbox_risk_score = max(0, min(100, int(sandbox_risk_score)))
+    sandbox_trust_score = max(0, min(100, int(sandbox_trust_score)))
+
+    if failed_checks and sandbox_risk_score > 50:
+        sandbox_status = "failed"
+        governance_recommendation = "reject_before_simulation"
+        next_factory_status = "sandbox_failed"
+        next_simulation_status = "blocked"
+        event_type = "factory_sandbox_failed"
+    elif sandbox_risk_score > 25 or manual_review_checks:
+        sandbox_status = "manual_review"
+        governance_recommendation = "manual_sandbox_review"
+        next_factory_status = "sandbox_manual_review"
+        next_simulation_status = "not_started"
+        event_type = "factory_sandbox_manual_review"
+    else:
+        sandbox_status = "passed"
+        governance_recommendation = "queue_simulation"
+        next_factory_status = "sandbox_passed"
+        next_simulation_status = "queued"
+        event_type = "factory_sandbox_passed"
+
+    sandbox_report = {
+        "factory_request_id": factory_request_id,
+        "seller_id": seller.get("seller_id"),
+        "catalog_item_id": catalog_item.get("catalog_item_id"),
+        "requested_agent_count": requested_agent_count,
+        "requested_specializations": requested_specializations,
+        "factory_plan": factory_plan,
+        "sandbox_risk_score": sandbox_risk_score,
+        "sandbox_trust_score": sandbox_trust_score,
+        "passed_checks": passed_checks,
+        "failed_checks": failed_checks,
+        "manual_review_checks": manual_review_checks,
+        "governance_recommendation": governance_recommendation,
+    }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+    sandbox_run_id = str(uuid.uuid4())
+
+    cur.execute(f"""
+    INSERT INTO seller_agent_sandbox_runs (
+        sandbox_run_id,
+        factory_request_id,
+        seller_id,
+        catalog_item_id,
+        sandbox_status,
+        sandbox_risk_score,
+        sandbox_trust_score,
+        sandbox_report,
+        governance_recommendation,
+        created_at,
+        updated_at,
+        metadata
+    )
+    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+    """, (
+        sandbox_run_id,
+        factory_request_id,
+        seller.get("seller_id"),
+        catalog_item.get("catalog_item_id"),
+        sandbox_status,
+        sandbox_risk_score,
+        sandbox_trust_score,
+        json.dumps(sandbox_report),
+        governance_recommendation,
+        now,
+        now,
+        "{}",
+    ))
+
+    cur.execute(f"""
+    UPDATE seller_agent_factory_requests
+    SET sandbox_status = {p},
+        simulation_status = {p},
+        factory_status = {p},
+        updated_at = {p}
+    WHERE factory_request_id = {p}
+    """, (
+        sandbox_status,
+        next_simulation_status,
+        next_factory_status,
+        now,
+        factory_request_id,
+    ))
+
+    cur.execute(f"""
+    UPDATE seller_catalog_items
+    SET agent_creation_status = {p},
+        updated_at = {p}
+    WHERE catalog_item_id = {p}
+    """, (
+        next_factory_status,
+        now,
+        catalog_item.get("catalog_item_id"),
+    ))
+
+    event_result = create_seller_governance_event_with_cursor(
+        cur=cur,
+        seller_id=seller.get("seller_id"),
+        event_type=event_type,
+        reviewer="iat_factory_sandbox_engine",
+        reason=governance_recommendation,
+        old_status=str(factory_request.get("sandbox_status") or "queued"),
+        new_status=sandbox_status,
+        metadata=sandbox_report,
+    )
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "sandbox_run_id": sandbox_run_id,
+        "factory_request_id": factory_request_id,
+        "sandbox_status": sandbox_status,
+        "sandbox_risk_score": sandbox_risk_score,
+        "sandbox_trust_score": sandbox_trust_score,
+        "governance_recommendation": governance_recommendation,
+        "passed_checks": passed_checks,
+        "failed_checks": failed_checks,
+        "manual_review_checks": manual_review_checks,
+        "event": event_result,
+        "sandbox_run": get_seller_agent_sandbox_run_db(sandbox_run_id),
+        "factory_request": get_seller_agent_factory_request_db(factory_request_id),
+    }
+
 
 
 def create_seller_catalog_item_db(item):

@@ -6779,6 +6779,257 @@ def can_seller_add_agent_db(seller_id):
     }
 
 
+
+def run_seller_agent_generation_db(factory_request_id):
+    if not factory_request_id:
+        return {"status": "error", "message": "factory_request_id_required"}
+
+    factory_request = get_seller_agent_factory_request_db(factory_request_id)
+    if not factory_request:
+        return {"status": "error", "message": "factory_request_not_found"}
+
+    if str(factory_request.get("factory_status") or "").lower() != "ready_for_generation":
+        return {
+            "status": "error",
+            "message": "factory_request_not_ready_for_generation",
+            "factory_status": factory_request.get("factory_status"),
+            "sandbox_status": factory_request.get("sandbox_status"),
+            "simulation_status": factory_request.get("simulation_status"),
+        }
+
+    if str(factory_request.get("sandbox_status") or "").lower() != "passed":
+        return {"status": "error", "message": "sandbox_not_passed"}
+
+    if str(factory_request.get("simulation_status") or "").lower() != "passed":
+        return {"status": "error", "message": "simulation_not_passed"}
+
+    seller = get_seller_db(factory_request.get("seller_id"))
+    if not seller:
+        return {"status": "error", "message": "seller_not_found"}
+
+    catalog_item = get_seller_catalog_item_db(factory_request.get("catalog_item_id"))
+    if not catalog_item:
+        return {"status": "error", "message": "catalog_item_not_found"}
+
+    seller_id = seller.get("seller_id")
+    catalog_item_id = catalog_item.get("catalog_item_id")
+
+    requested_specializations = _safe_json_loads(
+        factory_request.get("requested_specializations"),
+        [],
+    )
+
+    if not isinstance(requested_specializations, list) or not requested_specializations:
+        requested_specializations = [
+            str(factory_request.get("requested_agent_name") or catalog_item.get("category") or "general").lower()
+        ]
+
+    requested_agent_count = int(factory_request.get("requested_agent_count", len(requested_specializations)) or len(requested_specializations))
+
+    # Normalize count to specializations. One specialization = one seller agent.
+    requested_specializations = [
+        str(s or "").strip().lower().replace(" ", "_")
+        for s in requested_specializations
+        if str(s or "").strip()
+    ]
+
+    if len(requested_specializations) == 0:
+        return {"status": "error", "message": "no_valid_specializations"}
+
+    if requested_agent_count != len(requested_specializations):
+        return {
+            "status": "error",
+            "message": "requested_agent_count_specialization_mismatch",
+            "requested_agent_count": requested_agent_count,
+            "specialization_count": len(requested_specializations),
+        }
+
+    max_agents_allowed = int(seller.get("max_agents_allowed", 5) or 5)
+    active_agents = int(seller.get("active_agents", 0) or 0)
+    remaining_capacity = max_agents_allowed - active_agents
+
+    if requested_agent_count > remaining_capacity:
+        return {
+            "status": "error",
+            "message": "requested_agents_exceed_remaining_capacity",
+            "requested_agent_count": requested_agent_count,
+            "max_agents_allowed": max_agents_allowed,
+            "active_agents": active_agents,
+            "remaining_capacity": remaining_capacity,
+        }
+
+    now = int(time.time())
+    category = str(catalog_item.get("category") or "general").lower().replace(" ", "_")
+    service = str(catalog_item.get("service_type") or catalog_item.get("category") or "seller_service").lower().replace(" ", "_")
+    unit_price = float(catalog_item.get("unit_price", 0) or 0)
+
+    generated = []
+
+    for specialization in requested_specializations:
+        short_id = str(uuid.uuid4())[:8]
+        agent_id = f"seller_{seller_id[-8:]}_{category}_{specialization}_{short_id}"
+        seller_agent_id = f"seller_agent_{short_id}_{specialization}"
+
+        capabilities = [
+            "seller_catalog_execution",
+            "iat_controlled",
+            "foundation_mediated",
+        ]
+
+        specialties = [
+            specialization,
+            category,
+        ]
+
+        metadata = {
+            "source": "iat_generation_engine",
+            "factory_request_id": factory_request_id,
+            "catalog_item_id": catalog_item_id,
+            "seller_id": seller_id,
+            "specialization": specialization,
+            "buyer_access": False,
+            "raw_prompt_access": False,
+            "web_access": False,
+            "generation_policy": "pending_review_unavailable_by_default",
+        }
+
+        seller_agent_result = create_seller_agent_db({
+            "seller_agent_id": seller_agent_id,
+            "seller_id": seller_id,
+            "agent_id": agent_id,
+            "service": service,
+            "url": "",
+            "capabilities": capabilities,
+            "specialties": specialties,
+            "seller_agent_status": "pending_review",
+            "reputation": 0.5,
+            "risk_score": float(factory_request.get("risk_score", 0) or 0),
+            "exposure_limit": 0,
+            "runtime_validation_status": "generated_pending_review",
+            "runtime_health_score": 0,
+            "runtime_latency": 0,
+            "runtime_last_checked_at": now,
+            "metadata": metadata,
+        })
+
+        if isinstance(seller_agent_result, dict) and seller_agent_result.get("status") == "error":
+            return {
+                "status": "error",
+                "message": "seller_agent_creation_failed",
+                "details": seller_agent_result,
+                "generated_so_far": generated,
+            }
+
+        register_agent_db({
+            "agent_id": agent_id,
+            "service": service,
+            "url": "",
+            "wallet": seller.get("wallet"),
+            "agent_type": "seller",
+            "price": unit_price if unit_price > 0 else 1.0,
+            "reputation": 0.5,
+            "available": False,
+            "stake_amount": float(seller.get("stake_amount", 0) or 0),
+            "stake_required": 0,
+            "max_order_value": 0,
+            "trust_tier": seller.get("trust_tier", "new"),
+            "capabilities": json.dumps(capabilities),
+            "specialties": json.dumps(specialties),
+            "seller_status": "pending_review",
+            "verification_status": "sandbox_generated",
+            "seller_metadata": metadata,
+            "buyer_access": False,
+            "web_access": False,
+            "raw_prompt_access": False,
+            "foundation_verified_at": None,
+            "foundation_verdict": "generated_pending_foundation_review",
+            "seller_id": seller_id,
+            "seller_agent_id": seller_agent_id,
+        })
+
+        generated.append({
+            "agent_id": agent_id,
+            "seller_agent_id": seller_agent_id,
+            "specialization": specialization,
+            "service": service,
+            "status": "pending_review",
+            "available": False,
+        })
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    generated_agent_id = generated[0]["agent_id"] if generated else None
+    generated_seller_agent_id = generated[0]["seller_agent_id"] if generated else None
+
+    generation_report = {
+        "factory_request_id": factory_request_id,
+        "seller_id": seller_id,
+        "catalog_item_id": catalog_item_id,
+        "generated_count": len(generated),
+        "generated_agents": generated,
+        "generation_policy": "pending_review_unavailable_by_default",
+        "buyer_access": False,
+        "web_access": False,
+        "raw_prompt_access": False,
+    }
+
+    cur.execute(f"""
+    UPDATE seller_agent_factory_requests
+    SET factory_status = {p},
+        generated_agent_id = {p},
+        generated_seller_agent_id = {p},
+        updated_at = {p},
+        metadata = {p}
+    WHERE factory_request_id = {p}
+    """, (
+        "generated_pending_review",
+        generated_agent_id,
+        generated_seller_agent_id,
+        now,
+        json.dumps(generation_report),
+        factory_request_id,
+    ))
+
+    cur.execute(f"""
+    UPDATE seller_catalog_items
+    SET agent_creation_status = {p},
+        linked_seller_agent_id = {p},
+        updated_at = {p}
+    WHERE catalog_item_id = {p}
+    """, (
+        "generated_pending_review",
+        generated_seller_agent_id,
+        now,
+        catalog_item_id,
+    ))
+
+    event_result = create_seller_governance_event_with_cursor(
+        cur=cur,
+        seller_id=seller_id,
+        event_type="factory_generation_completed",
+        reviewer="iat_factory_generation_engine",
+        reason="generated_pending_foundation_review",
+        old_status="ready_for_generation",
+        new_status="generated_pending_review",
+        metadata=generation_report,
+    )
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "factory_request_id": factory_request_id,
+        "generated_count": len(generated),
+        "generated_agents": generated,
+        "event": event_result,
+        "factory_request": get_seller_agent_factory_request_db(factory_request_id),
+    }
+
+
+
 def create_seller_agent_db(seller_agent):
     seller_id = seller_agent["seller_id"]
 

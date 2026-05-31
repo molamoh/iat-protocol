@@ -7641,6 +7641,29 @@ def run_foundation_decision_db(order_id):
     decision_context = context_result.get("decision_context") or {}
     contributions = decision_context.get("verified_seller_contributions") or []
 
+    seller_contribution_consensus = None
+    seller_contribution_strength = None
+
+    try:
+        from iat.api.multi_exec import compute_consensus, compute_consensus_strength
+
+        consensus_input_result = build_consensus_inputs_from_verified_contributions_db(order_id)
+        consensus_inputs = consensus_input_result.get("results", [])
+
+        seller_contribution_consensus = compute_consensus(consensus_inputs)
+        seller_contribution_strength = compute_consensus_strength(consensus_inputs)
+    except Exception as exc:
+        seller_contribution_consensus = {
+            "status": "error",
+            "message": "seller_contribution_consensus_failed",
+            "error": str(exc),
+        }
+        seller_contribution_strength = {
+            "status": "error",
+            "message": "seller_contribution_strength_failed",
+            "error": str(exc),
+        }
+
     approved_contributions = [
         c for c in contributions
         if c.get("verification_status") == "approved"
@@ -7657,10 +7680,27 @@ def run_foundation_decision_db(order_id):
             4,
         )
 
+    seller_consensus_valid_agents = 0
+    seller_consensus_status = None
+
+    if isinstance(seller_contribution_consensus, dict):
+        seller_consensus_valid_agents = int(
+            seller_contribution_consensus.get("valid_agents", 0) or 0
+        )
+        seller_consensus_status = seller_contribution_consensus.get("status")
+
     if not approved_contributions:
         foundation_verdict = "insufficient_seller_input"
         decision_confidence = 0.25
         decision_reason = "no_verified_seller_contributions"
+    elif seller_consensus_valid_agents < 2:
+        foundation_verdict = "seller_inputs_accepted_as_supporting_evidence"
+        decision_confidence = min(0.50, 0.30 + seller_input_quality_score)
+        decision_reason = "seller_input_single_source_requires_foundation_confirmation"
+    elif seller_consensus_status != "passed":
+        foundation_verdict = "seller_inputs_accepted_with_consensus_caution"
+        decision_confidence = min(0.55, 0.35 + seller_input_quality_score)
+        decision_reason = "seller_contribution_consensus_not_passed"
     elif seller_input_quality_score >= 0.35:
         foundation_verdict = "seller_inputs_accepted_as_supporting_evidence"
         decision_confidence = min(0.75, 0.50 + seller_input_quality_score)
@@ -7693,6 +7733,12 @@ def run_foundation_decision_db(order_id):
         "seller_input_quality_score": seller_input_quality_score,
 
         "seller_inputs_role": "supporting_evidence_only",
+
+        # Existing protocol consensus engine applied to seller contributions.
+        # This is NOT seller governance and NOT seller decision power.
+        "seller_contribution_consensus": seller_contribution_consensus,
+        "seller_contribution_strength": seller_contribution_strength,
+
         "foundation_final_authority": True,
         "protocol_core_sovereignty_reserved": True,
 
@@ -7725,6 +7771,120 @@ def run_foundation_decision_db(order_id):
         "status": "ok",
         "order_id": order_id,
         "foundation_decision": foundation_decision,
+    }
+
+
+
+
+def build_consensus_inputs_from_verified_contributions_db(order_id):
+    if not order_id:
+        return {
+            "status": "error",
+            "message": "order_id_required",
+            "results": [],
+        }
+
+    context_result = build_foundation_decision_context_db(order_id)
+
+    if context_result.get("status") != "ok":
+        return {
+            **context_result,
+            "results": [],
+        }
+
+    decision_context = context_result.get("decision_context") or {}
+    contributions = decision_context.get("verified_seller_contributions") or []
+
+    results = []
+
+    for contribution in contributions:
+        execution_result = contribution.get("execution_result") or {}
+        result_payload = execution_result.get("result") or execution_result
+
+        normalized_data = {
+            "summary": result_payload.get("note") or result_payload.get("summary"),
+            "final_recommendation": result_payload.get("final_recommendation")
+                or result_payload.get("scope")
+                or result_payload.get("task"),
+            "confidence": min(
+                1.0,
+                max(0.0, float(contribution.get("trust_score", 0) or 0) / 100.0)
+            ),
+            "claims": [
+                str(result_payload.get("task") or ""),
+                str(result_payload.get("scope") or ""),
+                str(result_payload.get("requested_format") or ""),
+            ],
+            "entities": [
+                str(result_payload.get("scope") or ""),
+                str(result_payload.get("service") or contribution.get("service") or ""),
+                str(result_payload.get("specialization") or contribution.get("specialization") or ""),
+            ],
+            "structured_signals": {
+                "source_type": "verified_seller_contribution",
+                "execution_mode": "iat_internal",
+                "seller_inputs_role": "supporting_evidence_only",
+                "foundation_final_authority": "true",
+            },
+            "metrics": {
+                "seller_trust_score": contribution.get("trust_score", 0),
+                "seller_risk_score": contribution.get("risk_score", 0),
+                "contribution_score": contribution.get("contribution_score", 0),
+            },
+            "raw": {
+                "data": result_payload,
+            },
+        }
+
+        results.append({
+            "status": "ok",
+            "success": True,
+            "source_type": "verified_seller_contribution",
+            "agent_id": contribution.get("agent_id"),
+            "seller_id": contribution.get("seller_id"),
+            "seller_agent_id": contribution.get("seller_agent_id"),
+            "order_id": order_id,
+            "service": contribution.get("service"),
+            "specialization": contribution.get("specialization"),
+            "wallet": f"seller:{contribution.get('seller_id')}",
+            "reputation": min(
+                1.0,
+                max(0.0, float(contribution.get("trust_score", 0) or 0) / 100.0)
+            ),
+            "trust_tier": "verified_seller_contribution",
+            "stake_amount": 0,
+            "stake_required": 0,
+            "success_count": 0,
+            "failure_count": 0,
+            "latency": 0,
+
+            # Important: contribution_score is input quality, not governance power.
+            "contribution_score": contribution.get("contribution_score", 0),
+            "governance_authority": False,
+            "decision_authority": False,
+
+            # Fields expected by existing consensus utilities.
+            "result": result_payload,
+            "data": normalized_data,
+            "content": json.dumps(normalized_data, sort_keys=True),
+
+            "risk_score": contribution.get("risk_score", 0),
+            "trust_score": contribution.get("trust_score", 0),
+            "metadata": {
+                "source_type": "verified_seller_contribution",
+                "execution_session_id": contribution.get("execution_session_id"),
+                "seller_inputs_role": "supporting_evidence_only",
+                "foundation_final_authority": True,
+                "protocol_core_sovereignty_reserved": True,
+            },
+        })
+
+    return {
+        "status": "ok",
+        "order_id": order_id,
+        "count": len(results),
+        "results": results,
+        "decision_context": decision_context,
     }
 
 

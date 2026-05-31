@@ -4,6 +4,7 @@ import time
 import uuid
 import requests
 import threading
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 from fastapi import FastAPI, Header, Request
 from pydantic import BaseModel, EmailStr, Field
@@ -121,6 +122,9 @@ from iat.api.db import (
     run_seller_agent_activation_review_db,
     recompute_seller_dynamic_agent_capacity_db,
     orchestrate_seller_runtime_governance_db,
+    run_foundation_controlled_seller_execution_db,
+    verify_seller_execution_result_db,
+    run_foundation_decision_db,
 )
 
 
@@ -5418,6 +5422,63 @@ def internal_seller_runtime_orchestrator(
         }
 
     return orchestrate_seller_runtime_governance_db(seller_id)
+
+
+
+class InternalSellerAgentExecuteRequest(BaseModel):
+    service: str
+    specialization: Optional[str] = None
+    order_id: Optional[str] = None
+    seller_agent_id: Optional[str] = None
+    execution_context: Dict[str, Any] = {}
+
+
+@app.post("/internal/seller-agent/execute")
+def internal_seller_agent_execute(
+    payload: InternalSellerAgentExecuteRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    execution_result = run_foundation_controlled_seller_execution_db(
+        service=payload.service,
+        specialization=payload.specialization,
+        order_id=payload.order_id,
+        seller_agent_id=payload.seller_agent_id,
+        execution_context=payload.execution_context,
+    )
+
+    if execution_result.get("status") != "ok":
+        return execution_result
+
+    verification_result = verify_seller_execution_result_db(
+        execution_result.get("execution_session_id")
+    )
+
+    return {
+        "status": "ok",
+        "execution": execution_result,
+        "verification": verification_result,
+    }
+
+
+
+@app.post("/internal/foundation/decision/{order_id}")
+def internal_foundation_decision(
+    order_id: str,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return run_foundation_decision_db(order_id)
 
 
 @app.post("/admin/seller/approve")

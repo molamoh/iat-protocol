@@ -150,6 +150,7 @@ def init_db():
     init_seller_agent_sandbox_runs_table()
     init_seller_agent_simulation_runs_table()
     init_seller_agent_activation_reviews_table()
+    init_seller_agent_execution_sessions_table()
     init_seller_governance_events_table()
     init_threat_memory_nodes_table()
     init_adversarial_mutation_signatures_table()
@@ -6741,6 +6742,990 @@ def count_active_seller_agents_db(seller_id):
 
     return int(row_get(row, "active_count", 0) or 0)
 
+
+
+
+
+def init_seller_agent_execution_sessions_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS seller_agent_execution_sessions (
+        execution_session_id TEXT PRIMARY KEY,
+
+        order_id TEXT,
+        seller_id TEXT NOT NULL,
+        seller_agent_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+
+        service TEXT NOT NULL,
+        specialization TEXT,
+
+        execution_status TEXT DEFAULT 'queued',
+
+        execution_context TEXT DEFAULT '{}',
+        execution_result TEXT DEFAULT '{}',
+        verification_result TEXT DEFAULT '{}',
+
+        consensus_score REAL DEFAULT 0,
+        risk_score REAL DEFAULT 0,
+        trust_score REAL DEFAULT 0,
+
+        failure_reason TEXT,
+
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+
+        metadata TEXT DEFAULT '{}'
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+def create_seller_agent_execution_session_db(payload):
+    payload = payload or {}
+
+    seller_id = payload.get("seller_id")
+    seller_agent_id = payload.get("seller_agent_id")
+    agent_id = payload.get("agent_id")
+    service = payload.get("service")
+
+    if not seller_id:
+        return {"status": "error", "message": "seller_id_required"}
+
+    if not seller_agent_id:
+        return {"status": "error", "message": "seller_agent_id_required"}
+
+    if not agent_id:
+        return {"status": "error", "message": "agent_id_required"}
+
+    if not service:
+        return {"status": "error", "message": "service_required"}
+
+    execution_session_id = payload.get("execution_session_id") or f"exec_{uuid.uuid4()}"
+    now = int(time.time())
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    INSERT INTO seller_agent_execution_sessions (
+        execution_session_id,
+        order_id,
+        seller_id,
+        seller_agent_id,
+        agent_id,
+        service,
+        specialization,
+        execution_status,
+        execution_context,
+        execution_result,
+        verification_result,
+        consensus_score,
+        risk_score,
+        trust_score,
+        failure_reason,
+        created_at,
+        updated_at,
+        metadata
+    )
+    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+    """, (
+        execution_session_id,
+        payload.get("order_id"),
+        seller_id,
+        seller_agent_id,
+        agent_id,
+        service,
+        payload.get("specialization"),
+        payload.get("execution_status", "queued"),
+        json.dumps(payload.get("execution_context", {})),
+        json.dumps(payload.get("execution_result", {})),
+        json.dumps(payload.get("verification_result", {})),
+        float(payload.get("consensus_score", 0) or 0),
+        float(payload.get("risk_score", 0) or 0),
+        float(payload.get("trust_score", 0) or 0),
+        payload.get("failure_reason"),
+        now,
+        now,
+        json.dumps(payload.get("metadata", {})),
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return get_seller_agent_execution_session_db(execution_session_id)
+
+
+def get_seller_agent_execution_session_db(execution_session_id):
+    if not execution_session_id:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM seller_agent_execution_sessions
+    WHERE execution_session_id = {p}
+    """, (
+        execution_session_id,
+    ))
+
+    row = cur.fetchone()
+    release_conn(conn)
+
+    return dict(row) if row else None
+
+
+def update_seller_agent_execution_session_db(
+    execution_session_id,
+    updates,
+):
+    if not execution_session_id:
+        return {"status": "error", "message": "execution_session_id_required"}
+
+    updates = updates or {}
+
+    allowed_fields = {
+        "execution_status",
+        "execution_result",
+        "verification_result",
+        "consensus_score",
+        "risk_score",
+        "trust_score",
+        "failure_reason",
+        "metadata",
+    }
+
+    clean_updates = {
+        k: v for k, v in updates.items()
+        if k in allowed_fields
+    }
+
+    if not clean_updates:
+        return {"status": "error", "message": "no_valid_updates"}
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    set_parts = []
+    values = []
+
+    for key, value in clean_updates.items():
+        set_parts.append(f"{key} = {p}")
+        if key in ["execution_result", "verification_result", "metadata"]:
+            values.append(json.dumps(value if value is not None else {}))
+        else:
+            values.append(value)
+
+    set_parts.append(f"updated_at = {p}")
+    values.append(now)
+    values.append(execution_session_id)
+
+    cur.execute(f"""
+    UPDATE seller_agent_execution_sessions
+    SET {", ".join(set_parts)}
+    WHERE execution_session_id = {p}
+    """, tuple(values))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "execution_session": get_seller_agent_execution_session_db(execution_session_id),
+    }
+
+
+
+
+def get_available_seller_execution_agents_db(
+    service,
+    specialization=None,
+    limit=10,
+):
+    if not service:
+        return {
+            "status": "error",
+            "message": "service_required",
+            "agents": [],
+        }
+
+    service = str(service).strip().lower()
+    specialization = str(specialization).strip().lower() if specialization else None
+    limit = int(limit or 10)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    sql = f"""
+    SELECT
+        sa.*,
+        a.available AS marketplace_available,
+        a.seller_status AS registry_seller_status,
+        a.verification_status AS registry_verification_status,
+        a.buyer_access,
+        a.web_access,
+        a.raw_prompt_access,
+        a.foundation_verdict,
+        s.seller_status AS seller_status,
+        s.verification_status AS seller_verification_status,
+        s.risk_score AS seller_risk_score,
+        s.trust_score AS seller_trust_score,
+        s.max_agents_allowed AS seller_max_agents_allowed
+    FROM seller_agents sa
+    JOIN agents a
+        ON a.agent_id = sa.agent_id
+    JOIN sellers s
+        ON s.seller_id = sa.seller_id
+    WHERE sa.service = {p}
+      AND sa.seller_agent_status = 'active'
+      AND sa.runtime_validation_status IN ('healthy', 'validated', 'generated_pending_review')
+      AND a.available = 1
+      AND a.agent_type = 'seller'
+      AND a.seller_status = 'active'
+      AND a.verification_status = 'foundation_verified'
+      AND COALESCE(a.buyer_access, 0) = 0
+      AND COALESCE(a.web_access, 0) = 0
+      AND COALESCE(a.raw_prompt_access, 0) = 0
+      AND s.seller_status = 'active'
+      AND s.verification_status IN ('verified', 'foundation_verified')
+    """
+
+    params = [service]
+
+    if specialization:
+        sql += f"""
+          AND (
+                sa.specialties LIKE {p}
+                OR sa.capabilities LIKE {p}
+              )
+        """
+        like_value = f"%{specialization}%"
+        params.extend([like_value, like_value])
+
+    sql += f"""
+    ORDER BY
+        sa.runtime_health_score DESC,
+        sa.reputation DESC,
+        sa.successful_orders DESC,
+        s.trust_score DESC,
+        s.risk_score ASC
+    LIMIT {limit}
+    """
+
+    cur.execute(sql, tuple(params))
+    rows = cur.fetchall()
+    release_conn(conn)
+
+    agents = [dict(r) for r in rows]
+
+    return {
+        "status": "ok",
+        "service": service,
+        "specialization": specialization,
+        "count": len(agents),
+        "agents": agents,
+    }
+
+
+
+
+def _sanitize_foundation_execution_context(execution_context):
+    execution_context = execution_context or {}
+
+    forbidden_keys = {
+        "buyer_prompt",
+        "raw_buyer_prompt",
+        "buyer_wallet",
+        "buyer_id",
+        "buyer_email",
+        "buyer_context",
+        "session_id",
+        "payment_signature",
+        "wallet",
+    }
+
+    sanitized = {}
+
+    for key, value in execution_context.items():
+        normalized_key = str(key).strip()
+        if normalized_key.lower() in forbidden_keys:
+            continue
+        sanitized[normalized_key] = value
+
+    return sanitized
+
+
+def run_foundation_controlled_seller_execution_db(
+    service,
+    execution_context,
+    specialization=None,
+    order_id=None,
+    seller_agent_id=None,
+):
+    if not service:
+        return {
+            "status": "error",
+            "message": "service_required",
+        }
+
+    sanitized_context = _sanitize_foundation_execution_context(
+        execution_context or {}
+    )
+
+    # Foundation-controlled execution requires a normalized task.
+    if not sanitized_context.get("task"):
+        return {
+            "status": "error",
+            "message": "foundation_task_required",
+        }
+
+    eligible_result = get_available_seller_execution_agents_db(
+        service=service,
+        specialization=specialization,
+        limit=10,
+    )
+
+    if eligible_result.get("status") != "ok":
+        return eligible_result
+
+    candidates = eligible_result.get("agents", [])
+
+    if seller_agent_id:
+        candidates = [
+            a for a in candidates
+            if a.get("seller_agent_id") == seller_agent_id
+        ]
+
+    if not candidates:
+        return {
+            "status": "error",
+            "message": "no_eligible_seller_execution_agent",
+            "service": service,
+            "specialization": specialization,
+        }
+
+    selected = candidates[0]
+
+    metadata = _safe_json_loads(selected.get("metadata"), {})
+    execution_mode = str(metadata.get("execution_mode") or "").lower()
+
+    if execution_mode != "iat_internal":
+        return {
+            "status": "error",
+            "message": "unsupported_execution_mode",
+            "execution_mode": execution_mode,
+        }
+
+    session = create_seller_agent_execution_session_db({
+        "order_id": order_id,
+        "seller_id": selected.get("seller_id"),
+        "seller_agent_id": selected.get("seller_agent_id"),
+        "agent_id": selected.get("agent_id"),
+        "service": service,
+        "specialization": specialization,
+        "execution_status": "executing",
+        "execution_context": sanitized_context,
+        "metadata": {
+            "source": "foundation_controlled_seller_execution",
+            "execution_mode": execution_mode,
+            "buyer_data_stripped": True,
+            "foundation_mediated": True,
+        },
+    })
+
+    if not session:
+        return {
+            "status": "error",
+            "message": "execution_session_creation_failed",
+        }
+
+    execution_session_id = session.get("execution_session_id")
+
+    try:
+        # V1 internal execution:
+        # Seller agent does not call buyer, web, wallet, or external systems.
+        # It only transforms a foundation-normalized execution context into a
+        # structured seller contribution.
+        execution_result = {
+            "status": "ok",
+            "execution_mode": "iat_internal",
+            "seller_agent_id": selected.get("seller_agent_id"),
+            "agent_id": selected.get("agent_id"),
+            "service": service,
+            "specialization": specialization,
+            "result_type": "seller_controlled_contribution",
+            "result": {
+                "task": sanitized_context.get("task"),
+                "scope": sanitized_context.get("scope"),
+                "requested_format": sanitized_context.get("required_format"),
+                "seller_capabilities": _safe_json_loads(selected.get("capabilities"), []),
+                "seller_specialties": _safe_json_loads(selected.get("specialties"), []),
+                "note": "V1 internal seller execution completed under foundation mediation.",
+            },
+        }
+
+        update_result = update_seller_agent_execution_session_db(
+            execution_session_id,
+            {
+                "execution_status": "completed",
+                "execution_result": execution_result,
+                "trust_score": 50,
+                "risk_score": 0,
+                "metadata": {
+                    "source": "foundation_controlled_seller_execution",
+                    "execution_mode": execution_mode,
+                    "buyer_data_stripped": True,
+                    "foundation_mediated": True,
+                    "completed_at": int(time.time()),
+                },
+            },
+        )
+
+        conn = get_conn()
+        cur = conn.cursor()
+
+        create_seller_governance_event_with_cursor(
+            cur=cur,
+            seller_id=selected.get("seller_id"),
+            event_type="seller_agent_execution_completed",
+            reviewer="iat_foundation_execution_engine",
+            reason="foundation_controlled_internal_execution_completed",
+            old_status="executing",
+            new_status="completed",
+            metadata={
+                "execution_session_id": execution_session_id,
+                "seller_agent_id": selected.get("seller_agent_id"),
+                "agent_id": selected.get("agent_id"),
+                "service": service,
+                "specialization": specialization,
+                "buyer_data_stripped": True,
+            },
+        )
+
+        conn.commit()
+        release_conn(conn)
+
+        return {
+            "status": "ok",
+            "execution_session_id": execution_session_id,
+            "selected_seller_agent": {
+                "seller_agent_id": selected.get("seller_agent_id"),
+                "agent_id": selected.get("agent_id"),
+                "seller_id": selected.get("seller_id"),
+                "service": selected.get("service"),
+                "runtime_health_score": selected.get("runtime_health_score"),
+            },
+            "execution_result": execution_result,
+            "session": update_result.get("execution_session"),
+        }
+
+    except Exception as exc:
+        update_seller_agent_execution_session_db(
+            execution_session_id,
+            {
+                "execution_status": "failed",
+                "failure_reason": str(exc),
+                "risk_score": 25,
+            },
+        )
+
+        return {
+            "status": "error",
+            "message": "seller_execution_failed",
+            "error": str(exc),
+            "execution_session_id": execution_session_id,
+        }
+
+
+
+
+def _contains_forbidden_buyer_data(obj):
+    forbidden_terms = [
+        "buyer_prompt",
+        "raw_buyer_prompt",
+        "buyer_wallet",
+        "buyer_id",
+        "buyer_email",
+        "buyer_context",
+        "payment_signature",
+        "THIS MUST NOT BE STORED",
+        "THIS_MUST_NOT_BE_STORED",
+    ]
+
+    try:
+        serialized = json.dumps(obj)
+    except Exception:
+        serialized = str(obj)
+
+    lowered = serialized.lower()
+
+    for term in forbidden_terms:
+        if term.lower() in lowered:
+            return True, term
+
+    return False, None
+
+
+def verify_seller_execution_result_db(execution_session_id):
+    if not execution_session_id:
+        return {
+            "status": "error",
+            "message": "execution_session_id_required",
+        }
+
+    session = get_seller_agent_execution_session_db(execution_session_id)
+    if not session:
+        return {
+            "status": "error",
+            "message": "execution_session_not_found",
+        }
+
+    risk_score = 0
+    trust_score = 0
+    passed_checks = []
+    failed_checks = []
+    manual_review_checks = []
+
+    execution_status = str(session.get("execution_status") or "").lower()
+
+    execution_context = _safe_json_loads(
+        session.get("execution_context"),
+        {},
+    )
+
+    execution_result = _safe_json_loads(
+        session.get("execution_result"),
+        {},
+    )
+
+    metadata = _safe_json_loads(
+        session.get("metadata"),
+        {},
+    )
+
+    if execution_status == "completed":
+        trust_score += 20
+        passed_checks.append("execution_completed")
+    else:
+        risk_score += 40
+        failed_checks.append("execution_not_completed")
+
+    if isinstance(execution_result, dict) and execution_result:
+        trust_score += 10
+        passed_checks.append("execution_result_present")
+    else:
+        risk_score += 30
+        failed_checks.append("execution_result_missing")
+
+    if str(execution_result.get("status") or "").lower() == "ok":
+        trust_score += 10
+        passed_checks.append("execution_result_status_ok")
+    else:
+        risk_score += 20
+        failed_checks.append("execution_result_status_not_ok")
+
+    if str(execution_result.get("execution_mode") or "").lower() == "iat_internal":
+        trust_score += 10
+        passed_checks.append("execution_mode_iat_internal")
+    else:
+        risk_score += 20
+        manual_review_checks.append("execution_mode_not_iat_internal")
+
+    if metadata.get("buyer_data_stripped") is True:
+        trust_score += 15
+        passed_checks.append("buyer_data_stripped")
+    else:
+        risk_score += 30
+        failed_checks.append("buyer_data_not_confirmed_stripped")
+
+    if metadata.get("foundation_mediated") is True:
+        trust_score += 15
+        passed_checks.append("foundation_mediated")
+    else:
+        risk_score += 30
+        failed_checks.append("foundation_mediation_missing")
+
+    context_forbidden, context_term = _contains_forbidden_buyer_data(
+        execution_context
+    )
+    if context_forbidden:
+        risk_score += 60
+        failed_checks.append(f"forbidden_buyer_data_in_context:{context_term}")
+    else:
+        trust_score += 10
+        passed_checks.append("no_forbidden_buyer_data_in_context")
+
+    result_forbidden, result_term = _contains_forbidden_buyer_data(
+        execution_result
+    )
+    if result_forbidden:
+        risk_score += 60
+        failed_checks.append(f"forbidden_buyer_data_in_result:{result_term}")
+    else:
+        trust_score += 10
+        passed_checks.append("no_forbidden_buyer_data_in_result")
+
+    risk_score = max(0, min(100, int(risk_score)))
+    trust_score = max(0, min(100, int(trust_score)))
+
+    if failed_checks and risk_score >= 60:
+        verification_status = "rejected"
+        governance_recommendation = "reject_execution_result"
+        next_execution_status = "verification_rejected"
+        event_type = "seller_execution_verification_rejected"
+    elif failed_checks or manual_review_checks or risk_score >= 25:
+        verification_status = "manual_review"
+        governance_recommendation = "manual_execution_review"
+        next_execution_status = "verification_manual_review"
+        event_type = "seller_execution_verification_manual_review"
+    else:
+        verification_status = "approved"
+        governance_recommendation = "approve_execution_result"
+        next_execution_status = "verified"
+        event_type = "seller_execution_verification_approved"
+
+    verification_result = {
+        "verification_status": verification_status,
+        "governance_recommendation": governance_recommendation,
+        "risk_score": risk_score,
+        "trust_score": trust_score,
+        "passed_checks": passed_checks,
+        "failed_checks": failed_checks,
+        "manual_review_checks": manual_review_checks,
+    }
+
+    update_result = update_seller_agent_execution_session_db(
+        execution_session_id,
+        {
+            "execution_status": next_execution_status,
+            "verification_result": verification_result,
+            "risk_score": risk_score,
+            "trust_score": trust_score,
+        },
+    )
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    create_seller_governance_event_with_cursor(
+        cur=cur,
+        seller_id=session.get("seller_id"),
+        event_type=event_type,
+        reviewer="iat_seller_execution_verification_engine",
+        reason=governance_recommendation,
+        old_status=execution_status,
+        new_status=next_execution_status,
+        metadata={
+            "execution_session_id": execution_session_id,
+            "seller_agent_id": session.get("seller_agent_id"),
+            "agent_id": session.get("agent_id"),
+            **verification_result,
+        },
+    )
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "execution_session_id": execution_session_id,
+        "verification_status": verification_status,
+        "governance_recommendation": governance_recommendation,
+        "risk_score": risk_score,
+        "trust_score": trust_score,
+        "passed_checks": passed_checks,
+        "failed_checks": failed_checks,
+        "manual_review_checks": manual_review_checks,
+        "session": update_result.get("execution_session"),
+    }
+
+
+
+
+def build_verified_seller_contribution_db(execution_session_id):
+    if not execution_session_id:
+        return {
+            "status": "error",
+            "message": "execution_session_id_required",
+        }
+
+    session = get_seller_agent_execution_session_db(execution_session_id)
+    if not session:
+        return {
+            "status": "error",
+            "message": "execution_session_not_found",
+        }
+
+    execution_status = str(session.get("execution_status") or "").lower()
+
+    verification_result = _safe_json_loads(
+        session.get("verification_result"),
+        {},
+    )
+
+    execution_result = _safe_json_loads(
+        session.get("execution_result"),
+        {},
+    )
+
+    verification_status = str(
+        verification_result.get("verification_status") or ""
+    ).lower()
+
+    risk_score = float(session.get("risk_score", 0) or 0)
+    trust_score = float(session.get("trust_score", 0) or 0)
+
+    if execution_status != "verified":
+        return {
+            "status": "error",
+            "message": "execution_session_not_verified",
+            "execution_status": execution_status,
+        }
+
+    if verification_status != "approved":
+        return {
+            "status": "error",
+            "message": "execution_verification_not_approved",
+            "verification_status": verification_status,
+        }
+
+    # Seller contribution score is NOT governance power.
+    # It is only a confidence/input-quality score used by foundation agents.
+    contribution_score = 0.20
+
+    if trust_score >= 90 and risk_score <= 5:
+        contribution_score = 0.40
+    elif trust_score >= 70 and risk_score <= 15:
+        contribution_score = 0.30
+    elif trust_score >= 50 and risk_score <= 30:
+        contribution_score = 0.20
+    else:
+        contribution_score = 0.10
+
+    if risk_score >= 40:
+        contribution_score = min(contribution_score, 0.10)
+
+    contribution = {
+        "source_type": "verified_seller_contribution",
+        "governance_authority": False,
+        "decision_authority": False,
+        "seller_id": session.get("seller_id"),
+        "seller_agent_id": session.get("seller_agent_id"),
+        "agent_id": session.get("agent_id"),
+        "order_id": session.get("order_id"),
+        "service": session.get("service"),
+        "specialization": session.get("specialization"),
+        "execution_session_id": execution_session_id,
+        "execution_status": execution_status,
+        "verification_status": verification_status,
+        "risk_score": risk_score,
+        "trust_score": trust_score,
+        "contribution_score": contribution_score,
+        "contribution_score_meaning": "foundation_input_quality_score_not_governance_weight",
+        "execution_result": execution_result,
+        "verification_result": verification_result,
+    }
+
+    return {
+        "status": "ok",
+        "execution_session_id": execution_session_id,
+        "contribution": contribution,
+    }
+
+
+
+
+def build_foundation_decision_context_db(order_id):
+    if not order_id:
+        return {
+            "status": "error",
+            "message": "order_id_required",
+        }
+
+    order = None
+    try:
+        order = get_order_db(order_id)
+    except Exception:
+        order = None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT execution_session_id
+    FROM seller_agent_execution_sessions
+    WHERE order_id = {p}
+      AND execution_status = 'verified'
+    ORDER BY trust_score DESC, risk_score ASC, updated_at DESC
+    """, (
+        order_id,
+    ))
+
+    rows = cur.fetchall()
+    release_conn(conn)
+
+    verified_contributions = []
+    skipped_contributions = []
+
+    for row in rows:
+        execution_session_id = row_get(row, "execution_session_id")
+        contribution_result = build_verified_seller_contribution_db(
+            execution_session_id
+        )
+
+        if contribution_result.get("status") == "ok":
+            verified_contributions.append(
+                contribution_result.get("contribution")
+            )
+        else:
+            skipped_contributions.append({
+                "execution_session_id": execution_session_id,
+                "reason": contribution_result,
+            })
+
+    decision_context = {
+        "context_type": "foundation_decision_context",
+        "governance_authority": "iat_protocol_core_only",
+        "decision_authority": "foundation_agents_only",
+        "seller_role": "verified_execution_contributor_only",
+        "buyer_role": "customer_demand_source_only",
+        "order_id": order_id,
+        "order": order,
+        "verified_seller_contributions": verified_contributions,
+        "skipped_contributions": skipped_contributions,
+        "contribution_count": len(verified_contributions),
+        "foundation_rules": {
+            "seller_governance_authority": False,
+            "seller_decision_authority": False,
+            "buyer_governance_authority": False,
+            "buyer_decision_authority": False,
+            "seller_contributions_are_inputs_only": True,
+            "foundation_agents_keep_final_authority": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+    return {
+        "status": "ok",
+        "order_id": order_id,
+        "decision_context": decision_context,
+    }
+
+
+
+
+def run_foundation_decision_db(order_id):
+    if not order_id:
+        return {
+            "status": "error",
+            "message": "order_id_required",
+        }
+
+    context_result = build_foundation_decision_context_db(order_id)
+
+    if context_result.get("status") != "ok":
+        return context_result
+
+    decision_context = context_result.get("decision_context") or {}
+    contributions = decision_context.get("verified_seller_contributions") or []
+
+    approved_contributions = [
+        c for c in contributions
+        if c.get("verification_status") == "approved"
+        and c.get("decision_authority") is False
+        and c.get("governance_authority") is False
+    ]
+
+    seller_input_quality_score = 0.0
+
+    if approved_contributions:
+        seller_input_quality_score = round(
+            sum(float(c.get("contribution_score", 0) or 0) for c in approved_contributions)
+            / max(len(approved_contributions), 1),
+            4,
+        )
+
+    if not approved_contributions:
+        foundation_verdict = "insufficient_seller_input"
+        decision_confidence = 0.25
+        decision_reason = "no_verified_seller_contributions"
+    elif seller_input_quality_score >= 0.35:
+        foundation_verdict = "seller_inputs_accepted_as_supporting_evidence"
+        decision_confidence = min(0.75, 0.50 + seller_input_quality_score)
+        decision_reason = "verified_seller_contributions_support_foundation_context"
+    elif seller_input_quality_score >= 0.20:
+        foundation_verdict = "seller_inputs_accepted_with_low_weight"
+        decision_confidence = 0.50
+        decision_reason = "seller_contributions_valid_but_low_input_quality"
+    else:
+        foundation_verdict = "seller_inputs_require_additional_foundation_verification"
+        decision_confidence = 0.35
+        decision_reason = "seller_contribution_quality_too_low"
+
+    foundation_decision = {
+        "decision_type": "foundation_decision",
+        "order_id": order_id,
+        "foundation_verdict": foundation_verdict,
+        "decision_reason": decision_reason,
+        "decision_confidence": round(float(decision_confidence), 4),
+
+        "governance_authority": "iat_protocol_core_only",
+        "decision_authority": "foundation_agents_only",
+        "seller_decision_power": False,
+        "seller_governance_power": False,
+        "buyer_decision_power": False,
+        "buyer_governance_power": False,
+
+        "seller_inputs_used": bool(approved_contributions),
+        "seller_input_count": len(approved_contributions),
+        "seller_input_quality_score": seller_input_quality_score,
+
+        "seller_inputs_role": "supporting_evidence_only",
+        "foundation_final_authority": True,
+        "protocol_core_sovereignty_reserved": True,
+
+        "decision_context": decision_context,
+    }
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # Record a governance/audit event. This does not transfer authority to sellers;
+    # it records that foundation used seller contributions as supporting evidence.
+    create_seller_governance_event_with_cursor(
+        cur=cur,
+        seller_id=(
+            approved_contributions[0].get("seller_id")
+            if approved_contributions else "protocol_core"
+        ),
+        event_type="foundation_decision_completed",
+        reviewer="iat_foundation_decision_engine",
+        reason=decision_reason,
+        old_status="foundation_decision_pending",
+        new_status=foundation_verdict,
+        metadata=foundation_decision,
+    )
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "order_id": order_id,
+        "foundation_decision": foundation_decision,
+    }
 
 
 

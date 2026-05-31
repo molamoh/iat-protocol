@@ -6743,6 +6743,164 @@ def count_active_seller_agents_db(seller_id):
 
 
 
+
+def get_seller_runtime_summary_db(seller_id):
+    if not seller_id:
+        return {
+            "status": "error",
+            "message": "seller_id_required",
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT
+        COUNT(*) AS total_agents,
+        SUM(CASE WHEN seller_agent_status = 'active' THEN 1 ELSE 0 END) AS active_agents,
+        SUM(CASE WHEN seller_agent_status = 'capacity_frozen' THEN 1 ELSE 0 END) AS capacity_frozen_agents,
+        SUM(CASE WHEN seller_agent_status IN ('disabled', 'quarantined') THEN 1 ELSE 0 END) AS disabled_agents,
+        AVG(COALESCE(runtime_health_score, 0)) AS avg_runtime_health_score,
+        SUM(COALESCE(runtime_failure_count, 0)) AS runtime_failure_count_total,
+        SUM(COALESCE(containment_count, 0)) AS containment_count_total,
+        SUM(COALESCE(economic_penalty_level, 0)) AS economic_penalty_level_total
+    FROM seller_agents
+    WHERE seller_id = {p}
+    """, (seller_id,))
+
+    row = cur.fetchone()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "total_agents": int(row_get(row, "total_agents", 0) or 0),
+        "active_agents": int(row_get(row, "active_agents", 0) or 0),
+        "capacity_frozen_agents": int(row_get(row, "capacity_frozen_agents", 0) or 0),
+        "disabled_agents": int(row_get(row, "disabled_agents", 0) or 0),
+        "avg_runtime_health_score": float(row_get(row, "avg_runtime_health_score", 0) or 0),
+        "runtime_failure_count_total": int(row_get(row, "runtime_failure_count_total", 0) or 0),
+        "containment_count_total": int(row_get(row, "containment_count_total", 0) or 0),
+        "economic_penalty_level_total": int(row_get(row, "economic_penalty_level_total", 0) or 0),
+    }
+
+
+def orchestrate_seller_runtime_governance_db(seller_id):
+    if not seller_id:
+        return {
+            "status": "error",
+            "message": "seller_id_required",
+        }
+
+    seller_before = get_seller_db(seller_id)
+    if not seller_before:
+        return {
+            "status": "error",
+            "message": "seller_not_found",
+            "seller_id": seller_id,
+        }
+
+    runtime_summary = get_seller_runtime_summary_db(seller_id)
+
+    # Synchronize seller-level runtime health from seller agents before
+    # capacity recompute. This prevents the capacity engine from using
+    # stale seller.runtime_health_score values.
+    synced_runtime_health_score = float(
+        runtime_summary.get("avg_runtime_health_score", 0) or 0
+    )
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    UPDATE sellers
+    SET runtime_health_score = {p},
+        updated_at = {p}
+    WHERE seller_id = {p}
+    """, (
+        synced_runtime_health_score,
+        now,
+        seller_id,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    capacity_result = recompute_seller_dynamic_agent_capacity_db(seller_id)
+
+    seller_after = get_seller_db(seller_id)
+
+    adaptive_policy = None
+    try:
+        adaptive_policy = get_active_adaptive_policy_db(
+            scope="seller",
+            service=seller_id,
+        )
+    except Exception as exc:
+        adaptive_policy = {
+            "status": "error",
+            "message": "adaptive_policy_lookup_failed",
+            "error": str(exc),
+        }
+
+    summary = {
+        "seller_id": seller_id,
+        "seller_status_before": seller_before.get("seller_status"),
+        "seller_status_after": seller_after.get("seller_status") if seller_after else None,
+        "risk_score_before": seller_before.get("risk_score"),
+        "risk_score_after": seller_after.get("risk_score") if seller_after else None,
+        "trust_score_before": seller_before.get("trust_score"),
+        "trust_score_after": seller_after.get("trust_score") if seller_after else None,
+        "max_agents_allowed_before": seller_before.get("max_agents_allowed"),
+        "max_agents_allowed_after": seller_after.get("max_agents_allowed") if seller_after else None,
+        "runtime_health_score_before": seller_before.get("runtime_health_score"),
+        "runtime_health_score_after": seller_after.get("runtime_health_score") if seller_after else None,
+    }
+
+    now = int(time.time())
+
+    report = {
+        "seller_id": seller_id,
+        "runtime_summary": runtime_summary,
+        "capacity_result": capacity_result,
+        "adaptive_policy": adaptive_policy,
+        "summary": summary,
+        "orchestrator_version": "v1",
+        "created_at": now,
+    }
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    event_result = create_seller_governance_event_with_cursor(
+        cur=cur,
+        seller_id=seller_id,
+        event_type="seller_runtime_orchestrated",
+        reviewer="iat_seller_runtime_orchestrator",
+        reason="runtime_capacity_policy_orchestration",
+        old_status=str(seller_before.get("seller_status")),
+        new_status=str(seller_after.get("seller_status") if seller_after else seller_before.get("seller_status")),
+        metadata=report,
+    )
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "runtime_summary": runtime_summary,
+        "capacity_result": capacity_result,
+        "adaptive_policy": adaptive_policy,
+        "summary": summary,
+        "event": event_result,
+    }
+
+
+
 def recompute_seller_dynamic_agent_capacity_db(seller_id):
     if not seller_id:
         return {

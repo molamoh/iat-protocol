@@ -120,6 +120,7 @@ from iat.api.db import (
     run_seller_agent_generation_db,
     run_seller_agent_activation_review_db,
     recompute_seller_dynamic_agent_capacity_db,
+    orchestrate_seller_runtime_governance_db,
 )
 
 
@@ -5402,6 +5403,21 @@ def internal_recompute_seller_agent_capacity(
         }
 
     return recompute_seller_dynamic_agent_capacity_db(seller_id)
+
+
+
+@app.post("/internal/seller/runtime-orchestrator/{seller_id}")
+def internal_seller_runtime_orchestrator(
+    seller_id: str,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return orchestrate_seller_runtime_governance_db(seller_id)
 
 
 @app.post("/admin/seller/approve")

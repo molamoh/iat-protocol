@@ -6742,6 +6742,239 @@ def count_active_seller_agents_db(seller_id):
     return int(row_get(row, "active_count", 0) or 0)
 
 
+
+def recompute_seller_dynamic_agent_capacity_db(seller_id):
+    if not seller_id:
+        return {
+            "status": "error",
+            "message": "seller_id_required",
+        }
+
+    seller = get_seller_db(seller_id)
+    if not seller:
+        return {
+            "status": "error",
+            "message": "seller_not_found",
+            "seller_id": seller_id,
+        }
+
+    seller_status = str(seller.get("seller_status") or "pending").lower()
+    verification_status = str(seller.get("verification_status") or "unverified").lower()
+
+    current_capacity = int(seller.get("max_agents_allowed", 5) or 5)
+    active_agents = int(seller.get("active_agents", 0) or 0)
+
+    trust_score = float(seller.get("trust_score", 0) or 0)
+    risk_score = float(seller.get("risk_score", 0) or 0)
+    reputation = float(seller.get("reputation", 0.5) or 0.5)
+    runtime_health_score = float(seller.get("runtime_health_score", 0) or 0)
+
+    successful_orders = int(seller.get("successful_orders", 0) or 0)
+    failed_orders = int(seller.get("failed_orders", 0) or 0)
+    containment_count = int(seller.get("containment_count", 0) or 0)
+    economic_penalty_level = int(seller.get("economic_penalty_level", 0) or 0)
+
+    trust_component = max(0.0, min(trust_score, 100.0)) * 0.40
+    runtime_component = max(0.0, min(runtime_health_score, 1.0)) * 20.0
+    reputation_component = max(0.0, min(reputation, 1.0)) * 20.0
+
+    total_orders = successful_orders + failed_orders
+    if total_orders > 0:
+        success_rate = successful_orders / max(total_orders, 1)
+        success_component = success_rate * 20.0
+    else:
+        success_rate = 0.0
+        success_component = 0.0
+
+    risk_penalty = max(0.0, min(risk_score, 1.0)) * 40.0
+
+    if total_orders > 0:
+        failure_rate = failed_orders / max(total_orders, 1)
+        failure_penalty = failure_rate * 20.0
+    else:
+        failure_rate = 0.0
+        failure_penalty = 0.0
+
+    containment_penalty = min(containment_count * 10.0, 20.0)
+    economic_penalty = min(economic_penalty_level * 10.0, 20.0)
+
+    capacity_score = (
+        trust_component
+        + runtime_component
+        + reputation_component
+        + success_component
+        - risk_penalty
+        - failure_penalty
+        - containment_penalty
+        - economic_penalty
+    )
+
+    capacity_score = max(0.0, min(100.0, round(capacity_score, 2)))
+
+    if seller_status in ["banned", "rejected"]:
+        target_capacity = 0
+        decision_reason = "terminal_seller_status"
+    elif seller_status in ["contained", "restricted"]:
+        target_capacity = 1
+        decision_reason = "contained_or_restricted_seller"
+    elif risk_score >= 0.85:
+        target_capacity = 1
+        decision_reason = "critical_risk_score"
+    elif risk_score >= 0.65 or seller_status in ["limited", "watchlist"]:
+        target_capacity = 5
+        decision_reason = "high_risk_or_limited_status"
+    elif verification_status not in ["verified", "foundation_verified"]:
+        target_capacity = min(5, current_capacity)
+        decision_reason = "seller_not_fully_verified"
+    elif capacity_score < 20:
+        target_capacity = 1
+        decision_reason = "capacity_score_below_20"
+    elif capacity_score < 40:
+        target_capacity = 5
+        decision_reason = "capacity_score_20_39"
+    elif capacity_score < 60:
+        target_capacity = 10
+        decision_reason = "capacity_score_40_59"
+    elif capacity_score < 80:
+        target_capacity = 20
+        decision_reason = "capacity_score_60_79"
+    else:
+        target_capacity = 50
+        decision_reason = "capacity_score_80_plus"
+
+    # Progressive growth, immediate degradation.
+    if target_capacity > current_capacity:
+        if current_capacity <= 0:
+            new_capacity = min(target_capacity, 5)
+        else:
+            new_capacity = min(target_capacity, max(current_capacity + 5, current_capacity * 2))
+        capacity_direction = "increase"
+    elif target_capacity < current_capacity:
+        new_capacity = target_capacity
+        capacity_direction = "decrease"
+    else:
+        new_capacity = current_capacity
+        capacity_direction = "unchanged"
+
+    # New or pending sellers should not jump above 5.
+    if seller_status in ["pending", "new"]:
+        new_capacity = min(new_capacity, 5)
+
+    # IAT onboarding rule:
+    # a verified, active, low-risk seller starts with 5 agents by default.
+    # Trust can increase this later; risk can still reduce it.
+    if (
+        seller_status == "active"
+        and verification_status in ["verified", "foundation_verified"]
+        and risk_score < 0.35
+        and containment_count == 0
+        and economic_penalty_level == 0
+    ):
+        new_capacity = max(new_capacity, 5)
+        if target_capacity < 5:
+            decision_reason = "verified_low_risk_seller_floor"
+
+    if new_capacity > current_capacity:
+        capacity_direction = "increase"
+    elif new_capacity < current_capacity:
+        capacity_direction = "decrease"
+    else:
+        capacity_direction = "unchanged"
+
+    new_capacity = int(max(0, min(new_capacity, 50)))
+
+    now = int(time.time())
+
+    capacity_report = {
+        "seller_id": seller_id,
+        "seller_status": seller_status,
+        "verification_status": verification_status,
+        "old_max_agents_allowed": current_capacity,
+        "new_max_agents_allowed": new_capacity,
+        "target_capacity": target_capacity,
+        "capacity_direction": capacity_direction,
+        "capacity_score": capacity_score,
+        "decision_reason": decision_reason,
+        "active_agents": active_agents,
+        "components": {
+            "trust_component": round(trust_component, 4),
+            "runtime_component": round(runtime_component, 4),
+            "reputation_component": round(reputation_component, 4),
+            "success_component": round(success_component, 4),
+            "risk_penalty": round(risk_penalty, 4),
+            "failure_penalty": round(failure_penalty, 4),
+            "containment_penalty": round(containment_penalty, 4),
+            "economic_penalty": round(economic_penalty, 4),
+        },
+        "raw_inputs": {
+            "trust_score": trust_score,
+            "runtime_health_score": runtime_health_score,
+            "reputation": reputation,
+            "risk_score": risk_score,
+            "successful_orders": successful_orders,
+            "failed_orders": failed_orders,
+            "containment_count": containment_count,
+            "economic_penalty_level": economic_penalty_level,
+        },
+    }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    UPDATE sellers
+    SET max_agents_allowed = {p},
+        updated_at = {p},
+        metadata = {p}
+    WHERE seller_id = {p}
+    """, (
+        new_capacity,
+        now,
+        json.dumps({
+            **_safe_json_loads(seller.get("metadata"), {}),
+            "last_dynamic_capacity_report": capacity_report,
+        }),
+        seller_id,
+    ))
+
+    if new_capacity > current_capacity:
+        event_type = "seller_capacity_increased"
+    elif new_capacity < current_capacity:
+        event_type = "seller_capacity_decreased"
+    else:
+        event_type = "seller_capacity_unchanged"
+
+    event_result = create_seller_governance_event_with_cursor(
+        cur=cur,
+        seller_id=seller_id,
+        event_type=event_type,
+        reviewer="iat_dynamic_agent_capacity_engine",
+        reason=decision_reason,
+        old_status=str(current_capacity),
+        new_status=str(new_capacity),
+        metadata=capacity_report,
+    )
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "old_max_agents_allowed": current_capacity,
+        "new_max_agents_allowed": new_capacity,
+        "target_capacity": target_capacity,
+        "capacity_direction": capacity_direction,
+        "capacity_score": capacity_score,
+        "decision_reason": decision_reason,
+        "active_agents": active_agents,
+        "event": event_result,
+        "report": capacity_report,
+    }
+
+
+
 def can_seller_add_agent_db(seller_id):
     seller = get_seller_db(seller_id)
     if not seller:

@@ -119,6 +119,7 @@ from iat.api.db import (
     run_seller_agent_simulation_review_db,
     run_seller_agent_generation_db,
     run_seller_agent_activation_review_db,
+    recompute_seller_dynamic_agent_capacity_db,
 )
 
 
@@ -5386,6 +5387,21 @@ def admin_activate_seller_agent(
         }
 
     return run_seller_agent_activation_review_db(seller_agent_id)
+
+
+
+@app.post("/internal/seller/recompute-agent-capacity/{seller_id}")
+def internal_recompute_seller_agent_capacity(
+    seller_id: str,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return recompute_seller_dynamic_agent_capacity_db(seller_id)
 
 
 @app.post("/admin/seller/approve")

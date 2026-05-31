@@ -149,6 +149,7 @@ def init_db():
     init_seller_agent_factory_requests_table()
     init_seller_agent_sandbox_runs_table()
     init_seller_agent_simulation_runs_table()
+    init_seller_agent_activation_reviews_table()
     init_seller_governance_events_table()
     init_threat_memory_nodes_table()
     init_adversarial_mutation_signatures_table()
@@ -6776,6 +6777,412 @@ def can_seller_add_agent_db(seller_id):
         "reason": "allowed",
         "active_agents": active_agents,
         "max_agents_allowed": max_agents_allowed,
+    }
+
+
+
+
+def init_seller_agent_activation_reviews_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS seller_agent_activation_reviews (
+        activation_review_id TEXT PRIMARY KEY,
+        seller_agent_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        seller_id TEXT NOT NULL,
+
+        activation_status TEXT DEFAULT 'pending',
+
+        activation_risk_score REAL DEFAULT 0,
+        activation_trust_score REAL DEFAULT 0,
+
+        activation_report TEXT DEFAULT '{}',
+        governance_recommendation TEXT,
+
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+
+        metadata TEXT DEFAULT '{}'
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+def get_seller_agent_activation_review_db(activation_review_id):
+    if not activation_review_id:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM seller_agent_activation_reviews
+    WHERE activation_review_id = {p}
+    """, (activation_review_id,))
+
+    row = cur.fetchone()
+    release_conn(conn)
+
+    return dict(row) if row else None
+
+
+def run_seller_agent_activation_review_db(seller_agent_id):
+    if not seller_agent_id:
+        return {"status": "error", "message": "seller_agent_id_required"}
+
+    seller_agent = get_seller_agent_db(seller_agent_id)
+    if not seller_agent:
+        return {"status": "error", "message": "seller_agent_not_found"}
+
+    seller = get_seller_db(seller_agent.get("seller_id"))
+    if not seller:
+        return {"status": "error", "message": "seller_not_found"}
+
+    agent_id = seller_agent.get("agent_id")
+    seller_id = seller.get("seller_id")
+
+    metadata = _safe_json_loads(seller_agent.get("metadata"), {})
+    factory_request_id = metadata.get("factory_request_id")
+    catalog_item_id = metadata.get("catalog_item_id")
+    specialization = metadata.get("specialization")
+
+    factory_request = get_seller_agent_factory_request_db(factory_request_id) if factory_request_id else None
+    catalog_item = get_seller_catalog_item_db(catalog_item_id) if catalog_item_id else None
+
+    risk = 0
+    trust = 0
+    passed = []
+    failed = []
+    manual = []
+
+    seller_status = str(seller.get("seller_status") or "").lower()
+    verification_status = str(seller.get("verification_status") or "").lower()
+
+    if seller_status == "active":
+        trust += 15
+        passed.append("seller_active")
+    else:
+        risk += 30
+        failed.append("seller_not_active")
+
+    if verification_status in ["verified", "foundation_verified"]:
+        trust += 15
+        passed.append("seller_verified")
+    else:
+        risk += 25
+        failed.append("seller_not_verified")
+
+    if int(seller.get("email_verified", 0) or 0) == 1:
+        trust += 5
+        passed.append("email_verified")
+    else:
+        risk += 5
+        manual.append("email_not_verified")
+
+    if str(seller.get("kyc_status") or "").lower() in ["verified", "approved"]:
+        trust += 10
+        passed.append("kyc_verified")
+    else:
+        risk += 10
+        manual.append("kyc_not_verified")
+
+    if str(seller.get("business_verification_status") or "").lower() in ["verified", "approved"]:
+        trust += 10
+        passed.append("business_verified")
+    else:
+        risk += 10
+        manual.append("business_not_verified")
+
+    if str(seller_agent.get("seller_agent_status") or "").lower() == "pending_review":
+        trust += 10
+        passed.append("seller_agent_pending_review")
+    else:
+        risk += 20
+        manual.append("seller_agent_not_pending_review")
+
+    if str(seller_agent.get("runtime_validation_status") or "").lower() == "generated_pending_review":
+        trust += 5
+        passed.append("runtime_generated_pending_review")
+    else:
+        risk += 10
+        manual.append("runtime_status_unexpected")
+
+    if factory_request:
+        if str(factory_request.get("factory_status") or "").lower() == "generated_pending_review":
+            trust += 10
+            passed.append("factory_generated_pending_review")
+        else:
+            risk += 15
+            manual.append("factory_status_not_generated_pending_review")
+
+        if str(factory_request.get("sandbox_status") or "").lower() == "passed":
+            trust += 10
+            passed.append("sandbox_passed")
+        else:
+            risk += 25
+            failed.append("sandbox_not_passed")
+
+        if str(factory_request.get("simulation_status") or "").lower() == "passed":
+            trust += 10
+            passed.append("simulation_passed")
+        else:
+            risk += 25
+            failed.append("simulation_not_passed")
+    else:
+        risk += 30
+        failed.append("factory_request_missing")
+
+    if catalog_item:
+        if str(catalog_item.get("agent_creation_status") or "").lower() == "generated_pending_review":
+            trust += 5
+            passed.append("catalog_generated_pending_review")
+        else:
+            manual.append("catalog_status_unexpected")
+    else:
+        risk += 20
+        manual.append("catalog_item_missing")
+
+    max_agents_allowed = int(seller.get("max_agents_allowed", 5) or 5)
+    active_agents = int(seller.get("active_agents", 0) or 0)
+
+    if active_agents <= max_agents_allowed:
+        trust += 5
+        passed.append("agent_capacity_available")
+    else:
+        risk += 50
+        failed.append("agent_capacity_exceeded")
+
+    # Duplication check: same seller + same specialization already active.
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    duplicate_count = 0
+    if specialization:
+        cur.execute(f"""
+        SELECT COUNT(*) AS c
+        FROM seller_agents
+        WHERE seller_id = {p}
+          AND seller_agent_id != {p}
+          AND seller_agent_status = 'active'
+          AND specialties LIKE {p}
+        """, (
+            seller_id,
+            seller_agent_id,
+            f"%{specialization}%",
+        ))
+        row = cur.fetchone()
+        duplicate_count = int(row_get(row, "c", 0) or 0)
+
+    release_conn(conn)
+
+    if duplicate_count > 0:
+        risk += 20
+        manual.append("active_specialization_duplicate_detected")
+    else:
+        trust += 5
+        passed.append("no_active_specialization_duplicate")
+
+    # Safety flags must remain disabled at activation time.
+    agent_row = None
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(f"SELECT * FROM agents WHERE agent_id = {p}", (agent_id,))
+    row = cur.fetchone()
+    if row:
+        agent_row = dict(row)
+    release_conn(conn)
+
+    if not agent_row:
+        risk += 30
+        failed.append("registry_agent_missing")
+    else:
+        if int(agent_row.get("buyer_access", 0) or 0) == 0:
+            trust += 5
+            passed.append("buyer_access_disabled")
+        else:
+            risk += 50
+            failed.append("buyer_access_enabled_before_activation")
+
+        if int(agent_row.get("raw_prompt_access", 0) or 0) == 0:
+            trust += 5
+            passed.append("raw_prompt_access_disabled")
+        else:
+            risk += 50
+            failed.append("raw_prompt_access_enabled_before_activation")
+
+        if int(agent_row.get("web_access", 0) or 0) == 0:
+            trust += 5
+            passed.append("web_access_disabled")
+        else:
+            risk += 25
+            manual.append("web_access_enabled_before_activation")
+
+    risk = max(0, min(100, int(risk)))
+    trust = max(0, min(100, int(trust)))
+
+    if failed and risk > 50:
+        activation_status = "rejected"
+        recommendation = "reject_activation"
+        next_seller_agent_status = "rejected"
+        next_available = 0
+        event_type = "seller_agent_activation_rejected"
+    elif risk > 25 or manual:
+        activation_status = "manual_review"
+        recommendation = "manual_activation_review"
+        next_seller_agent_status = "pending_review"
+        next_available = 0
+        event_type = "seller_agent_activation_manual_review"
+    else:
+        activation_status = "approved"
+        recommendation = "activate_agent"
+        next_seller_agent_status = "active"
+        next_available = 1
+        event_type = "seller_agent_activation_approved"
+
+    report = {
+        "seller_agent_id": seller_agent_id,
+        "agent_id": agent_id,
+        "seller_id": seller_id,
+        "factory_request_id": factory_request_id,
+        "catalog_item_id": catalog_item_id,
+        "specialization": specialization,
+        "activation_risk_score": risk,
+        "activation_trust_score": trust,
+        "passed_checks": passed,
+        "failed_checks": failed,
+        "manual_review_checks": manual,
+        "governance_recommendation": recommendation,
+    }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+    activation_review_id = str(uuid.uuid4())
+
+    cur.execute(f"""
+    INSERT INTO seller_agent_activation_reviews (
+        activation_review_id,
+        seller_agent_id,
+        agent_id,
+        seller_id,
+        activation_status,
+        activation_risk_score,
+        activation_trust_score,
+        activation_report,
+        governance_recommendation,
+        created_at,
+        updated_at,
+        metadata
+    )
+    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+    """, (
+        activation_review_id,
+        seller_agent_id,
+        agent_id,
+        seller_id,
+        activation_status,
+        risk,
+        trust,
+        json.dumps(report),
+        recommendation,
+        now,
+        now,
+        "{}",
+    ))
+
+    cur.execute(f"""
+    UPDATE seller_agents
+    SET seller_agent_status = {p},
+        updated_at = {p}
+    WHERE seller_agent_id = {p}
+    """, (
+        next_seller_agent_status,
+        now,
+        seller_agent_id,
+    ))
+
+    if agent_row:
+        cur.execute(f"""
+        UPDATE agents
+        SET available = {p},
+            seller_status = {p},
+            verification_status = {p},
+            foundation_verified_at = {p},
+            foundation_verdict = {p},
+            updated_at = {p}
+        WHERE agent_id = {p}
+        """, (
+            next_available,
+            "active" if activation_status == "approved" else next_seller_agent_status,
+            "foundation_verified" if activation_status == "approved" else "activation_review_failed",
+            now if activation_status == "approved" else None,
+            recommendation,
+            now,
+            agent_id,
+        ))
+
+    if activation_status == "approved":
+        cur.execute(f"""
+        UPDATE seller_agent_factory_requests
+        SET factory_status = {p},
+            updated_at = {p}
+        WHERE factory_request_id = {p}
+        """, (
+            "activated",
+            now,
+            factory_request_id,
+        ))
+
+        cur.execute(f"""
+        UPDATE seller_catalog_items
+        SET agent_creation_status = {p},
+            linked_seller_agent_id = {p},
+            updated_at = {p}
+        WHERE catalog_item_id = {p}
+        """, (
+            "activated",
+            seller_agent_id,
+            now,
+            catalog_item_id,
+        ))
+
+    event_result = create_seller_governance_event_with_cursor(
+        cur=cur,
+        seller_id=seller_id,
+        event_type=event_type,
+        reviewer="iat_seller_agent_activation_engine",
+        reason=recommendation,
+        old_status=str(seller_agent.get("seller_agent_status") or "pending_review"),
+        new_status=next_seller_agent_status,
+        metadata=report,
+    )
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "activation_review_id": activation_review_id,
+        "seller_agent_id": seller_agent_id,
+        "agent_id": agent_id,
+        "activation_status": activation_status,
+        "activation_risk_score": risk,
+        "activation_trust_score": trust,
+        "governance_recommendation": recommendation,
+        "passed_checks": passed,
+        "failed_checks": failed,
+        "manual_review_checks": manual,
+        "event": event_result,
+        "activation_review": get_seller_agent_activation_review_db(activation_review_id),
+        "seller_agent": get_seller_agent_db(seller_agent_id),
     }
 
 

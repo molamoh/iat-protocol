@@ -118,6 +118,7 @@ from iat.api.db import (
     run_seller_agent_sandbox_review_db,
     run_seller_agent_simulation_review_db,
     run_seller_agent_generation_db,
+    run_seller_agent_activation_review_db,
 )
 
 
@@ -5370,6 +5371,21 @@ def admin_generate_seller_agents_from_factory_request(
         }
 
     return run_seller_agent_generation_db(factory_request_id)
+
+
+
+@app.post("/admin/seller-agent/activate/{seller_agent_id}")
+def admin_activate_seller_agent(
+    seller_agent_id: str,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return run_seller_agent_activation_review_db(seller_agent_id)
 
 
 @app.post("/admin/seller/approve")

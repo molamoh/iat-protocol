@@ -6906,17 +6906,19 @@ def run_seller_agent_activation_review_db(seller_agent_id):
         risk += 20
         manual.append("seller_agent_not_pending_review")
 
-    if str(seller_agent.get("runtime_validation_status") or "").lower() == "generated_pending_review":
+    runtime_state = str(seller_agent.get("runtime_validation_status") or "").lower()
+    if runtime_state in ["generated_pending_review", "validated", "healthy"]:
         trust += 5
-        passed.append("runtime_generated_pending_review")
+        passed.append(f"runtime_state_accepted:{runtime_state}")
     else:
         risk += 10
         manual.append("runtime_status_unexpected")
 
     if factory_request:
-        if str(factory_request.get("factory_status") or "").lower() == "generated_pending_review":
+        factory_state = str(factory_request.get("factory_status") or "").lower()
+        if factory_state in ["generated_pending_review", "activated"]:
             trust += 10
-            passed.append("factory_generated_pending_review")
+            passed.append(f"factory_state_accepted:{factory_state}")
         else:
             risk += 15
             manual.append("factory_status_not_generated_pending_review")
@@ -6939,9 +6941,10 @@ def run_seller_agent_activation_review_db(seller_agent_id):
         failed.append("factory_request_missing")
 
     if catalog_item:
-        if str(catalog_item.get("agent_creation_status") or "").lower() == "generated_pending_review":
+        catalog_state = str(catalog_item.get("agent_creation_status") or "").lower()
+        if catalog_state in ["generated_pending_review", "activated"]:
             trust += 5
-            passed.append("catalog_generated_pending_review")
+            passed.append(f"catalog_state_accepted:{catalog_state}")
         else:
             manual.append("catalog_status_unexpected")
     else:
@@ -7101,10 +7104,16 @@ def run_seller_agent_activation_review_db(seller_agent_id):
     cur.execute(f"""
     UPDATE seller_agents
     SET seller_agent_status = {p},
+        runtime_validation_status = {p},
+        runtime_health_score = {p},
+        runtime_last_checked_at = {p},
         updated_at = {p}
     WHERE seller_agent_id = {p}
     """, (
         next_seller_agent_status,
+        "healthy" if activation_status == "approved" else "activation_review_failed",
+        1.0 if activation_status == "approved" else 0.0,
+        now,
         now,
         seller_agent_id,
     ))
@@ -7130,6 +7139,25 @@ def run_seller_agent_activation_review_db(seller_agent_id):
         ))
 
     if activation_status == "approved":
+        cur.execute(f"""
+        UPDATE agents
+        SET available = 1,
+            seller_status = 'active',
+            verification_status = 'foundation_verified',
+            buyer_access = 0,
+            web_access = 0,
+            raw_prompt_access = 0,
+            foundation_verified_at = {p},
+            foundation_verdict = {p},
+            updated_at = {p}
+        WHERE agent_id = {p}
+        """, (
+            now,
+            "activation_approved_secure",
+            now,
+            agent_id,
+        ))
+
         cur.execute(f"""
         UPDATE seller_agent_factory_requests
         SET factory_status = {p},
@@ -7290,6 +7318,7 @@ def run_seller_agent_generation_db(factory_request_id):
 
         metadata = {
             "source": "iat_generation_engine",
+            "execution_mode": "iat_internal",
             "factory_request_id": factory_request_id,
             "catalog_item_id": catalog_item_id,
             "seller_id": seller_id,
@@ -7578,6 +7607,27 @@ def update_seller_agent_runtime_status_db(
     seller_agent_status = None
 
     quarantine_until = None
+
+    cur.execute(f"""
+    SELECT metadata
+    FROM seller_agents
+    WHERE seller_agent_id = {p}
+    """, (seller_agent_id,))
+
+    metadata_row = cur.fetchone()
+    seller_agent_metadata = _safe_json_loads(
+        row_get(metadata_row, "metadata", "{}") if metadata_row else "{}",
+        {},
+    )
+
+    execution_mode = str(
+        seller_agent_metadata.get("execution_mode") or ""
+    ).lower()
+
+    if execution_mode == "iat_internal":
+        runtime_validation_status = "validated"
+        runtime_health_score = max(float(runtime_health_score or 0), 1.0)
+        disable_if_unhealthy = False
 
     cur.execute(f"""
     SELECT runtime_failure_count

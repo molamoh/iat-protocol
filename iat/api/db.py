@@ -7018,6 +7018,91 @@ def recompute_seller_dynamic_agent_capacity_db(seller_id):
 
     capacity_report["frozen_agents"] = frozen_agents
 
+    reactivated_agents = []
+
+    if new_capacity > active_agents:
+        available_slots = new_capacity - active_agents
+
+        cur.execute(f"""
+        SELECT
+            seller_agent_id,
+            agent_id,
+            runtime_health_score,
+            reputation,
+            successful_orders
+        FROM seller_agents
+        WHERE seller_id = {p}
+          AND seller_agent_status = 'capacity_frozen'
+        ORDER BY
+            runtime_health_score DESC,
+            reputation DESC,
+            successful_orders DESC,
+            updated_at ASC
+        LIMIT {int(available_slots)}
+        """, (
+            seller_id,
+        ))
+
+        rows_to_reactivate = cur.fetchall()
+
+        for row in rows_to_reactivate:
+            seller_agent_id_to_reactivate = row_get(row, "seller_agent_id")
+            agent_id_to_reactivate = row_get(row, "agent_id")
+
+            cur.execute(f"""
+            UPDATE seller_agents
+            SET seller_agent_status = {p},
+                updated_at = {p}
+            WHERE seller_agent_id = {p}
+            """, (
+                "active",
+                now,
+                seller_agent_id_to_reactivate,
+            ))
+
+            if agent_id_to_reactivate:
+                cur.execute(f"""
+                UPDATE agents
+                SET available = 1,
+                    seller_status = {p},
+                    verification_status = {p},
+                    buyer_access = 0,
+                    web_access = 0,
+                    raw_prompt_access = 0,
+                    foundation_verdict = {p},
+                    updated_at = {p}
+                WHERE agent_id = {p}
+                """, (
+                    "active",
+                    "foundation_verified",
+                    "auto_reactivated_capacity_available",
+                    now,
+                    agent_id_to_reactivate,
+                ))
+
+            reactivated_agent = {
+                "seller_agent_id": seller_agent_id_to_reactivate,
+                "agent_id": agent_id_to_reactivate,
+                "reason": "dynamic_capacity_available",
+            }
+            reactivated_agents.append(reactivated_agent)
+
+            create_seller_governance_event_with_cursor(
+                cur=cur,
+                seller_id=seller_id,
+                event_type="seller_agent_auto_reactivated",
+                reviewer="iat_dynamic_agent_capacity_engine",
+                reason="dynamic_capacity_available",
+                old_status="capacity_frozen",
+                new_status="active",
+                metadata={
+                    **capacity_report,
+                    "reactivated_agent": reactivated_agent,
+                },
+            )
+
+    capacity_report["reactivated_agents"] = reactivated_agents
+
     if new_capacity > current_capacity:
         event_type = "seller_capacity_increased"
     elif new_capacity < current_capacity:
@@ -7050,6 +7135,7 @@ def recompute_seller_dynamic_agent_capacity_db(seller_id):
         "decision_reason": decision_reason,
         "active_agents": active_agents,
         "frozen_agents": frozen_agents,
+        "reactivated_agents": reactivated_agents,
         "event": event_result,
         "report": capacity_report,
     }

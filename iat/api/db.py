@@ -6938,6 +6938,86 @@ def recompute_seller_dynamic_agent_capacity_db(seller_id):
         seller_id,
     ))
 
+    frozen_agents = []
+
+    if active_agents > new_capacity:
+        freeze_count = active_agents - new_capacity
+
+        cur.execute(f"""
+        SELECT
+            seller_agent_id,
+            agent_id,
+            runtime_health_score,
+            reputation,
+            successful_orders
+        FROM seller_agents
+        WHERE seller_id = {p}
+          AND seller_agent_status = 'active'
+        ORDER BY
+            runtime_health_score ASC,
+            reputation ASC,
+            successful_orders ASC,
+            updated_at ASC
+        LIMIT {int(freeze_count)}
+        """, (
+            seller_id,
+        ))
+
+        rows_to_freeze = cur.fetchall()
+
+        for row in rows_to_freeze:
+            seller_agent_id_to_freeze = row_get(row, "seller_agent_id")
+            agent_id_to_freeze = row_get(row, "agent_id")
+
+            cur.execute(f"""
+            UPDATE seller_agents
+            SET seller_agent_status = {p},
+                updated_at = {p}
+            WHERE seller_agent_id = {p}
+            """, (
+                "capacity_frozen",
+                now,
+                seller_agent_id_to_freeze,
+            ))
+
+            if agent_id_to_freeze:
+                cur.execute(f"""
+                UPDATE agents
+                SET available = 0,
+                    seller_status = {p},
+                    foundation_verdict = {p},
+                    updated_at = {p}
+                WHERE agent_id = {p}
+                """, (
+                    "capacity_frozen",
+                    "auto_frozen_capacity_limit",
+                    now,
+                    agent_id_to_freeze,
+                ))
+
+            frozen_agent = {
+                "seller_agent_id": seller_agent_id_to_freeze,
+                "agent_id": agent_id_to_freeze,
+                "reason": "active_agents_exceeded_dynamic_capacity",
+            }
+            frozen_agents.append(frozen_agent)
+
+            create_seller_governance_event_with_cursor(
+                cur=cur,
+                seller_id=seller_id,
+                event_type="seller_agent_auto_frozen",
+                reviewer="iat_dynamic_agent_capacity_engine",
+                reason="active_agents_exceeded_dynamic_capacity",
+                old_status="active",
+                new_status="capacity_frozen",
+                metadata={
+                    **capacity_report,
+                    "frozen_agent": frozen_agent,
+                },
+            )
+
+    capacity_report["frozen_agents"] = frozen_agents
+
     if new_capacity > current_capacity:
         event_type = "seller_capacity_increased"
     elif new_capacity < current_capacity:
@@ -6969,6 +7049,7 @@ def recompute_seller_dynamic_agent_capacity_db(seller_id):
         "capacity_score": capacity_score,
         "decision_reason": decision_reason,
         "active_agents": active_agents,
+        "frozen_agents": frozen_agents,
         "event": event_result,
         "report": capacity_report,
     }

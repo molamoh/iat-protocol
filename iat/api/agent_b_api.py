@@ -139,6 +139,10 @@ from iat.api.db import (
     store_protocol_hypothesis_db,
     get_protocol_hypotheses_db,
     evaluate_protocol_hypothesis_db,
+    store_protocol_experiment_db,
+    get_protocol_experiments_db,
+    start_protocol_experiment_db,
+    complete_protocol_experiment_db,
 )
 
 
@@ -5797,6 +5801,118 @@ def internal_protocol_hypothesis_evaluate(
         hypothesis_id=hypothesis_id,
         observed_success=req.observed_success,
         evaluation_note=req.evaluation_note,
+    )
+
+
+
+
+class ProtocolExperimentCreateRequest(BaseModel):
+    experiment_type: str
+    scope: str
+    objective: str
+    hypothesis_id: int | None = None
+    subject_id: str | None = None
+    success_metric: str | None = None
+    target_value: float | None = None
+    confidence_before: float = 0
+    metadata: dict = {}
+
+
+class ProtocolExperimentStartRequest(BaseModel):
+    note: str = ""
+
+
+class ProtocolExperimentCompleteRequest(BaseModel):
+    measured_value: float
+    success: bool | None = None
+    note: str = ""
+
+
+@app.get("/admin/protocol-experiments")
+def admin_protocol_experiments(
+    experiment_type: str | None = None,
+    scope: str | None = None,
+    subject_id: str | None = None,
+    status: str | None = None,
+    hypothesis_id: int | None = None,
+    limit: int = 50,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return get_protocol_experiments_db(
+        experiment_type=experiment_type,
+        scope=scope,
+        subject_id=subject_id,
+        status=status,
+        hypothesis_id=hypothesis_id,
+        limit=limit,
+    )
+
+
+@app.post("/internal/protocol-experiments/store")
+def internal_protocol_experiment_store(
+    req: ProtocolExperimentCreateRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return store_protocol_experiment_db(
+        experiment_type=req.experiment_type,
+        scope=req.scope,
+        objective=req.objective,
+        hypothesis_id=req.hypothesis_id,
+        subject_id=req.subject_id,
+        success_metric=req.success_metric,
+        target_value=req.target_value,
+        confidence_before=req.confidence_before,
+        metadata=req.metadata,
+    )
+
+
+@app.post("/internal/protocol-experiments/start/{experiment_id}")
+def internal_protocol_experiment_start(
+    experiment_id: int,
+    req: ProtocolExperimentStartRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return start_protocol_experiment_db(
+        experiment_id=experiment_id,
+        note=req.note,
+    )
+
+
+@app.post("/internal/protocol-experiments/complete/{experiment_id}")
+def internal_protocol_experiment_complete(
+    experiment_id: int,
+    req: ProtocolExperimentCompleteRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return complete_protocol_experiment_db(
+        experiment_id=experiment_id,
+        measured_value=req.measured_value,
+        success=req.success,
+        note=req.note,
     )
 
 

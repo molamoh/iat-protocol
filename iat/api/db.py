@@ -80,6 +80,430 @@ def qmark():
 
 
 
+
+def init_protocol_experiments_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    if USE_POSTGRES:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS protocol_experiments (
+            experiment_id SERIAL PRIMARY KEY,
+
+            hypothesis_id INTEGER,
+            experiment_type TEXT NOT NULL,
+
+            scope TEXT NOT NULL,
+            subject_id TEXT,
+
+            objective TEXT NOT NULL,
+
+            status TEXT DEFAULT 'planned',
+
+            success_metric TEXT,
+            target_value REAL,
+
+            measured_value REAL,
+
+            confidence_before REAL DEFAULT 0,
+            confidence_after REAL DEFAULT 0,
+
+            started_at INTEGER,
+            completed_at INTEGER,
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+
+            metadata TEXT DEFAULT '{}'
+        )
+        """)
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS protocol_experiments (
+            experiment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            hypothesis_id INTEGER,
+            experiment_type TEXT NOT NULL,
+
+            scope TEXT NOT NULL,
+            subject_id TEXT,
+
+            objective TEXT NOT NULL,
+
+            status TEXT DEFAULT 'planned',
+
+            success_metric TEXT,
+            target_value REAL,
+
+            measured_value REAL,
+
+            confidence_before REAL DEFAULT 0,
+            confidence_after REAL DEFAULT 0,
+
+            started_at INTEGER,
+            completed_at INTEGER,
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+
+            metadata TEXT DEFAULT '{}'
+        )
+        """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_protocol_experiments_lookup
+    ON protocol_experiments(
+        experiment_type,
+        scope,
+        status
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+
+
+def store_protocol_experiment_db(
+    experiment_type,
+    scope,
+    objective,
+    hypothesis_id=None,
+    subject_id=None,
+    success_metric=None,
+    target_value=None,
+    confidence_before=0,
+    metadata=None,
+):
+    if not experiment_type or not scope or not objective:
+        return {
+            "status": "error",
+            "message": "experiment_type_scope_and_objective_required",
+        }
+
+    now = int(time.time())
+    metadata = metadata or {}
+
+    metadata = {
+        **metadata,
+        "experiment_can_test": True,
+        "experiment_can_govern": False,
+        "protocol_core_sovereignty_reserved": True,
+    }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    INSERT INTO protocol_experiments (
+        hypothesis_id,
+        experiment_type,
+        scope,
+        subject_id,
+        objective,
+        status,
+        success_metric,
+        target_value,
+        confidence_before,
+        confidence_after,
+        created_at,
+        updated_at,
+        metadata
+    )
+    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+    """, (
+        hypothesis_id,
+        experiment_type,
+        scope,
+        subject_id,
+        objective,
+        "planned",
+        success_metric,
+        target_value,
+        round(float(confidence_before or 0), 4),
+        round(float(confidence_before or 0), 4),
+        now,
+        now,
+        json.dumps(metadata, sort_keys=True),
+    ))
+
+    experiment_id = cur.lastrowid
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "stored",
+        "experiment_id": experiment_id,
+        "experiment_type": experiment_type,
+        "scope": scope,
+        "subject_id": subject_id,
+        "hypothesis_id": hypothesis_id,
+    }
+
+
+def get_protocol_experiments_db(
+    experiment_type=None,
+    scope=None,
+    subject_id=None,
+    status=None,
+    hypothesis_id=None,
+    limit=50,
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    where = []
+    params = []
+
+    if experiment_type:
+        where.append(f"experiment_type = {p}")
+        params.append(experiment_type)
+
+    if scope:
+        where.append(f"scope = {p}")
+        params.append(scope)
+
+    if subject_id:
+        where.append(f"subject_id = {p}")
+        params.append(subject_id)
+
+    if status:
+        where.append(f"status = {p}")
+        params.append(status)
+
+    if hypothesis_id is not None:
+        where.append(f"hypothesis_id = {p}")
+        params.append(hypothesis_id)
+
+    where_sql = "WHERE " + " AND ".join(where) if where else ""
+
+    cur.execute(f"""
+    SELECT *
+    FROM protocol_experiments
+    {where_sql}
+    ORDER BY updated_at DESC, created_at DESC
+    LIMIT {int(limit or 50)}
+    """, tuple(params))
+
+    rows = [dict(r) for r in cur.fetchall()]
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "count": len(rows),
+        "experiments": rows,
+    }
+
+
+def start_protocol_experiment_db(experiment_id, note=""):
+    if not experiment_id:
+        return {
+            "status": "error",
+            "message": "experiment_id_required",
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    SELECT *
+    FROM protocol_experiments
+    WHERE experiment_id = {p}
+    """, (experiment_id,))
+
+    row = cur.fetchone()
+
+    if not row:
+        release_conn(conn)
+        return {
+            "status": "not_found",
+            "experiment_id": experiment_id,
+        }
+
+    current_status = row_get(row, "status", "planned")
+
+    if current_status not in ("planned", "paused"):
+        release_conn(conn)
+        return {
+            "status": "error",
+            "message": "experiment_not_startable",
+            "current_status": current_status,
+        }
+
+    try:
+        metadata = json.loads(row_get(row, "metadata") or "{}")
+    except Exception:
+        metadata = {}
+
+    metadata["start_note"] = note
+    metadata["experiment_can_govern"] = False
+    metadata["protocol_core_sovereignty_reserved"] = True
+
+    cur.execute(f"""
+    UPDATE protocol_experiments
+    SET status = 'running',
+        started_at = COALESCE(started_at, {p}),
+        updated_at = {p},
+        metadata = {p}
+    WHERE experiment_id = {p}
+    """, (
+        now,
+        now,
+        json.dumps(metadata, sort_keys=True),
+        experiment_id,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "started",
+        "experiment_id": experiment_id,
+        "started_at": now,
+        "policy": {
+            "experiment_can_test": True,
+            "experiment_can_govern": False,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
+def complete_protocol_experiment_db(
+    experiment_id,
+    measured_value,
+    success=None,
+    note="",
+):
+    if not experiment_id:
+        return {
+            "status": "error",
+            "message": "experiment_id_required",
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    SELECT *
+    FROM protocol_experiments
+    WHERE experiment_id = {p}
+    """, (experiment_id,))
+
+    row = cur.fetchone()
+
+    if not row:
+        release_conn(conn)
+        return {
+            "status": "not_found",
+            "experiment_id": experiment_id,
+        }
+
+    current_status = row_get(row, "status", "planned")
+
+    if current_status not in ("running", "planned"):
+        release_conn(conn)
+        return {
+            "status": "error",
+            "message": "experiment_not_completable",
+            "current_status": current_status,
+        }
+
+    target_value = row_get(row, "target_value")
+    confidence_before = float(row_get(row, "confidence_before", 0) or 0)
+    measured_value = float(measured_value or 0)
+
+    if success is None:
+        if target_value is None:
+            success = measured_value > 0
+        else:
+            success = measured_value >= float(target_value)
+
+    confidence_after = confidence_before
+
+    if success:
+        confidence_after = min(1.0, confidence_before + 0.10)
+        status = "succeeded"
+    else:
+        confidence_after = max(0.0, confidence_before - 0.12)
+        status = "failed"
+
+    try:
+        metadata = json.loads(row_get(row, "metadata") or "{}")
+    except Exception:
+        metadata = {}
+
+    metadata["completion_note"] = note
+    metadata["experiment_success"] = bool(success)
+    metadata["experiment_can_govern"] = False
+    metadata["protocol_core_sovereignty_reserved"] = True
+
+    cur.execute(f"""
+    UPDATE protocol_experiments
+    SET status = {p},
+        measured_value = {p},
+        confidence_after = {p},
+        completed_at = {p},
+        updated_at = {p},
+        metadata = {p}
+    WHERE experiment_id = {p}
+    """, (
+        status,
+        round(measured_value, 4),
+        round(confidence_after, 4),
+        now,
+        now,
+        json.dumps(metadata, sort_keys=True),
+        experiment_id,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    hypothesis_id = row_get(row, "hypothesis_id")
+
+    hypothesis_update = None
+
+    if hypothesis_id:
+        try:
+            hypothesis_update = evaluate_protocol_hypothesis_db(
+                hypothesis_id=hypothesis_id,
+                observed_success=bool(success),
+                evaluation_note=note or f"experiment_{status}",
+            )
+        except Exception as exc:
+            hypothesis_update = {
+                "status": "error",
+                "message": "hypothesis_update_failed",
+                "error": str(exc),
+            }
+
+    return {
+        "status": "completed",
+        "experiment_id": experiment_id,
+        "experiment_status": status,
+        "measured_value": round(measured_value, 4),
+        "target_value": target_value,
+        "success": bool(success),
+        "confidence_before": round(confidence_before, 4),
+        "confidence_after": round(confidence_after, 4),
+        "hypothesis_update": hypothesis_update,
+        "policy": {
+            "experiment_can_test": True,
+            "experiment_can_govern": False,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
+
 def init_protocol_hypotheses_table():
     conn = get_conn()
     cur = conn.cursor()
@@ -2079,6 +2503,7 @@ def init_db():
     init_protocol_memory_table()
     init_protocol_knowledge_table()
     init_protocol_hypotheses_table()
+    init_protocol_experiments_table()
     init_sellers_table()
     ensure_seller_punishment_columns()
     init_seller_agents_table()

@@ -132,6 +132,10 @@ from iat.api.db import (
     archive_protocol_memory_db,
     run_protocol_learning_cycle_db,
     build_protocol_strategy_context_db,
+    store_protocol_knowledge_db,
+    get_protocol_knowledge_db,
+    promote_memory_to_knowledge_db,
+    build_protocol_knowledge_context_db,
 )
 
 
@@ -5611,6 +5615,102 @@ def admin_protocol_strategy_context(
         }
 
     return build_protocol_strategy_context_db(limit=limit)
+
+
+
+
+class ProtocolKnowledgeCreateRequest(BaseModel):
+    knowledge_type: str
+    scope: str
+    subject_id: str | None = None
+    source_memory_id: int | None = None
+    confidence: float = 0.8
+    knowledge_strength: float = 0.75
+    stability_score: float = 0.75
+    knowledge_payload: dict = {}
+    tags: list[str] = []
+    metadata: dict = {}
+
+
+@app.get("/admin/protocol-knowledge")
+def admin_protocol_knowledge(
+    knowledge_type: str | None = None,
+    scope: str | None = None,
+    subject_id: str | None = None,
+    status: str = "active",
+    limit: int = 50,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return get_protocol_knowledge_db(
+        knowledge_type=knowledge_type,
+        scope=scope,
+        subject_id=subject_id,
+        status=status,
+        limit=limit,
+    )
+
+
+@app.post("/internal/protocol-knowledge/store")
+def internal_protocol_knowledge_store(
+    req: ProtocolKnowledgeCreateRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return store_protocol_knowledge_db(
+        knowledge_type=req.knowledge_type,
+        scope=req.scope,
+        subject_id=req.subject_id,
+        source_memory_id=req.source_memory_id,
+        confidence=req.confidence,
+        knowledge_strength=req.knowledge_strength,
+        stability_score=req.stability_score,
+        knowledge_payload=req.knowledge_payload,
+        tags=req.tags,
+        metadata=req.metadata,
+    )
+
+
+@app.post("/internal/protocol-knowledge/promote-memory/{memory_id}")
+def internal_protocol_knowledge_promote_memory(
+    memory_id: int,
+    force: bool = False,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return promote_memory_to_knowledge_db(
+        memory_id=memory_id,
+        force=force,
+    )
+
+
+@app.get("/admin/protocol-knowledge-context")
+def admin_protocol_knowledge_context(
+    limit: int = 100,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return build_protocol_knowledge_context_db(limit=limit)
 
 
 

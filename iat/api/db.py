@@ -78,6 +78,440 @@ def qmark():
 
 
 
+
+def init_protocol_knowledge_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    if USE_POSTGRES:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS protocol_knowledge (
+            knowledge_id SERIAL PRIMARY KEY,
+
+            knowledge_type TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            subject_id TEXT,
+
+            source_memory_id INTEGER,
+            confidence REAL DEFAULT 0,
+            knowledge_strength REAL DEFAULT 0.5,
+            stability_score REAL DEFAULT 0.5,
+
+            status TEXT DEFAULT 'active',
+
+            knowledge_payload TEXT DEFAULT '{}',
+            tags TEXT DEFAULT '[]',
+            metadata TEXT DEFAULT '{}',
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            archived_at INTEGER
+        )
+        """)
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS protocol_knowledge (
+            knowledge_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            knowledge_type TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            subject_id TEXT,
+
+            source_memory_id INTEGER,
+            confidence REAL DEFAULT 0,
+            knowledge_strength REAL DEFAULT 0.5,
+            stability_score REAL DEFAULT 0.5,
+
+            status TEXT DEFAULT 'active',
+
+            knowledge_payload TEXT DEFAULT '{}',
+            tags TEXT DEFAULT '[]',
+            metadata TEXT DEFAULT '{}',
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            archived_at INTEGER
+        )
+        """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_protocol_knowledge_lookup
+    ON protocol_knowledge(knowledge_type, scope, subject_id, status)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_protocol_knowledge_strength
+    ON protocol_knowledge(status, confidence, knowledge_strength, stability_score)
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+
+
+def store_protocol_knowledge_db(
+    knowledge_type,
+    scope,
+    subject_id=None,
+    source_memory_id=None,
+    confidence=0.8,
+    knowledge_strength=0.75,
+    stability_score=0.75,
+    knowledge_payload=None,
+    tags=None,
+    metadata=None,
+):
+    if not knowledge_type or not scope:
+        return {
+            "status": "error",
+            "message": "knowledge_type_and_scope_required",
+        }
+
+    confidence = float(confidence or 0)
+    knowledge_strength = float(knowledge_strength or 0)
+    stability_score = float(stability_score or 0)
+
+    if confidence < 0.75 or knowledge_strength < 0.65 or stability_score < 0.65:
+        return {
+            "status": "ignored",
+            "reason": "knowledge_threshold_not_met",
+            "confidence": confidence,
+            "knowledge_strength": knowledge_strength,
+            "stability_score": stability_score,
+        }
+
+    now = int(time.time())
+    knowledge_payload = knowledge_payload or {}
+    metadata = metadata or {}
+    normalized_tags = _normalize_protocol_memory_tags(tags)
+
+    metadata = {
+        **metadata,
+        "protocol_core_sovereignty_reserved": True,
+        "knowledge_guides_protocol": True,
+        "knowledge_governs_protocol": False,
+    }
+
+    payload_json = json.dumps(knowledge_payload, sort_keys=True)
+    tags_json = json.dumps(normalized_tags, sort_keys=True)
+    metadata_json = json.dumps(metadata, sort_keys=True)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM protocol_knowledge
+    WHERE knowledge_type = {p}
+      AND scope = {p}
+      AND COALESCE(subject_id, '') = COALESCE({p}, '')
+      AND knowledge_payload = {p}
+      AND status = 'active'
+    LIMIT 1
+    """, (
+        knowledge_type,
+        scope,
+        subject_id,
+        payload_json,
+    ))
+
+    existing = cur.fetchone()
+
+    if existing:
+        knowledge_id = row_get(existing, "knowledge_id")
+        old_confidence = float(row_get(existing, "confidence", 0) or 0)
+        old_strength = float(row_get(existing, "knowledge_strength", 0.5) or 0.5)
+        old_stability = float(row_get(existing, "stability_score", 0.5) or 0.5)
+
+        new_confidence = min(1.0, max(old_confidence, confidence) + 0.02)
+        new_strength = min(1.0, max(old_strength, knowledge_strength) + 0.03)
+        new_stability = min(1.0, max(old_stability, stability_score) + 0.03)
+
+        cur.execute(f"""
+        UPDATE protocol_knowledge
+        SET confidence = {p},
+            knowledge_strength = {p},
+            stability_score = {p},
+            tags = {p},
+            metadata = {p},
+            updated_at = {p}
+        WHERE knowledge_id = {p}
+        """, (
+            round(new_confidence, 4),
+            round(new_strength, 4),
+            round(new_stability, 4),
+            tags_json,
+            metadata_json,
+            now,
+            knowledge_id,
+        ))
+
+        conn.commit()
+        release_conn(conn)
+
+        return {
+            "status": "updated",
+            "knowledge_id": knowledge_id,
+            "confidence": round(new_confidence, 4),
+            "knowledge_strength": round(new_strength, 4),
+            "stability_score": round(new_stability, 4),
+        }
+
+    cur.execute(f"""
+    INSERT INTO protocol_knowledge (
+        knowledge_type,
+        scope,
+        subject_id,
+        source_memory_id,
+        confidence,
+        knowledge_strength,
+        stability_score,
+        status,
+        knowledge_payload,
+        tags,
+        metadata,
+        created_at,
+        updated_at
+    )
+    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+    """, (
+        knowledge_type,
+        scope,
+        subject_id,
+        source_memory_id,
+        round(confidence, 4),
+        round(knowledge_strength, 4),
+        round(stability_score, 4),
+        "active",
+        payload_json,
+        tags_json,
+        metadata_json,
+        now,
+        now,
+    ))
+
+    knowledge_id = cur.lastrowid
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "stored",
+        "knowledge_id": knowledge_id,
+        "knowledge_type": knowledge_type,
+        "scope": scope,
+        "subject_id": subject_id,
+    }
+
+
+def get_protocol_knowledge_db(
+    knowledge_type=None,
+    scope=None,
+    subject_id=None,
+    status="active",
+    limit=50,
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    where = []
+    params = []
+
+    if status:
+        where.append(f"status = {p}")
+        params.append(status)
+
+    if knowledge_type:
+        where.append(f"knowledge_type = {p}")
+        params.append(knowledge_type)
+
+    if scope:
+        where.append(f"scope = {p}")
+        params.append(scope)
+
+    if subject_id:
+        where.append(f"subject_id = {p}")
+        params.append(subject_id)
+
+    where_sql = "WHERE " + " AND ".join(where) if where else ""
+
+    cur.execute(f"""
+    SELECT *
+    FROM protocol_knowledge
+    {where_sql}
+    ORDER BY
+        stability_score DESC,
+        confidence DESC,
+        knowledge_strength DESC,
+        updated_at DESC
+    LIMIT {int(limit or 50)}
+    """, tuple(params))
+
+    rows = [dict(r) for r in cur.fetchall()]
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "count": len(rows),
+        "knowledge": rows,
+    }
+
+
+def promote_memory_to_knowledge_db(memory_id, force=False):
+    if not memory_id:
+        return {
+            "status": "error",
+            "message": "memory_id_required",
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM protocol_memory
+    WHERE memory_id = {p}
+      AND status = 'active'
+    """, (memory_id,))
+
+    memory = cur.fetchone()
+    release_conn(conn)
+
+    if not memory:
+        return {
+            "status": "error",
+            "message": "active_memory_not_found",
+            "memory_id": memory_id,
+        }
+
+    m = dict(memory)
+
+    confidence = float(m.get("confidence", 0) or 0)
+    memory_strength = float(m.get("memory_strength", 0) or 0)
+    importance_score = float(m.get("importance_score", 0) or 0)
+    times_observed = int(m.get("times_observed", 0) or 0)
+    times_false_positive = int(m.get("times_false_positive", 0) or 0)
+
+    eligible = (
+        confidence >= 0.80
+        and memory_strength >= 0.75
+        and importance_score >= 0.75
+        and times_observed >= 2
+        and times_false_positive == 0
+    )
+
+    if not eligible and not force:
+        return {
+            "status": "ignored",
+            "reason": "memory_not_eligible_for_knowledge",
+            "memory_id": memory_id,
+            "requirements": {
+                "confidence_min": 0.80,
+                "memory_strength_min": 0.75,
+                "importance_score_min": 0.75,
+                "times_observed_min": 2,
+                "times_false_positive_required": 0,
+            },
+            "actual": {
+                "confidence": confidence,
+                "memory_strength": memory_strength,
+                "importance_score": importance_score,
+                "times_observed": times_observed,
+                "times_false_positive": times_false_positive,
+            },
+        }
+
+    try:
+        payload = json.loads(m.get("memory_payload") or "{}")
+    except Exception:
+        payload = {"raw_memory_payload": m.get("memory_payload")}
+
+    try:
+        tags = json.loads(m.get("tags") or "[]")
+    except Exception:
+        tags = []
+
+    return store_protocol_knowledge_db(
+        knowledge_type=str(m.get("memory_type") or "protocol_memory").replace("_memory", "_knowledge"),
+        scope=m.get("scope"),
+        subject_id=m.get("subject_id"),
+        source_memory_id=memory_id,
+        confidence=max(confidence, 0.80 if force else confidence),
+        knowledge_strength=max(memory_strength, 0.75 if force else memory_strength),
+        stability_score=max(importance_score, 0.75 if force else importance_score),
+        knowledge_payload={
+            "source_memory_type": m.get("memory_type"),
+            "source_memory_id": memory_id,
+            "promoted_payload": payload,
+        },
+        tags=list(set(tags + ["knowledge", "promoted_from_memory"])),
+        metadata={
+            "promotion_force_used": bool(force),
+            "protocol_core_sovereignty_reserved": True,
+            "knowledge_guides_protocol": True,
+            "knowledge_governs_protocol": False,
+        },
+    )
+
+
+def build_protocol_knowledge_context_db(limit=100):
+    knowledge_result = get_protocol_knowledge_db(
+        status="active",
+        limit=limit,
+    )
+
+    knowledge = knowledge_result.get("knowledge", [])
+
+    by_type = {}
+    high_stability = []
+
+    for item in knowledge:
+        knowledge_type = item.get("knowledge_type")
+        by_type.setdefault(knowledge_type, 0)
+        by_type[knowledge_type] += 1
+
+        stability = float(item.get("stability_score", 0) or 0)
+        confidence = float(item.get("confidence", 0) or 0)
+        strength = float(item.get("knowledge_strength", 0) or 0)
+
+        if stability >= 0.75 and confidence >= 0.75 and strength >= 0.65:
+            high_stability.append(item)
+
+    context = {
+        "context_type": "protocol_knowledge_context",
+        "governance_authority": "iat_protocol_core_only",
+        "decision_authority": "foundation_agents_only",
+        "knowledge_authority": "advisory_guidance_only",
+        "seller_authority": False,
+        "buyer_authority": False,
+
+        "knowledge_summary": {
+            "total_active_knowledge": len(knowledge),
+            "knowledge_count_by_type": by_type,
+            "high_stability_count": len(high_stability),
+        },
+
+        "high_stability_knowledge": high_stability[:25],
+
+        "protocol_policy": {
+            "knowledge_guides_protocol": True,
+            "knowledge_governs_protocol": False,
+            "protocol_core_sovereignty_reserved": True,
+            "foundation_agents_remain_protocol_authority": True,
+        },
+    }
+
+    return {
+        "status": "ok",
+        "knowledge_context": context,
+    }
+
+
+
 def init_protocol_memory_table():
     conn = get_conn()
     cur = conn.cursor()
@@ -1263,6 +1697,7 @@ def init_db():
     init_agents_table()
     init_foundation_agent_columns()
     init_protocol_memory_table()
+    init_protocol_knowledge_table()
     init_sellers_table()
     ensure_seller_punishment_columns()
     init_seller_agents_table()

@@ -79,6 +79,386 @@ def qmark():
 
 
 
+
+def init_protocol_hypotheses_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    if USE_POSTGRES:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS protocol_hypotheses (
+            hypothesis_id SERIAL PRIMARY KEY,
+
+            hypothesis_type TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            subject_id TEXT,
+
+            hypothesis TEXT NOT NULL,
+            rationale TEXT,
+
+            confidence REAL DEFAULT 0,
+            importance_score REAL DEFAULT 0.5,
+
+            status TEXT DEFAULT 'proposed',
+
+            evaluation_count INTEGER DEFAULT 0,
+            success_count INTEGER DEFAULT 0,
+            failure_count INTEGER DEFAULT 0,
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+
+            metadata TEXT DEFAULT '{}'
+        )
+        """)
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS protocol_hypotheses (
+            hypothesis_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            hypothesis_type TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            subject_id TEXT,
+
+            hypothesis TEXT NOT NULL,
+            rationale TEXT,
+
+            confidence REAL DEFAULT 0,
+            importance_score REAL DEFAULT 0.5,
+
+            status TEXT DEFAULT 'proposed',
+
+            evaluation_count INTEGER DEFAULT 0,
+            success_count INTEGER DEFAULT 0,
+            failure_count INTEGER DEFAULT 0,
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+
+            metadata TEXT DEFAULT '{}'
+        )
+        """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_protocol_hypotheses_lookup
+    ON protocol_hypotheses(
+        hypothesis_type,
+        scope,
+        status
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+
+
+def store_protocol_hypothesis_db(
+    hypothesis_type,
+    scope,
+    hypothesis,
+    subject_id=None,
+    rationale=None,
+    confidence=0.5,
+    importance_score=0.5,
+    metadata=None,
+):
+    if not hypothesis_type or not scope or not hypothesis:
+        return {
+            "status": "error",
+            "message": "hypothesis_type_scope_and_hypothesis_required",
+        }
+
+    confidence = float(confidence or 0)
+    importance_score = float(importance_score or 0.5)
+
+    if confidence < 0.35:
+        return {
+            "status": "ignored",
+            "reason": "hypothesis_confidence_too_low",
+            "confidence": confidence,
+        }
+
+    now = int(time.time())
+    metadata = metadata or {}
+
+    metadata = {
+        **metadata,
+        "intelligence_layer": True,
+        "hypothesis_can_propose": True,
+        "hypothesis_can_govern": False,
+        "protocol_core_sovereignty_reserved": True,
+    }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM protocol_hypotheses
+    WHERE hypothesis_type = {p}
+      AND scope = {p}
+      AND COALESCE(subject_id, '') = COALESCE({p}, '')
+      AND hypothesis = {p}
+      AND status IN ('proposed', 'testing', 'validated')
+    LIMIT 1
+    """, (
+        hypothesis_type,
+        scope,
+        subject_id,
+        hypothesis,
+    ))
+
+    existing = cur.fetchone()
+
+    if existing:
+        hypothesis_id = row_get(existing, "hypothesis_id")
+        old_confidence = float(row_get(existing, "confidence", 0) or 0)
+        old_importance = float(row_get(existing, "importance_score", 0.5) or 0.5)
+
+        new_confidence = min(1.0, max(old_confidence, confidence) + 0.02)
+        new_importance = min(1.0, max(old_importance, importance_score))
+
+        cur.execute(f"""
+        UPDATE protocol_hypotheses
+        SET confidence = {p},
+            importance_score = {p},
+            rationale = COALESCE({p}, rationale),
+            metadata = {p},
+            updated_at = {p}
+        WHERE hypothesis_id = {p}
+        """, (
+            round(new_confidence, 4),
+            round(new_importance, 4),
+            rationale,
+            json.dumps(metadata, sort_keys=True),
+            now,
+            hypothesis_id,
+        ))
+
+        conn.commit()
+        release_conn(conn)
+
+        return {
+            "status": "updated",
+            "hypothesis_id": hypothesis_id,
+            "confidence": round(new_confidence, 4),
+            "importance_score": round(new_importance, 4),
+        }
+
+    cur.execute(f"""
+    INSERT INTO protocol_hypotheses (
+        hypothesis_type,
+        scope,
+        subject_id,
+        hypothesis,
+        rationale,
+        confidence,
+        importance_score,
+        status,
+        created_at,
+        updated_at,
+        metadata
+    )
+    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+    """, (
+        hypothesis_type,
+        scope,
+        subject_id,
+        hypothesis,
+        rationale,
+        round(confidence, 4),
+        round(importance_score, 4),
+        "proposed",
+        now,
+        now,
+        json.dumps(metadata, sort_keys=True),
+    ))
+
+    hypothesis_id = cur.lastrowid
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "stored",
+        "hypothesis_id": hypothesis_id,
+        "hypothesis_type": hypothesis_type,
+        "scope": scope,
+        "subject_id": subject_id,
+    }
+
+
+def get_protocol_hypotheses_db(
+    hypothesis_type=None,
+    scope=None,
+    subject_id=None,
+    status=None,
+    limit=50,
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    where = []
+    params = []
+
+    if hypothesis_type:
+        where.append(f"hypothesis_type = {p}")
+        params.append(hypothesis_type)
+
+    if scope:
+        where.append(f"scope = {p}")
+        params.append(scope)
+
+    if subject_id:
+        where.append(f"subject_id = {p}")
+        params.append(subject_id)
+
+    if status:
+        where.append(f"status = {p}")
+        params.append(status)
+
+    where_sql = "WHERE " + " AND ".join(where) if where else ""
+
+    cur.execute(f"""
+    SELECT *
+    FROM protocol_hypotheses
+    {where_sql}
+    ORDER BY
+        importance_score DESC,
+        confidence DESC,
+        updated_at DESC
+    LIMIT {int(limit or 50)}
+    """, tuple(params))
+
+    rows = [dict(r) for r in cur.fetchall()]
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "count": len(rows),
+        "hypotheses": rows,
+    }
+
+
+def evaluate_protocol_hypothesis_db(
+    hypothesis_id,
+    observed_success=True,
+    evaluation_note="",
+):
+    if not hypothesis_id:
+        return {
+            "status": "error",
+            "message": "hypothesis_id_required",
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    SELECT *
+    FROM protocol_hypotheses
+    WHERE hypothesis_id = {p}
+    """, (hypothesis_id,))
+
+    row = cur.fetchone()
+
+    if not row:
+        release_conn(conn)
+        return {
+            "status": "not_found",
+            "hypothesis_id": hypothesis_id,
+        }
+
+    confidence = float(row_get(row, "confidence", 0) or 0)
+    importance = float(row_get(row, "importance_score", 0.5) or 0.5)
+    evaluation_count = int(row_get(row, "evaluation_count", 0) or 0)
+    success_count = int(row_get(row, "success_count", 0) or 0)
+    failure_count = int(row_get(row, "failure_count", 0) or 0)
+
+    evaluation_count += 1
+
+    if observed_success:
+        success_count += 1
+        confidence = min(1.0, confidence + 0.08)
+        importance = min(1.0, importance + 0.03)
+    else:
+        failure_count += 1
+        confidence = max(0.0, confidence - 0.10)
+        importance = max(0.0, importance - 0.04)
+
+    success_rate = success_count / evaluation_count if evaluation_count else 0
+
+    status = row_get(row, "status", "proposed")
+
+    if evaluation_count >= 3 and success_rate >= 0.75 and confidence >= 0.75:
+        status = "validated"
+    elif evaluation_count >= 3 and success_rate <= 0.34:
+        status = "rejected"
+    elif evaluation_count >= 1:
+        status = "testing"
+
+    try:
+        metadata = json.loads(row_get(row, "metadata") or "{}")
+    except Exception:
+        metadata = {}
+
+    metadata["last_evaluation_note"] = evaluation_note
+    metadata["last_observed_success"] = bool(observed_success)
+    metadata["hypothesis_can_govern"] = False
+    metadata["protocol_core_sovereignty_reserved"] = True
+
+    cur.execute(f"""
+    UPDATE protocol_hypotheses
+    SET confidence = {p},
+        importance_score = {p},
+        evaluation_count = {p},
+        success_count = {p},
+        failure_count = {p},
+        status = {p},
+        updated_at = {p},
+        metadata = {p}
+    WHERE hypothesis_id = {p}
+    """, (
+        round(confidence, 4),
+        round(importance, 4),
+        evaluation_count,
+        success_count,
+        failure_count,
+        status,
+        now,
+        json.dumps(metadata, sort_keys=True),
+        hypothesis_id,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "evaluated",
+        "hypothesis_id": hypothesis_id,
+        "hypothesis_status": status,
+        "observed_success": bool(observed_success),
+        "confidence": round(confidence, 4),
+        "importance_score": round(importance, 4),
+        "evaluation_count": evaluation_count,
+        "success_count": success_count,
+        "failure_count": failure_count,
+        "success_rate": round(success_rate, 4),
+        "policy": {
+            "hypothesis_can_propose": True,
+            "hypothesis_can_govern": False,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
+
 def init_protocol_knowledge_table():
     conn = get_conn()
     cur = conn.cursor()
@@ -1698,6 +2078,7 @@ def init_db():
     init_foundation_agent_columns()
     init_protocol_memory_table()
     init_protocol_knowledge_table()
+    init_protocol_hypotheses_table()
     init_sellers_table()
     ensure_seller_punishment_columns()
     init_seller_agents_table()

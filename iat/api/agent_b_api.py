@@ -136,6 +136,9 @@ from iat.api.db import (
     get_protocol_knowledge_db,
     promote_memory_to_knowledge_db,
     build_protocol_knowledge_context_db,
+    store_protocol_hypothesis_db,
+    get_protocol_hypotheses_db,
+    evaluate_protocol_hypothesis_db,
 )
 
 
@@ -5711,6 +5714,90 @@ def admin_protocol_knowledge_context(
         }
 
     return build_protocol_knowledge_context_db(limit=limit)
+
+
+
+
+class ProtocolHypothesisCreateRequest(BaseModel):
+    hypothesis_type: str
+    scope: str
+    subject_id: str | None = None
+    hypothesis: str
+    rationale: str | None = None
+    confidence: float = 0.5
+    importance_score: float = 0.5
+    metadata: dict = {}
+
+
+class ProtocolHypothesisEvaluateRequest(BaseModel):
+    observed_success: bool = True
+    evaluation_note: str = ""
+
+
+@app.get("/admin/protocol-hypotheses")
+def admin_protocol_hypotheses(
+    hypothesis_type: str | None = None,
+    scope: str | None = None,
+    subject_id: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return get_protocol_hypotheses_db(
+        hypothesis_type=hypothesis_type,
+        scope=scope,
+        subject_id=subject_id,
+        status=status,
+        limit=limit,
+    )
+
+
+@app.post("/internal/protocol-hypotheses/store")
+def internal_protocol_hypothesis_store(
+    req: ProtocolHypothesisCreateRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return store_protocol_hypothesis_db(
+        hypothesis_type=req.hypothesis_type,
+        scope=req.scope,
+        subject_id=req.subject_id,
+        hypothesis=req.hypothesis,
+        rationale=req.rationale,
+        confidence=req.confidence,
+        importance_score=req.importance_score,
+        metadata=req.metadata,
+    )
+
+
+@app.post("/internal/protocol-hypotheses/evaluate/{hypothesis_id}")
+def internal_protocol_hypothesis_evaluate(
+    hypothesis_id: int,
+    req: ProtocolHypothesisEvaluateRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return evaluate_protocol_hypothesis_db(
+        hypothesis_id=hypothesis_id,
+        observed_success=req.observed_success,
+        evaluation_note=req.evaluation_note,
+    )
 
 
 

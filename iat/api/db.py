@@ -76,6 +76,29 @@ def qmark():
     return "%s" if USE_POSTGRES else "?"
 
 
+
+def init_foundation_agent_columns():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    columns = {
+        row[1]
+        for row in cur.execute("PRAGMA table_info(agents)").fetchall()
+    }
+
+    if "foundation_role" not in columns:
+        cur.execute("ALTER TABLE agents ADD COLUMN foundation_role TEXT")
+
+    if "foundation_priority" not in columns:
+        cur.execute("ALTER TABLE agents ADD COLUMN foundation_priority INTEGER DEFAULT 100")
+
+    if "foundation_authority_level" not in columns:
+        cur.execute("ALTER TABLE agents ADD COLUMN foundation_authority_level INTEGER DEFAULT 0")
+
+    conn.commit()
+    release_conn(conn)
+
+
 def init_db():
     conn = get_conn()
     cur = conn.cursor()
@@ -140,6 +163,7 @@ def init_db():
     conn.commit()
     release_conn(locals().get("conn"))
     init_agents_table()
+    init_foundation_agent_columns()
     init_sellers_table()
     ensure_seller_punishment_columns()
     init_seller_agents_table()
@@ -4970,6 +4994,435 @@ def get_agents_for_service_db(service):
 
 
 
+
+def list_foundation_agents_db():
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM agents
+    WHERE agent_type = {p}
+    ORDER BY
+        COALESCE(foundation_priority, 100) ASC,
+        reputation DESC,
+        agent_id ASC
+    """, ("foundation",))
+
+    rows = cur.fetchall()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "count": len(rows),
+        "foundation_agents": [dict(r) for r in rows],
+    }
+
+
+def get_foundation_agents_by_role_db(role):
+    if not role:
+        return {
+            "status": "error",
+            "message": "foundation_role_required",
+            "foundation_agents": [],
+        }
+
+    role = str(role).strip().lower()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM agents
+    WHERE agent_type = {p}
+      AND LOWER(COALESCE(foundation_role, '')) = {p}
+      AND COALESCE(available, 0) = 1
+    ORDER BY
+        COALESCE(foundation_priority, 100) ASC,
+        reputation DESC,
+        agent_id ASC
+    """, ("foundation", role))
+
+    rows = cur.fetchall()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "foundation_role": role,
+        "count": len(rows),
+        "foundation_agents": [dict(r) for r in rows],
+    }
+
+
+def get_foundation_agent_profile_db(agent_id):
+    if not agent_id:
+        return {
+            "status": "error",
+            "message": "foundation_agent_id_required",
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM agents
+    WHERE agent_id = {p}
+      AND agent_type = {p}
+    """, (agent_id, "foundation"))
+
+    row = cur.fetchone()
+    release_conn(conn)
+
+    if not row:
+        return {
+            "status": "error",
+            "message": "foundation_agent_not_found",
+            "agent_id": agent_id,
+        }
+
+    agent = dict(row)
+
+    return {
+        "status": "ok",
+        "foundation_agent": agent,
+        "foundation_policy": {
+            "protocol_reserved_asset": True,
+            "seller_creation_allowed": False,
+            "auto_creation_allowed": False,
+            "protocol_owner_only_registration": True,
+            "governance_authority": "iat_protocol_core_only",
+        },
+    }
+
+
+
+
+def build_foundation_execution_plan_db(
+    service=None,
+    required_research_agents=2,
+    required_verification_agents=1,
+):
+    service = str(service or "").strip()
+
+    research_result = get_foundation_agents_by_role_db("research")
+    verification_result = get_foundation_agents_by_role_db("verification")
+
+    research_agents = research_result.get("foundation_agents", [])
+    verification_agents = verification_result.get("foundation_agents", [])
+
+    if service:
+        research_agents = [
+            a for a in research_agents
+            if str(a.get("service") or "").lower() == service.lower()
+        ]
+        verification_agents = [
+            a for a in verification_agents
+            if str(a.get("service") or "").lower() == service.lower()
+        ]
+
+    selected_research_agents = research_agents[:max(0, int(required_research_agents or 0))]
+    selected_verification_agents = verification_agents[:max(0, int(required_verification_agents or 0))]
+
+    missing_requirements = []
+
+    if len(selected_research_agents) < int(required_research_agents or 0):
+        missing_requirements.append("insufficient_research_foundation_agents")
+
+    if len(selected_verification_agents) < int(required_verification_agents or 0):
+        missing_requirements.append("insufficient_verification_foundation_agents")
+
+    execution_strategy = (
+        "research_then_verification"
+        if selected_research_agents and selected_verification_agents
+        else "incomplete_foundation_plan"
+    )
+
+    plan = {
+        "plan_type": "foundation_execution_plan",
+        "service": service or None,
+        "execution_strategy": execution_strategy,
+
+        "governance_authority": "iat_protocol_core_only",
+        "decision_authority": "foundation_agents_only",
+        "seller_authority": False,
+        "buyer_authority": False,
+
+        "research_agents": selected_research_agents,
+        "verification_agents": selected_verification_agents,
+
+        "research_agent_ids": [
+            a.get("agent_id") for a in selected_research_agents
+        ],
+        "verification_agent_ids": [
+            a.get("agent_id") for a in selected_verification_agents
+        ],
+
+        "required_research_agents": int(required_research_agents or 0),
+        "required_verification_agents": int(required_verification_agents or 0),
+        "missing_requirements": missing_requirements,
+
+        "foundation_policy": {
+            "uses_existing_foundation_registry": True,
+            "creates_new_foundation_agents": False,
+            "auto_creation_allowed": False,
+            "seller_creation_allowed": False,
+            "protocol_owner_only_registration": True,
+        },
+    }
+
+    return {
+        "status": "ok" if not missing_requirements else "incomplete",
+        "plan": plan,
+    }
+
+
+
+
+def execute_foundation_plan_db(order):
+    if not isinstance(order, dict):
+        return {
+            "status": "error",
+            "message": "order_dict_required",
+        }
+
+    service = order.get("service") or "web_research"
+
+    plan_result = build_foundation_execution_plan_db(
+        service=service,
+        required_research_agents=2,
+        required_verification_agents=1,
+    )
+
+    plan = plan_result.get("plan") or {}
+
+    if plan_result.get("status") != "ok":
+        return {
+            "status": "error",
+            "message": "foundation_execution_plan_incomplete",
+            "plan_result": plan_result,
+        }
+
+    research_agents = plan.get("research_agents") or []
+    verification_agents = plan.get("verification_agents") or []
+
+    try:
+        from iat.api.multi_exec import (
+            multi_call,
+            compute_consensus,
+            compute_consensus_strength,
+            select_best_result,
+        )
+
+        research_results = multi_call(research_agents, order)
+        research_consensus = compute_consensus(research_results)
+        research_strength = compute_consensus_strength(research_results)
+        best_research_result = select_best_result(research_results)
+
+        verification_order = {
+            **order,
+            "foundation_research_results": research_results,
+            "foundation_research_consensus": research_consensus,
+            "foundation_research_strength": research_strength,
+            "execution_phase": "foundation_verification",
+        }
+
+        verification_results = multi_call(verification_agents, verification_order)
+        verification_consensus = compute_consensus(verification_results)
+        verification_strength = compute_consensus_strength(verification_results)
+        best_verification_result = select_best_result(verification_results)
+
+    except Exception as exc:
+        return {
+            "status": "error",
+            "message": "foundation_plan_execution_failed",
+            "error": str(exc),
+            "plan": plan,
+        }
+
+    evidence_package = {
+        "package_type": "foundation_evidence_package",
+        "order_id": order.get("order_id"),
+        "service": service,
+
+        "governance_authority": "iat_protocol_core_only",
+        "decision_authority": "foundation_agents_only",
+        "seller_authority": False,
+        "buyer_authority": False,
+
+        "execution_strategy": plan.get("execution_strategy"),
+        "research_agent_ids": plan.get("research_agent_ids"),
+        "verification_agent_ids": plan.get("verification_agent_ids"),
+
+        "research_results": research_results,
+        "research_consensus": research_consensus,
+        "research_strength": research_strength,
+        "best_research_result": best_research_result,
+
+        "verification_results": verification_results,
+        "verification_consensus": verification_consensus,
+        "verification_strength": verification_strength,
+        "best_verification_result": best_verification_result,
+
+        "foundation_ready_for_decision": bool(
+            research_results and verification_results
+        ),
+
+        "foundation_policy": {
+            "uses_existing_foundation_registry": True,
+            "creates_new_foundation_agents": False,
+            "auto_creation_allowed": False,
+            "seller_creation_allowed": False,
+            "protocol_owner_only_registration": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+    evaluation_result = evaluate_foundation_evidence_package_db(
+        evidence_package
+    )
+
+    evidence_package["foundation_evidence_evaluation"] = (
+        evaluation_result.get("evaluation")
+        if evaluation_result.get("status") == "ok"
+        else evaluation_result
+    )
+
+    return {
+        "status": "ok",
+        "order_id": order.get("order_id"),
+        "plan": plan,
+        "evidence_package": evidence_package,
+    }
+
+
+
+
+def evaluate_foundation_evidence_package_db(evidence_package):
+    if not isinstance(evidence_package, dict):
+        return {
+            "status": "error",
+            "message": "evidence_package_required",
+        }
+
+    research_consensus = evidence_package.get("research_consensus") or {}
+    verification_consensus = evidence_package.get("verification_consensus") or {}
+
+    research_valid_agents = int(research_consensus.get("valid_agents", 0) or 0)
+    verification_valid_agents = int(verification_consensus.get("valid_agents", 0) or 0)
+
+    research_status = str(research_consensus.get("status") or "").lower()
+    verification_status = str(verification_consensus.get("status") or "").lower()
+
+    research_score = float(research_consensus.get("score", 0) or 0)
+    verification_score = float(verification_consensus.get("score", 0) or 0)
+
+    ready = bool(evidence_package.get("foundation_ready_for_decision"))
+
+    reasons = []
+    warnings = []
+
+    confidence_cap = 0.40
+    foundation_evidence_status = "insufficient"
+
+    if not ready:
+        reasons.append("foundation_package_not_ready")
+    else:
+        if research_valid_agents >= 2 and research_status == "passed":
+            confidence_cap += 0.20
+            reasons.append("research_consensus_passed")
+        elif research_valid_agents >= 1:
+            confidence_cap += 0.10
+            warnings.append("research_consensus_not_strong")
+        else:
+            warnings.append("no_research_foundation_results")
+
+        if verification_valid_agents >= 2 and verification_status == "passed":
+            confidence_cap += 0.25
+            reasons.append("verification_consensus_passed")
+        elif verification_valid_agents == 1:
+            confidence_cap += 0.05
+            warnings.append("verification_single_source_requires_caution")
+        else:
+            warnings.append("no_verification_foundation_results")
+
+        if research_score >= 0.60:
+            confidence_cap += 0.05
+
+        if verification_score >= 0.60:
+            confidence_cap += 0.05
+
+    confidence_cap = round(min(max(confidence_cap, 0.0), 0.90), 4)
+
+    if not ready:
+        foundation_evidence_status = "not_ready"
+        decision_ready = False
+    elif verification_valid_agents == 0:
+        foundation_evidence_status = "research_only"
+        decision_ready = False
+    elif research_valid_agents >= 2 and verification_valid_agents >= 1:
+        foundation_evidence_status = "decision_ready_with_caution"
+        decision_ready = True
+    elif research_valid_agents >= 1 and verification_valid_agents >= 1:
+        foundation_evidence_status = "minimal_decision_ready"
+        decision_ready = True
+    else:
+        foundation_evidence_status = "insufficient"
+        decision_ready = False
+
+    if verification_valid_agents == 1:
+        confidence_cap = min(confidence_cap, 0.65)
+
+    if research_valid_agents < 2:
+        confidence_cap = min(confidence_cap, 0.55)
+
+    evaluation = {
+        "evaluation_type": "foundation_evidence_package_evaluation",
+        "foundation_evidence_status": foundation_evidence_status,
+        "foundation_decision_ready": decision_ready,
+        "confidence_cap": round(confidence_cap, 4),
+        "reason": (
+            "verification_single_source_requires_caution"
+            if verification_valid_agents == 1
+            else ";".join(reasons) if reasons else "foundation_evidence_evaluated"
+        ),
+        "reasons": reasons,
+        "warnings": warnings,
+
+        "research_status": research_status,
+        "research_valid_agents": research_valid_agents,
+        "research_score": research_score,
+
+        "verification_status": verification_status,
+        "verification_valid_agents": verification_valid_agents,
+        "verification_score": verification_score,
+
+        "governance_authority": "iat_protocol_core_only",
+        "decision_authority": "foundation_agents_only",
+        "seller_authority": False,
+        "buyer_authority": False,
+
+        "foundation_policy": {
+            "uses_existing_foundation_registry": True,
+            "creates_new_foundation_agents": False,
+            "auto_creation_allowed": False,
+            "seller_creation_allowed": False,
+            "protocol_owner_only_registration": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+    return {
+        "status": "ok",
+        "evaluation": evaluation,
+    }
+
+
+
 def is_foundation_agent_db(agent_id):
     if not agent_id:
         return False
@@ -7664,6 +8117,48 @@ def run_foundation_decision_db(order_id):
             "error": str(exc),
         }
 
+    foundation_execution_result = None
+    foundation_evidence_evaluation = None
+
+    try:
+        foundation_order = {
+            "order_id": order_id,
+            "service": (
+                decision_context.get("order", {}) or {}
+            ).get("service") if isinstance(decision_context.get("order"), dict) else "web_research",
+            "query": (
+                decision_context.get("order", {}) or {}
+            ).get("query") if isinstance(decision_context.get("order"), dict) else order_id,
+            "buyer_intent": (
+                decision_context.get("order", {}) or {}
+            ).get("buyer_intent") if isinstance(decision_context.get("order"), dict) else {},
+            "requirements": (
+                decision_context.get("order", {}) or {}
+            ).get("requirements") if isinstance(decision_context.get("order"), dict) else {},
+            "execution_phase": "foundation_decision_support",
+        }
+
+        if not foundation_order.get("service"):
+            foundation_order["service"] = "web_research"
+
+        foundation_execution_result = execute_foundation_plan_db(foundation_order)
+        foundation_evidence_evaluation = (
+            foundation_execution_result.get("evidence_package", {})
+            .get("foundation_evidence_evaluation")
+        )
+    except Exception as exc:
+        foundation_execution_result = {
+            "status": "error",
+            "message": "foundation_execution_support_failed",
+            "error": str(exc),
+        }
+        foundation_evidence_evaluation = {
+            "foundation_evidence_status": "error",
+            "foundation_decision_ready": False,
+            "confidence_cap": 0.50,
+            "reason": "foundation_execution_support_failed",
+        }
+
     approved_contributions = [
         c for c in contributions
         if c.get("verification_status") == "approved"
@@ -7714,6 +8209,19 @@ def run_foundation_decision_db(order_id):
         decision_confidence = 0.35
         decision_reason = "seller_contribution_quality_too_low"
 
+    if isinstance(foundation_evidence_evaluation, dict):
+        confidence_cap = float(
+            foundation_evidence_evaluation.get("confidence_cap", 1.0) or 1.0
+        )
+        decision_confidence = min(float(decision_confidence), confidence_cap)
+
+        if foundation_evidence_evaluation.get("foundation_decision_ready") is False:
+            foundation_verdict = "foundation_evidence_not_ready"
+            decision_reason = foundation_evidence_evaluation.get(
+                "reason",
+                "foundation_evidence_not_ready",
+            )
+
     foundation_decision = {
         "decision_type": "foundation_decision",
         "order_id": order_id,
@@ -7733,6 +8241,13 @@ def run_foundation_decision_db(order_id):
         "seller_input_quality_score": seller_input_quality_score,
 
         "seller_inputs_role": "supporting_evidence_only",
+
+        "foundation_execution_used": bool(
+            foundation_execution_result
+            and foundation_execution_result.get("status") == "ok"
+        ),
+        "foundation_evidence_evaluation": foundation_evidence_evaluation,
+        "foundation_execution_result": foundation_execution_result,
 
         # Existing protocol consensus engine applied to seller contributions.
         # This is NOT seller governance and NOT seller decision power.

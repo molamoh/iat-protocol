@@ -125,6 +125,13 @@ from iat.api.db import (
     run_foundation_controlled_seller_execution_db,
     verify_seller_execution_result_db,
     run_foundation_decision_db,
+    get_protocol_memory_db,
+    search_protocol_memory_db,
+    reinforce_protocol_memory_db,
+    decay_protocol_memory_db,
+    archive_protocol_memory_db,
+    run_protocol_learning_cycle_db,
+    build_protocol_strategy_context_db,
 )
 
 
@@ -5464,6 +5471,146 @@ def internal_seller_agent_execute(
         "execution": execution_result,
         "verification": verification_result,
     }
+
+
+
+
+@app.get("/admin/protocol-memory")
+def admin_protocol_memory(
+    memory_type: str | None = None,
+    scope: str | None = None,
+    subject_id: str | None = None,
+    status: str = "active",
+    limit: int = 50,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return get_protocol_memory_db(
+        memory_type=memory_type,
+        scope=scope,
+        subject_id=subject_id,
+        status=status,
+        limit=limit,
+    )
+
+
+@app.get("/admin/protocol-memory/search")
+def admin_protocol_memory_search(
+    query: str,
+    memory_type: str | None = None,
+    scope: str | None = None,
+    limit: int = 50,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return search_protocol_memory_db(
+        query=query,
+        memory_type=memory_type,
+        scope=scope,
+        limit=limit,
+    )
+
+
+@app.post("/internal/protocol-memory/reinforce/{memory_id}")
+def internal_protocol_memory_reinforce(
+    memory_id: int,
+    observed: bool = True,
+    reason: str = "",
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return reinforce_protocol_memory_db(
+        memory_id=memory_id,
+        observed=observed,
+        reason=reason,
+    )
+
+
+@app.post("/internal/protocol-memory/decay")
+def internal_protocol_memory_decay(
+    max_age_seconds: int = 604800,
+    decay_amount: float = 0.03,
+    limit: int = 500,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return decay_protocol_memory_db(
+        max_age_seconds=max_age_seconds,
+        decay_amount=decay_amount,
+        limit=limit,
+    )
+
+
+@app.post("/internal/protocol-memory/archive/{memory_id}")
+def internal_protocol_memory_archive(
+    memory_id: int,
+    reason: str = "manual_archive",
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return archive_protocol_memory_db(
+        memory_id=memory_id,
+        reason=reason,
+    )
+
+
+@app.post("/internal/protocol-memory/learning-cycle")
+def internal_protocol_memory_learning_cycle(
+    limit: int = 1000,
+    auto_archive: bool = True,
+    auto_decay: bool = True,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return run_protocol_learning_cycle_db(
+        limit=limit,
+        auto_archive=auto_archive,
+        auto_decay=auto_decay,
+    )
+
+
+@app.get("/admin/protocol-strategy-context")
+def admin_protocol_strategy_context(
+    limit: int = 100,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return build_protocol_strategy_context_db(limit=limit)
 
 
 

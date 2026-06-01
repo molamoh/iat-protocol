@@ -77,6 +77,1030 @@ def qmark():
 
 
 
+
+def init_protocol_memory_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS protocol_memory (
+        memory_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+        memory_type TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        subject_id TEXT,
+
+        source_type TEXT DEFAULT 'protocol',
+        source_id TEXT,
+
+        confidence REAL DEFAULT 0,
+        memory_strength REAL DEFAULT 0.5,
+        importance_score REAL DEFAULT 0.5,
+
+        status TEXT DEFAULT 'active',
+
+        times_reinforced INTEGER DEFAULT 0,
+        times_observed INTEGER DEFAULT 0,
+        times_false_positive INTEGER DEFAULT 0,
+
+        last_validated_at INTEGER,
+        last_decay_at INTEGER,
+        archived_at INTEGER,
+
+        memory_payload TEXT DEFAULT '{}',
+        tags TEXT DEFAULT '[]',
+        metadata TEXT DEFAULT '{}',
+
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    )
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_protocol_memory_lookup
+    ON protocol_memory(memory_type, scope, subject_id, status)
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_protocol_memory_strength
+    ON protocol_memory(status, importance_score, confidence, memory_strength)
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+
+
+def _normalize_protocol_memory_tags(tags):
+    if tags is None:
+        return []
+    if isinstance(tags, str):
+        return [t.strip().lower() for t in tags.split(",") if t.strip()]
+    if isinstance(tags, list):
+        return [str(t).strip().lower() for t in tags if str(t).strip()]
+    return []
+
+
+
+def build_protocol_memory_signature_db(
+    memory_type,
+    scope,
+    subject_id=None,
+    source_type=None,
+    source_id=None,
+    memory_payload=None,
+    tags=None,
+):
+    payload = memory_payload or {}
+    normalized_tags = _normalize_protocol_memory_tags(tags)
+
+    # Stable semantic-ish signature for deduplication.
+    signature_payload = {
+        "memory_type": str(memory_type or "").strip().lower(),
+        "scope": str(scope or "").strip().lower(),
+        "subject_id": str(subject_id or "").strip().lower(),
+        "source_type": str(source_type or "").strip().lower(),
+        "source_id": str(source_id or "").strip().lower(),
+        "payload": payload,
+        "tags": normalized_tags,
+    }
+
+    raw = json.dumps(signature_payload, sort_keys=True)
+    import hashlib
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def find_similar_protocol_memory_db(
+    memory_type,
+    scope,
+    subject_id=None,
+    source_type=None,
+    source_id=None,
+    memory_payload=None,
+    tags=None,
+):
+    signature = build_protocol_memory_signature_db(
+        memory_type=memory_type,
+        scope=scope,
+        subject_id=subject_id,
+        source_type=source_type,
+        source_id=source_id,
+        memory_payload=memory_payload,
+        tags=tags,
+    )
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM protocol_memory
+    WHERE memory_type = {p}
+      AND scope = {p}
+      AND COALESCE(subject_id, '') = COALESCE({p}, '')
+      AND status = 'active'
+      AND json_extract(COALESCE(metadata, '{{}}'), '$.memory_signature') = {p}
+    ORDER BY updated_at DESC
+    LIMIT 1
+    """, (
+        memory_type,
+        scope,
+        subject_id,
+        signature,
+    ))
+
+    row = cur.fetchone()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "signature": signature,
+        "found": bool(row),
+        "memory": dict(row) if row else None,
+    }
+
+
+
+def store_protocol_memory_db(
+    memory_type,
+    scope,
+    subject_id=None,
+    source_type="protocol",
+    source_id=None,
+    confidence=0.5,
+    importance_score=0.5,
+    memory_payload=None,
+    tags=None,
+    metadata=None,
+    min_confidence=0.35,
+):
+    if not memory_type or not scope:
+        return {
+            "status": "error",
+            "message": "memory_type_and_scope_required",
+        }
+
+    confidence = float(confidence or 0)
+    importance_score = float(importance_score or 0.5)
+
+    if confidence < float(min_confidence or 0):
+        return {
+            "status": "ignored",
+            "reason": "confidence_below_minimum",
+            "confidence": confidence,
+            "min_confidence": min_confidence,
+        }
+
+    now = int(time.time())
+    memory_payload = memory_payload or {}
+    metadata = metadata or {}
+    normalized_tags = _normalize_protocol_memory_tags(tags)
+
+    signature = build_protocol_memory_signature_db(
+        memory_type=memory_type,
+        scope=scope,
+        subject_id=subject_id,
+        source_type=source_type,
+        source_id=source_id,
+        memory_payload=memory_payload,
+        tags=normalized_tags,
+    )
+
+    metadata = {
+        **metadata,
+        "memory_signature": signature,
+        "dedup_enabled": True,
+    }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    payload_json = json.dumps(memory_payload, sort_keys=True)
+    tags_json = json.dumps(normalized_tags, sort_keys=True)
+    metadata_json = json.dumps(metadata, sort_keys=True)
+
+    cur.execute(f"""
+    SELECT *
+    FROM protocol_memory
+    WHERE memory_type = {p}
+      AND scope = {p}
+      AND COALESCE(subject_id, '') = COALESCE({p}, '')
+      AND COALESCE(source_type, '') = COALESCE({p}, '')
+      AND COALESCE(source_id, '') = COALESCE({p}, '')
+      AND json_extract(COALESCE(metadata, '{{}}'), '$.memory_signature') = {p}
+      AND status = 'active'
+    LIMIT 1
+    """, (
+        memory_type,
+        scope,
+        subject_id,
+        source_type,
+        source_id,
+        signature,
+    ))
+
+    existing = cur.fetchone()
+
+    if existing:
+        memory_id = row_get(existing, "memory_id")
+        old_confidence = float(row_get(existing, "confidence", 0) or 0)
+        old_strength = float(row_get(existing, "memory_strength", 0.5) or 0.5)
+        old_importance = float(row_get(existing, "importance_score", 0.5) or 0.5)
+
+        new_confidence = min(1.0, max(old_confidence, confidence) + 0.02)
+        new_strength = min(1.0, old_strength + 0.05)
+        new_importance = min(1.0, max(old_importance, importance_score))
+
+        cur.execute(f"""
+        UPDATE protocol_memory
+        SET confidence = {p},
+            memory_strength = {p},
+            importance_score = {p},
+            tags = {p},
+            metadata = {p},
+            updated_at = {p}
+        WHERE memory_id = {p}
+        """, (
+            round(new_confidence, 4),
+            round(new_strength, 4),
+            round(new_importance, 4),
+            tags_json,
+            metadata_json,
+            now,
+            memory_id,
+        ))
+
+        conn.commit()
+        release_conn(conn)
+
+        return {
+            "status": "updated",
+            "memory_id": memory_id,
+            "confidence": round(new_confidence, 4),
+            "memory_strength": round(new_strength, 4),
+            "importance_score": round(new_importance, 4),
+        }
+
+    cur.execute(f"""
+    INSERT INTO protocol_memory (
+        memory_type,
+        scope,
+        subject_id,
+        source_type,
+        source_id,
+        confidence,
+        memory_strength,
+        importance_score,
+        status,
+        memory_payload,
+        tags,
+        metadata,
+        created_at,
+        updated_at
+    )
+    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+    """, (
+        memory_type,
+        scope,
+        subject_id,
+        source_type,
+        source_id,
+        round(confidence, 4),
+        0.5,
+        round(importance_score, 4),
+        "active",
+        payload_json,
+        tags_json,
+        metadata_json,
+        now,
+        now,
+    ))
+
+    memory_id = cur.lastrowid
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "stored",
+        "memory_id": memory_id,
+        "memory_type": memory_type,
+        "scope": scope,
+        "subject_id": subject_id,
+    }
+
+
+def get_protocol_memory_db(
+    memory_type=None,
+    scope=None,
+    subject_id=None,
+    status="active",
+    limit=50,
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    where = []
+    params = []
+
+    if status:
+        where.append(f"status = {p}")
+        params.append(status)
+
+    if memory_type:
+        where.append(f"memory_type = {p}")
+        params.append(memory_type)
+
+    if scope:
+        where.append(f"scope = {p}")
+        params.append(scope)
+
+    if subject_id:
+        where.append(f"subject_id = {p}")
+        params.append(subject_id)
+
+    where_sql = "WHERE " + " AND ".join(where) if where else ""
+
+    cur.execute(f"""
+    SELECT *
+    FROM protocol_memory
+    {where_sql}
+    ORDER BY
+        importance_score DESC,
+        confidence DESC,
+        memory_strength DESC,
+        updated_at DESC
+    LIMIT {int(limit or 50)}
+    """, tuple(params))
+
+    rows = [dict(r) for r in cur.fetchall()]
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "count": len(rows),
+        "memory": rows,
+    }
+
+
+def search_protocol_memory_db(
+    query,
+    memory_type=None,
+    scope=None,
+    limit=50,
+):
+    if not query:
+        return {
+            "status": "error",
+            "message": "query_required",
+            "memory": [],
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    like = f"%{str(query).lower()}%"
+
+    where = ["status = 'active'", f"""(
+        LOWER(COALESCE(memory_payload, '')) LIKE {p}
+        OR LOWER(COALESCE(tags, '')) LIKE {p}
+        OR LOWER(COALESCE(metadata, '')) LIKE {p}
+        OR LOWER(COALESCE(subject_id, '')) LIKE {p}
+    )"""]
+    params = [like, like, like, like]
+
+    if memory_type:
+        where.append(f"memory_type = {p}")
+        params.append(memory_type)
+
+    if scope:
+        where.append(f"scope = {p}")
+        params.append(scope)
+
+    cur.execute(f"""
+    SELECT *
+    FROM protocol_memory
+    WHERE {' AND '.join(where)}
+    ORDER BY
+        importance_score DESC,
+        confidence DESC,
+        memory_strength DESC,
+        updated_at DESC
+    LIMIT {int(limit or 50)}
+    """, tuple(params))
+
+    rows = [dict(r) for r in cur.fetchall()]
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "query": query,
+        "count": len(rows),
+        "memory": rows,
+    }
+
+
+def reinforce_protocol_memory_db(
+    memory_id,
+    observed=True,
+    reason="",
+):
+    if not memory_id:
+        return {
+            "status": "error",
+            "message": "memory_id_required",
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    SELECT *
+    FROM protocol_memory
+    WHERE memory_id = {p}
+    """, (memory_id,))
+
+    row = cur.fetchone()
+
+    if not row:
+        release_conn(conn)
+        return {
+            "status": "not_found",
+            "memory_id": memory_id,
+        }
+
+    confidence = float(row_get(row, "confidence", 0) or 0)
+    strength = float(row_get(row, "memory_strength", 0.5) or 0.5)
+    importance = float(row_get(row, "importance_score", 0.5) or 0.5)
+
+    times_reinforced = int(row_get(row, "times_reinforced", 0) or 0)
+    times_observed = int(row_get(row, "times_observed", 0) or 0)
+    times_false_positive = int(row_get(row, "times_false_positive", 0) or 0)
+
+    if observed:
+        confidence = min(1.0, confidence + 0.05)
+        strength = min(1.0, strength + 0.10)
+        importance = min(1.0, importance + 0.03)
+        times_reinforced += 1
+        times_observed += 1
+    else:
+        confidence = max(0.0, confidence - 0.05)
+        strength = max(0.0, strength - 0.10)
+        importance = max(0.0, importance - 0.02)
+        times_false_positive += 1
+
+    status = "active"
+    archived_at = row_get(row, "archived_at")
+
+    if strength <= 0.15 and confidence <= 0.25:
+        status = "archived"
+        archived_at = now
+
+    cur.execute(f"""
+    UPDATE protocol_memory
+    SET confidence = {p},
+        memory_strength = {p},
+        importance_score = {p},
+        times_reinforced = {p},
+        times_observed = {p},
+        times_false_positive = {p},
+        last_validated_at = {p},
+        updated_at = {p},
+        status = {p},
+        archived_at = {p}
+    WHERE memory_id = {p}
+    """, (
+        round(confidence, 4),
+        round(strength, 4),
+        round(importance, 4),
+        times_reinforced,
+        times_observed,
+        times_false_positive,
+        now,
+        now,
+        status,
+        archived_at,
+        memory_id,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "reinforced" if observed else "weakened",
+        "memory_id": memory_id,
+        "observed": observed,
+        "confidence": round(confidence, 4),
+        "memory_strength": round(strength, 4),
+        "importance_score": round(importance, 4),
+        "times_reinforced": times_reinforced,
+        "times_observed": times_observed,
+        "times_false_positive": times_false_positive,
+        "reason": reason,
+    }
+
+
+def decay_protocol_memory_db(
+    max_age_seconds=604800,
+    decay_amount=0.03,
+    limit=500,
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+    cutoff = now - int(max_age_seconds or 604800)
+
+    cur.execute(f"""
+    SELECT *
+    FROM protocol_memory
+    WHERE status = 'active'
+      AND updated_at <= {p}
+    ORDER BY updated_at ASC
+    LIMIT {int(limit or 500)}
+    """, (cutoff,))
+
+    rows = cur.fetchall()
+    decayed = 0
+    archived = 0
+
+    for row in rows:
+        memory_id = row_get(row, "memory_id")
+        confidence = float(row_get(row, "confidence", 0) or 0)
+        strength = float(row_get(row, "memory_strength", 0.5) or 0.5)
+        importance = float(row_get(row, "importance_score", 0.5) or 0.5)
+
+        strength = max(0.0, strength - float(decay_amount or 0.03))
+
+        status = "active"
+        archived_at = row_get(row, "archived_at")
+
+        if strength <= 0.10 and confidence <= 0.25 and importance <= 0.25:
+            status = "archived"
+            archived_at = now
+            archived += 1
+
+        cur.execute(f"""
+        UPDATE protocol_memory
+        SET memory_strength = {p},
+            last_decay_at = {p},
+            updated_at = {p},
+            status = {p},
+            archived_at = {p}
+        WHERE memory_id = {p}
+        """, (
+            round(strength, 4),
+            now,
+            now,
+            status,
+            archived_at,
+            memory_id,
+        ))
+
+        decayed += 1
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "decayed": decayed,
+        "archived": archived,
+    }
+
+
+def archive_protocol_memory_db(memory_id, reason="manual_archive"):
+    if not memory_id:
+        return {
+            "status": "error",
+            "message": "memory_id_required",
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    UPDATE protocol_memory
+    SET status = 'archived',
+        archived_at = {p},
+        updated_at = {p},
+        metadata = json_set(
+            COALESCE(metadata, '{{}}'),
+            '$.archive_reason',
+            {p}
+        )
+    WHERE memory_id = {p}
+    """, (
+        now,
+        now,
+        reason,
+        memory_id,
+    ))
+
+    affected = cur.rowcount
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "archived" if affected else "not_found",
+        "memory_id": memory_id,
+        "reason": reason,
+    }
+
+
+def store_foundation_evidence_memory_db(
+    order_id,
+    evidence_package,
+    importance_score=0.7,
+):
+    if not isinstance(evidence_package, dict):
+        return {
+            "status": "error",
+            "message": "evidence_package_required",
+        }
+
+    evaluation = evidence_package.get("foundation_evidence_evaluation") or {}
+    confidence = float(evaluation.get("confidence_cap", 0.5) or 0.5)
+
+    return store_protocol_memory_db(
+        memory_type="foundation_evidence_memory",
+        scope="foundation",
+        subject_id=order_id,
+        source_type="foundation_execution_engine",
+        source_id=order_id,
+        confidence=confidence,
+        importance_score=importance_score,
+        memory_payload={
+            "order_id": order_id,
+            "evidence_status": evaluation.get("foundation_evidence_status"),
+            "decision_ready": evaluation.get("foundation_decision_ready"),
+            "confidence_cap": evaluation.get("confidence_cap"),
+            "reason": evaluation.get("reason"),
+            "research_agent_ids": evidence_package.get("research_agent_ids"),
+            "verification_agent_ids": evidence_package.get("verification_agent_ids"),
+            "research_consensus": evidence_package.get("research_consensus"),
+            "verification_consensus": evidence_package.get("verification_consensus"),
+        },
+        tags=[
+            "foundation",
+            "evidence",
+            str(evaluation.get("foundation_evidence_status") or ""),
+            str(evaluation.get("reason") or ""),
+        ],
+        metadata={
+            "protocol_core_sovereignty_reserved": True,
+            "seller_authority": False,
+            "buyer_authority": False,
+        },
+    )
+
+
+def store_foundation_decision_memory_db(
+    order_id,
+    foundation_decision,
+    importance_score=0.8,
+):
+    if not isinstance(foundation_decision, dict):
+        return {
+            "status": "error",
+            "message": "foundation_decision_required",
+        }
+
+    confidence = float(foundation_decision.get("decision_confidence", 0.5) or 0.5)
+
+    return store_protocol_memory_db(
+        memory_type="foundation_decision_memory",
+        scope="foundation",
+        subject_id=order_id,
+        source_type="foundation_decision_engine",
+        source_id=order_id,
+        confidence=confidence,
+        importance_score=importance_score,
+        memory_payload={
+            "order_id": order_id,
+            "foundation_verdict": foundation_decision.get("foundation_verdict"),
+            "decision_reason": foundation_decision.get("decision_reason"),
+            "decision_confidence": foundation_decision.get("decision_confidence"),
+            "seller_inputs_used": foundation_decision.get("seller_inputs_used"),
+            "foundation_execution_used": foundation_decision.get("foundation_execution_used"),
+            "foundation_evidence_evaluation": foundation_decision.get("foundation_evidence_evaluation"),
+            "seller_contribution_consensus": foundation_decision.get("seller_contribution_consensus"),
+        },
+        tags=[
+            "foundation",
+            "decision",
+            str(foundation_decision.get("foundation_verdict") or ""),
+            str(foundation_decision.get("decision_reason") or ""),
+        ],
+        metadata={
+            "governance_authority": "iat_protocol_core_only",
+            "decision_authority": "foundation_agents_only",
+            "seller_decision_power": False,
+            "buyer_decision_power": False,
+        },
+    )
+
+
+
+
+def run_protocol_learning_cycle_db(
+    limit=1000,
+    auto_archive=True,
+    auto_decay=True,
+):
+    memories_result = get_protocol_memory_db(
+        status="active",
+        limit=limit,
+    )
+
+    memories = memories_result.get("memory", [])
+
+    strategic_candidates = []
+    reinforcement_candidates = []
+    decay_candidates = []
+    archive_candidates = []
+    learning_events = []
+
+    for memory in memories:
+        memory_id = memory.get("memory_id")
+
+        confidence = float(memory.get("confidence", 0) or 0)
+        strength = float(memory.get("memory_strength", 0) or 0)
+        importance = float(memory.get("importance_score", 0) or 0)
+
+        times_reinforced = int(memory.get("times_reinforced", 0) or 0)
+        times_observed = int(memory.get("times_observed", 0) or 0)
+        times_false_positive = int(memory.get("times_false_positive", 0) or 0)
+
+        memory_type = memory.get("memory_type")
+        scope = memory.get("scope")
+        subject_id = memory.get("subject_id")
+
+        classification = {
+            "memory_id": memory_id,
+            "memory_type": memory_type,
+            "scope": scope,
+            "subject_id": subject_id,
+            "confidence": confidence,
+            "memory_strength": strength,
+            "importance_score": importance,
+            "times_reinforced": times_reinforced,
+            "times_observed": times_observed,
+            "times_false_positive": times_false_positive,
+        }
+
+        if (
+            confidence >= 0.80
+            and strength >= 0.80
+            and importance >= 0.75
+            and times_observed >= 3
+        ):
+            strategic_candidates.append({
+                **classification,
+                "reason": "high_confidence_high_strength_repeated_observation",
+            })
+
+        if (
+            confidence >= 0.70
+            and importance >= 0.70
+            and strength < 0.80
+            and times_false_positive == 0
+        ):
+            reinforcement_candidates.append({
+                **classification,
+                "reason": "important_memory_needs_more_observation",
+            })
+
+        if confidence <= 0.30 and strength <= 0.30:
+            decay_candidates.append({
+                **classification,
+                "reason": "low_confidence_low_strength",
+            })
+
+        if times_false_positive > times_observed:
+            archive_candidates.append({
+                **classification,
+                "reason": "false_positive_count_exceeds_observations",
+            })
+
+    archived = []
+    decayed = None
+
+    if auto_archive:
+        for item in archive_candidates:
+            result = archive_protocol_memory_db(
+                item.get("memory_id"),
+                reason=item.get("reason"),
+            )
+            archived.append(result)
+
+    if auto_decay:
+        decayed = decay_protocol_memory_db(
+            max_age_seconds=604800,
+            decay_amount=0.02,
+            limit=500,
+        )
+
+    summary = {
+        "total_active_memories": len(memories),
+        "strategic_candidates_count": len(strategic_candidates),
+        "reinforcement_candidates_count": len(reinforcement_candidates),
+        "decay_candidates_count": len(decay_candidates),
+        "archive_candidates_count": len(archive_candidates),
+        "auto_archive": bool(auto_archive),
+        "auto_decay": bool(auto_decay),
+        "archived_count": len([
+            a for a in archived
+            if a and a.get("status") == "archived"
+        ]),
+        "decay_result": decayed,
+    }
+
+    learning_report = {
+        "learning_cycle_type": "protocol_memory_learning_cycle",
+        "governance_authority": "iat_protocol_core_only",
+        "decision_authority": "foundation_agents_only",
+        "seller_authority": False,
+        "buyer_authority": False,
+        "summary": summary,
+        "strategic_candidates": strategic_candidates,
+        "reinforcement_candidates": reinforcement_candidates,
+        "decay_candidates": decay_candidates,
+        "archive_candidates": archive_candidates,
+        "archive_results": archived,
+        "learning_events": learning_events,
+        "protocol_policy": {
+            "memory_learning_informs_protocol": True,
+            "memory_learning_governs_protocol": False,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+    try:
+        store_protocol_memory_db(
+            memory_type="protocol_learning_cycle_memory",
+            scope="protocol",
+            subject_id="iat_core",
+            source_type="protocol_learning_engine",
+            source_id=f"learning_cycle_{int(time.time())}",
+            confidence=0.75,
+            importance_score=0.75,
+            memory_payload={
+                "summary": summary,
+            },
+            tags=[
+                "protocol",
+                "learning",
+                "memory_cycle",
+            ],
+            metadata={
+                "protocol_core_sovereignty_reserved": True,
+                "seller_authority": False,
+                "buyer_authority": False,
+            },
+            min_confidence=0.35,
+        )
+    except Exception:
+        pass
+
+    return {
+        "status": "ok",
+        "learning_report": learning_report,
+    }
+
+
+
+
+def build_protocol_strategy_context_db(limit=100):
+    memory_result = get_protocol_memory_db(
+        status="active",
+        limit=limit,
+    )
+
+    memories = memory_result.get("memory", [])
+
+    by_type = {}
+    high_importance = []
+    high_confidence = []
+    weak_memories = []
+
+    for memory in memories:
+        memory_type = memory.get("memory_type")
+        by_type.setdefault(memory_type, 0)
+        by_type[memory_type] += 1
+
+        confidence = float(memory.get("confidence", 0) or 0)
+        strength = float(memory.get("memory_strength", 0) or 0)
+        importance = float(memory.get("importance_score", 0) or 0)
+
+        item = {
+            "memory_id": memory.get("memory_id"),
+            "memory_type": memory_type,
+            "scope": memory.get("scope"),
+            "subject_id": memory.get("subject_id"),
+            "confidence": confidence,
+            "memory_strength": strength,
+            "importance_score": importance,
+            "tags": memory.get("tags"),
+            "memory_payload": memory.get("memory_payload"),
+            "updated_at": memory.get("updated_at"),
+        }
+
+        if importance >= 0.75:
+            high_importance.append(item)
+
+        if confidence >= 0.75 and strength >= 0.50:
+            high_confidence.append(item)
+
+        if confidence <= 0.35 or strength <= 0.25:
+            weak_memories.append(item)
+
+    learning_result = run_protocol_learning_cycle_db(
+        limit=limit,
+        auto_archive=False,
+        auto_decay=False,
+    )
+
+    learning_report = learning_result.get("learning_report", {})
+
+    strategy_context = {
+        "context_type": "protocol_strategy_context",
+        "governance_authority": "iat_protocol_core_only",
+        "decision_authority": "foundation_agents_only",
+        "memory_authority": "advisory_only",
+        "seller_authority": False,
+        "buyer_authority": False,
+
+        "memory_summary": {
+            "total_active_memories": len(memories),
+            "memory_count_by_type": by_type,
+            "high_importance_count": len(high_importance),
+            "high_confidence_count": len(high_confidence),
+            "weak_memory_count": len(weak_memories),
+        },
+
+        "high_importance_memories": high_importance[:20],
+        "high_confidence_memories": high_confidence[:20],
+        "weak_memories": weak_memories[:20],
+
+        "learning_report_summary": learning_report.get("summary"),
+        "strategic_candidates": learning_report.get("strategic_candidates", []),
+        "reinforcement_candidates": learning_report.get("reinforcement_candidates", []),
+        "decay_candidates": learning_report.get("decay_candidates", []),
+        "archive_candidates": learning_report.get("archive_candidates", []),
+
+        "protocol_policy": {
+            "strategy_context_informs_protocol": True,
+            "strategy_context_governs_protocol": False,
+            "protocol_core_sovereignty_reserved": True,
+            "foundation_agents_remain_protocol_authority": True,
+        },
+    }
+
+    try:
+        store_protocol_memory_db(
+            memory_type="protocol_strategy_context_memory",
+            scope="protocol",
+            subject_id="iat_core",
+            source_type="protocol_strategy_engine",
+            source_id=f"strategy_context_{int(time.time())}",
+            confidence=0.75,
+            importance_score=0.8,
+            memory_payload={
+                "memory_summary": strategy_context.get("memory_summary"),
+                "learning_report_summary": strategy_context.get("learning_report_summary"),
+            },
+            tags=[
+                "protocol",
+                "strategy",
+                "context",
+                "learning",
+            ],
+            metadata={
+                "protocol_core_sovereignty_reserved": True,
+                "strategy_context_governs_protocol": False,
+            },
+            min_confidence=0.35,
+        )
+    except Exception:
+        pass
+
+    return {
+        "status": "ok",
+        "strategy_context": strategy_context,
+    }
+
+
+
 def init_foundation_agent_columns():
     conn = get_conn()
     cur = conn.cursor()
@@ -164,6 +1188,7 @@ def init_db():
     release_conn(locals().get("conn"))
     init_agents_table()
     init_foundation_agent_columns()
+    init_protocol_memory_table()
     init_sellers_table()
     ensure_seller_punishment_columns()
     init_seller_agents_table()
@@ -5292,6 +6317,21 @@ def execute_foundation_plan_db(order):
         else evaluation_result
     )
 
+    evidence_memory_result = None
+    try:
+        evidence_memory_result = store_foundation_evidence_memory_db(
+            order_id=order.get("order_id"),
+            evidence_package=evidence_package,
+        )
+    except Exception as exc:
+        evidence_memory_result = {
+            "status": "error",
+            "message": "foundation_evidence_memory_store_failed",
+            "error": str(exc),
+        }
+
+    evidence_package["foundation_evidence_memory_result"] = evidence_memory_result
+
     return {
         "status": "ok",
         "order_id": order.get("order_id"),
@@ -8259,6 +9299,21 @@ def run_foundation_decision_db(order_id):
 
         "decision_context": decision_context,
     }
+
+    decision_memory_result = None
+    try:
+        decision_memory_result = store_foundation_decision_memory_db(
+            order_id=order_id,
+            foundation_decision=foundation_decision,
+        )
+    except Exception as exc:
+        decision_memory_result = {
+            "status": "error",
+            "message": "foundation_decision_memory_store_failed",
+            "error": str(exc),
+        }
+
+    foundation_decision["foundation_decision_memory_result"] = decision_memory_result
 
     conn = get_conn()
     cur = conn.cursor()

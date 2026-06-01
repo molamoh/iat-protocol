@@ -82,39 +82,74 @@ def init_protocol_memory_table():
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS protocol_memory (
-        memory_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    if USE_POSTGRES:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS protocol_memory (
+            memory_id SERIAL PRIMARY KEY,
 
-        memory_type TEXT NOT NULL,
-        scope TEXT NOT NULL,
-        subject_id TEXT,
+            memory_type TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            subject_id TEXT,
 
-        source_type TEXT DEFAULT 'protocol',
-        source_id TEXT,
+            source_type TEXT DEFAULT 'protocol',
+            source_id TEXT,
 
-        confidence REAL DEFAULT 0,
-        memory_strength REAL DEFAULT 0.5,
-        importance_score REAL DEFAULT 0.5,
+            confidence REAL DEFAULT 0,
+            memory_strength REAL DEFAULT 0.5,
+            importance_score REAL DEFAULT 0.5,
 
-        status TEXT DEFAULT 'active',
+            status TEXT DEFAULT 'active',
 
-        times_reinforced INTEGER DEFAULT 0,
-        times_observed INTEGER DEFAULT 0,
-        times_false_positive INTEGER DEFAULT 0,
+            times_reinforced INTEGER DEFAULT 0,
+            times_observed INTEGER DEFAULT 0,
+            times_false_positive INTEGER DEFAULT 0,
 
-        last_validated_at INTEGER,
-        last_decay_at INTEGER,
-        archived_at INTEGER,
+            last_validated_at INTEGER,
+            last_decay_at INTEGER,
+            archived_at INTEGER,
 
-        memory_payload TEXT DEFAULT '{}',
-        tags TEXT DEFAULT '[]',
-        metadata TEXT DEFAULT '{}',
+            memory_payload TEXT DEFAULT '{}',
+            tags TEXT DEFAULT '[]',
+            metadata TEXT DEFAULT '{}',
 
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-    )
-    """)
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """)
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS protocol_memory (
+            memory_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            memory_type TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            subject_id TEXT,
+
+            source_type TEXT DEFAULT 'protocol',
+            source_id TEXT,
+
+            confidence REAL DEFAULT 0,
+            memory_strength REAL DEFAULT 0.5,
+            importance_score REAL DEFAULT 0.5,
+
+            status TEXT DEFAULT 'active',
+
+            times_reinforced INTEGER DEFAULT 0,
+            times_observed INTEGER DEFAULT 0,
+            times_false_positive INTEGER DEFAULT 0,
+
+            last_validated_at INTEGER,
+            last_decay_at INTEGER,
+            archived_at INTEGER,
+
+            memory_payload TEXT DEFAULT '{}',
+            tags TEXT DEFAULT '[]',
+            metadata TEXT DEFAULT '{}',
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """)
 
     cur.execute("""
     CREATE INDEX IF NOT EXISTS idx_protocol_memory_lookup
@@ -128,8 +163,6 @@ def init_protocol_memory_table():
 
     conn.commit()
     release_conn(conn)
-
-
 
 
 def _normalize_protocol_memory_tags(tags):
@@ -201,24 +234,37 @@ def find_similar_protocol_memory_db(
       AND scope = {p}
       AND COALESCE(subject_id, '') = COALESCE({p}, '')
       AND status = 'active'
-      AND json_extract(COALESCE(metadata, '{{}}'), '$.memory_signature') = {p}
     ORDER BY updated_at DESC
-    LIMIT 1
+    LIMIT 100
     """, (
         memory_type,
         scope,
         subject_id,
-        signature,
     ))
 
-    row = cur.fetchone()
+    rows = cur.fetchall()
     release_conn(conn)
+
+    for row in rows:
+        row_dict = dict(row)
+        try:
+            meta = json.loads(row_dict.get("metadata") or "{}")
+        except Exception:
+            meta = {}
+
+        if meta.get("memory_signature") == signature:
+            return {
+                "status": "ok",
+                "signature": signature,
+                "found": True,
+                "memory": row_dict,
+            }
 
     return {
         "status": "ok",
         "signature": signature,
-        "found": bool(row),
-        "memory": dict(row) if row else None,
+        "found": False,
+        "memory": None,
     }
 
 
@@ -282,27 +328,17 @@ def store_protocol_memory_db(
     tags_json = json.dumps(normalized_tags, sort_keys=True)
     metadata_json = json.dumps(metadata, sort_keys=True)
 
-    cur.execute(f"""
-    SELECT *
-    FROM protocol_memory
-    WHERE memory_type = {p}
-      AND scope = {p}
-      AND COALESCE(subject_id, '') = COALESCE({p}, '')
-      AND COALESCE(source_type, '') = COALESCE({p}, '')
-      AND COALESCE(source_id, '') = COALESCE({p}, '')
-      AND json_extract(COALESCE(metadata, '{{}}'), '$.memory_signature') = {p}
-      AND status = 'active'
-    LIMIT 1
-    """, (
-        memory_type,
-        scope,
-        subject_id,
-        source_type,
-        source_id,
-        signature,
-    ))
+    existing_result = find_similar_protocol_memory_db(
+        memory_type=memory_type,
+        scope=scope,
+        subject_id=subject_id,
+        source_type=source_type,
+        source_id=source_id,
+        memory_payload=memory_payload,
+        tags=normalized_tags,
+    )
 
-    existing = cur.fetchone()
+    existing = existing_result.get("memory")
 
     if existing:
         memory_id = row_get(existing, "memory_id")
@@ -689,20 +725,39 @@ def archive_protocol_memory_db(memory_id, reason="manual_archive"):
     now = int(time.time())
 
     cur.execute(f"""
+    SELECT metadata
+    FROM protocol_memory
+    WHERE memory_id = {p}
+    """, (memory_id,))
+
+    row = cur.fetchone()
+
+    if not row:
+        release_conn(conn)
+        return {
+            "status": "not_found",
+            "memory_id": memory_id,
+            "reason": reason,
+        }
+
+    try:
+        meta = json.loads(row_get(row, "metadata") or "{}")
+    except Exception:
+        meta = {}
+
+    meta["archive_reason"] = reason
+
+    cur.execute(f"""
     UPDATE protocol_memory
     SET status = 'archived',
         archived_at = {p},
         updated_at = {p},
-        metadata = json_set(
-            COALESCE(metadata, '{{}}'),
-            '$.archive_reason',
-            {p}
-        )
+        metadata = {p}
     WHERE memory_id = {p}
     """, (
         now,
         now,
-        reason,
+        json.dumps(meta, sort_keys=True),
         memory_id,
     ))
 
@@ -715,6 +770,7 @@ def archive_protocol_memory_db(memory_id, reason="manual_archive"):
         "memory_id": memory_id,
         "reason": reason,
     }
+
 
 
 def store_foundation_evidence_memory_db(
@@ -1105,19 +1161,37 @@ def init_foundation_agent_columns():
     conn = get_conn()
     cur = conn.cursor()
 
-    columns = {
-        row[1]
-        for row in cur.execute("PRAGMA table_info(agents)").fetchall()
-    }
+    if USE_POSTGRES:
+        cur.execute("""
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = 'agents'
+        """)
+        columns = {row_get(row, "column_name") for row in cur.fetchall()}
 
-    if "foundation_role" not in columns:
-        cur.execute("ALTER TABLE agents ADD COLUMN foundation_role TEXT")
+        if "foundation_role" not in columns:
+            cur.execute("ALTER TABLE agents ADD COLUMN foundation_role TEXT")
 
-    if "foundation_priority" not in columns:
-        cur.execute("ALTER TABLE agents ADD COLUMN foundation_priority INTEGER DEFAULT 100")
+        if "foundation_priority" not in columns:
+            cur.execute("ALTER TABLE agents ADD COLUMN foundation_priority INTEGER DEFAULT 100")
 
-    if "foundation_authority_level" not in columns:
-        cur.execute("ALTER TABLE agents ADD COLUMN foundation_authority_level INTEGER DEFAULT 0")
+        if "foundation_authority_level" not in columns:
+            cur.execute("ALTER TABLE agents ADD COLUMN foundation_authority_level INTEGER DEFAULT 0")
+
+    else:
+        columns = {
+            row[1]
+            for row in cur.execute("PRAGMA table_info(agents)").fetchall()
+        }
+
+        if "foundation_role" not in columns:
+            cur.execute("ALTER TABLE agents ADD COLUMN foundation_role TEXT")
+
+        if "foundation_priority" not in columns:
+            cur.execute("ALTER TABLE agents ADD COLUMN foundation_priority INTEGER DEFAULT 100")
+
+        if "foundation_authority_level" not in columns:
+            cur.execute("ALTER TABLE agents ADD COLUMN foundation_authority_level INTEGER DEFAULT 0")
 
     conn.commit()
     release_conn(conn)

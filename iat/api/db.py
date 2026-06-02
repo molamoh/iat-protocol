@@ -81,6 +81,1136 @@ def qmark():
 
 
 
+
+
+def init_protocol_rollbacks_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    if USE_POSTGRES:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS protocol_rollbacks (
+            rollback_id SERIAL PRIMARY KEY,
+
+            adaptation_id INTEGER,
+
+            scope TEXT NOT NULL,
+            subject_id TEXT,
+
+            rollback_type TEXT NOT NULL,
+            rollback_reason TEXT,
+
+            pre_change_snapshot TEXT DEFAULT '{}',
+            post_change_snapshot TEXT DEFAULT '{}',
+
+            status TEXT DEFAULT 'available',
+
+            created_at INTEGER NOT NULL,
+            executed_at INTEGER,
+            updated_at INTEGER NOT NULL,
+
+            executed_by TEXT,
+            metadata TEXT DEFAULT '{}'
+        )
+        """)
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS protocol_rollbacks (
+            rollback_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            adaptation_id INTEGER,
+
+            scope TEXT NOT NULL,
+            subject_id TEXT,
+
+            rollback_type TEXT NOT NULL,
+            rollback_reason TEXT,
+
+            pre_change_snapshot TEXT DEFAULT '{}',
+            post_change_snapshot TEXT DEFAULT '{}',
+
+            status TEXT DEFAULT 'available',
+
+            created_at INTEGER NOT NULL,
+            executed_at INTEGER,
+            updated_at INTEGER NOT NULL,
+
+            executed_by TEXT,
+            metadata TEXT DEFAULT '{}'
+        )
+        """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_protocol_rollbacks_lookup
+    ON protocol_rollbacks(
+        adaptation_id,
+        scope,
+        subject_id,
+        status
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+
+
+def store_protocol_rollback_db(
+    adaptation_id,
+    scope,
+    subject_id,
+    rollback_type,
+    rollback_reason="",
+    pre_change_snapshot=None,
+    post_change_snapshot=None,
+    metadata=None,
+):
+    if not scope or not rollback_type:
+        return {
+            "status": "error",
+            "message": "scope_and_rollback_type_required",
+        }
+
+    now = int(time.time())
+
+    pre_change_snapshot = pre_change_snapshot or {}
+    post_change_snapshot = post_change_snapshot or {}
+    metadata = metadata or {}
+
+    metadata = {
+        **metadata,
+        "rollback_authority": "foundation_or_core_only",
+        "rollback_independent_from_intelligence": True,
+        "protocol_core_sovereignty_reserved": True,
+    }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    INSERT INTO protocol_rollbacks (
+        adaptation_id,
+        scope,
+        subject_id,
+        rollback_type,
+        rollback_reason,
+        pre_change_snapshot,
+        post_change_snapshot,
+        status,
+        created_at,
+        updated_at,
+        metadata
+    )
+    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+    """, (
+        adaptation_id,
+        scope,
+        subject_id,
+        rollback_type,
+        rollback_reason,
+        json.dumps(pre_change_snapshot, sort_keys=True),
+        json.dumps(post_change_snapshot, sort_keys=True),
+        "available",
+        now,
+        now,
+        json.dumps(metadata, sort_keys=True),
+    ))
+
+    rollback_id = cur.lastrowid
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "stored",
+        "rollback_id": rollback_id,
+        "adaptation_id": adaptation_id,
+        "scope": scope,
+        "subject_id": subject_id,
+        "rollback_type": rollback_type,
+    }
+
+
+def get_protocol_rollbacks_db(
+    adaptation_id=None,
+    scope=None,
+    subject_id=None,
+    status=None,
+    limit=50,
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    where = []
+    params = []
+
+    if adaptation_id is not None:
+        where.append(f"adaptation_id = {p}")
+        params.append(adaptation_id)
+
+    if scope:
+        where.append(f"scope = {p}")
+        params.append(scope)
+
+    if subject_id:
+        where.append(f"subject_id = {p}")
+        params.append(subject_id)
+
+    if status:
+        where.append(f"status = {p}")
+        params.append(status)
+
+    where_sql = "WHERE " + " AND ".join(where) if where else ""
+
+    cur.execute(f"""
+    SELECT *
+    FROM protocol_rollbacks
+    {where_sql}
+    ORDER BY updated_at DESC, created_at DESC
+    LIMIT {int(limit or 50)}
+    """, tuple(params))
+
+    rows = [dict(r) for r in cur.fetchall()]
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "count": len(rows),
+        "rollbacks": rows,
+    }
+
+
+def rollback_protocol_adaptation_db(
+    rollback_id=None,
+    adaptation_id=None,
+    executed_by="iat_core",
+    rollback_reason="",
+):
+    if not rollback_id and not adaptation_id:
+        return {
+            "status": "error",
+            "message": "rollback_id_or_adaptation_id_required",
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    if rollback_id:
+        cur.execute(f"""
+        SELECT *
+        FROM protocol_rollbacks
+        WHERE rollback_id = {p}
+        """, (rollback_id,))
+    else:
+        cur.execute(f"""
+        SELECT *
+        FROM protocol_rollbacks
+        WHERE adaptation_id = {p}
+          AND status = 'available'
+        ORDER BY created_at DESC
+        LIMIT 1
+        """, (adaptation_id,))
+
+    rollback = cur.fetchone()
+
+    if not rollback:
+        release_conn(conn)
+        return {
+            "status": "not_found",
+            "message": "rollback_not_found",
+            "rollback_id": rollback_id,
+            "adaptation_id": adaptation_id,
+        }
+
+    rb_status = row_get(rollback, "status", "available")
+
+    if rb_status != "available":
+        release_conn(conn)
+        return {
+            "status": "error",
+            "message": "rollback_not_available",
+            "current_status": rb_status,
+        }
+
+    rollback_id = row_get(rollback, "rollback_id")
+    adaptation_id = row_get(rollback, "adaptation_id")
+    rollback_type = row_get(rollback, "rollback_type")
+    scope = row_get(rollback, "scope")
+    subject_id = row_get(rollback, "subject_id")
+
+    if rollback_type != "seller_exposure_limit_adjustment":
+        release_conn(conn)
+        return {
+            "status": "error",
+            "message": "rollback_type_not_allowed_in_v1",
+            "rollback_type": rollback_type,
+        }
+
+    try:
+        pre_snapshot = json.loads(row_get(rollback, "pre_change_snapshot") or "{}")
+    except Exception:
+        pre_snapshot = {}
+
+    agents_snapshot = pre_snapshot.get("agents", [])
+
+    if scope != "seller" or not subject_id:
+        release_conn(conn)
+        return {
+            "status": "error",
+            "message": "seller_scope_and_subject_required",
+            "scope": scope,
+            "subject_id": subject_id,
+        }
+
+    if not agents_snapshot:
+        release_conn(conn)
+        return {
+            "status": "error",
+            "message": "empty_pre_change_snapshot",
+        }
+
+    restored_agents = []
+
+    for item in agents_snapshot:
+        agent_id = item.get("agent_id")
+        old_max_order_value = item.get("max_order_value")
+
+        if not agent_id:
+            continue
+
+        cur.execute(f"""
+        UPDATE agents
+        SET max_order_value = {p},
+            updated_at = {p}
+        WHERE agent_id = {p}
+          AND seller_id = {p}
+        """, (
+            old_max_order_value,
+            now,
+            agent_id,
+            subject_id,
+        ))
+
+        if cur.rowcount:
+            restored_agents.append({
+                "agent_id": agent_id,
+                "restored_max_order_value": old_max_order_value,
+            })
+
+    try:
+        metadata = json.loads(row_get(rollback, "metadata") or "{}")
+    except Exception:
+        metadata = {}
+
+    metadata["executed_by"] = executed_by
+    metadata["execution_reason"] = rollback_reason
+    metadata["restored_agents"] = restored_agents
+    metadata["rollback_independent_from_intelligence"] = True
+    metadata["protocol_core_sovereignty_reserved"] = True
+
+    cur.execute(f"""
+    UPDATE protocol_rollbacks
+    SET status = 'executed',
+        executed_at = {p},
+        executed_by = {p},
+        updated_at = {p},
+        metadata = {p}
+    WHERE rollback_id = {p}
+    """, (
+        now,
+        executed_by,
+        now,
+        json.dumps(metadata, sort_keys=True),
+        rollback_id,
+    ))
+
+    cur.execute(f"""
+    UPDATE protocol_adaptations
+    SET status = 'rolled_back',
+        updated_at = {p}
+    WHERE adaptation_id = {p}
+      AND status = 'applied'
+    """, (
+        now,
+        adaptation_id,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "executed",
+        "rollback_id": rollback_id,
+        "adaptation_id": adaptation_id,
+        "rollback_type": rollback_type,
+        "scope": scope,
+        "subject_id": subject_id,
+        "restored_agents": restored_agents,
+        "policy": {
+            "rollback_authority": "foundation_or_core_only",
+            "rollback_independent_from_intelligence": True,
+            "protocol_core_sovereignty_reserved": True,
+            "v1_allowlist_only": True,
+        },
+    }
+
+
+
+def init_protocol_adaptations_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    if USE_POSTGRES:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS protocol_adaptations (
+            adaptation_id SERIAL PRIMARY KEY,
+
+            experiment_id INTEGER,
+            hypothesis_id INTEGER,
+
+            adaptation_type TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            subject_id TEXT,
+
+            recommendation TEXT NOT NULL,
+            rationale TEXT,
+
+            proposed_change TEXT DEFAULT '{}',
+            expected_impact TEXT DEFAULT '{}',
+            safety_constraints TEXT DEFAULT '{}',
+
+            status TEXT DEFAULT 'proposed',
+
+            confidence REAL DEFAULT 0,
+            risk_score REAL DEFAULT 0,
+            impact_score REAL DEFAULT 0,
+
+            proposed_at INTEGER NOT NULL,
+            approved_at INTEGER,
+            rejected_at INTEGER,
+            applied_at INTEGER,
+            failed_at INTEGER,
+
+            approved_by TEXT,
+            rejected_by TEXT,
+            applied_by TEXT,
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+
+            metadata TEXT DEFAULT '{}'
+        )
+        """)
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS protocol_adaptations (
+            adaptation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            experiment_id INTEGER,
+            hypothesis_id INTEGER,
+
+            adaptation_type TEXT NOT NULL,
+            scope TEXT NOT NULL,
+            subject_id TEXT,
+
+            recommendation TEXT NOT NULL,
+            rationale TEXT,
+
+            proposed_change TEXT DEFAULT '{}',
+            expected_impact TEXT DEFAULT '{}',
+            safety_constraints TEXT DEFAULT '{}',
+
+            status TEXT DEFAULT 'proposed',
+
+            confidence REAL DEFAULT 0,
+            risk_score REAL DEFAULT 0,
+            impact_score REAL DEFAULT 0,
+
+            proposed_at INTEGER NOT NULL,
+            approved_at INTEGER,
+            rejected_at INTEGER,
+            applied_at INTEGER,
+            failed_at INTEGER,
+
+            approved_by TEXT,
+            rejected_by TEXT,
+            applied_by TEXT,
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+
+            metadata TEXT DEFAULT '{}'
+        )
+        """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_protocol_adaptations_lookup
+    ON protocol_adaptations(
+        adaptation_type,
+        scope,
+        status
+    )
+    """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_protocol_adaptations_subject
+    ON protocol_adaptations(
+        scope,
+        subject_id,
+        status
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+
+
+def store_protocol_adaptation_db(
+    adaptation_type,
+    scope,
+    recommendation,
+    subject_id=None,
+    experiment_id=None,
+    hypothesis_id=None,
+    rationale=None,
+    proposed_change=None,
+    expected_impact=None,
+    safety_constraints=None,
+    confidence=0.5,
+    risk_score=0.0,
+    impact_score=0.5,
+    metadata=None,
+):
+    if not adaptation_type or not scope or not recommendation:
+        return {
+            "status": "error",
+            "message": "adaptation_type_scope_and_recommendation_required",
+        }
+
+    confidence = float(confidence or 0)
+    risk_score = float(risk_score or 0)
+    impact_score = float(impact_score or 0)
+
+    if confidence < 0.45:
+        return {
+            "status": "ignored",
+            "reason": "adaptation_confidence_too_low",
+            "confidence": confidence,
+        }
+
+    if risk_score > 0.75:
+        return {
+            "status": "ignored",
+            "reason": "adaptation_risk_too_high",
+            "risk_score": risk_score,
+        }
+
+    now = int(time.time())
+
+    metadata = metadata or {}
+    metadata = {
+        **metadata,
+        "adaptation_can_propose": True,
+        "adaptation_can_govern": False,
+        "adaptation_requires_approval": True,
+        "protocol_core_sovereignty_reserved": True,
+    }
+
+    proposed_change = proposed_change or {}
+    expected_impact = expected_impact or {}
+    safety_constraints = safety_constraints or {}
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    INSERT INTO protocol_adaptations (
+        experiment_id,
+        hypothesis_id,
+        adaptation_type,
+        scope,
+        subject_id,
+        recommendation,
+        rationale,
+        proposed_change,
+        expected_impact,
+        safety_constraints,
+        status,
+        confidence,
+        risk_score,
+        impact_score,
+        proposed_at,
+        created_at,
+        updated_at,
+        metadata
+    )
+    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+    """, (
+        experiment_id,
+        hypothesis_id,
+        adaptation_type,
+        scope,
+        subject_id,
+        recommendation,
+        rationale,
+        json.dumps(proposed_change, sort_keys=True),
+        json.dumps(expected_impact, sort_keys=True),
+        json.dumps(safety_constraints, sort_keys=True),
+        "proposed",
+        round(confidence, 4),
+        round(risk_score, 4),
+        round(impact_score, 4),
+        now,
+        now,
+        now,
+        json.dumps(metadata, sort_keys=True),
+    ))
+
+    adaptation_id = cur.lastrowid
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "stored",
+        "adaptation_id": adaptation_id,
+        "adaptation_type": adaptation_type,
+        "scope": scope,
+        "subject_id": subject_id,
+        "policy": {
+            "adaptation_can_propose": True,
+            "adaptation_can_govern": False,
+            "adaptation_requires_approval": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
+def get_protocol_adaptations_db(
+    adaptation_type=None,
+    scope=None,
+    subject_id=None,
+    status=None,
+    experiment_id=None,
+    hypothesis_id=None,
+    limit=50,
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    where = []
+    params = []
+
+    if adaptation_type:
+        where.append(f"adaptation_type = {p}")
+        params.append(adaptation_type)
+
+    if scope:
+        where.append(f"scope = {p}")
+        params.append(scope)
+
+    if subject_id:
+        where.append(f"subject_id = {p}")
+        params.append(subject_id)
+
+    if status:
+        where.append(f"status = {p}")
+        params.append(status)
+
+    if experiment_id is not None:
+        where.append(f"experiment_id = {p}")
+        params.append(experiment_id)
+
+    if hypothesis_id is not None:
+        where.append(f"hypothesis_id = {p}")
+        params.append(hypothesis_id)
+
+    where_sql = "WHERE " + " AND ".join(where) if where else ""
+
+    cur.execute(f"""
+    SELECT *
+    FROM protocol_adaptations
+    {where_sql}
+    ORDER BY
+        impact_score DESC,
+        confidence DESC,
+        risk_score ASC,
+        updated_at DESC
+    LIMIT {int(limit or 50)}
+    """, tuple(params))
+
+    rows = [dict(r) for r in cur.fetchall()]
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "count": len(rows),
+        "adaptations": rows,
+    }
+
+
+def approve_protocol_adaptation_db(
+    adaptation_id,
+    approved_by="iat_core",
+    approval_note="",
+):
+    if not adaptation_id:
+        return {
+            "status": "error",
+            "message": "adaptation_id_required",
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    SELECT *
+    FROM protocol_adaptations
+    WHERE adaptation_id = {p}
+    """, (adaptation_id,))
+
+    row = cur.fetchone()
+
+    if not row:
+        release_conn(conn)
+        return {
+            "status": "not_found",
+            "adaptation_id": adaptation_id,
+        }
+
+    current_status = row_get(row, "status", "proposed")
+
+    if current_status != "proposed":
+        release_conn(conn)
+        return {
+            "status": "error",
+            "message": "adaptation_not_approvable",
+            "current_status": current_status,
+        }
+
+    confidence = float(row_get(row, "confidence", 0) or 0)
+    risk_score = float(row_get(row, "risk_score", 0) or 0)
+
+    if confidence < 0.60:
+        release_conn(conn)
+        return {
+            "status": "error",
+            "message": "adaptation_confidence_too_low_for_approval",
+            "confidence": confidence,
+        }
+
+    if risk_score > 0.60:
+        release_conn(conn)
+        return {
+            "status": "error",
+            "message": "adaptation_risk_too_high_for_approval",
+            "risk_score": risk_score,
+        }
+
+    try:
+        metadata = json.loads(row_get(row, "metadata") or "{}")
+    except Exception:
+        metadata = {}
+
+    metadata["approval_note"] = approval_note
+    metadata["approved_by_foundation_or_core"] = True
+    metadata["adaptation_can_govern"] = False
+    metadata["protocol_core_sovereignty_reserved"] = True
+
+    cur.execute(f"""
+    UPDATE protocol_adaptations
+    SET status = 'approved',
+        approved_at = {p},
+        approved_by = {p},
+        updated_at = {p},
+        metadata = {p}
+    WHERE adaptation_id = {p}
+    """, (
+        now,
+        approved_by,
+        now,
+        json.dumps(metadata, sort_keys=True),
+        adaptation_id,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "approved",
+        "adaptation_id": adaptation_id,
+        "approved_by": approved_by,
+        "policy": {
+            "adaptation_can_propose": True,
+            "adaptation_can_govern": False,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
+def reject_protocol_adaptation_db(
+    adaptation_id,
+    rejected_by="iat_core",
+    rejection_reason="",
+):
+    if not adaptation_id:
+        return {
+            "status": "error",
+            "message": "adaptation_id_required",
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    SELECT *
+    FROM protocol_adaptations
+    WHERE adaptation_id = {p}
+    """, (adaptation_id,))
+
+    row = cur.fetchone()
+
+    if not row:
+        release_conn(conn)
+        return {
+            "status": "not_found",
+            "adaptation_id": adaptation_id,
+        }
+
+    current_status = row_get(row, "status", "proposed")
+
+    if current_status not in ("proposed", "approved"):
+        release_conn(conn)
+        return {
+            "status": "error",
+            "message": "adaptation_not_rejectable",
+            "current_status": current_status,
+        }
+
+    try:
+        metadata = json.loads(row_get(row, "metadata") or "{}")
+    except Exception:
+        metadata = {}
+
+    metadata["rejection_reason"] = rejection_reason
+    metadata["rejected_by_foundation_or_core"] = True
+    metadata["adaptation_can_govern"] = False
+    metadata["protocol_core_sovereignty_reserved"] = True
+
+    cur.execute(f"""
+    UPDATE protocol_adaptations
+    SET status = 'rejected',
+        rejected_at = {p},
+        rejected_by = {p},
+        updated_at = {p},
+        metadata = {p}
+    WHERE adaptation_id = {p}
+    """, (
+        now,
+        rejected_by,
+        now,
+        json.dumps(metadata, sort_keys=True),
+        adaptation_id,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "rejected",
+        "adaptation_id": adaptation_id,
+        "rejected_by": rejected_by,
+        "reason": rejection_reason,
+    }
+
+
+
+
+def apply_protocol_adaptation_db(
+    adaptation_id,
+    applied_by="iat_core",
+    apply_note="",
+):
+    if not adaptation_id:
+        return {
+            "status": "error",
+            "message": "adaptation_id_required",
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    SELECT *
+    FROM protocol_adaptations
+    WHERE adaptation_id = {p}
+    """, (adaptation_id,))
+
+    row = cur.fetchone()
+
+    if not row:
+        release_conn(conn)
+        return {
+            "status": "not_found",
+            "adaptation_id": adaptation_id,
+        }
+
+    current_status = row_get(row, "status", "proposed")
+
+    if current_status != "approved":
+        release_conn(conn)
+        return {
+            "status": "error",
+            "message": "adaptation_not_approved",
+            "current_status": current_status,
+        }
+
+    adaptation_type = row_get(row, "adaptation_type")
+    scope = row_get(row, "scope")
+    subject_id = row_get(row, "subject_id")
+    risk_score = float(row_get(row, "risk_score", 0) or 0)
+
+    if risk_score > 0.60:
+        release_conn(conn)
+        return {
+            "status": "error",
+            "message": "adaptation_risk_too_high_to_apply",
+            "risk_score": risk_score,
+        }
+
+    if adaptation_type != "seller_exposure_limit_adjustment":
+        release_conn(conn)
+        return {
+            "status": "error",
+            "message": "adaptation_type_not_allowed_in_v1",
+            "adaptation_type": adaptation_type,
+        }
+
+    if scope != "seller" or not subject_id:
+        release_conn(conn)
+        return {
+            "status": "error",
+            "message": "seller_scope_and_subject_required",
+            "scope": scope,
+            "subject_id": subject_id,
+        }
+
+    try:
+        proposed_change = json.loads(row_get(row, "proposed_change") or "{}")
+    except Exception:
+        proposed_change = {}
+
+    try:
+        safety_constraints = json.loads(row_get(row, "safety_constraints") or "{}")
+    except Exception:
+        safety_constraints = {}
+
+    field = proposed_change.get("field")
+    operation = proposed_change.get("operation")
+    factor = float(proposed_change.get("factor", 1) or 1)
+
+    max_increment_percent = float(
+        safety_constraints.get("max_increment_percent", 0) or 0
+    )
+    rollback_on_failure = bool(
+        safety_constraints.get("rollback_on_failure", False)
+    )
+
+    if field != "max_order_value":
+        release_conn(conn)
+        return {
+            "status": "error",
+            "message": "field_not_allowed_in_v1",
+            "field": field,
+        }
+
+    if operation != "multiply":
+        release_conn(conn)
+        return {
+            "status": "error",
+            "message": "operation_not_allowed_in_v1",
+            "operation": operation,
+        }
+
+    if factor <= 1 or factor > 1.25:
+        release_conn(conn)
+        return {
+            "status": "error",
+            "message": "factor_outside_allowed_range",
+            "factor": factor,
+            "allowed_max": 1.25,
+        }
+
+    if max_increment_percent <= 0 or max_increment_percent > 25:
+        release_conn(conn)
+        return {
+            "status": "error",
+            "message": "max_increment_percent_outside_allowed_range",
+            "max_increment_percent": max_increment_percent,
+            "allowed_max": 25,
+        }
+
+    if not rollback_on_failure:
+        release_conn(conn)
+        return {
+            "status": "error",
+            "message": "rollback_on_failure_required",
+        }
+
+    # V1 target: agents table, seller_id column.
+    cur.execute(f"""
+    SELECT *
+    FROM agents
+    WHERE seller_id = {p}
+    """, (subject_id,))
+
+    agents = cur.fetchall()
+
+    if not agents:
+        release_conn(conn)
+        return {
+            "status": "error",
+            "message": "no_agents_found_for_seller",
+            "seller_id": subject_id,
+        }
+
+    pre_change_agents = []
+    post_change_agents = []
+    updated_agents = []
+
+    for agent in agents:
+        agent_id = row_get(agent, "agent_id")
+        old_value = float(row_get(agent, "max_order_value", 0) or 0)
+        new_value = round(old_value * factor, 4)
+
+        pre_change_agents.append({
+            "agent_id": agent_id,
+            "seller_id": subject_id,
+            "max_order_value": old_value,
+        })
+
+        post_change_agents.append({
+            "agent_id": agent_id,
+            "seller_id": subject_id,
+            "max_order_value": new_value,
+        })
+
+        cur.execute(f"""
+        UPDATE agents
+        SET max_order_value = {p},
+            updated_at = {p}
+        WHERE agent_id = {p}
+        """, (
+            new_value,
+            now,
+            agent_id,
+        ))
+
+        updated_agents.append({
+            "agent_id": agent_id,
+            "old_max_order_value": old_value,
+            "new_max_order_value": new_value,
+        })
+
+    try:
+        metadata = json.loads(row_get(row, "metadata") or "{}")
+    except Exception:
+        metadata = {}
+
+    metadata["apply_note"] = apply_note
+    metadata["applied_change"] = {
+        "field": field,
+        "operation": operation,
+        "factor": factor,
+        "updated_agents": updated_agents,
+    }
+    metadata["rollback_on_failure"] = rollback_on_failure
+    metadata["adaptation_can_govern"] = False
+    metadata["protocol_core_sovereignty_reserved"] = True
+
+    cur.execute(f"""
+    UPDATE protocol_adaptations
+    SET status = 'applied',
+        applied_at = {p},
+        applied_by = {p},
+        updated_at = {p},
+        metadata = {p}
+    WHERE adaptation_id = {p}
+    """, (
+        now,
+        applied_by,
+        now,
+        json.dumps(metadata, sort_keys=True),
+        adaptation_id,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    rollback_result = None
+    try:
+        rollback_result = store_protocol_rollback_db(
+            adaptation_id=adaptation_id,
+            scope=scope,
+            subject_id=subject_id,
+            rollback_type=adaptation_type,
+            rollback_reason="auto_snapshot_before_adaptation_apply",
+            pre_change_snapshot={
+                "agents": pre_change_agents,
+            },
+            post_change_snapshot={
+                "agents": post_change_agents,
+            },
+            metadata={
+                "created_by": "apply_protocol_adaptation_db",
+                "applied_by": applied_by,
+                "rollback_on_failure": rollback_on_failure,
+                "field": field,
+                "operation": operation,
+                "factor": factor,
+            },
+        )
+    except Exception as exc:
+        rollback_result = {
+            "status": "error",
+            "message": "rollback_snapshot_store_failed",
+            "error": str(exc),
+        }
+
+    return {
+        "status": "applied",
+        "adaptation_id": adaptation_id,
+        "adaptation_type": adaptation_type,
+        "scope": scope,
+        "subject_id": subject_id,
+        "updated_agents": updated_agents,
+        "rollback_result": rollback_result,
+        "policy": {
+            "adaptation_can_propose": True,
+            "adaptation_can_govern": False,
+            "adaptation_required_approval": True,
+            "protocol_core_sovereignty_reserved": True,
+            "v1_allowlist_only": True,
+        },
+    }
+
+
+
 def init_protocol_experiments_table():
     conn = get_conn()
     cur = conn.cursor()
@@ -2504,6 +3634,8 @@ def init_db():
     init_protocol_knowledge_table()
     init_protocol_hypotheses_table()
     init_protocol_experiments_table()
+    init_protocol_adaptations_table()
+    init_protocol_rollbacks_table()
     init_sellers_table()
     ensure_seller_punishment_columns()
     init_seller_agents_table()

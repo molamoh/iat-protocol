@@ -143,6 +143,13 @@ from iat.api.db import (
     get_protocol_experiments_db,
     start_protocol_experiment_db,
     complete_protocol_experiment_db,
+    store_protocol_adaptation_db,
+    get_protocol_adaptations_db,
+    approve_protocol_adaptation_db,
+    reject_protocol_adaptation_db,
+    apply_protocol_adaptation_db,
+    get_protocol_rollbacks_db,
+    rollback_protocol_adaptation_db,
 )
 
 
@@ -5913,6 +5920,223 @@ def internal_protocol_experiment_complete(
         measured_value=req.measured_value,
         success=req.success,
         note=req.note,
+    )
+
+
+
+
+class ProtocolAdaptationCreateRequest(BaseModel):
+    adaptation_type: str
+    scope: str
+    recommendation: str
+    subject_id: str | None = None
+    experiment_id: int | None = None
+    hypothesis_id: int | None = None
+    rationale: str | None = None
+    proposed_change: dict = {}
+    expected_impact: dict = {}
+    safety_constraints: dict = {}
+    confidence: float = 0.5
+    risk_score: float = 0.0
+    impact_score: float = 0.5
+    metadata: dict = {}
+
+
+class ProtocolAdaptationApproveRequest(BaseModel):
+    approved_by: str = "iat_core"
+    approval_note: str = ""
+
+
+class ProtocolAdaptationRejectRequest(BaseModel):
+    rejected_by: str = "iat_core"
+    rejection_reason: str = ""
+
+
+class ProtocolAdaptationApplyRequest(BaseModel):
+    applied_by: str = "iat_core"
+    apply_note: str = ""
+
+
+@app.get("/admin/protocol-adaptations")
+def admin_protocol_adaptations(
+    adaptation_type: str | None = None,
+    scope: str | None = None,
+    subject_id: str | None = None,
+    status: str | None = None,
+    experiment_id: int | None = None,
+    hypothesis_id: int | None = None,
+    limit: int = 50,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return get_protocol_adaptations_db(
+        adaptation_type=adaptation_type,
+        scope=scope,
+        subject_id=subject_id,
+        status=status,
+        experiment_id=experiment_id,
+        hypothesis_id=hypothesis_id,
+        limit=limit,
+    )
+
+
+@app.post("/internal/protocol-adaptations/store")
+def internal_protocol_adaptation_store(
+    req: ProtocolAdaptationCreateRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return store_protocol_adaptation_db(
+        adaptation_type=req.adaptation_type,
+        scope=req.scope,
+        recommendation=req.recommendation,
+        subject_id=req.subject_id,
+        experiment_id=req.experiment_id,
+        hypothesis_id=req.hypothesis_id,
+        rationale=req.rationale,
+        proposed_change=req.proposed_change,
+        expected_impact=req.expected_impact,
+        safety_constraints=req.safety_constraints,
+        confidence=req.confidence,
+        risk_score=req.risk_score,
+        impact_score=req.impact_score,
+        metadata=req.metadata,
+    )
+
+
+@app.post("/internal/protocol-adaptations/approve/{adaptation_id}")
+def internal_protocol_adaptation_approve(
+    adaptation_id: int,
+    req: ProtocolAdaptationApproveRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return approve_protocol_adaptation_db(
+        adaptation_id=adaptation_id,
+        approved_by=req.approved_by,
+        approval_note=req.approval_note,
+    )
+
+
+@app.post("/internal/protocol-adaptations/reject/{adaptation_id}")
+def internal_protocol_adaptation_reject(
+    adaptation_id: int,
+    req: ProtocolAdaptationRejectRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return reject_protocol_adaptation_db(
+        adaptation_id=adaptation_id,
+        rejected_by=req.rejected_by,
+        rejection_reason=req.rejection_reason,
+    )
+
+
+@app.post("/internal/protocol-adaptations/apply/{adaptation_id}")
+def internal_protocol_adaptation_apply(
+    adaptation_id: int,
+    req: ProtocolAdaptationApplyRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return apply_protocol_adaptation_db(
+        adaptation_id=adaptation_id,
+        applied_by=req.applied_by,
+        apply_note=req.apply_note,
+    )
+
+
+
+
+class ProtocolRollbackExecuteRequest(BaseModel):
+    executed_by: str = "iat_core"
+    rollback_reason: str = ""
+
+
+@app.get("/admin/protocol-rollbacks")
+def admin_protocol_rollbacks(
+    adaptation_id: int | None = None,
+    scope: str | None = None,
+    subject_id: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return get_protocol_rollbacks_db(
+        adaptation_id=adaptation_id,
+        scope=scope,
+        subject_id=subject_id,
+        status=status,
+        limit=limit,
+    )
+
+
+@app.post("/internal/protocol-rollbacks/execute/{rollback_id}")
+def internal_protocol_rollback_execute_by_id(
+    rollback_id: int,
+    req: ProtocolRollbackExecuteRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return rollback_protocol_adaptation_db(
+        rollback_id=rollback_id,
+        executed_by=req.executed_by,
+        rollback_reason=req.rollback_reason,
+    )
+
+
+@app.post("/internal/protocol-rollbacks/execute-by-adaptation/{adaptation_id}")
+def internal_protocol_rollback_execute_by_adaptation(
+    adaptation_id: int,
+    req: ProtocolRollbackExecuteRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return rollback_protocol_adaptation_db(
+        adaptation_id=adaptation_id,
+        executed_by=req.executed_by,
+        rollback_reason=req.rollback_reason,
     )
 
 

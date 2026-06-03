@@ -157,6 +157,9 @@ from iat.api.db import (
     get_protocol_adaptation_monitors_db,
     evaluate_protocol_adaptation_monitor_db,
     run_protocol_adaptation_monitoring_cycle_db,
+    store_protocol_rollback_review_db,
+    get_protocol_rollback_reviews_db,
+    evaluate_protocol_rollback_reviews_db,
 )
 
 
@@ -6328,6 +6331,100 @@ def internal_protocol_adaptation_monitoring_cycle(
     return run_protocol_adaptation_monitoring_cycle_db(
         limit=limit,
         include_warning=include_warning,
+    )
+
+
+
+
+class ProtocolRollbackReviewCreateRequest(BaseModel):
+    rollback_id: int | None = None
+    adaptation_id: int | None = None
+    monitor_id: int | None = None
+    reviewer_type: str
+    reviewer_id: str
+    review_decision: str
+    review_reason: str | None = None
+    confidence_score: float = 0.0
+    risk_score: float = 0.0
+    metadata: dict = {}
+
+
+@app.get("/admin/protocol-rollback-reviews")
+def admin_protocol_rollback_reviews(
+    rollback_id: int | None = None,
+    adaptation_id: int | None = None,
+    monitor_id: int | None = None,
+    reviewer_type: str | None = None,
+    reviewer_id: str | None = None,
+    review_decision: str | None = None,
+    limit: int = 50,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return get_protocol_rollback_reviews_db(
+        rollback_id=rollback_id,
+        adaptation_id=adaptation_id,
+        monitor_id=monitor_id,
+        reviewer_type=reviewer_type,
+        reviewer_id=reviewer_id,
+        review_decision=review_decision,
+        limit=limit,
+    )
+
+
+@app.post("/internal/protocol-rollback-reviews/store")
+def internal_protocol_rollback_review_store(
+    req: ProtocolRollbackReviewCreateRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return store_protocol_rollback_review_db(
+        rollback_id=req.rollback_id,
+        adaptation_id=req.adaptation_id,
+        monitor_id=req.monitor_id,
+        reviewer_type=req.reviewer_type,
+        reviewer_id=req.reviewer_id,
+        review_decision=req.review_decision,
+        review_reason=req.review_reason,
+        confidence_score=req.confidence_score,
+        risk_score=req.risk_score,
+        metadata=req.metadata,
+    )
+
+
+@app.get("/admin/protocol-rollback-reviews/evaluate")
+def admin_protocol_rollback_reviews_evaluate(
+    rollback_id: int | None = None,
+    adaptation_id: int | None = None,
+    monitor_id: int | None = None,
+    min_reviews: int = 2,
+    max_avg_risk: float = 0.60,
+    min_avg_confidence: float = 0.65,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return evaluate_protocol_rollback_reviews_db(
+        rollback_id=rollback_id,
+        adaptation_id=adaptation_id,
+        monitor_id=monitor_id,
+        min_reviews=min_reviews,
+        max_avg_risk=max_avg_risk,
+        min_avg_confidence=min_avg_confidence,
     )
 
 

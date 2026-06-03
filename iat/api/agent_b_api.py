@@ -153,6 +153,10 @@ from iat.api.db import (
     store_protocol_adaptation_review_db,
     get_protocol_adaptation_reviews_db,
     evaluate_protocol_adaptation_reviews_db,
+    store_protocol_adaptation_monitor_db,
+    get_protocol_adaptation_monitors_db,
+    evaluate_protocol_adaptation_monitor_db,
+    run_protocol_adaptation_monitoring_cycle_db,
 )
 
 
@@ -6222,6 +6226,108 @@ def admin_protocol_adaptation_reviews_evaluate(
         min_reviews=min_reviews,
         max_avg_risk=max_avg_risk,
         min_avg_confidence=min_avg_confidence,
+    )
+
+
+
+
+class ProtocolAdaptationMonitorCreateRequest(BaseModel):
+    adaptation_id: int
+    scope: str
+    subject_id: str | None = None
+    metric_name: str
+    baseline_value: float = 0
+    current_value: float = 0
+    threshold_value: float = 0
+    metadata: dict = {}
+
+
+class ProtocolAdaptationMonitorEvaluateRequest(BaseModel):
+    current_value: float | None = None
+    evaluation_note: str = ""
+
+
+@app.get("/admin/protocol-adaptation-monitors")
+def admin_protocol_adaptation_monitors(
+    adaptation_id: int | None = None,
+    scope: str | None = None,
+    subject_id: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return get_protocol_adaptation_monitors_db(
+        adaptation_id=adaptation_id,
+        scope=scope,
+        subject_id=subject_id,
+        status=status,
+        limit=limit,
+    )
+
+
+@app.post("/internal/protocol-adaptation-monitors/store")
+def internal_protocol_adaptation_monitor_store(
+    req: ProtocolAdaptationMonitorCreateRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return store_protocol_adaptation_monitor_db(
+        adaptation_id=req.adaptation_id,
+        scope=req.scope,
+        subject_id=req.subject_id,
+        metric_name=req.metric_name,
+        baseline_value=req.baseline_value,
+        current_value=req.current_value,
+        threshold_value=req.threshold_value,
+        metadata=req.metadata,
+    )
+
+
+@app.post("/internal/protocol-adaptation-monitors/evaluate/{monitor_id}")
+def internal_protocol_adaptation_monitor_evaluate(
+    monitor_id: int,
+    req: ProtocolAdaptationMonitorEvaluateRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return evaluate_protocol_adaptation_monitor_db(
+        monitor_id=monitor_id,
+        current_value=req.current_value,
+        evaluation_note=req.evaluation_note,
+    )
+
+
+@app.post("/internal/protocol-adaptation-monitoring/cycle")
+def internal_protocol_adaptation_monitoring_cycle(
+    limit: int = 100,
+    include_warning: bool = True,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return run_protocol_adaptation_monitoring_cycle_db(
+        limit=limit,
+        include_warning=include_warning,
     )
 
 

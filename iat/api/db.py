@@ -97,6 +97,76 @@ def get_last_insert_id_db(cur):
 
 
 
+
+def init_protocol_adaptation_monitors_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    if USE_POSTGRES:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS protocol_adaptation_monitors (
+            monitor_id SERIAL PRIMARY KEY,
+
+            adaptation_id INTEGER,
+
+            scope TEXT NOT NULL,
+            subject_id TEXT,
+
+            metric_name TEXT NOT NULL,
+
+            baseline_value REAL DEFAULT 0,
+            current_value REAL DEFAULT 0,
+            threshold_value REAL DEFAULT 0,
+
+            status TEXT DEFAULT 'active',
+
+            created_at INTEGER NOT NULL,
+            last_checked_at INTEGER,
+            updated_at INTEGER NOT NULL,
+
+            metadata TEXT DEFAULT '{}'
+        )
+        """)
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS protocol_adaptation_monitors (
+            monitor_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            adaptation_id INTEGER,
+
+            scope TEXT NOT NULL,
+            subject_id TEXT,
+
+            metric_name TEXT NOT NULL,
+
+            baseline_value REAL DEFAULT 0,
+            current_value REAL DEFAULT 0,
+            threshold_value REAL DEFAULT 0,
+
+            status TEXT DEFAULT 'active',
+
+            created_at INTEGER NOT NULL,
+            last_checked_at INTEGER,
+            updated_at INTEGER NOT NULL,
+
+            metadata TEXT DEFAULT '{}'
+        )
+        """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_protocol_adaptation_monitors
+    ON protocol_adaptation_monitors(
+        adaptation_id,
+        scope,
+        status
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+
 def init_protocol_adaptation_reviews_table():
     conn = get_conn()
     cur = conn.cursor()
@@ -233,6 +303,317 @@ def init_protocol_rollbacks_table():
     release_conn(conn)
 
 
+
+
+
+
+def store_protocol_adaptation_monitor_db(
+    adaptation_id,
+    scope,
+    subject_id,
+    metric_name,
+    baseline_value=0,
+    current_value=0,
+    threshold_value=0,
+    metadata=None,
+):
+    metadata = metadata or {}
+    now = int(time.time())
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    INSERT INTO protocol_adaptation_monitors (
+        adaptation_id,
+        scope,
+        subject_id,
+        metric_name,
+        baseline_value,
+        current_value,
+        threshold_value,
+        status,
+        created_at,
+        updated_at,
+        metadata
+    )
+    VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})
+    """, (
+        adaptation_id,
+        scope,
+        subject_id,
+        metric_name,
+        baseline_value,
+        current_value,
+        threshold_value,
+        "active",
+        now,
+        now,
+        json.dumps(metadata, sort_keys=True),
+    ))
+
+    monitor_id = get_last_insert_id_db(cur)
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "stored",
+        "monitor_id": monitor_id,
+        "adaptation_id": adaptation_id,
+        "metric_name": metric_name,
+    }
+
+
+def get_protocol_adaptation_monitors_db(
+    adaptation_id=None,
+    scope=None,
+    subject_id=None,
+    status=None,
+    limit=50,
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    where = []
+    params = []
+
+    if adaptation_id is not None:
+        where.append(f"adaptation_id = {p}")
+        params.append(adaptation_id)
+
+    if scope:
+        where.append(f"scope = {p}")
+        params.append(scope)
+
+    if subject_id:
+        where.append(f"subject_id = {p}")
+        params.append(subject_id)
+
+    if status:
+        where.append(f"status = {p}")
+        params.append(status)
+
+    where_sql = "WHERE " + " AND ".join(where) if where else ""
+
+    cur.execute(f"""
+    SELECT *
+    FROM protocol_adaptation_monitors
+    {where_sql}
+    ORDER BY created_at DESC
+    LIMIT {int(limit or 50)}
+    """, tuple(params))
+
+    rows = [dict(r) for r in cur.fetchall()]
+
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "count": len(rows),
+        "monitors": rows,
+    }
+
+
+
+
+def evaluate_protocol_adaptation_monitor_db(
+    monitor_id,
+    current_value=None,
+    evaluation_note="",
+):
+    if not monitor_id:
+        return {
+            "status": "error",
+            "message": "monitor_id_required",
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    SELECT *
+    FROM protocol_adaptation_monitors
+    WHERE monitor_id = {p}
+    """, (monitor_id,))
+
+    row = cur.fetchone()
+
+    if not row:
+        release_conn(conn)
+        return {
+            "status": "not_found",
+            "monitor_id": monitor_id,
+        }
+
+    baseline_value = float(row_get(row, "baseline_value", 0) or 0)
+    previous_current = float(row_get(row, "current_value", 0) or 0)
+    threshold_value = float(row_get(row, "threshold_value", 0) or 0)
+
+    if current_value is None:
+        current_value = previous_current
+
+    current_value = float(current_value or 0)
+
+    health_status = "healthy"
+    rollback_recommended = False
+    reason = "metric_above_threshold"
+
+    if current_value < threshold_value:
+        health_status = "degradation_detected"
+        rollback_recommended = True
+        reason = "metric_below_threshold"
+    elif baseline_value > 0 and current_value < (baseline_value * 0.90):
+        health_status = "warning"
+        rollback_recommended = False
+        reason = "metric_dropped_more_than_10_percent_from_baseline"
+
+    try:
+        metadata = json.loads(row_get(row, "metadata") or "{}")
+    except Exception:
+        metadata = {}
+
+    metadata["last_evaluation_note"] = evaluation_note
+    metadata["last_health_status"] = health_status
+    metadata["rollback_recommended"] = rollback_recommended
+    metadata["rollback_authority"] = "foundation_or_core_only"
+    metadata["monitor_informs_protocol"] = True
+    metadata["monitor_governs_protocol"] = False
+    metadata["protocol_core_sovereignty_reserved"] = True
+
+    new_status = "active"
+    if health_status == "degradation_detected":
+        new_status = "degradation_detected"
+    elif health_status == "warning":
+        new_status = "warning"
+
+    cur.execute(f"""
+    UPDATE protocol_adaptation_monitors
+    SET current_value = {p},
+        status = {p},
+        last_checked_at = {p},
+        updated_at = {p},
+        metadata = {p}
+    WHERE monitor_id = {p}
+    """, (
+        round(current_value, 4),
+        new_status,
+        now,
+        now,
+        json.dumps(metadata, sort_keys=True),
+        monitor_id,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "monitor_id": monitor_id,
+        "adaptation_id": row_get(row, "adaptation_id"),
+        "metric_name": row_get(row, "metric_name"),
+        "baseline_value": baseline_value,
+        "current_value": round(current_value, 4),
+        "threshold_value": threshold_value,
+        "health_status": health_status,
+        "rollback_recommended": rollback_recommended,
+        "reason": reason,
+        "policy": {
+            "monitor_informs_protocol": True,
+            "monitor_governs_protocol": False,
+            "rollback_authority": "foundation_or_core_only",
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
+
+
+def run_protocol_adaptation_monitoring_cycle_db(
+    limit=100,
+    include_warning=True,
+):
+    monitors_result = get_protocol_adaptation_monitors_db(
+        status=None,
+        limit=limit,
+    )
+
+    monitors = monitors_result.get("monitors", [])
+
+    evaluated = []
+    degradation_detected = []
+    warnings = []
+    healthy = []
+
+    for monitor in monitors:
+        status = monitor.get("status")
+
+        if status not in ("active", "warning", "degradation_detected"):
+            continue
+
+        monitor_id = monitor.get("monitor_id")
+        current_value = monitor.get("current_value")
+
+        result = evaluate_protocol_adaptation_monitor_db(
+            monitor_id=monitor_id,
+            current_value=current_value,
+            evaluation_note="monitoring_cycle_evaluation",
+        )
+
+        evaluated.append(result)
+
+        health_status = result.get("health_status")
+
+        if health_status == "degradation_detected":
+            degradation_detected.append(result)
+        elif health_status == "warning":
+            warnings.append(result)
+        elif health_status == "healthy":
+            healthy.append(result)
+
+    rollback_recommendations = [
+        {
+            "adaptation_id": item.get("adaptation_id"),
+            "monitor_id": item.get("monitor_id"),
+            "metric_name": item.get("metric_name"),
+            "reason": item.get("reason"),
+            "current_value": item.get("current_value"),
+            "threshold_value": item.get("threshold_value"),
+            "recommended_action": "review_and_execute_rollback",
+            "rollback_authority": "foundation_or_core_only",
+        }
+        for item in degradation_detected
+        if item.get("rollback_recommended")
+    ]
+
+    summary = {
+        "monitors_checked": len(evaluated),
+        "healthy_count": len(healthy),
+        "warning_count": len(warnings),
+        "degradation_count": len(degradation_detected),
+        "rollback_recommendation_count": len(rollback_recommendations),
+    }
+
+    return {
+        "status": "ok",
+        "cycle_type": "protocol_adaptation_monitoring_cycle",
+        "summary": summary,
+        "healthy": healthy,
+        "warnings": warnings if include_warning else [],
+        "degradation_detected": degradation_detected,
+        "rollback_recommendations": rollback_recommendations,
+        "policy": {
+            "monitoring_cycle_informs_protocol": True,
+            "monitoring_cycle_governs_protocol": False,
+            "automatic_rollback_executed": False,
+            "rollback_authority": "foundation_or_core_only",
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
 
 
 
@@ -3985,6 +4366,7 @@ def init_db():
     init_protocol_adaptations_table()
     init_protocol_rollbacks_table()
     init_protocol_adaptation_reviews_table()
+    init_protocol_adaptation_monitors_table()
     init_sellers_table()
     ensure_seller_punishment_columns()
     init_seller_agents_table()

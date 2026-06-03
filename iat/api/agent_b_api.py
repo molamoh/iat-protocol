@@ -150,6 +150,9 @@ from iat.api.db import (
     apply_protocol_adaptation_db,
     get_protocol_rollbacks_db,
     rollback_protocol_adaptation_db,
+    store_protocol_adaptation_review_db,
+    get_protocol_adaptation_reviews_db,
+    evaluate_protocol_adaptation_reviews_db,
 )
 
 
@@ -6137,6 +6140,88 @@ def internal_protocol_rollback_execute_by_adaptation(
         adaptation_id=adaptation_id,
         executed_by=req.executed_by,
         rollback_reason=req.rollback_reason,
+    )
+
+
+
+
+class ProtocolAdaptationReviewCreateRequest(BaseModel):
+    adaptation_id: int
+    reviewer_type: str
+    reviewer_id: str
+    review_decision: str
+    review_reason: str | None = None
+    confidence_score: float = 0.0
+    risk_score: float = 0.0
+    metadata: dict = {}
+
+
+@app.get("/admin/protocol-adaptation-reviews")
+def admin_protocol_adaptation_reviews(
+    adaptation_id: int | None = None,
+    reviewer_type: str | None = None,
+    reviewer_id: str | None = None,
+    review_decision: str | None = None,
+    limit: int = 50,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return get_protocol_adaptation_reviews_db(
+        adaptation_id=adaptation_id,
+        reviewer_type=reviewer_type,
+        reviewer_id=reviewer_id,
+        review_decision=review_decision,
+        limit=limit,
+    )
+
+
+@app.post("/internal/protocol-adaptation-reviews/store")
+def internal_protocol_adaptation_review_store(
+    req: ProtocolAdaptationReviewCreateRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return store_protocol_adaptation_review_db(
+        adaptation_id=req.adaptation_id,
+        reviewer_type=req.reviewer_type,
+        reviewer_id=req.reviewer_id,
+        review_decision=req.review_decision,
+        review_reason=req.review_reason,
+        confidence_score=req.confidence_score,
+        risk_score=req.risk_score,
+        metadata=req.metadata,
+    )
+
+
+@app.get("/admin/protocol-adaptation-reviews/evaluate/{adaptation_id}")
+def admin_protocol_adaptation_reviews_evaluate(
+    adaptation_id: int,
+    min_reviews: int = 2,
+    max_avg_risk: float = 0.60,
+    min_avg_confidence: float = 0.65,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return evaluate_protocol_adaptation_reviews_db(
+        adaptation_id=adaptation_id,
+        min_reviews=min_reviews,
+        max_avg_risk=max_avg_risk,
+        min_avg_confidence=min_avg_confidence,
     )
 
 

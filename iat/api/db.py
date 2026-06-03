@@ -83,6 +83,72 @@ def qmark():
 
 
 
+
+def init_protocol_adaptation_reviews_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    if USE_POSTGRES:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS protocol_adaptation_reviews (
+            review_id SERIAL PRIMARY KEY,
+
+            adaptation_id INTEGER NOT NULL,
+
+            reviewer_type TEXT NOT NULL,
+            reviewer_id TEXT NOT NULL,
+
+            review_decision TEXT NOT NULL,
+
+            review_reason TEXT,
+
+            confidence_score REAL DEFAULT 0,
+            risk_score REAL DEFAULT 0,
+
+            metadata TEXT DEFAULT '{}',
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """)
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS protocol_adaptation_reviews (
+            review_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            adaptation_id INTEGER NOT NULL,
+
+            reviewer_type TEXT NOT NULL,
+            reviewer_id TEXT NOT NULL,
+
+            review_decision TEXT NOT NULL,
+
+            review_reason TEXT,
+
+            confidence_score REAL DEFAULT 0,
+            risk_score REAL DEFAULT 0,
+
+            metadata TEXT DEFAULT '{}',
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_protocol_adaptation_reviews
+    ON protocol_adaptation_reviews(
+        adaptation_id,
+        reviewer_type,
+        review_decision
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+
 def init_protocol_rollbacks_table():
     conn = get_conn()
     cur = conn.cursor()
@@ -153,6 +219,260 @@ def init_protocol_rollbacks_table():
     conn.commit()
     release_conn(conn)
 
+
+
+
+
+def store_protocol_adaptation_review_db(
+    adaptation_id,
+    reviewer_type,
+    reviewer_id,
+    review_decision,
+    review_reason=None,
+    confidence_score=0.0,
+    risk_score=0.0,
+    metadata=None,
+):
+    if not adaptation_id:
+        return {
+            "status": "error",
+            "message": "adaptation_id_required",
+        }
+
+    if not reviewer_type or not reviewer_id:
+        return {
+            "status": "error",
+            "message": "reviewer_required",
+        }
+
+    if review_decision not in [
+        "approve",
+        "reject",
+        "abstain",
+        "needs_more_evidence",
+    ]:
+        return {
+            "status": "error",
+            "message": "invalid_review_decision",
+        }
+
+    metadata = metadata or {}
+    now = int(time.time())
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    INSERT INTO protocol_adaptation_reviews (
+        adaptation_id,
+        reviewer_type,
+        reviewer_id,
+        review_decision,
+        review_reason,
+        confidence_score,
+        risk_score,
+        metadata,
+        created_at,
+        updated_at
+    )
+    VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p})
+    """, (
+        adaptation_id,
+        reviewer_type,
+        reviewer_id,
+        review_decision,
+        review_reason,
+        confidence_score,
+        risk_score,
+        json.dumps(metadata, sort_keys=True),
+        now,
+        now,
+    ))
+
+    review_id = cur.lastrowid
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "stored",
+        "review_id": review_id,
+        "adaptation_id": adaptation_id,
+        "review_decision": review_decision,
+    }
+
+
+def get_protocol_adaptation_reviews_db(
+    adaptation_id=None,
+    reviewer_type=None,
+    reviewer_id=None,
+    review_decision=None,
+    limit=50,
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    where = []
+    params = []
+
+    if adaptation_id is not None:
+        where.append(f"adaptation_id = {p}")
+        params.append(adaptation_id)
+
+    if reviewer_type:
+        where.append(f"reviewer_type = {p}")
+        params.append(reviewer_type)
+
+    if reviewer_id:
+        where.append(f"reviewer_id = {p}")
+        params.append(reviewer_id)
+
+    if review_decision:
+        where.append(f"review_decision = {p}")
+        params.append(review_decision)
+
+    where_sql = "WHERE " + " AND ".join(where) if where else ""
+
+    cur.execute(f"""
+    SELECT *
+    FROM protocol_adaptation_reviews
+    {where_sql}
+    ORDER BY created_at DESC
+    LIMIT {int(limit or 50)}
+    """, tuple(params))
+
+    rows = [dict(r) for r in cur.fetchall()]
+
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "count": len(rows),
+        "reviews": rows,
+    }
+
+
+
+
+def evaluate_protocol_adaptation_reviews_db(
+    adaptation_id,
+    min_reviews=2,
+    max_avg_risk=0.60,
+    min_avg_confidence=0.65,
+):
+    if not adaptation_id:
+        return {
+            "status": "error",
+            "message": "adaptation_id_required",
+        }
+
+    reviews_result = get_protocol_adaptation_reviews_db(
+        adaptation_id=adaptation_id,
+        limit=100,
+    )
+
+    reviews = reviews_result.get("reviews", [])
+
+    approve_reviews = [
+        r for r in reviews
+        if r.get("review_decision") == "approve"
+    ]
+
+    reject_reviews = [
+        r for r in reviews
+        if r.get("review_decision") == "reject"
+    ]
+
+    needs_more_evidence_reviews = [
+        r for r in reviews
+        if r.get("review_decision") == "needs_more_evidence"
+    ]
+
+    abstain_reviews = [
+        r for r in reviews
+        if r.get("review_decision") == "abstain"
+    ]
+
+    total_reviews = len(reviews)
+    approve_count = len(approve_reviews)
+    reject_count = len(reject_reviews)
+    needs_more_evidence_count = len(needs_more_evidence_reviews)
+    abstain_count = len(abstain_reviews)
+
+    confidence_values = [
+        float(r.get("confidence_score", 0) or 0)
+        for r in reviews
+        if r.get("review_decision") in ("approve", "reject", "needs_more_evidence")
+    ]
+
+    risk_values = [
+        float(r.get("risk_score", 0) or 0)
+        for r in reviews
+        if r.get("review_decision") in ("approve", "reject", "needs_more_evidence")
+    ]
+
+    avg_confidence = (
+        sum(confidence_values) / len(confidence_values)
+        if confidence_values else 0
+    )
+
+    avg_risk = (
+        sum(risk_values) / len(risk_values)
+        if risk_values else 1
+    )
+
+    readiness = "needs_more_reviews"
+    reason = "minimum_reviews_not_met"
+
+    if total_reviews < int(min_reviews or 2):
+        readiness = "needs_more_reviews"
+        reason = "minimum_reviews_not_met"
+
+    elif reject_count > 0:
+        readiness = "blocked"
+        reason = "one_or_more_reviews_rejected"
+
+    elif needs_more_evidence_count > 0:
+        readiness = "needs_more_evidence"
+        reason = "one_or_more_reviews_need_more_evidence"
+
+    elif approve_count >= int(min_reviews or 2) and avg_confidence >= min_avg_confidence and avg_risk <= max_avg_risk:
+        readiness = "ready_for_approval"
+        reason = "review_threshold_met"
+
+    elif avg_confidence < min_avg_confidence:
+        readiness = "blocked"
+        reason = "average_confidence_too_low"
+
+    elif avg_risk > max_avg_risk:
+        readiness = "blocked"
+        reason = "average_risk_too_high"
+
+    return {
+        "status": "ok",
+        "adaptation_id": adaptation_id,
+        "readiness": readiness,
+        "reason": reason,
+        "review_summary": {
+            "total_reviews": total_reviews,
+            "approve_count": approve_count,
+            "reject_count": reject_count,
+            "needs_more_evidence_count": needs_more_evidence_count,
+            "abstain_count": abstain_count,
+            "avg_confidence": round(avg_confidence, 4),
+            "avg_risk": round(avg_risk, 4),
+            "min_reviews": int(min_reviews or 2),
+            "min_avg_confidence": min_avg_confidence,
+            "max_avg_risk": max_avg_risk,
+        },
+        "policy": {
+            "reviews_inform_approval": True,
+            "reviews_do_not_govern_protocol": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
 
 
 
@@ -787,6 +1107,21 @@ def approve_protocol_adaptation_db(
         return {
             "status": "not_found",
             "adaptation_id": adaptation_id,
+        }
+
+    review_evaluation = evaluate_protocol_adaptation_reviews_db(
+        adaptation_id
+    )
+
+    readiness = review_evaluation.get("readiness")
+
+    if readiness != "ready_for_approval":
+        release_conn(conn)
+        return {
+            "status": "error",
+            "message": "adaptation_not_ready_for_approval",
+            "adaptation_id": adaptation_id,
+            "review_evaluation": review_evaluation,
         }
 
     current_status = row_get(row, "status", "proposed")
@@ -3636,6 +3971,7 @@ def init_db():
     init_protocol_experiments_table()
     init_protocol_adaptations_table()
     init_protocol_rollbacks_table()
+    init_protocol_adaptation_reviews_table()
     init_sellers_table()
     ensure_seller_punishment_columns()
     init_seller_agents_table()

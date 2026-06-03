@@ -77,6 +77,16 @@ def qmark():
 
 
 
+def get_last_insert_id_db(cur):
+    if USE_POSTGRES:
+        cur.execute("SELECT LASTVAL() AS id")
+        row = cur.fetchone()
+        return row_get(row, "id")
+
+    return get_last_insert_id_db(cur)
+
+
+
 
 
 
@@ -290,7 +300,7 @@ def store_protocol_adaptation_review_db(
         now,
     ))
 
-    review_id = cur.lastrowid
+    review_id = get_last_insert_id_db(cur)
 
     conn.commit()
     release_conn(conn)
@@ -538,7 +548,7 @@ def store_protocol_rollback_db(
         json.dumps(metadata, sort_keys=True),
     ))
 
-    rollback_id = cur.lastrowid
+    rollback_id = get_last_insert_id_db(cur)
 
     conn.commit()
     release_conn(conn)
@@ -994,7 +1004,7 @@ def store_protocol_adaptation_db(
         json.dumps(metadata, sort_keys=True),
     ))
 
-    adaptation_id = cur.lastrowid
+    adaptation_id = get_last_insert_id_db(cur)
 
     conn.commit()
     release_conn(conn)
@@ -1694,7 +1704,7 @@ def store_protocol_experiment_db(
         json.dumps(metadata, sort_keys=True),
     ))
 
-    experiment_id = cur.lastrowid
+    experiment_id = get_last_insert_id_db(cur)
 
     conn.commit()
     release_conn(conn)
@@ -2166,7 +2176,7 @@ def store_protocol_hypothesis_db(
         json.dumps(metadata, sort_keys=True),
     ))
 
-    hypothesis_id = cur.lastrowid
+    hypothesis_id = get_last_insert_id_db(cur)
 
     conn.commit()
     release_conn(conn)
@@ -2561,7 +2571,7 @@ def store_protocol_knowledge_db(
         now,
     ))
 
-    knowledge_id = cur.lastrowid
+    knowledge_id = get_last_insert_id_db(cur)
 
     conn.commit()
     release_conn(conn)
@@ -3118,7 +3128,7 @@ def store_protocol_memory_db(
         now,
     ))
 
-    memory_id = cur.lastrowid
+    memory_id = get_last_insert_id_db(cur)
 
     conn.commit()
     release_conn(conn)

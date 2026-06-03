@@ -83,6 +83,9 @@ def get_last_insert_id_db(cur):
         row = cur.fetchone()
         return row_get(row, "id")
 
+    return cur.lastrowid
+
+
     return get_last_insert_id_db(cur)
 
 

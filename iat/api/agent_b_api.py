@@ -116,6 +116,9 @@ from iat.api.db import (
     create_seller_agent_factory_request_db,
     list_seller_agent_factory_requests_db,
     run_seller_agent_factory_review_db,
+    store_seller_agent_factory_review_db,
+    get_seller_agent_factory_reviews_db,
+    evaluate_seller_agent_factory_reviews_db,
     run_seller_agent_sandbox_review_db,
     run_seller_agent_simulation_review_db,
     run_seller_agent_generation_db,
@@ -6493,6 +6496,88 @@ def internal_protocol_rollback_proposal_store(
         confidence_score=req.confidence_score,
         risk_score=req.risk_score,
         metadata=req.metadata,
+    )
+
+
+
+
+class SellerAgentFactoryReviewRequest(BaseModel):
+    factory_request_id: str
+    seller_id: str | None = None
+
+    reviewer_type: str
+    reviewer_id: str
+
+    review_decision: str
+    review_reason: str | None = None
+
+    confidence_score: float = 0.0
+    risk_score: float = 0.0
+
+    capability_score: float = 0.0
+    policy_score: float = 0.0
+    safety_score: float = 0.0
+
+    metadata: dict = {}
+
+
+@app.get("/admin/seller-agent-factory-reviews")
+def admin_seller_agent_factory_reviews(
+    factory_request_id: str | None = None,
+    seller_id: str | None = None,
+    reviewer_type: str | None = None,
+    reviewer_id: str | None = None,
+    review_decision: str | None = None,
+    limit: int = 50,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    return get_seller_agent_factory_reviews_db(
+        factory_request_id=factory_request_id,
+        seller_id=seller_id,
+        reviewer_type=reviewer_type,
+        reviewer_id=reviewer_id,
+        review_decision=review_decision,
+        limit=limit,
+    )
+
+
+@app.post("/internal/seller-agent-factory-reviews/store")
+def internal_seller_agent_factory_review_store(
+    req: SellerAgentFactoryReviewRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    return store_seller_agent_factory_review_db(
+        factory_request_id=req.factory_request_id,
+        seller_id=req.seller_id,
+        reviewer_type=req.reviewer_type,
+        reviewer_id=req.reviewer_id,
+        review_decision=req.review_decision,
+        review_reason=req.review_reason,
+        confidence_score=req.confidence_score,
+        risk_score=req.risk_score,
+        capability_score=req.capability_score,
+        policy_score=req.policy_score,
+        safety_score=req.safety_score,
+        metadata=req.metadata,
+    )
+
+
+@app.get("/admin/seller-agent-factory-reviews/evaluate/{factory_request_id}")
+def admin_seller_agent_factory_reviews_evaluate(
+    factory_request_id: str,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    return evaluate_seller_agent_factory_reviews_db(
+        factory_request_id=factory_request_id
     )
 
 

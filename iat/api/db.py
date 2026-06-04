@@ -247,6 +247,28 @@ def approve_seller_agent_factory_request_db(
 
     seller_id = factory_request.get("seller_id")
 
+    existing_approvals = get_seller_agent_factory_approvals_db(
+        factory_request_id=factory_request_id,
+        status="approved",
+        limit=1,
+    )
+
+    if existing_approvals.get("count", 0) > 0:
+        return {
+            "status": "already_approved",
+            "factory_request_id": factory_request_id,
+            "seller_id": seller_id,
+            "approval": existing_approvals.get("approvals", [None])[0],
+            "review_evaluation": review_evaluation,
+            "policy": {
+                "factory_reviews_required": True,
+                "seller_cannot_self_approve": True,
+                "factory_approval_required_before_sandbox": True,
+                "duplicate_approval_prevented": True,
+                "protocol_core_sovereignty_reserved": True,
+            },
+        }
+
     approval = store_seller_agent_factory_approval_db(
         factory_request_id=factory_request_id,
         seller_id=seller_id,

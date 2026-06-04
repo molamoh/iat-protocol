@@ -119,6 +119,8 @@ from iat.api.db import (
     store_seller_agent_factory_review_db,
     get_seller_agent_factory_reviews_db,
     evaluate_seller_agent_factory_reviews_db,
+    approve_seller_agent_factory_request_db,
+    get_seller_agent_factory_approvals_db,
     run_seller_agent_sandbox_review_db,
     run_seller_agent_simulation_review_db,
     run_seller_agent_generation_db,
@@ -6578,6 +6580,48 @@ def admin_seller_agent_factory_reviews_evaluate(
 
     return evaluate_seller_agent_factory_reviews_db(
         factory_request_id=factory_request_id
+    )
+
+
+
+
+class SellerAgentFactoryApprovalRequest(BaseModel):
+    approved_by: str = "iat_core"
+    approval_reason: str = ""
+
+
+@app.get("/admin/seller-agent-factory-approvals")
+def admin_seller_agent_factory_approvals(
+    factory_request_id: str | None = None,
+    seller_id: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    return get_seller_agent_factory_approvals_db(
+        factory_request_id=factory_request_id,
+        seller_id=seller_id,
+        status=status,
+        limit=limit,
+    )
+
+
+@app.post("/internal/seller-agent-factory-approvals/approve/{factory_request_id}")
+def internal_seller_agent_factory_approve(
+    factory_request_id: str,
+    req: SellerAgentFactoryApprovalRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    return approve_seller_agent_factory_request_db(
+        factory_request_id=factory_request_id,
+        approved_by=req.approved_by,
+        approval_reason=req.approval_reason,
     )
 
 

@@ -102,6 +102,178 @@ def get_last_insert_id_db(cur):
 
 
 
+
+def store_seller_agent_factory_approval_db(
+    factory_request_id,
+    seller_id,
+    approved_by,
+    approval_reason="",
+    metadata=None,
+):
+    if not factory_request_id:
+        return {"status": "error", "message": "factory_request_id_required"}
+
+    if not approved_by:
+        return {"status": "error", "message": "approved_by_required"}
+
+    metadata = metadata or {}
+    metadata = {
+        **metadata,
+        "factory_approval_informs_protocol": True,
+        "factory_approval_governs_protocol": False,
+        "seller_cannot_self_approve": True,
+        "protocol_core_sovereignty_reserved": True,
+    }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    INSERT INTO seller_agent_factory_approvals (
+        factory_request_id,
+        seller_id,
+        approved_by,
+        approval_reason,
+        status,
+        created_at,
+        updated_at,
+        metadata
+    )
+    VALUES ({p},{p},{p},{p},{p},{p},{p},{p})
+    """, (
+        factory_request_id,
+        seller_id,
+        approved_by,
+        approval_reason,
+        "approved",
+        now,
+        now,
+        json.dumps(metadata, sort_keys=True),
+    ))
+
+    approval_id = get_last_insert_id_db(cur)
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "stored",
+        "approval_id": approval_id,
+        "factory_request_id": factory_request_id,
+        "seller_id": seller_id,
+        "approved_by": approved_by,
+    }
+
+
+def get_seller_agent_factory_approvals_db(
+    factory_request_id=None,
+    seller_id=None,
+    status=None,
+    limit=50,
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    where = []
+    params = []
+
+    if factory_request_id:
+        where.append(f"factory_request_id = {p}")
+        params.append(factory_request_id)
+
+    if seller_id:
+        where.append(f"seller_id = {p}")
+        params.append(seller_id)
+
+    if status:
+        where.append(f"status = {p}")
+        params.append(status)
+
+    where_sql = "WHERE " + " AND ".join(where) if where else ""
+
+    cur.execute(f"""
+    SELECT *
+    FROM seller_agent_factory_approvals
+    {where_sql}
+    ORDER BY created_at DESC
+    LIMIT {int(limit or 50)}
+    """, tuple(params))
+
+    rows = [dict(r) for r in cur.fetchall()]
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "count": len(rows),
+        "approvals": rows,
+    }
+
+
+def approve_seller_agent_factory_request_db(
+    factory_request_id,
+    approved_by="iat_core",
+    approval_reason="",
+):
+    if not factory_request_id:
+        return {"status": "error", "message": "factory_request_id_required"}
+
+    factory_request = get_seller_agent_factory_request_db(factory_request_id)
+    if not factory_request:
+        return {
+            "status": "error",
+            "message": "factory_request_not_found",
+            "factory_request_id": factory_request_id,
+        }
+
+    review_evaluation = evaluate_seller_agent_factory_reviews_db(
+        factory_request_id=factory_request_id
+    )
+
+    if review_evaluation.get("readiness") != "ready_for_factory_approval":
+        return {
+            "status": "error",
+            "message": "factory_request_not_ready_for_approval",
+            "factory_request_id": factory_request_id,
+            "review_evaluation": review_evaluation,
+            "policy": {
+                "factory_reviews_required": True,
+                "seller_cannot_self_approve": True,
+                "protocol_core_sovereignty_reserved": True,
+            },
+        }
+
+    seller_id = factory_request.get("seller_id")
+
+    approval = store_seller_agent_factory_approval_db(
+        factory_request_id=factory_request_id,
+        seller_id=seller_id,
+        approved_by=approved_by,
+        approval_reason=approval_reason,
+        metadata={
+            "review_evaluation": review_evaluation,
+            "approval_source": "approve_seller_agent_factory_request_db",
+        },
+    )
+
+    return {
+        "status": "approved",
+        "factory_request_id": factory_request_id,
+        "seller_id": seller_id,
+        "approval": approval,
+        "review_evaluation": review_evaluation,
+        "policy": {
+            "factory_reviews_required": True,
+            "seller_cannot_self_approve": True,
+            "factory_approval_required_before_sandbox": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
+
 def store_seller_agent_factory_review_db(
     factory_request_id,
     reviewer_type,
@@ -362,6 +534,64 @@ def evaluate_seller_agent_factory_reviews_db(
             "protocol_core_sovereignty_reserved": True,
         },
     }
+
+
+
+
+def init_seller_agent_factory_approvals_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    if USE_POSTGRES:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS seller_agent_factory_approvals (
+            approval_id SERIAL PRIMARY KEY,
+
+            factory_request_id TEXT NOT NULL,
+            seller_id TEXT,
+
+            approved_by TEXT NOT NULL,
+            approval_reason TEXT,
+
+            status TEXT DEFAULT 'approved',
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+
+            metadata TEXT DEFAULT '{}'
+        )
+        """)
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS seller_agent_factory_approvals (
+            approval_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            factory_request_id TEXT NOT NULL,
+            seller_id TEXT,
+
+            approved_by TEXT NOT NULL,
+            approval_reason TEXT,
+
+            status TEXT DEFAULT 'approved',
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+
+            metadata TEXT DEFAULT '{}'
+        )
+        """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_seller_agent_factory_approvals
+    ON seller_agent_factory_approvals(
+        factory_request_id,
+        seller_id,
+        status
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
 
 
 
@@ -5331,6 +5561,7 @@ def init_db():
     init_protocol_rollback_reviews_table()
     init_protocol_rollback_proposals_table()
     init_seller_agent_factory_reviews_table()
+    init_seller_agent_factory_approvals_table()
     init_sellers_table()
     ensure_seller_punishment_columns()
     init_seller_agents_table()
@@ -5913,6 +6144,53 @@ def run_seller_agent_sandbox_review_db(factory_request_id):
             "factory_request_id": factory_request_id,
             "governance_status": factory_request.get("governance_status"),
             "sandbox_status": factory_request.get("sandbox_status"),
+        }
+
+    approvals_result = get_seller_agent_factory_approvals_db(
+        factory_request_id=factory_request_id,
+        status="approved",
+        limit=1,
+    )
+
+    if approvals_result.get("count", 0) < 1:
+        conn = get_conn()
+        cur = conn.cursor()
+        p = qmark()
+        now = int(time.time())
+
+        cur.execute(f"""
+        UPDATE seller_agent_factory_requests
+        SET governance_status = {p},
+            factory_status = {p},
+            sandbox_status = {p},
+            simulation_status = {p},
+            updated_at = {p}
+        WHERE factory_request_id = {p}
+        """, (
+            "pending_factory_approval",
+            "pending_factory_approval",
+            "not_started",
+            "not_started",
+            now,
+            factory_request_id,
+        ))
+
+        conn.commit()
+        release_conn(conn)
+
+        return {
+            "status": "blocked",
+            "message": "factory_approval_required_before_sandbox",
+            "factory_request_id": factory_request_id,
+            "review_evaluation": review_evaluation,
+            "approvals": approvals_result,
+            "policy": {
+                "factory_reviews_required": True,
+                "factory_approval_required_before_sandbox": True,
+                "seller_cannot_self_approve": True,
+                "protocol_core_sovereignty_reserved": True,
+            },
+            "factory_request": get_seller_agent_factory_request_db(factory_request_id),
         }
 
     seller = get_seller_db(factory_request.get("seller_id"))
@@ -6773,6 +7051,53 @@ def run_seller_agent_factory_review_db(factory_request_id):
                 "seller_cannot_self_approve": True,
                 "factory_reviews_required": True,
                 "foundation_reviews_required": True,
+                "protocol_core_sovereignty_reserved": True,
+            },
+            "factory_request": get_seller_agent_factory_request_db(factory_request_id),
+        }
+
+    approvals_result = get_seller_agent_factory_approvals_db(
+        factory_request_id=factory_request_id,
+        status="approved",
+        limit=1,
+    )
+
+    if approvals_result.get("count", 0) < 1:
+        conn = get_conn()
+        cur = conn.cursor()
+        p = qmark()
+        now = int(time.time())
+
+        cur.execute(f"""
+        UPDATE seller_agent_factory_requests
+        SET governance_status = {p},
+            factory_status = {p},
+            sandbox_status = {p},
+            simulation_status = {p},
+            updated_at = {p}
+        WHERE factory_request_id = {p}
+        """, (
+            "pending_factory_approval",
+            "pending_factory_approval",
+            "not_started",
+            "not_started",
+            now,
+            factory_request_id,
+        ))
+
+        conn.commit()
+        release_conn(conn)
+
+        return {
+            "status": "blocked",
+            "message": "factory_approval_required_before_sandbox",
+            "factory_request_id": factory_request_id,
+            "review_evaluation": review_evaluation,
+            "approvals": approvals_result,
+            "policy": {
+                "factory_reviews_required": True,
+                "factory_approval_required_before_sandbox": True,
+                "seller_cannot_self_approve": True,
                 "protocol_core_sovereignty_reserved": True,
             },
             "factory_request": get_seller_agent_factory_request_db(factory_request_id),

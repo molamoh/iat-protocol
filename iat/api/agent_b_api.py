@@ -121,6 +121,11 @@ from iat.api.db import (
     evaluate_seller_agent_factory_reviews_db,
     approve_seller_agent_factory_request_db,
     get_seller_agent_factory_approvals_db,
+    store_seller_agent_sandbox_review_db,
+    get_seller_agent_sandbox_reviews_db,
+    evaluate_seller_agent_sandbox_reviews_db,
+    approve_seller_agent_sandbox_request_db,
+    get_seller_agent_sandbox_approvals_db,
     run_seller_agent_sandbox_review_db,
     run_seller_agent_simulation_review_db,
     run_seller_agent_generation_db,
@@ -6619,6 +6624,128 @@ def internal_seller_agent_factory_approve(
         return {"status": "error", "message": "unauthorized"}
 
     return approve_seller_agent_factory_request_db(
+        factory_request_id=factory_request_id,
+        approved_by=req.approved_by,
+        approval_reason=req.approval_reason,
+    )
+
+
+
+
+class SellerAgentSandboxReviewRequest(BaseModel):
+    factory_request_id: str
+    seller_id: str | None = None
+
+    reviewer_type: str
+    reviewer_id: str
+
+    review_decision: str
+    review_reason: str | None = None
+
+    confidence_score: float = 0.0
+    risk_score: float = 0.0
+
+    sandbox_score: float = 0.0
+    policy_score: float = 0.0
+    safety_score: float = 0.0
+
+    metadata: dict = {}
+
+
+class SellerAgentSandboxApprovalRequest(BaseModel):
+    approved_by: str = "iat_core"
+    approval_reason: str = ""
+
+
+@app.get("/admin/seller-agent-sandbox-reviews")
+def admin_seller_agent_sandbox_reviews(
+    factory_request_id: str | None = None,
+    seller_id: str | None = None,
+    reviewer_type: str | None = None,
+    reviewer_id: str | None = None,
+    review_decision: str | None = None,
+    limit: int = 50,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    return get_seller_agent_sandbox_reviews_db(
+        factory_request_id=factory_request_id,
+        seller_id=seller_id,
+        reviewer_type=reviewer_type,
+        reviewer_id=reviewer_id,
+        review_decision=review_decision,
+        limit=limit,
+    )
+
+
+@app.post("/internal/seller-agent-sandbox-reviews/store")
+def internal_seller_agent_sandbox_review_store(
+    req: SellerAgentSandboxReviewRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    return store_seller_agent_sandbox_review_db(
+        factory_request_id=req.factory_request_id,
+        seller_id=req.seller_id,
+        reviewer_type=req.reviewer_type,
+        reviewer_id=req.reviewer_id,
+        review_decision=req.review_decision,
+        review_reason=req.review_reason,
+        confidence_score=req.confidence_score,
+        risk_score=req.risk_score,
+        sandbox_score=req.sandbox_score,
+        policy_score=req.policy_score,
+        safety_score=req.safety_score,
+        metadata=req.metadata,
+    )
+
+
+@app.get("/admin/seller-agent-sandbox-reviews/evaluate/{factory_request_id}")
+def admin_seller_agent_sandbox_reviews_evaluate(
+    factory_request_id: str,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    return evaluate_seller_agent_sandbox_reviews_db(
+        factory_request_id=factory_request_id
+    )
+
+
+@app.get("/admin/seller-agent-sandbox-approvals")
+def admin_seller_agent_sandbox_approvals(
+    factory_request_id: str | None = None,
+    seller_id: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    return get_seller_agent_sandbox_approvals_db(
+        factory_request_id=factory_request_id,
+        seller_id=seller_id,
+        status=status,
+        limit=limit,
+    )
+
+
+@app.post("/internal/seller-agent-sandbox-approvals/approve/{factory_request_id}")
+def internal_seller_agent_sandbox_approve(
+    factory_request_id: str,
+    req: SellerAgentSandboxApprovalRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    return approve_seller_agent_sandbox_request_db(
         factory_request_id=factory_request_id,
         approved_by=req.approved_by,
         approval_reason=req.approval_reason,

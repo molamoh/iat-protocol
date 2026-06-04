@@ -99,6 +99,77 @@ def get_last_insert_id_db(cur):
 
 
 
+
+def init_protocol_rollback_proposals_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    if USE_POSTGRES:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS protocol_rollback_proposals (
+            proposal_id SERIAL PRIMARY KEY,
+
+            rollback_id INTEGER,
+            adaptation_id INTEGER,
+            monitor_id INTEGER,
+
+            scope TEXT NOT NULL,
+            subject_id TEXT,
+
+            proposal_reason TEXT NOT NULL,
+
+            status TEXT DEFAULT 'proposed',
+
+            confidence_score REAL DEFAULT 0,
+            risk_score REAL DEFAULT 0,
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+
+            metadata TEXT DEFAULT '{}'
+        )
+        """)
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS protocol_rollback_proposals (
+            proposal_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            rollback_id INTEGER,
+            adaptation_id INTEGER,
+            monitor_id INTEGER,
+
+            scope TEXT NOT NULL,
+            subject_id TEXT,
+
+            proposal_reason TEXT NOT NULL,
+
+            status TEXT DEFAULT 'proposed',
+
+            confidence_score REAL DEFAULT 0,
+            risk_score REAL DEFAULT 0,
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+
+            metadata TEXT DEFAULT '{}'
+        )
+        """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_protocol_rollback_proposals_lookup
+    ON protocol_rollback_proposals(
+        rollback_id,
+        adaptation_id,
+        monitor_id,
+        status
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+
 def init_protocol_rollback_reviews_table():
     conn = get_conn()
     cur = conn.cursor()
@@ -374,6 +445,141 @@ def init_protocol_rollbacks_table():
 
 
 
+
+
+
+
+def store_protocol_rollback_proposal_db(
+    scope,
+    proposal_reason,
+    rollback_id=None,
+    adaptation_id=None,
+    monitor_id=None,
+    subject_id=None,
+    confidence_score=0.0,
+    risk_score=0.0,
+    metadata=None,
+):
+    metadata = metadata or {}
+
+    metadata = {
+        **metadata,
+        "proposal_can_propose": True,
+        "proposal_can_govern": False,
+        "rollback_authority": "foundation_or_core_only",
+        "protocol_core_sovereignty_reserved": True,
+    }
+
+    now = int(time.time())
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    INSERT INTO protocol_rollback_proposals (
+        rollback_id,
+        adaptation_id,
+        monitor_id,
+        scope,
+        subject_id,
+        proposal_reason,
+        status,
+        confidence_score,
+        risk_score,
+        created_at,
+        updated_at,
+        metadata
+    )
+    VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})
+    """, (
+        rollback_id,
+        adaptation_id,
+        monitor_id,
+        scope,
+        subject_id,
+        proposal_reason,
+        "proposed",
+        round(float(confidence_score or 0), 4),
+        round(float(risk_score or 0), 4),
+        now,
+        now,
+        json.dumps(metadata, sort_keys=True),
+    ))
+
+    proposal_id = get_last_insert_id_db(cur)
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "stored",
+        "proposal_id": proposal_id,
+        "rollback_id": rollback_id,
+        "adaptation_id": adaptation_id,
+        "monitor_id": monitor_id,
+    }
+
+
+def get_protocol_rollback_proposals_db(
+    rollback_id=None,
+    adaptation_id=None,
+    monitor_id=None,
+    scope=None,
+    subject_id=None,
+    status=None,
+    limit=50,
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    where = []
+    params = []
+
+    if rollback_id is not None:
+        where.append(f"rollback_id = {p}")
+        params.append(rollback_id)
+
+    if adaptation_id is not None:
+        where.append(f"adaptation_id = {p}")
+        params.append(adaptation_id)
+
+    if monitor_id is not None:
+        where.append(f"monitor_id = {p}")
+        params.append(monitor_id)
+
+    if scope:
+        where.append(f"scope = {p}")
+        params.append(scope)
+
+    if subject_id:
+        where.append(f"subject_id = {p}")
+        params.append(subject_id)
+
+    if status:
+        where.append(f"status = {p}")
+        params.append(status)
+
+    where_sql = "WHERE " + " AND ".join(where) if where else ""
+
+    cur.execute(f"""
+    SELECT *
+    FROM protocol_rollback_proposals
+    {where_sql}
+    ORDER BY created_at DESC
+    LIMIT {int(limit or 50)}
+    """, tuple(params))
+
+    rows = [dict(r) for r in cur.fetchall()]
+
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "count": len(rows),
+        "proposals": rows,
+    }
 
 
 
@@ -945,12 +1151,55 @@ def run_protocol_adaptation_monitoring_cycle_db(
         if item.get("rollback_recommended")
     ]
 
+    rollback_proposals_created = []
+
+    for rec in rollback_recommendations:
+        adaptation_id = rec.get("adaptation_id")
+        monitor_id = rec.get("monitor_id")
+
+        existing = get_protocol_rollback_proposals_db(
+            adaptation_id=adaptation_id,
+            monitor_id=monitor_id,
+            status="proposed",
+            limit=1,
+        )
+
+        if existing.get("count", 0) > 0:
+            rollback_proposals_created.append({
+                "status": "already_exists",
+                "adaptation_id": adaptation_id,
+                "monitor_id": monitor_id,
+            })
+            continue
+
+        proposal = store_protocol_rollback_proposal_db(
+            rollback_id=None,
+            adaptation_id=adaptation_id,
+            monitor_id=monitor_id,
+            scope="adaptation_monitor",
+            subject_id=str(monitor_id),
+            proposal_reason=rec.get("reason") or "monitoring_degradation_detected",
+            confidence_score=0.75,
+            risk_score=0.25,
+            metadata={
+                "created_by": "run_protocol_adaptation_monitoring_cycle_db",
+                "metric_name": rec.get("metric_name"),
+                "current_value": rec.get("current_value"),
+                "threshold_value": rec.get("threshold_value"),
+                "recommended_action": rec.get("recommended_action"),
+                "automatic_rollback_executed": False,
+            },
+        )
+
+        rollback_proposals_created.append(proposal)
+
     summary = {
         "monitors_checked": len(evaluated),
         "healthy_count": len(healthy),
         "warning_count": len(warnings),
         "degradation_count": len(degradation_detected),
         "rollback_recommendation_count": len(rollback_recommendations),
+        "rollback_proposal_count": len(rollback_proposals_created),
     }
 
     return {
@@ -961,6 +1210,7 @@ def run_protocol_adaptation_monitoring_cycle_db(
         "warnings": warnings if include_warning else [],
         "degradation_detected": degradation_detected,
         "rollback_recommendations": rollback_recommendations,
+        "rollback_proposals_created": rollback_proposals_created,
         "policy": {
             "monitoring_cycle_informs_protocol": True,
             "monitoring_cycle_governs_protocol": False,
@@ -4740,6 +4990,7 @@ def init_db():
     init_protocol_adaptation_reviews_table()
     init_protocol_adaptation_monitors_table()
     init_protocol_rollback_reviews_table()
+    init_protocol_rollback_proposals_table()
     init_sellers_table()
     ensure_seller_punishment_columns()
     init_seller_agents_table()

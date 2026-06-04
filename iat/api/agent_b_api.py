@@ -160,6 +160,8 @@ from iat.api.db import (
     store_protocol_rollback_review_db,
     get_protocol_rollback_reviews_db,
     evaluate_protocol_rollback_reviews_db,
+    store_protocol_rollback_proposal_db,
+    get_protocol_rollback_proposals_db,
 )
 
 
@@ -6425,6 +6427,72 @@ def admin_protocol_rollback_reviews_evaluate(
         min_reviews=min_reviews,
         max_avg_risk=max_avg_risk,
         min_avg_confidence=min_avg_confidence,
+    )
+
+
+
+
+class ProtocolRollbackProposalCreateRequest(BaseModel):
+    rollback_id: int | None = None
+    adaptation_id: int | None = None
+    monitor_id: int | None = None
+    scope: str
+    subject_id: str | None = None
+    proposal_reason: str
+    confidence_score: float = 0.0
+    risk_score: float = 0.0
+    metadata: dict = {}
+
+
+@app.get("/admin/protocol-rollback-proposals")
+def admin_protocol_rollback_proposals(
+    rollback_id: int | None = None,
+    adaptation_id: int | None = None,
+    monitor_id: int | None = None,
+    scope: str | None = None,
+    subject_id: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return get_protocol_rollback_proposals_db(
+        rollback_id=rollback_id,
+        adaptation_id=adaptation_id,
+        monitor_id=monitor_id,
+        scope=scope,
+        subject_id=subject_id,
+        status=status,
+        limit=limit,
+    )
+
+
+@app.post("/internal/protocol-rollback-proposals/store")
+def internal_protocol_rollback_proposal_store(
+    req: ProtocolRollbackProposalCreateRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return store_protocol_rollback_proposal_db(
+        rollback_id=req.rollback_id,
+        adaptation_id=req.adaptation_id,
+        monitor_id=req.monitor_id,
+        scope=req.scope,
+        subject_id=req.subject_id,
+        proposal_reason=req.proposal_reason,
+        confidence_score=req.confidence_score,
+        risk_score=req.risk_score,
+        metadata=req.metadata,
     )
 
 

@@ -6782,6 +6782,7 @@ def init_db():
     init_seller_agent_activation_governance_reviews_table()
     init_seller_agent_activation_approvals_table()
     init_seller_agent_runtime_reviews_table()
+    init_seller_agent_runtime_governance_reviews_table()
     init_seller_agent_runtime_actions_table()
     init_seller_agent_execution_sessions_table()
     init_seller_governance_events_table()
@@ -16806,6 +16807,387 @@ def evaluate_seller_agent_runtime_reviews_db(
 
 
 
+
+
+
+
+
+def init_seller_agent_runtime_governance_reviews_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    if USE_POSTGRES:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS seller_agent_runtime_governance_reviews (
+            review_id SERIAL PRIMARY KEY,
+
+            seller_agent_id TEXT NOT NULL,
+            agent_id TEXT,
+            seller_id TEXT,
+
+            runtime_risk_score REAL DEFAULT 0,
+            runtime_trust_score REAL DEFAULT 0,
+
+            governance_status TEXT NOT NULL,
+            recommended_action TEXT NOT NULL,
+
+            report TEXT DEFAULT '{}',
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+
+            metadata TEXT DEFAULT '{}'
+        )
+        """)
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS seller_agent_runtime_governance_reviews (
+            review_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            seller_agent_id TEXT NOT NULL,
+            agent_id TEXT,
+            seller_id TEXT,
+
+            runtime_risk_score REAL DEFAULT 0,
+            runtime_trust_score REAL DEFAULT 0,
+
+            governance_status TEXT NOT NULL,
+            recommended_action TEXT NOT NULL,
+
+            report TEXT DEFAULT '{}',
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+
+            metadata TEXT DEFAULT '{}'
+        )
+        """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_seller_agent_runtime_governance_reviews
+    ON seller_agent_runtime_governance_reviews(
+        seller_agent_id,
+        seller_id,
+        governance_status,
+        recommended_action
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+
+
+def store_seller_agent_runtime_governance_review_db(
+    seller_agent_id,
+    agent_id,
+    seller_id,
+    runtime_risk_score,
+    runtime_trust_score,
+    governance_status,
+    recommended_action,
+    report,
+    metadata=None,
+):
+    metadata = metadata or {}
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    now = int(time.time())
+
+    cur.execute(f"""
+    INSERT INTO seller_agent_runtime_governance_reviews(
+        seller_agent_id,
+        agent_id,
+        seller_id,
+        runtime_risk_score,
+        runtime_trust_score,
+        governance_status,
+        recommended_action,
+        report,
+        created_at,
+        updated_at,
+        metadata
+    )
+    VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})
+    """, (
+        seller_agent_id,
+        agent_id,
+        seller_id,
+        float(runtime_risk_score or 0),
+        float(runtime_trust_score or 0),
+        governance_status,
+        recommended_action,
+        json.dumps(report),
+        now,
+        now,
+        json.dumps(metadata),
+    ))
+
+    review_id = cur.lastrowid if not USE_POSTGRES else None
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "stored",
+        "review_id": review_id,
+        "seller_agent_id": seller_agent_id,
+        "governance_status": governance_status,
+        "recommended_action": recommended_action,
+    }
+
+
+def get_seller_agent_runtime_governance_reviews_db(
+    seller_agent_id=None,
+    seller_id=None,
+    governance_status=None,
+    recommended_action=None,
+    limit=50,
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    where = []
+    params = []
+
+    if seller_agent_id:
+        where.append(f"seller_agent_id = {p}")
+        params.append(seller_agent_id)
+
+    if seller_id:
+        where.append(f"seller_id = {p}")
+        params.append(seller_id)
+
+    if governance_status:
+        where.append(f"governance_status = {p}")
+        params.append(governance_status)
+
+    if recommended_action:
+        where.append(f"recommended_action = {p}")
+        params.append(recommended_action)
+
+    where_sql = "WHERE " + " AND ".join(where) if where else ""
+
+    cur.execute(f"""
+    SELECT *
+    FROM seller_agent_runtime_governance_reviews
+    {where_sql}
+    ORDER BY created_at DESC
+    LIMIT {int(limit or 50)}
+    """, tuple(params))
+
+    rows = [dict(r) for r in cur.fetchall()]
+
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "count": len(rows),
+        "reviews": rows,
+    }
+
+
+
+
+def run_seller_agent_runtime_governance_db(seller_agent_id):
+    if not seller_agent_id:
+        return {"status": "error", "message": "seller_agent_id_required"}
+
+    seller_agent = get_seller_agent_db(seller_agent_id)
+    if not seller_agent:
+        return {
+            "status": "error",
+            "message": "seller_agent_not_found",
+            "seller_agent_id": seller_agent_id,
+        }
+
+    agent_id = seller_agent.get("agent_id")
+    seller_id = seller_agent.get("seller_id")
+
+    runtime_eval = evaluate_seller_agent_runtime_reviews_db(
+        seller_agent_id=seller_agent_id
+    )
+
+    summary = runtime_eval.get("review_summary", {}) or {}
+
+    total_reviews = int(summary.get("total_reviews", 0) or 0)
+    reject_count = int(summary.get("reject_count", 0) or 0)
+    needs_more_evidence_count = int(summary.get("needs_more_evidence_count", 0) or 0)
+
+    avg_risk = float(summary.get("avg_risk", 1) or 1)
+    avg_runtime = float(summary.get("avg_runtime", 0) or 0)
+    avg_policy = float(summary.get("avg_policy", 0) or 0)
+    avg_safety = float(summary.get("avg_safety", 0) or 0)
+    avg_confidence = float(summary.get("avg_confidence", 0) or 0)
+
+    runtime_health_score = float(seller_agent.get("runtime_health_score", 0) or 0)
+    runtime_failure_count = int(seller_agent.get("runtime_failure_count", 0) or 0)
+    containment_count = int(seller_agent.get("containment_count", 0) or 0)
+    current_status = str(seller_agent.get("seller_agent_status") or "").lower()
+    runtime_state = str(seller_agent.get("runtime_validation_status") or "").lower()
+
+    risk = 0
+    trust = 0
+    reasons = []
+    healthy_signals = []
+
+    if total_reviews < 2:
+        risk += 20
+        reasons.append("minimum_runtime_reviews_not_met")
+    else:
+        trust += 10
+        healthy_signals.append("minimum_runtime_reviews_met")
+
+    if reject_count > 0:
+        risk += 50
+        reasons.append("runtime_review_rejected")
+
+    if needs_more_evidence_count > 0:
+        risk += 20
+        reasons.append("runtime_review_needs_more_evidence")
+
+    if avg_risk > 0.60:
+        risk += 40
+        reasons.append("average_runtime_risk_too_high")
+    else:
+        trust += 10
+        healthy_signals.append("average_runtime_risk_acceptable")
+
+    if avg_runtime < 0.50 and total_reviews >= 2:
+        risk += 30
+        reasons.append("runtime_score_low")
+    elif avg_runtime >= 0.70:
+        trust += 15
+        healthy_signals.append("runtime_score_healthy")
+
+    if avg_policy < 0.50 and total_reviews >= 2:
+        risk += 25
+        reasons.append("policy_score_low")
+    elif avg_policy >= 0.70:
+        trust += 10
+        healthy_signals.append("policy_score_healthy")
+
+    if avg_safety < 0.50 and total_reviews >= 2:
+        risk += 40
+        reasons.append("safety_score_low")
+    elif avg_safety >= 0.70:
+        trust += 15
+        healthy_signals.append("safety_score_healthy")
+
+    if runtime_health_score < 0.40:
+        risk += 35
+        reasons.append("runtime_health_score_low")
+    elif runtime_health_score >= 0.80:
+        trust += 15
+        healthy_signals.append("runtime_health_score_healthy")
+
+    if runtime_failure_count >= 5:
+        risk += 40
+        reasons.append("runtime_failure_count_high")
+    elif runtime_failure_count == 0:
+        trust += 10
+        healthy_signals.append("runtime_failure_count_zero")
+
+    if containment_count >= 3:
+        risk += 30
+        reasons.append("containment_count_high")
+
+    if current_status in ["suspended", "quarantined"]:
+        risk += 20
+        reasons.append(f"current_status_{current_status}")
+
+    if runtime_state in ["healthy", "runtime_warning", "runtime_throttled"]:
+        trust += 5
+        healthy_signals.append(f"runtime_state_accepted:{runtime_state}")
+    elif runtime_state:
+        risk += 10
+        reasons.append(f"runtime_state_watch:{runtime_state}")
+
+    risk = max(0, min(100, int(risk)))
+    trust = max(0, min(100, int(trust)))
+
+    governance_status = "healthy"
+    recommended_action = "none"
+
+    if reject_count > 0 or avg_risk > 0.60 or avg_safety < 0.50:
+        governance_status = "quarantine"
+        recommended_action = "quarantine"
+    elif runtime_health_score < 0.40 or runtime_failure_count >= 5:
+        governance_status = "quarantine"
+        recommended_action = "quarantine"
+    elif needs_more_evidence_count > 0 or avg_runtime < 0.50:
+        governance_status = "throttle"
+        recommended_action = "throttle"
+    elif containment_count >= 3:
+        governance_status = "manual_review"
+        recommended_action = "manual_review"
+    elif risk >= 30:
+        governance_status = "warning"
+        recommended_action = "warn"
+    else:
+        governance_status = "healthy"
+        recommended_action = "none"
+
+    report = {
+        "seller_agent_id": seller_agent_id,
+        "agent_id": agent_id,
+        "seller_id": seller_id,
+        "runtime_eval": runtime_eval,
+        "current_status": current_status,
+        "runtime_state": runtime_state,
+        "runtime_health_score": runtime_health_score,
+        "runtime_failure_count": runtime_failure_count,
+        "containment_count": containment_count,
+        "runtime_risk_score": risk,
+        "runtime_trust_score": trust,
+        "governance_status": governance_status,
+        "recommended_action": recommended_action,
+        "risk_reasons": reasons,
+        "healthy_signals": healthy_signals,
+    }
+
+    stored = store_seller_agent_runtime_governance_review_db(
+        seller_agent_id=seller_agent_id,
+        agent_id=agent_id,
+        seller_id=seller_id,
+        runtime_risk_score=risk,
+        runtime_trust_score=trust,
+        governance_status=governance_status,
+        recommended_action=recommended_action,
+        report=report,
+        metadata={
+            "runtime_governance_informs_protocol": True,
+            "runtime_governance_does_not_auto_execute": True,
+            "runtime_action_execution_required_separately": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    )
+
+    return {
+        "status": "ok",
+        "seller_agent_id": seller_agent_id,
+        "agent_id": agent_id,
+        "seller_id": seller_id,
+        "governance_status": governance_status,
+        "recommended_action": recommended_action,
+        "runtime_risk_score": risk,
+        "runtime_trust_score": trust,
+        "risk_reasons": reasons,
+        "healthy_signals": healthy_signals,
+        "stored_review": stored,
+        "policy": {
+            "runtime_governance_informs_protocol": True,
+            "runtime_governance_does_not_auto_execute": True,
+            "runtime_action_execution_required_separately": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+        "report": report,
+    }
 
 
 

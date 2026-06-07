@@ -16806,6 +16806,83 @@ def evaluate_seller_agent_runtime_reviews_db(
 
 
 
+
+
+def init_seller_agent_runtime_reviews_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    if USE_POSTGRES:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS seller_agent_runtime_reviews (
+            review_id SERIAL PRIMARY KEY,
+
+            seller_agent_id TEXT NOT NULL,
+            agent_id TEXT,
+            seller_id TEXT,
+
+            reviewer_type TEXT NOT NULL,
+            reviewer_id TEXT NOT NULL,
+
+            review_decision TEXT NOT NULL,
+            review_reason TEXT,
+
+            confidence_score REAL DEFAULT 0,
+            risk_score REAL DEFAULT 0,
+
+            runtime_score REAL DEFAULT 0,
+            policy_score REAL DEFAULT 0,
+            safety_score REAL DEFAULT 0,
+
+            metadata TEXT DEFAULT '{}',
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """)
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS seller_agent_runtime_reviews (
+            review_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            seller_agent_id TEXT NOT NULL,
+            agent_id TEXT,
+            seller_id TEXT,
+
+            reviewer_type TEXT NOT NULL,
+            reviewer_id TEXT NOT NULL,
+
+            review_decision TEXT NOT NULL,
+            review_reason TEXT,
+
+            confidence_score REAL DEFAULT 0,
+            risk_score REAL DEFAULT 0,
+
+            runtime_score REAL DEFAULT 0,
+            policy_score REAL DEFAULT 0,
+            safety_score REAL DEFAULT 0,
+
+            metadata TEXT DEFAULT '{}',
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_seller_agent_runtime_reviews
+    ON seller_agent_runtime_reviews(
+        seller_agent_id,
+        seller_id,
+        reviewer_type,
+        review_decision
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
 def init_seller_agent_runtime_actions_table():
     conn = get_conn()
     cur = conn.cursor()

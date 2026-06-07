@@ -6779,6 +6779,8 @@ def init_db():
     init_seller_agent_sandbox_runs_table()
     init_seller_agent_simulation_runs_table()
     init_seller_agent_activation_reviews_table()
+    init_seller_agent_activation_governance_reviews_table()
+    init_seller_agent_activation_approvals_table()
     init_seller_agent_execution_sessions_table()
     init_seller_governance_events_table()
     init_threat_memory_nodes_table()
@@ -15815,6 +15817,610 @@ def can_seller_add_agent_db(seller_id):
 
 
 
+
+
+
+
+def store_seller_agent_activation_approval_db(
+    seller_agent_id,
+    agent_id,
+    seller_id,
+    approved_by,
+    approval_reason="",
+    metadata=None,
+):
+    if not seller_agent_id:
+        return {"status": "error", "message": "seller_agent_id_required"}
+
+    if not approved_by:
+        return {"status": "error", "message": "approved_by_required"}
+
+    metadata = metadata or {}
+    metadata = {
+        **metadata,
+        "activation_approval_informs_protocol": True,
+        "activation_approval_governs_protocol": False,
+        "seller_cannot_self_approve": True,
+        "protocol_core_sovereignty_reserved": True,
+    }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    INSERT INTO seller_agent_activation_approvals (
+        seller_agent_id,
+        agent_id,
+        seller_id,
+        approved_by,
+        approval_reason,
+        status,
+        created_at,
+        updated_at,
+        metadata
+    )
+    VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p})
+    """, (
+        seller_agent_id,
+        agent_id,
+        seller_id,
+        approved_by,
+        approval_reason,
+        "approved",
+        now,
+        now,
+        json.dumps(metadata, sort_keys=True),
+    ))
+
+    approval_id = get_last_insert_id_db(cur)
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "stored",
+        "approval_id": approval_id,
+        "seller_agent_id": seller_agent_id,
+        "agent_id": agent_id,
+        "seller_id": seller_id,
+        "approved_by": approved_by,
+    }
+
+
+def get_seller_agent_activation_approvals_db(
+    seller_agent_id=None,
+    agent_id=None,
+    seller_id=None,
+    status=None,
+    limit=50,
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    where = []
+    params = []
+
+    if seller_agent_id:
+        where.append(f"seller_agent_id = {p}")
+        params.append(seller_agent_id)
+
+    if agent_id:
+        where.append(f"agent_id = {p}")
+        params.append(agent_id)
+
+    if seller_id:
+        where.append(f"seller_id = {p}")
+        params.append(seller_id)
+
+    if status:
+        where.append(f"status = {p}")
+        params.append(status)
+
+    where_sql = "WHERE " + " AND ".join(where) if where else ""
+
+    cur.execute(f"""
+    SELECT *
+    FROM seller_agent_activation_approvals
+    {where_sql}
+    ORDER BY created_at DESC
+    LIMIT {int(limit or 50)}
+    """, tuple(params))
+
+    rows = [dict(r) for r in cur.fetchall()]
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "count": len(rows),
+        "approvals": rows,
+    }
+
+
+def approve_seller_agent_activation_request_db(
+    seller_agent_id,
+    approved_by="iat_core",
+    approval_reason="",
+):
+    if not seller_agent_id:
+        return {"status": "error", "message": "seller_agent_id_required"}
+
+    seller_agent = get_seller_agent_db(seller_agent_id)
+    if not seller_agent:
+        return {
+            "status": "error",
+            "message": "seller_agent_not_found",
+            "seller_agent_id": seller_agent_id,
+        }
+
+    agent_id = seller_agent.get("agent_id")
+    seller_id = seller_agent.get("seller_id")
+
+    review_evaluation = evaluate_seller_agent_activation_governance_reviews_db(
+        seller_agent_id=seller_agent_id
+    )
+
+    if review_evaluation.get("readiness") != "ready_for_activation_approval":
+        return {
+            "status": "error",
+            "message": "activation_request_not_ready_for_approval",
+            "seller_agent_id": seller_agent_id,
+            "agent_id": agent_id,
+            "seller_id": seller_id,
+            "review_evaluation": review_evaluation,
+            "policy": {
+                "activation_reviews_required": True,
+                "seller_cannot_self_approve": True,
+                "protocol_core_sovereignty_reserved": True,
+            },
+        }
+
+    existing_approvals = get_seller_agent_activation_approvals_db(
+        seller_agent_id=seller_agent_id,
+        status="approved",
+        limit=1,
+    )
+
+    if existing_approvals.get("count", 0) > 0:
+        return {
+            "status": "already_approved",
+            "seller_agent_id": seller_agent_id,
+            "agent_id": agent_id,
+            "seller_id": seller_id,
+            "approval": existing_approvals.get("approvals", [None])[0],
+            "review_evaluation": review_evaluation,
+            "policy": {
+                "activation_reviews_required": True,
+                "seller_cannot_self_approve": True,
+                "activation_approval_required_before_final_activation": True,
+                "duplicate_approval_prevented": True,
+                "protocol_core_sovereignty_reserved": True,
+            },
+        }
+
+    approval = store_seller_agent_activation_approval_db(
+        seller_agent_id=seller_agent_id,
+        agent_id=agent_id,
+        seller_id=seller_id,
+        approved_by=approved_by,
+        approval_reason=approval_reason,
+        metadata={
+            "review_evaluation": review_evaluation,
+            "approval_source": "approve_seller_agent_activation_request_db",
+        },
+    )
+
+    return {
+        "status": "approved",
+        "seller_agent_id": seller_agent_id,
+        "agent_id": agent_id,
+        "seller_id": seller_id,
+        "approval": approval,
+        "review_evaluation": review_evaluation,
+        "policy": {
+            "activation_reviews_required": True,
+            "seller_cannot_self_approve": True,
+            "activation_approval_required_before_final_activation": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
+
+def store_seller_agent_activation_governance_review_db(
+    seller_agent_id,
+    reviewer_type,
+    reviewer_id,
+    review_decision,
+    agent_id=None,
+    seller_id=None,
+    review_reason="",
+    confidence_score=0,
+    risk_score=0,
+    activation_score=0,
+    policy_score=0,
+    safety_score=0,
+    metadata=None,
+):
+    if not seller_agent_id:
+        return {"status": "error", "message": "seller_agent_id_required"}
+
+    if not reviewer_type or not reviewer_id:
+        return {"status": "error", "message": "reviewer_required"}
+
+    if review_decision not in ["approve", "reject", "abstain", "needs_more_evidence"]:
+        return {"status": "error", "message": "invalid_review_decision"}
+
+    metadata = metadata or {}
+    metadata = {
+        **metadata,
+        "activation_review_informs_protocol": True,
+        "activation_review_governs_protocol": False,
+        "seller_cannot_self_approve": True,
+        "protocol_core_sovereignty_reserved": True,
+    }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    INSERT INTO seller_agent_activation_governance_reviews (
+        seller_agent_id,
+        agent_id,
+        seller_id,
+        reviewer_type,
+        reviewer_id,
+        review_decision,
+        review_reason,
+        confidence_score,
+        risk_score,
+        activation_score,
+        policy_score,
+        safety_score,
+        metadata,
+        created_at,
+        updated_at
+    )
+    VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})
+    """, (
+        seller_agent_id,
+        agent_id,
+        seller_id,
+        reviewer_type,
+        reviewer_id,
+        review_decision,
+        review_reason,
+        round(float(confidence_score or 0), 4),
+        round(float(risk_score or 0), 4),
+        round(float(activation_score or 0), 4),
+        round(float(policy_score or 0), 4),
+        round(float(safety_score or 0), 4),
+        json.dumps(metadata, sort_keys=True),
+        now,
+        now,
+    ))
+
+    review_id = get_last_insert_id_db(cur)
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "stored",
+        "review_id": review_id,
+        "seller_agent_id": seller_agent_id,
+        "agent_id": agent_id,
+        "seller_id": seller_id,
+        "review_decision": review_decision,
+    }
+
+
+def get_seller_agent_activation_governance_reviews_db(
+    seller_agent_id=None,
+    agent_id=None,
+    seller_id=None,
+    reviewer_type=None,
+    reviewer_id=None,
+    review_decision=None,
+    limit=50,
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    where = []
+    params = []
+
+    if seller_agent_id:
+        where.append(f"seller_agent_id = {p}")
+        params.append(seller_agent_id)
+
+    if agent_id:
+        where.append(f"agent_id = {p}")
+        params.append(agent_id)
+
+    if seller_id:
+        where.append(f"seller_id = {p}")
+        params.append(seller_id)
+
+    if reviewer_type:
+        where.append(f"reviewer_type = {p}")
+        params.append(reviewer_type)
+
+    if reviewer_id:
+        where.append(f"reviewer_id = {p}")
+        params.append(reviewer_id)
+
+    if review_decision:
+        where.append(f"review_decision = {p}")
+        params.append(review_decision)
+
+    where_sql = "WHERE " + " AND ".join(where) if where else ""
+
+    cur.execute(f"""
+    SELECT *
+    FROM seller_agent_activation_governance_reviews
+    {where_sql}
+    ORDER BY created_at DESC
+    LIMIT {int(limit or 50)}
+    """, tuple(params))
+
+    rows = [dict(r) for r in cur.fetchall()]
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "count": len(rows),
+        "reviews": rows,
+    }
+
+
+def evaluate_seller_agent_activation_governance_reviews_db(
+    seller_agent_id,
+    min_reviews=2,
+    max_avg_risk=0.60,
+    min_avg_confidence=0.65,
+    min_avg_activation=0.70,
+    min_avg_policy=0.70,
+    min_avg_safety=0.70,
+):
+    if not seller_agent_id:
+        return {"status": "error", "message": "seller_agent_id_required"}
+
+    reviews_result = get_seller_agent_activation_governance_reviews_db(
+        seller_agent_id=seller_agent_id,
+        limit=100,
+    )
+
+    reviews = reviews_result.get("reviews", [])
+
+    approve_reviews = [r for r in reviews if r.get("review_decision") == "approve"]
+    reject_reviews = [r for r in reviews if r.get("review_decision") == "reject"]
+    evidence_reviews = [r for r in reviews if r.get("review_decision") == "needs_more_evidence"]
+    abstain_reviews = [r for r in reviews if r.get("review_decision") == "abstain"]
+
+    total_reviews = len(reviews)
+    approve_count = len(approve_reviews)
+    reject_count = len(reject_reviews)
+    needs_more_evidence_count = len(evidence_reviews)
+    abstain_count = len(abstain_reviews)
+
+    scoring_reviews = [
+        r for r in reviews
+        if r.get("review_decision") in ("approve", "reject", "needs_more_evidence")
+    ]
+
+    def avg(field, default=0):
+        values = [float(r.get(field, default) or default) for r in scoring_reviews]
+        return sum(values) / len(values) if values else default
+
+    avg_confidence = avg("confidence_score", 0)
+    avg_risk = avg("risk_score", 1)
+    avg_activation = avg("activation_score", 0)
+    avg_policy = avg("policy_score", 0)
+    avg_safety = avg("safety_score", 0)
+
+    readiness = "needs_more_reviews"
+    reason = "minimum_reviews_not_met"
+
+    if total_reviews < int(min_reviews or 2):
+        readiness = "needs_more_reviews"
+        reason = "minimum_reviews_not_met"
+    elif reject_count > 0:
+        readiness = "blocked"
+        reason = "one_or_more_reviews_rejected"
+    elif needs_more_evidence_count > 0:
+        readiness = "needs_more_evidence"
+        reason = "one_or_more_reviews_need_more_evidence"
+    elif avg_confidence < min_avg_confidence:
+        readiness = "blocked"
+        reason = "average_confidence_too_low"
+    elif avg_risk > max_avg_risk:
+        readiness = "blocked"
+        reason = "average_risk_too_high"
+    elif avg_activation < min_avg_activation:
+        readiness = "blocked"
+        reason = "average_activation_score_too_low"
+    elif avg_policy < min_avg_policy:
+        readiness = "blocked"
+        reason = "average_policy_score_too_low"
+    elif avg_safety < min_avg_safety:
+        readiness = "blocked"
+        reason = "average_safety_score_too_low"
+    elif approve_count >= int(min_reviews or 2):
+        readiness = "ready_for_activation_approval"
+        reason = "activation_review_threshold_met"
+
+    return {
+        "status": "ok",
+        "seller_agent_id": seller_agent_id,
+        "readiness": readiness,
+        "reason": reason,
+        "review_summary": {
+            "total_reviews": total_reviews,
+            "approve_count": approve_count,
+            "reject_count": reject_count,
+            "needs_more_evidence_count": needs_more_evidence_count,
+            "abstain_count": abstain_count,
+            "avg_confidence": round(avg_confidence, 4),
+            "avg_risk": round(avg_risk, 4),
+            "avg_activation": round(avg_activation, 4),
+            "avg_policy": round(avg_policy, 4),
+            "avg_safety": round(avg_safety, 4),
+            "min_reviews": int(min_reviews or 2),
+            "min_avg_confidence": min_avg_confidence,
+            "max_avg_risk": max_avg_risk,
+            "min_avg_activation": min_avg_activation,
+            "min_avg_policy": min_avg_policy,
+            "min_avg_safety": min_avg_safety,
+        },
+        "policy": {
+            "activation_reviews_inform_protocol": True,
+            "activation_reviews_do_not_govern_protocol": True,
+            "seller_cannot_self_approve": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
+
+def init_seller_agent_activation_governance_reviews_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    if USE_POSTGRES:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS seller_agent_activation_governance_reviews (
+            review_id SERIAL PRIMARY KEY,
+
+            seller_agent_id TEXT NOT NULL,
+            agent_id TEXT,
+            seller_id TEXT,
+
+            reviewer_type TEXT NOT NULL,
+            reviewer_id TEXT NOT NULL,
+
+            review_decision TEXT NOT NULL,
+            review_reason TEXT,
+
+            confidence_score REAL DEFAULT 0,
+            risk_score REAL DEFAULT 0,
+
+            activation_score REAL DEFAULT 0,
+            policy_score REAL DEFAULT 0,
+            safety_score REAL DEFAULT 0,
+
+            metadata TEXT DEFAULT '{}',
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """)
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS seller_agent_activation_governance_reviews (
+            review_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            seller_agent_id TEXT NOT NULL,
+            agent_id TEXT,
+            seller_id TEXT,
+
+            reviewer_type TEXT NOT NULL,
+            reviewer_id TEXT NOT NULL,
+
+            review_decision TEXT NOT NULL,
+            review_reason TEXT,
+
+            confidence_score REAL DEFAULT 0,
+            risk_score REAL DEFAULT 0,
+
+            activation_score REAL DEFAULT 0,
+            policy_score REAL DEFAULT 0,
+            safety_score REAL DEFAULT 0,
+
+            metadata TEXT DEFAULT '{}',
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_seller_agent_activation_governance_reviews
+    ON seller_agent_activation_governance_reviews(
+        seller_agent_id,
+        seller_id,
+        reviewer_type,
+        review_decision
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+def init_seller_agent_activation_approvals_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    if USE_POSTGRES:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS seller_agent_activation_approvals (
+            approval_id SERIAL PRIMARY KEY,
+
+            seller_agent_id TEXT NOT NULL,
+            agent_id TEXT,
+            seller_id TEXT,
+
+            approved_by TEXT NOT NULL,
+            approval_reason TEXT,
+
+            status TEXT DEFAULT 'approved',
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+
+            metadata TEXT DEFAULT '{}'
+        )
+        """)
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS seller_agent_activation_approvals (
+            approval_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            seller_agent_id TEXT NOT NULL,
+            agent_id TEXT,
+            seller_id TEXT,
+
+            approved_by TEXT NOT NULL,
+            approval_reason TEXT,
+
+            status TEXT DEFAULT 'approved',
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+
+            metadata TEXT DEFAULT '{}'
+        )
+        """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_seller_agent_activation_approvals
+    ON seller_agent_activation_approvals(
+        seller_agent_id,
+        seller_id,
+        status
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
 def init_seller_agent_activation_reviews_table():
     conn = get_conn()
     cur = conn.cursor()
@@ -15940,7 +16546,7 @@ def run_seller_agent_activation_review_db(seller_agent_id):
         manual.append("seller_agent_not_pending_review")
 
     runtime_state = str(seller_agent.get("runtime_validation_status") or "").lower()
-    if runtime_state in ["generated_pending_review", "validated", "healthy"]:
+    if runtime_state in ["generated_pending_review", "validated", "healthy", "pending_activation_approval"]:
         trust += 5
         passed.append(f"runtime_state_accepted:{runtime_state}")
     else:
@@ -16082,6 +16688,22 @@ def run_seller_agent_activation_review_db(seller_agent_id):
         next_available = 1
         event_type = "seller_agent_activation_approved"
 
+    if activation_status == "approved":
+        activation_approvals = get_seller_agent_activation_approvals_db(
+            seller_agent_id=seller_agent_id,
+            status="approved",
+            limit=1,
+        )
+
+        if activation_approvals.get("count", 0) < 1:
+            activation_status = "pending_activation_approval"
+            recommendation = "activation_approval_required_before_final_activation"
+            next_seller_agent_status = "pending_review"
+            next_available = 0
+            event_type = "seller_agent_activation_pending_approval"
+            passed.append("activation_engine_passed_but_approval_missing")
+            manual.append("activation_approval_required_before_final_activation")
+
     report = {
         "seller_agent_id": seller_agent_id,
         "agent_id": agent_id,
@@ -16144,7 +16766,13 @@ def run_seller_agent_activation_review_db(seller_agent_id):
     WHERE seller_agent_id = {p}
     """, (
         next_seller_agent_status,
-        "healthy" if activation_status == "approved" else "activation_review_failed",
+        (
+            "healthy"
+            if activation_status == "approved"
+            else "pending_activation_approval"
+            if activation_status == "pending_activation_approval"
+            else "activation_review_failed"
+        ),
         1.0 if activation_status == "approved" else 0.0,
         now,
         now,

@@ -131,6 +131,11 @@ from iat.api.db import (
     evaluate_seller_agent_simulation_reviews_db,
     approve_seller_agent_simulation_request_db,
     get_seller_agent_simulation_approvals_db,
+    store_seller_agent_activation_governance_review_db,
+    get_seller_agent_activation_governance_reviews_db,
+    evaluate_seller_agent_activation_governance_reviews_db,
+    approve_seller_agent_activation_request_db,
+    get_seller_agent_activation_approvals_db,
     run_seller_agent_sandbox_review_db,
     run_seller_agent_simulation_review_db,
     run_seller_agent_generation_db,
@@ -6686,6 +6691,134 @@ class SellerAgentSimulationReviewRequest(BaseModel):
 class SellerAgentSimulationApprovalRequest(BaseModel):
     approved_by: str = "iat_core"
     approval_reason: str = ""
+
+
+
+class SellerAgentActivationGovernanceReviewRequest(BaseModel):
+    seller_agent_id: str
+    agent_id: str | None = None
+    seller_id: str | None = None
+
+    reviewer_type: str
+    reviewer_id: str
+
+    review_decision: str
+    review_reason: str | None = None
+
+    confidence_score: float = 0.0
+    risk_score: float = 0.0
+
+    activation_score: float = 0.0
+    policy_score: float = 0.0
+    safety_score: float = 0.0
+
+    metadata: dict = {}
+
+
+class SellerAgentActivationApprovalRequest(BaseModel):
+    approved_by: str = "iat_core"
+    approval_reason: str = ""
+
+
+@app.get("/admin/seller-agent-activation-governance-reviews")
+def admin_seller_agent_activation_governance_reviews(
+    seller_agent_id: str | None = None,
+    agent_id: str | None = None,
+    seller_id: str | None = None,
+    reviewer_type: str | None = None,
+    reviewer_id: str | None = None,
+    review_decision: str | None = None,
+    limit: int = 50,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    return get_seller_agent_activation_governance_reviews_db(
+        seller_agent_id=seller_agent_id,
+        agent_id=agent_id,
+        seller_id=seller_id,
+        reviewer_type=reviewer_type,
+        reviewer_id=reviewer_id,
+        review_decision=review_decision,
+        limit=limit,
+    )
+
+
+@app.post("/internal/seller-agent-activation-governance-reviews/store")
+def internal_seller_agent_activation_governance_review_store(
+    req: SellerAgentActivationGovernanceReviewRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    return store_seller_agent_activation_governance_review_db(
+        seller_agent_id=req.seller_agent_id,
+        agent_id=req.agent_id,
+        seller_id=req.seller_id,
+        reviewer_type=req.reviewer_type,
+        reviewer_id=req.reviewer_id,
+        review_decision=req.review_decision,
+        review_reason=req.review_reason,
+        confidence_score=req.confidence_score,
+        risk_score=req.risk_score,
+        activation_score=req.activation_score,
+        policy_score=req.policy_score,
+        safety_score=req.safety_score,
+        metadata=req.metadata,
+    )
+
+
+@app.get("/admin/seller-agent-activation-governance-reviews/evaluate/{seller_agent_id}")
+def admin_seller_agent_activation_governance_reviews_evaluate(
+    seller_agent_id: str,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    return evaluate_seller_agent_activation_governance_reviews_db(
+        seller_agent_id=seller_agent_id
+    )
+
+
+@app.get("/admin/seller-agent-activation-approvals")
+def admin_seller_agent_activation_approvals(
+    seller_agent_id: str | None = None,
+    agent_id: str | None = None,
+    seller_id: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    return get_seller_agent_activation_approvals_db(
+        seller_agent_id=seller_agent_id,
+        agent_id=agent_id,
+        seller_id=seller_id,
+        status=status,
+        limit=limit,
+    )
+
+
+@app.post("/internal/seller-agent-activation-approvals/approve/{seller_agent_id}")
+def internal_seller_agent_activation_approve(
+    seller_agent_id: str,
+    req: SellerAgentActivationApprovalRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    return approve_seller_agent_activation_request_db(
+        seller_agent_id=seller_agent_id,
+        approved_by=req.approved_by,
+        approval_reason=req.approval_reason,
+    )
+
 
 
 @app.get("/admin/seller-agent-simulation-reviews")

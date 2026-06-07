@@ -6781,6 +6781,7 @@ def init_db():
     init_seller_agent_activation_reviews_table()
     init_seller_agent_activation_governance_reviews_table()
     init_seller_agent_activation_approvals_table()
+    init_seller_agent_runtime_reviews_table()
     init_seller_agent_runtime_actions_table()
     init_seller_agent_execution_sessions_table()
     init_seller_governance_events_table()

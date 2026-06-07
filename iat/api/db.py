@@ -6781,6 +6781,7 @@ def init_db():
     init_seller_agent_activation_reviews_table()
     init_seller_agent_activation_governance_reviews_table()
     init_seller_agent_activation_approvals_table()
+    init_seller_agent_runtime_actions_table()
     init_seller_agent_execution_sessions_table()
     init_seller_governance_events_table()
     init_threat_memory_nodes_table()
@@ -15939,6 +15940,261 @@ def get_seller_agent_activation_approvals_db(
     }
 
 
+
+def get_seller_agent_runtime_actions_db(
+    seller_agent_id=None,
+    agent_id=None,
+    seller_id=None,
+    action_type=None,
+    execution_status=None,
+    limit=50,
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    where = []
+    params = []
+
+    if seller_agent_id:
+        where.append(f"seller_agent_id = {p}")
+        params.append(seller_agent_id)
+
+    if agent_id:
+        where.append(f"agent_id = {p}")
+        params.append(agent_id)
+
+    if seller_id:
+        where.append(f"seller_id = {p}")
+        params.append(seller_id)
+
+    if action_type:
+        where.append(f"action_type = {p}")
+        params.append(action_type)
+
+    if execution_status:
+        where.append(f"execution_status = {p}")
+        params.append(execution_status)
+
+    where_sql = "WHERE " + " AND ".join(where) if where else ""
+
+    cur.execute(f"""
+    SELECT *
+    FROM seller_agent_runtime_actions
+    {where_sql}
+    ORDER BY created_at DESC
+    LIMIT {int(limit or 50)}
+    """, tuple(params))
+
+    rows = [dict(r) for r in cur.fetchall()]
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "count": len(rows),
+        "actions": rows,
+    }
+
+
+def create_seller_agent_runtime_action_db(
+    seller_agent_id,
+    action_type,
+    action_reason="",
+    executed_by="iat_core",
+    severity="medium",
+    metadata=None,
+):
+    if not seller_agent_id:
+        return {"status": "error", "message": "seller_agent_id_required"}
+
+    allowed_actions = ["warn", "throttle", "quarantine", "suspend", "reactivate", "slash"]
+    if action_type not in allowed_actions:
+        return {
+            "status": "error",
+            "message": "invalid_runtime_action",
+            "allowed_actions": allowed_actions,
+        }
+
+    seller_agent = get_seller_agent_db(seller_agent_id)
+    if not seller_agent:
+        return {"status": "error", "message": "seller_agent_not_found"}
+
+    agent_id = seller_agent.get("agent_id")
+    seller_id = seller_agent.get("seller_id")
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    previous_status = seller_agent.get("seller_agent_status")
+
+    previous_available = 0
+    cur.execute(f"SELECT available FROM agents WHERE agent_id = {p}", (agent_id,))
+    agent_row = cur.fetchone()
+    if agent_row:
+        previous_available = int(row_get(agent_row, "available", 0) or 0)
+
+    new_status = previous_status
+    new_available = previous_available
+    runtime_validation_status = seller_agent.get("runtime_validation_status") or "unknown"
+    runtime_health_score = float(seller_agent.get("runtime_health_score", 0) or 0)
+
+    if action_type == "warn":
+        new_status = previous_status or "active"
+        new_available = previous_available
+        runtime_validation_status = "runtime_warning"
+        runtime_health_score = min(runtime_health_score, 0.75)
+
+    elif action_type == "throttle":
+        new_status = "throttled"
+        new_available = 1
+        runtime_validation_status = "runtime_throttled"
+        runtime_health_score = min(runtime_health_score, 0.50)
+
+    elif action_type == "quarantine":
+        new_status = "quarantined"
+        new_available = 0
+        runtime_validation_status = "runtime_quarantined"
+        runtime_health_score = min(runtime_health_score, 0.20)
+
+    elif action_type == "suspend":
+        new_status = "suspended"
+        new_available = 0
+        runtime_validation_status = "runtime_suspended"
+        runtime_health_score = 0.0
+
+    elif action_type == "reactivate":
+        new_status = "active"
+        new_available = 1
+        runtime_validation_status = "healthy"
+        runtime_health_score = max(runtime_health_score, 0.85)
+
+    elif action_type == "slash":
+        new_status = "suspended"
+        new_available = 0
+        runtime_validation_status = "runtime_slashed"
+        runtime_health_score = 0.0
+
+    metadata = metadata or {}
+    metadata = {
+        **metadata,
+        "runtime_action_informs_protocol": True,
+        "runtime_action_governs_agent": True,
+        "seller_cannot_self_execute_runtime_action": True,
+        "protocol_core_sovereignty_reserved": True,
+    }
+
+    cur.execute(f"""
+    INSERT INTO seller_agent_runtime_actions (
+        seller_agent_id,
+        agent_id,
+        seller_id,
+        action_type,
+        action_reason,
+        previous_status,
+        new_status,
+        previous_available,
+        new_available,
+        severity,
+        executed_by,
+        execution_status,
+        created_at,
+        updated_at,
+        metadata
+    )
+    VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})
+    """, (
+        seller_agent_id,
+        agent_id,
+        seller_id,
+        action_type,
+        action_reason,
+        previous_status,
+        new_status,
+        previous_available,
+        new_available,
+        severity,
+        executed_by,
+        "executed",
+        now,
+        now,
+        json.dumps(metadata, sort_keys=True),
+    ))
+
+    action_id = get_last_insert_id_db(cur)
+
+    cur.execute(f"""
+    UPDATE seller_agents
+    SET seller_agent_status = {p},
+        runtime_validation_status = {p},
+        runtime_health_score = {p},
+        runtime_last_checked_at = {p},
+        updated_at = {p}
+    WHERE seller_agent_id = {p}
+    """, (
+        new_status,
+        runtime_validation_status,
+        runtime_health_score,
+        now,
+        now,
+        seller_agent_id,
+    ))
+
+    cur.execute(f"""
+    UPDATE agents
+    SET available = {p},
+        seller_status = {p},
+        updated_at = {p}
+    WHERE agent_id = {p}
+    """, (
+        new_available,
+        new_status,
+        now,
+        agent_id,
+    ))
+
+    if action_type == "slash":
+        try:
+            apply_seller_risk_event_db(
+                seller_id=seller_id,
+                reason=action_reason or "runtime_slash",
+                severity=severity,
+                metadata={
+                    "source": "create_seller_agent_runtime_action_db",
+                    "seller_agent_id": seller_agent_id,
+                    "agent_id": agent_id,
+                    "action_type": action_type,
+                },
+            )
+        except Exception:
+            pass
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "executed",
+        "action_id": action_id,
+        "seller_agent_id": seller_agent_id,
+        "agent_id": agent_id,
+        "seller_id": seller_id,
+        "action_type": action_type,
+        "previous_status": previous_status,
+        "new_status": new_status,
+        "previous_available": previous_available,
+        "new_available": new_available,
+        "runtime_validation_status": runtime_validation_status,
+        "runtime_health_score": runtime_health_score,
+        "policy": {
+            "runtime_action_governs_agent": True,
+            "seller_cannot_self_execute_runtime_action": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
+
 def approve_seller_agent_activation_request_db(
     seller_agent_id,
     approved_by="iat_core",
@@ -16286,6 +16542,345 @@ def evaluate_seller_agent_activation_governance_reviews_db(
         },
     }
 
+
+
+
+def store_seller_agent_runtime_review_db(
+    seller_agent_id,
+    reviewer_type,
+    reviewer_id,
+    review_decision,
+    agent_id=None,
+    seller_id=None,
+    review_reason="",
+    confidence_score=0,
+    risk_score=0,
+    runtime_score=0,
+    policy_score=0,
+    safety_score=0,
+    metadata=None,
+):
+    if not seller_agent_id:
+        return {"status": "error", "message": "seller_agent_id_required"}
+
+    if not reviewer_type or not reviewer_id:
+        return {"status": "error", "message": "reviewer_required"}
+
+    if review_decision not in ["approve", "reject", "abstain", "needs_more_evidence"]:
+        return {"status": "error", "message": "invalid_review_decision"}
+
+    metadata = metadata or {}
+    metadata = {
+        **metadata,
+        "runtime_review_informs_protocol": True,
+        "runtime_review_governs_protocol": False,
+        "seller_cannot_self_approve": True,
+        "protocol_core_sovereignty_reserved": True,
+    }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    INSERT INTO seller_agent_runtime_reviews (
+        seller_agent_id,
+        agent_id,
+        seller_id,
+        reviewer_type,
+        reviewer_id,
+        review_decision,
+        review_reason,
+        confidence_score,
+        risk_score,
+        runtime_score,
+        policy_score,
+        safety_score,
+        metadata,
+        created_at,
+        updated_at
+    )
+    VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})
+    """, (
+        seller_agent_id,
+        agent_id,
+        seller_id,
+        reviewer_type,
+        reviewer_id,
+        review_decision,
+        review_reason,
+        round(float(confidence_score or 0), 4),
+        round(float(risk_score or 0), 4),
+        round(float(runtime_score or 0), 4),
+        round(float(policy_score or 0), 4),
+        round(float(safety_score or 0), 4),
+        json.dumps(metadata, sort_keys=True),
+        now,
+        now,
+    ))
+
+    review_id = get_last_insert_id_db(cur)
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "stored",
+        "review_id": review_id,
+        "seller_agent_id": seller_agent_id,
+        "agent_id": agent_id,
+        "seller_id": seller_id,
+        "review_decision": review_decision,
+    }
+
+
+def get_seller_agent_runtime_reviews_db(
+    seller_agent_id=None,
+    agent_id=None,
+    seller_id=None,
+    reviewer_type=None,
+    reviewer_id=None,
+    review_decision=None,
+    limit=50,
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    where = []
+    params = []
+
+    if seller_agent_id:
+        where.append(f"seller_agent_id = {p}")
+        params.append(seller_agent_id)
+
+    if agent_id:
+        where.append(f"agent_id = {p}")
+        params.append(agent_id)
+
+    if seller_id:
+        where.append(f"seller_id = {p}")
+        params.append(seller_id)
+
+    if reviewer_type:
+        where.append(f"reviewer_type = {p}")
+        params.append(reviewer_type)
+
+    if reviewer_id:
+        where.append(f"reviewer_id = {p}")
+        params.append(reviewer_id)
+
+    if review_decision:
+        where.append(f"review_decision = {p}")
+        params.append(review_decision)
+
+    where_sql = "WHERE " + " AND ".join(where) if where else ""
+
+    cur.execute(f"""
+    SELECT *
+    FROM seller_agent_runtime_reviews
+    {where_sql}
+    ORDER BY created_at DESC
+    LIMIT {int(limit or 50)}
+    """, tuple(params))
+
+    rows = [dict(r) for r in cur.fetchall()]
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "count": len(rows),
+        "reviews": rows,
+    }
+
+
+def evaluate_seller_agent_runtime_reviews_db(
+    seller_agent_id,
+    min_reviews=2,
+    max_avg_risk=0.60,
+    min_avg_confidence=0.65,
+    min_avg_runtime=0.70,
+    min_avg_policy=0.70,
+    min_avg_safety=0.70,
+):
+    if not seller_agent_id:
+        return {"status": "error", "message": "seller_agent_id_required"}
+
+    reviews_result = get_seller_agent_runtime_reviews_db(
+        seller_agent_id=seller_agent_id,
+        limit=100,
+    )
+
+    reviews = reviews_result.get("reviews", [])
+
+    approve_reviews = [r for r in reviews if r.get("review_decision") == "approve"]
+    reject_reviews = [r for r in reviews if r.get("review_decision") == "reject"]
+    evidence_reviews = [r for r in reviews if r.get("review_decision") == "needs_more_evidence"]
+    abstain_reviews = [r for r in reviews if r.get("review_decision") == "abstain"]
+
+    total_reviews = len(reviews)
+    approve_count = len(approve_reviews)
+    reject_count = len(reject_reviews)
+    needs_more_evidence_count = len(evidence_reviews)
+    abstain_count = len(abstain_reviews)
+
+    scoring_reviews = [
+        r for r in reviews
+        if r.get("review_decision") in ("approve", "reject", "needs_more_evidence")
+    ]
+
+    def avg(field, default=0):
+        values = [float(r.get(field, default) or default) for r in scoring_reviews]
+        return sum(values) / len(values) if values else default
+
+    avg_confidence = avg("confidence_score", 0)
+    avg_risk = avg("risk_score", 1)
+    avg_runtime = avg("runtime_score", 0)
+    avg_policy = avg("policy_score", 0)
+    avg_safety = avg("safety_score", 0)
+
+    readiness = "needs_more_reviews"
+    reason = "minimum_reviews_not_met"
+
+    if total_reviews < int(min_reviews or 2):
+        readiness = "needs_more_reviews"
+        reason = "minimum_reviews_not_met"
+    elif reject_count > 0:
+        readiness = "blocked"
+        reason = "one_or_more_reviews_rejected"
+    elif needs_more_evidence_count > 0:
+        readiness = "needs_more_evidence"
+        reason = "one_or_more_reviews_need_more_evidence"
+    elif avg_confidence < min_avg_confidence:
+        readiness = "blocked"
+        reason = "average_confidence_too_low"
+    elif avg_risk > max_avg_risk:
+        readiness = "blocked"
+        reason = "average_risk_too_high"
+    elif avg_runtime < min_avg_runtime:
+        readiness = "blocked"
+        reason = "average_runtime_score_too_low"
+    elif avg_policy < min_avg_policy:
+        readiness = "blocked"
+        reason = "average_policy_score_too_low"
+    elif avg_safety < min_avg_safety:
+        readiness = "blocked"
+        reason = "average_safety_score_too_low"
+    elif approve_count >= int(min_reviews or 2):
+        readiness = "runtime_review_threshold_met"
+        reason = "runtime_reviews_healthy"
+
+    return {
+        "status": "ok",
+        "seller_agent_id": seller_agent_id,
+        "readiness": readiness,
+        "reason": reason,
+        "review_summary": {
+            "total_reviews": total_reviews,
+            "approve_count": approve_count,
+            "reject_count": reject_count,
+            "needs_more_evidence_count": needs_more_evidence_count,
+            "abstain_count": abstain_count,
+            "avg_confidence": round(avg_confidence, 4),
+            "avg_risk": round(avg_risk, 4),
+            "avg_runtime": round(avg_runtime, 4),
+            "avg_policy": round(avg_policy, 4),
+            "avg_safety": round(avg_safety, 4),
+            "min_reviews": int(min_reviews or 2),
+            "min_avg_confidence": min_avg_confidence,
+            "max_avg_risk": max_avg_risk,
+            "min_avg_runtime": min_avg_runtime,
+            "min_avg_policy": min_avg_policy,
+            "min_avg_safety": min_avg_safety,
+        },
+        "policy": {
+            "runtime_reviews_inform_protocol": True,
+            "runtime_reviews_do_not_govern_protocol": True,
+            "seller_cannot_self_approve": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
+
+
+
+def init_seller_agent_runtime_actions_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    if USE_POSTGRES:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS seller_agent_runtime_actions (
+            action_id SERIAL PRIMARY KEY,
+
+            seller_agent_id TEXT NOT NULL,
+            agent_id TEXT,
+            seller_id TEXT,
+
+            action_type TEXT NOT NULL,
+            action_reason TEXT,
+
+            previous_status TEXT,
+            new_status TEXT,
+
+            previous_available INTEGER,
+            new_available INTEGER,
+
+            severity TEXT DEFAULT 'medium',
+
+            executed_by TEXT NOT NULL,
+            execution_status TEXT DEFAULT 'executed',
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+
+            metadata TEXT DEFAULT '{}'
+        )
+        """)
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS seller_agent_runtime_actions (
+            action_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            seller_agent_id TEXT NOT NULL,
+            agent_id TEXT,
+            seller_id TEXT,
+
+            action_type TEXT NOT NULL,
+            action_reason TEXT,
+
+            previous_status TEXT,
+            new_status TEXT,
+
+            previous_available INTEGER,
+            new_available INTEGER,
+
+            severity TEXT DEFAULT 'medium',
+
+            executed_by TEXT NOT NULL,
+            execution_status TEXT DEFAULT 'executed',
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+
+            metadata TEXT DEFAULT '{}'
+        )
+        """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_seller_agent_runtime_actions
+    ON seller_agent_runtime_actions(
+        seller_agent_id,
+        seller_id,
+        action_type,
+        execution_status
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
 
 
 def init_seller_agent_activation_governance_reviews_table():

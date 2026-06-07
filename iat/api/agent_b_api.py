@@ -136,6 +136,11 @@ from iat.api.db import (
     evaluate_seller_agent_activation_governance_reviews_db,
     approve_seller_agent_activation_request_db,
     get_seller_agent_activation_approvals_db,
+    store_seller_agent_runtime_review_db,
+    get_seller_agent_runtime_reviews_db,
+    evaluate_seller_agent_runtime_reviews_db,
+    create_seller_agent_runtime_action_db,
+    get_seller_agent_runtime_actions_db,
     run_seller_agent_sandbox_review_db,
     run_seller_agent_simulation_review_db,
     run_seller_agent_generation_db,
@@ -6718,6 +6723,142 @@ class SellerAgentActivationGovernanceReviewRequest(BaseModel):
 class SellerAgentActivationApprovalRequest(BaseModel):
     approved_by: str = "iat_core"
     approval_reason: str = ""
+
+
+
+class SellerAgentRuntimeReviewRequest(BaseModel):
+    seller_agent_id: str
+    agent_id: str | None = None
+    seller_id: str | None = None
+
+    reviewer_type: str
+    reviewer_id: str
+
+    review_decision: str
+    review_reason: str | None = None
+
+    confidence_score: float = 0.0
+    risk_score: float = 0.0
+
+    runtime_score: float = 0.0
+    policy_score: float = 0.0
+    safety_score: float = 0.0
+
+    metadata: dict = {}
+
+
+class SellerAgentRuntimeActionRequest(BaseModel):
+    action_type: str
+    action_reason: str = ""
+    executed_by: str = "iat_core"
+    severity: str = "medium"
+    metadata: dict = {}
+
+
+@app.get("/admin/seller-agent-runtime-reviews")
+def admin_seller_agent_runtime_reviews(
+    seller_agent_id: str | None = None,
+    agent_id: str | None = None,
+    seller_id: str | None = None,
+    reviewer_type: str | None = None,
+    reviewer_id: str | None = None,
+    review_decision: str | None = None,
+    limit: int = 50,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    return get_seller_agent_runtime_reviews_db(
+        seller_agent_id=seller_agent_id,
+        agent_id=agent_id,
+        seller_id=seller_id,
+        reviewer_type=reviewer_type,
+        reviewer_id=reviewer_id,
+        review_decision=review_decision,
+        limit=limit,
+    )
+
+
+@app.post("/internal/seller-agent-runtime-reviews/store")
+def internal_seller_agent_runtime_review_store(
+    req: SellerAgentRuntimeReviewRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    return store_seller_agent_runtime_review_db(
+        seller_agent_id=req.seller_agent_id,
+        agent_id=req.agent_id,
+        seller_id=req.seller_id,
+        reviewer_type=req.reviewer_type,
+        reviewer_id=req.reviewer_id,
+        review_decision=req.review_decision,
+        review_reason=req.review_reason,
+        confidence_score=req.confidence_score,
+        risk_score=req.risk_score,
+        runtime_score=req.runtime_score,
+        policy_score=req.policy_score,
+        safety_score=req.safety_score,
+        metadata=req.metadata,
+    )
+
+
+@app.get("/admin/seller-agent-runtime-reviews/evaluate/{seller_agent_id}")
+def admin_seller_agent_runtime_reviews_evaluate(
+    seller_agent_id: str,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    return evaluate_seller_agent_runtime_reviews_db(
+        seller_agent_id=seller_agent_id
+    )
+
+
+@app.get("/admin/seller-agent-runtime-actions")
+def admin_seller_agent_runtime_actions(
+    seller_agent_id: str | None = None,
+    agent_id: str | None = None,
+    seller_id: str | None = None,
+    action_type: str | None = None,
+    execution_status: str | None = None,
+    limit: int = 50,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    return get_seller_agent_runtime_actions_db(
+        seller_agent_id=seller_agent_id,
+        agent_id=agent_id,
+        seller_id=seller_id,
+        action_type=action_type,
+        execution_status=execution_status,
+        limit=limit,
+    )
+
+
+@app.post("/internal/seller-agent-runtime-actions/execute/{seller_agent_id}")
+def internal_seller_agent_runtime_action_execute(
+    seller_agent_id: str,
+    req: SellerAgentRuntimeActionRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    return create_seller_agent_runtime_action_db(
+        seller_agent_id=seller_agent_id,
+        action_type=req.action_type,
+        action_reason=req.action_reason,
+        executed_by=req.executed_by,
+        severity=req.severity,
+        metadata=req.metadata,
+    )
+
 
 
 @app.get("/admin/seller-agent-activation-governance-reviews")

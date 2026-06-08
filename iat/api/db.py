@@ -3548,9 +3548,6 @@ def rollback_protocol_adaptation_db(
         adaptation_id,
     ))
 
-    conn.commit()
-    release_conn(conn)
-
     return {
         "status": "executed",
         "rollback_id": rollback_id,
@@ -6783,6 +6780,7 @@ def init_db():
     init_seller_agent_activation_approvals_table()
     init_seller_agent_runtime_reviews_table()
     init_seller_agent_runtime_governance_reviews_table()
+    init_seller_runtime_risk_events_table()
     init_seller_agent_runtime_actions_table()
     init_seller_agent_execution_sessions_table()
     init_seller_governance_events_table()
@@ -15504,7 +15502,8 @@ def recompute_seller_dynamic_agent_capacity_db(seller_id):
     if (
         seller_status == "active"
         and verification_status in ["verified", "foundation_verified"]
-        and risk_score < 0.35
+        and risk_score < 0.20
+        and capacity_score >= 20
         and containment_count == 0
         and economic_penalty_level == 0
     ):
@@ -16156,24 +16155,77 @@ def create_seller_agent_runtime_action_db(
         agent_id,
     ))
 
-    if action_type == "slash":
+    conn.commit()
+    release_conn(conn)
+
+    runtime_seller_risk_map = {
+        "warn": 0.05,
+        "throttle": 0.20,
+        "quarantine": 0.50,
+        "slash": 0.75,
+    }
+
+    seller_risk_application = None
+    seller_capacity_recompute = None
+
+    if action_type in runtime_seller_risk_map:
         try:
-            apply_seller_risk_event_db(
+            seller_risk_application = apply_seller_risk_event_db(
                 seller_id=seller_id,
-                reason=action_reason or "runtime_slash",
-                severity=severity,
-                metadata={
+                event_type=f"runtime_{action_type}",
+                severity=runtime_seller_risk_map[action_type],
+                reason=json.dumps({
                     "source": "create_seller_agent_runtime_action_db",
                     "seller_agent_id": seller_agent_id,
                     "agent_id": agent_id,
+                    "action_id": action_id,
                     "action_type": action_type,
-                },
+                    "action_reason": action_reason,
+                    "severity": severity,
+                }),
             )
-        except Exception:
-            pass
 
-    conn.commit()
-    release_conn(conn)
+            seller_capacity_recompute = recompute_seller_dynamic_agent_capacity_db(
+                seller_id
+            )
+
+            try:
+                store_seller_runtime_risk_event_db(
+                    seller_id=seller_id,
+                    seller_agent_id=seller_agent_id,
+                    agent_id=agent_id,
+                    source_action_id=action_id,
+                    source_action_type=action_type,
+                    risk_delta=(
+                        seller_risk_application.get("new_risk_score", 0)
+                        - seller_risk_application.get("old_risk_score", 0)
+                    ),
+                    trust_delta=0,
+                    previous_seller_risk=seller_risk_application.get("old_risk_score", 0),
+                    new_seller_risk=seller_risk_application.get("new_risk_score", 0),
+                    previous_seller_trust=0,
+                    new_seller_trust=0,
+                    previous_max_agents_allowed=seller_risk_application.get("old_max_agents_allowed"),
+                    new_max_agents_allowed=seller_risk_application.get("new_max_agents_allowed"),
+                    previous_exposure_limit=0,
+                    new_exposure_limit=seller_risk_application.get("new_exposure_limit", 0),
+                    propagation_reason=f"Runtime action propagated to seller risk: {action_type}",
+                    severity=severity,
+                    metadata={
+                        "source": "create_seller_agent_runtime_action_db",
+                        "seller_risk_application": seller_risk_application,
+                        "seller_capacity_recompute": seller_capacity_recompute,
+                    },
+                )
+            except Exception:
+                pass
+
+        except Exception as e:
+            seller_risk_application = {
+                "status": "error",
+                "message": "runtime_seller_risk_propagation_failed",
+                "error": str(e),
+            }
 
     return {
         "status": "executed",
@@ -16188,8 +16240,11 @@ def create_seller_agent_runtime_action_db(
         "new_available": new_available,
         "runtime_validation_status": runtime_validation_status,
         "runtime_health_score": runtime_health_score,
+        "seller_risk_application": seller_risk_application,
+        "seller_capacity_recompute": seller_capacity_recompute,
         "policy": {
             "runtime_action_governs_agent": True,
+            "runtime_action_propagates_to_seller_risk": action_type in runtime_seller_risk_map,
             "seller_cannot_self_execute_runtime_action": True,
             "protocol_core_sovereignty_reserved": True,
         },
@@ -17259,6 +17314,250 @@ def init_seller_agent_runtime_reviews_table():
         seller_id,
         reviewer_type,
         review_decision
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+
+
+
+def store_seller_runtime_risk_event_db(
+    seller_id,
+    seller_agent_id=None,
+    agent_id=None,
+    source_action_id=None,
+    source_action_type=None,
+    risk_delta=0,
+    trust_delta=0,
+    previous_seller_risk=0,
+    new_seller_risk=0,
+    previous_seller_trust=0,
+    new_seller_trust=0,
+    previous_max_agents_allowed=None,
+    new_max_agents_allowed=None,
+    previous_exposure_limit=0,
+    new_exposure_limit=0,
+    propagation_reason="",
+    severity="medium",
+    metadata=None,
+):
+    if not seller_id:
+        return {"status": "error", "message": "seller_id_required"}
+
+    metadata = metadata or {}
+    metadata = {
+        **metadata,
+        "runtime_risk_propagates_to_seller": True,
+        "agent_governance_impacts_seller_governance": True,
+        "protocol_core_sovereignty_reserved": True,
+    }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    INSERT INTO seller_runtime_risk_events (
+        seller_id,
+        seller_agent_id,
+        agent_id,
+        source_action_id,
+        source_action_type,
+        risk_delta,
+        trust_delta,
+        previous_seller_risk,
+        new_seller_risk,
+        previous_seller_trust,
+        new_seller_trust,
+        previous_max_agents_allowed,
+        new_max_agents_allowed,
+        previous_exposure_limit,
+        new_exposure_limit,
+        propagation_reason,
+        severity,
+        created_at,
+        updated_at,
+        metadata
+    )
+    VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})
+    """, (
+        seller_id,
+        seller_agent_id,
+        agent_id,
+        source_action_id,
+        source_action_type,
+        float(risk_delta or 0),
+        float(trust_delta or 0),
+        float(previous_seller_risk or 0),
+        float(new_seller_risk or 0),
+        float(previous_seller_trust or 0),
+        float(new_seller_trust or 0),
+        previous_max_agents_allowed,
+        new_max_agents_allowed,
+        float(previous_exposure_limit or 0),
+        float(new_exposure_limit or 0),
+        propagation_reason,
+        severity,
+        now,
+        now,
+        json.dumps(metadata, sort_keys=True),
+    ))
+
+    event_id = get_last_insert_id_db(cur)
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "stored",
+        "event_id": event_id,
+        "seller_id": seller_id,
+        "seller_agent_id": seller_agent_id,
+        "source_action_type": source_action_type,
+        "risk_delta": risk_delta,
+        "trust_delta": trust_delta,
+    }
+
+
+def get_seller_runtime_risk_events_db(
+    seller_id=None,
+    seller_agent_id=None,
+    source_action_type=None,
+    severity=None,
+    limit=50,
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    where = []
+    params = []
+
+    if seller_id:
+        where.append(f"seller_id = {p}")
+        params.append(seller_id)
+
+    if seller_agent_id:
+        where.append(f"seller_agent_id = {p}")
+        params.append(seller_agent_id)
+
+    if source_action_type:
+        where.append(f"source_action_type = {p}")
+        params.append(source_action_type)
+
+    if severity:
+        where.append(f"severity = {p}")
+        params.append(severity)
+
+    where_sql = "WHERE " + " AND ".join(where) if where else ""
+
+    cur.execute(f"""
+    SELECT *
+    FROM seller_runtime_risk_events
+    {where_sql}
+    ORDER BY created_at DESC
+    LIMIT {int(limit or 50)}
+    """, tuple(params))
+
+    rows = [dict(r) for r in cur.fetchall()]
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "count": len(rows),
+        "events": rows,
+    }
+
+
+
+def init_seller_runtime_risk_events_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    if USE_POSTGRES:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS seller_runtime_risk_events (
+            event_id SERIAL PRIMARY KEY,
+
+            seller_id TEXT NOT NULL,
+            seller_agent_id TEXT,
+            agent_id TEXT,
+
+            source_action_id INTEGER,
+            source_action_type TEXT,
+
+            risk_delta REAL DEFAULT 0,
+            trust_delta REAL DEFAULT 0,
+
+            previous_seller_risk REAL DEFAULT 0,
+            new_seller_risk REAL DEFAULT 0,
+
+            previous_seller_trust REAL DEFAULT 0,
+            new_seller_trust REAL DEFAULT 0,
+
+            previous_max_agents_allowed INTEGER,
+            new_max_agents_allowed INTEGER,
+
+            previous_exposure_limit REAL DEFAULT 0,
+            new_exposure_limit REAL DEFAULT 0,
+
+            propagation_reason TEXT,
+            severity TEXT DEFAULT 'medium',
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+
+            metadata TEXT DEFAULT '{}'
+        )
+        """)
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS seller_runtime_risk_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            seller_id TEXT NOT NULL,
+            seller_agent_id TEXT,
+            agent_id TEXT,
+
+            source_action_id INTEGER,
+            source_action_type TEXT,
+
+            risk_delta REAL DEFAULT 0,
+            trust_delta REAL DEFAULT 0,
+
+            previous_seller_risk REAL DEFAULT 0,
+            new_seller_risk REAL DEFAULT 0,
+
+            previous_seller_trust REAL DEFAULT 0,
+            new_seller_trust REAL DEFAULT 0,
+
+            previous_max_agents_allowed INTEGER,
+            new_max_agents_allowed INTEGER,
+
+            previous_exposure_limit REAL DEFAULT 0,
+            new_exposure_limit REAL DEFAULT 0,
+
+            propagation_reason TEXT,
+            severity TEXT DEFAULT 'medium',
+
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+
+            metadata TEXT DEFAULT '{}'
+        )
+        """)
+
+    cur.execute("""
+    CREATE INDEX IF NOT EXISTS idx_seller_runtime_risk_events
+    ON seller_runtime_risk_events(
+        seller_id,
+        seller_agent_id,
+        source_action_type,
+        severity
     )
     """)
 

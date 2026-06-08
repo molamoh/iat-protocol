@@ -143,6 +143,7 @@ from iat.api.db import (
     get_seller_agent_runtime_actions_db,
     run_seller_agent_runtime_governance_db,
     get_seller_agent_runtime_governance_reviews_db,
+    get_seller_runtime_risk_events_db,
     run_seller_agent_sandbox_review_db,
     run_seller_agent_simulation_review_db,
     run_seller_agent_generation_db,
@@ -6755,6 +6756,29 @@ class SellerAgentRuntimeActionRequest(BaseModel):
     executed_by: str = "iat_core"
     severity: str = "medium"
     metadata: dict = {}
+
+
+
+
+@app.get("/admin/seller-runtime-risk-events")
+def admin_seller_runtime_risk_events(
+    seller_id: str | None = None,
+    seller_agent_id: str | None = None,
+    source_action_type: str | None = None,
+    severity: str | None = None,
+    limit: int = 50,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    return get_seller_runtime_risk_events_db(
+        seller_id=seller_id,
+        seller_agent_id=seller_agent_id,
+        source_action_type=source_action_type,
+        severity=severity,
+        limit=limit,
+    )
 
 
 

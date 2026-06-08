@@ -5295,6 +5295,146 @@ def seller_create_catalog_item(
     return result
 
 
+
+@app.get("/seller/dashboard")
+def seller_dashboard(
+    x_seller_api_key: str | None = Header(default=None),
+):
+    seller = get_authenticated_seller_from_header(x_seller_api_key)
+    if not seller:
+        return {
+            "status": "error",
+            "message": "seller_auth_required",
+        }
+
+    seller_id = seller.get("seller_id")
+
+    agents = list_seller_agents_db(seller_id)
+    catalog_items = list_seller_catalog_items_db(seller_id)
+    factory_requests = list_seller_agent_factory_requests_db(seller_id)
+    governance_events = list_seller_governance_events_db(seller_id)
+    runtime_risk_events = get_seller_runtime_risk_events_db(
+        seller_id=seller_id,
+        limit=20,
+    )
+
+    agents_list = agents.get("agents", []) if isinstance(agents, dict) else agents
+    catalog_list = catalog_items.get("items", []) if isinstance(catalog_items, dict) else catalog_items
+    factory_list = factory_requests.get("requests", []) if isinstance(factory_requests, dict) else factory_requests
+    governance_list = governance_events.get("events", []) if isinstance(governance_events, dict) else governance_events
+    runtime_risk_list = runtime_risk_events.get("events", [])
+
+    agent_status_counts = {}
+    for agent in agents_list or []:
+        status = str(agent.get("seller_agent_status") or "unknown")
+        agent_status_counts[status] = agent_status_counts.get(status, 0) + 1
+
+    catalog_status_counts = {}
+    for item in catalog_list or []:
+        status = str(item.get("availability_status") or "unknown")
+        catalog_status_counts[status] = catalog_status_counts.get(status, 0) + 1
+
+    factory_status_counts = {}
+    for req in factory_list or []:
+        status = str(req.get("factory_status") or "unknown")
+        factory_status_counts[status] = factory_status_counts.get(status, 0) + 1
+
+    next_required_actions = []
+
+    seller_status = str(seller.get("seller_status") or "").lower()
+    verification_status = str(seller.get("verification_status") or "").lower()
+
+    if seller_status not in ["active", "approved"]:
+        next_required_actions.append({
+            "type": "seller_status",
+            "action": "wait_for_or_request_seller_approval",
+            "reason": f"seller_status={seller_status}",
+        })
+
+    if verification_status not in ["verified", "foundation_verified"]:
+        next_required_actions.append({
+            "type": "verification",
+            "action": "complete_verification",
+            "reason": f"verification_status={verification_status}",
+        })
+
+    if len(catalog_list or []) == 0:
+        next_required_actions.append({
+            "type": "catalog",
+            "action": "create_catalog_item",
+            "reason": "no_catalog_items",
+        })
+
+    if len(factory_list or []) == 0:
+        next_required_actions.append({
+            "type": "factory",
+            "action": "request_agent_factory",
+            "reason": "no_factory_requests",
+        })
+
+    if agent_status_counts.get("quarantined", 0) > 0:
+        next_required_actions.append({
+            "type": "runtime_governance",
+            "action": "review_quarantined_agents",
+            "reason": "one_or_more_agents_quarantined",
+        })
+
+    if (
+        agent_status_counts.get("frozen", 0) > 0
+        or agent_status_counts.get("capacity_frozen", 0) > 0
+        or agent_status_counts.get("limited", 0) > 0
+    ):
+        next_required_actions.append({
+            "type": "capacity",
+            "action": "review_capacity_reduction",
+            "reason": "one_or_more_agents_capacity_limited",
+        })
+
+    active_agents_count = int(seller.get("active_agents", 0) or 0)
+    max_agents_allowed = int(seller.get("max_agents_allowed", 0) or 0)
+
+    if active_agents_count > max_agents_allowed:
+        next_required_actions.append({
+            "type": "capacity",
+            "action": "reduce_active_agents",
+            "reason": "active_agents_exceed_dynamic_capacity",
+            "active_agents": active_agents_count,
+            "max_agents_allowed": max_agents_allowed,
+        })
+
+    return {
+        "status": "ok",
+        "seller": seller,
+        "summary": {
+            "max_agents_allowed": seller.get("max_agents_allowed"),
+            "active_agents": seller.get("active_agents"),
+            "risk_score": seller.get("risk_score"),
+            "trust_score": seller.get("trust_score"),
+            "exposure_limit": seller.get("exposure_limit"),
+            "agent_status_counts": agent_status_counts,
+            "catalog_count": len(catalog_list or []),
+            "catalog_status_counts": catalog_status_counts,
+            "factory_request_count": len(factory_list or []),
+            "factory_status_counts": factory_status_counts,
+            "governance_event_count": len(governance_list or []),
+            "runtime_risk_event_count": len(runtime_risk_list or []),
+        },
+        "recent": {
+            "factory_requests": (factory_list or [])[:10],
+            "governance_events": (governance_list or [])[:10],
+            "runtime_risk_events": runtime_risk_list[:10],
+        },
+        "next_required_actions": next_required_actions,
+        "policy": {
+            "seller_dashboard_is_read_only": True,
+            "seller_cannot_self_approve": True,
+            "seller_cannot_bypass_foundation_governance": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
+
 @app.get("/seller/catalog/items")
 def seller_list_catalog_items(
     x_seller_api_key: str | None = Header(default=None),

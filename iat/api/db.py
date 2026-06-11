@@ -6993,7 +6993,7 @@ def init_sellers_table():
     cur.execute(f'''
     UPDATE sellers
     SET max_agents_allowed = 5
-    WHERE max_agents_allowed IS NULL OR max_agents_allowed < 5
+    WHERE max_agents_allowed IS NULL
     ''')
 
     conn.commit()
@@ -9327,7 +9327,7 @@ def create_order_db(order_id, order):
         foundation_context, execution_mode, execution_context,
         created_at, updated_at, status, tx_signature, delivered_at, delivery_result, used
     )
-    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
     """, (
         order_id,
         order["service"],
@@ -13615,6 +13615,30 @@ def create_seller_db(seller):
     if not isinstance(metadata, str):
         metadata = json.dumps(metadata)
 
+    seller_status_for_exposure = str(
+        seller.get("seller_status", "pending") or "pending"
+    ).lower()
+    verification_status_for_exposure = str(
+        seller.get("verification_status", "unverified") or "unverified"
+    ).lower()
+    risk_score_for_exposure = float(
+        seller.get("risk_score", 0) or 0
+    )
+
+    initial_exposure_limit = float(
+        seller.get("exposure_limit", 0) or 0
+    )
+
+    if (
+        initial_exposure_limit <= 0
+        and seller_status_for_exposure == "active"
+        and verification_status_for_exposure in ["verified", "foundation_verified"]
+        and risk_score_for_exposure < 0.35
+    ):
+        initial_exposure_limit = 100.0
+    elif initial_exposure_limit <= 0:
+        initial_exposure_limit = 10.0
+
     cur.execute(f"""
     INSERT INTO sellers (
         seller_id, seller_name, wallet, email, api_key,
@@ -13642,7 +13666,7 @@ def create_seller_db(seller):
         int(seller.get("active_agents", 0) or 0),
         int(seller.get("max_agents_allowed", 5) or 5),
         float(seller.get("stake_amount", 0) or 0),
-        float(seller.get("exposure_limit", 0) or 0),
+        initial_exposure_limit,
         int(seller.get("successful_orders", 0) or 0),
         int(seller.get("failed_orders", 0) or 0),
         now,
@@ -15497,13 +15521,12 @@ def recompute_seller_dynamic_agent_capacity_db(seller_id):
         new_capacity = min(new_capacity, 5)
 
     # IAT onboarding rule:
-    # a verified, active, low-risk seller starts with 5 agents by default.
-    # Trust can increase this later; risk can still reduce it.
+    # a verified, active seller keeps a 5-agent floor unless real risk escalates.
+    # Runtime/capacity score can slow growth, but should not destroy onboarding capacity.
     if (
         seller_status == "active"
         and verification_status in ["verified", "foundation_verified"]
-        and risk_score < 0.20
-        and capacity_score >= 20
+        and risk_score < 0.35
         and containment_count == 0
         and economic_penalty_level == 0
     ):
@@ -18983,6 +19006,21 @@ def apply_seller_risk_event_db(
     current_risk = float(seller.get("risk_score", 0) or 0)
     current_max_agents = int(seller.get("max_agents_allowed", 5) or 5)
     current_exposure = float(seller.get("exposure_limit", 0) or 0)
+
+    seller_status_for_exposure = str(
+        seller.get("seller_status", "pending") or "pending"
+    ).lower()
+    verification_status_for_exposure = str(
+        seller.get("verification_status", "unverified") or "unverified"
+    ).lower()
+
+    if (
+        current_exposure <= 0
+        and seller_status_for_exposure == "active"
+        and verification_status_for_exposure in ["verified", "foundation_verified"]
+        and current_risk < 0.35
+    ):
+        current_exposure = 100.0
 
     severity = max(0.0, min(float(severity or 0), 1.0))
 

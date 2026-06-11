@@ -78,6 +78,7 @@ from iat.api.db import (
     reject_seller_db,
     apply_seller_risk_event_db,
     list_seller_agents_db,
+    get_seller_agent_db,
     list_runtime_monitored_seller_agents_db,
     list_seller_governance_events_db,
     create_seller_api_key,
@@ -113,8 +114,10 @@ from iat.api.db import (
     cleanup_expired_buyer_sessions_db,
     create_seller_catalog_item_db,
     list_seller_catalog_items_db,
+    get_seller_catalog_item_db,
     create_seller_agent_factory_request_db,
     list_seller_agent_factory_requests_db,
+    get_seller_agent_factory_request_db,
     run_seller_agent_factory_review_db,
     store_seller_agent_factory_review_db,
     get_seller_agent_factory_reviews_db,
@@ -5435,6 +5438,89 @@ def seller_dashboard(
 
 
 
+
+@app.get("/seller/catalog/item/{catalog_item_id}")
+def seller_catalog_item_detail(
+    catalog_item_id: str,
+    x_seller_api_key: str | None = Header(default=None),
+):
+    seller = get_authenticated_seller_from_header(x_seller_api_key)
+    if not seller:
+        return {
+            "status": "error",
+            "message": "seller_auth_required",
+        }
+
+    seller_id = seller.get("seller_id")
+
+    catalog_item = get_seller_catalog_item_db(catalog_item_id)
+
+    if not catalog_item:
+        return {
+            "status": "error",
+            "message": "catalog_item_not_found",
+            "catalog_item_id": catalog_item_id,
+        }
+
+    if catalog_item.get("seller_id") != seller_id:
+        return {
+            "status": "error",
+            "message": "catalog_item_not_owned_by_seller",
+            "catalog_item_id": catalog_item_id,
+        }
+
+    factory_requests = list_seller_agent_factory_requests_db(seller_id)
+    linked_factory_requests = [
+        r for r in (factory_requests or [])
+        if r.get("catalog_item_id") == catalog_item_id
+    ]
+
+    seller_agents = list_seller_agents_db(seller_id)
+    linked_agents = []
+
+    for agent in seller_agents or []:
+        try:
+            metadata = json.loads(agent.get("metadata") or "{}")
+            if metadata.get("catalog_item_id") == catalog_item_id:
+                linked_agents.append(agent)
+        except Exception:
+            pass
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "catalog_item_id": catalog_item_id,
+        "catalog_item": catalog_item,
+        "linked_factory_requests": linked_factory_requests,
+        "linked_agents": linked_agents,
+        "summary": {
+            "factory_request_count": len(linked_factory_requests),
+            "linked_agent_count": len(linked_agents),
+            "active_linked_agents": len([
+                a for a in linked_agents
+                if a.get("seller_agent_status") == "active"
+            ]),
+            "limited_or_frozen_agents": len([
+                a for a in linked_agents
+                if a.get("seller_agent_status") in [
+                    "limited",
+                    "capacity_frozen",
+                    "quarantined",
+                    "throttled",
+                ]
+            ]),
+        },
+        "policy": {
+            "seller_can_observe_catalog_item": True,
+            "seller_cannot_self_verify_catalog_item": True,
+            "seller_cannot_force_agent_creation": True,
+            "seller_cannot_bypass_foundation_governance": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
+
 @app.get("/seller/catalog/items")
 def seller_list_catalog_items(
     x_seller_api_key: str | None = Header(default=None),
@@ -5504,6 +5590,105 @@ def seller_create_agent_factory_request(
     })
 
     return result
+
+
+
+@app.get("/seller/agent-factory/request/{factory_request_id}")
+def seller_agent_factory_request_detail(
+    factory_request_id: str,
+    x_seller_api_key: str | None = Header(default=None),
+):
+    seller = get_authenticated_seller_from_header(x_seller_api_key)
+    if not seller:
+        return {
+            "status": "error",
+            "message": "seller_auth_required",
+        }
+
+    seller_id = seller.get("seller_id")
+
+    factory_request = get_seller_agent_factory_request_db(factory_request_id)
+
+    if not factory_request:
+        return {
+            "status": "error",
+            "message": "factory_request_not_found",
+            "factory_request_id": factory_request_id,
+        }
+
+    if factory_request.get("seller_id") != seller_id:
+        return {
+            "status": "error",
+            "message": "factory_request_not_owned_by_seller",
+            "factory_request_id": factory_request_id,
+        }
+
+    factory_reviews = get_seller_agent_factory_reviews_db(
+        factory_request_id=factory_request_id,
+        limit=20,
+    )
+
+    factory_approvals = get_seller_agent_factory_approvals_db(
+        factory_request_id=factory_request_id,
+        limit=20,
+    )
+
+    sandbox_reviews = get_seller_agent_sandbox_reviews_db(
+        factory_request_id=factory_request_id,
+        limit=20,
+    )
+
+    sandbox_approvals = get_seller_agent_sandbox_approvals_db(
+        factory_request_id=factory_request_id,
+        limit=20,
+    )
+
+    simulation_reviews = get_seller_agent_simulation_reviews_db(
+        factory_request_id=factory_request_id,
+        limit=20,
+    )
+
+    simulation_approvals = get_seller_agent_simulation_approvals_db(
+        factory_request_id=factory_request_id,
+        limit=20,
+    )
+
+    generated_agents = []
+
+    try:
+        metadata = json.loads(factory_request.get("metadata") or "{}")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        generated_agents = metadata.get("generated_agents") or []
+    except Exception:
+        generated_agents = []
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "factory_request_id": factory_request_id,
+        "factory_request": factory_request,
+        "generated_agents": generated_agents,
+        "reviews": {
+            "factory": factory_reviews,
+            "sandbox": sandbox_reviews,
+            "simulation": simulation_reviews,
+        },
+        "approvals": {
+            "factory": factory_approvals,
+            "sandbox": sandbox_approvals,
+            "simulation": simulation_approvals,
+        },
+        "policy": {
+            "seller_can_observe_factory_request": True,
+            "seller_cannot_approve_factory_request": True,
+            "seller_cannot_run_sandbox_or_simulation": True,
+            "seller_cannot_generate_agents_directly": True,
+            "seller_cannot_bypass_foundation_governance": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
 
 
 @app.get("/seller/agent-factory/requests")
@@ -7380,26 +7565,808 @@ def admin_approve_seller(
     return approve_seller_db(req.seller_id)
 
 
-@app.get("/seller/my-agents")
-def seller_my_agents(
-    api_key: str,
+
+@app.get("/seller/my-agent/{seller_agent_id}")
+def seller_my_agent_detail(
+    seller_agent_id: str,
+    api_key: str | None = None,
+    x_seller_api_key: str | None = Header(default=None),
 ):
-    auth = authenticate_seller_api_key_db(api_key)
+    effective_api_key = x_seller_api_key or api_key
+
+    auth = authenticate_seller_api_key_db(effective_api_key)
+
+    if auth.get("status") != "ok":
+        return auth
+
+    seller = auth.get("seller")
+    seller_id = seller.get("seller_id")
+
+    seller_agent = get_seller_agent_db(seller_agent_id)
+
+    if not seller_agent:
+        return {
+            "status": "error",
+            "message": "seller_agent_not_found",
+            "seller_agent_id": seller_agent_id,
+        }
+
+    if seller_agent.get("seller_id") != seller_id:
+        return {
+            "status": "error",
+            "message": "seller_agent_not_owned_by_seller",
+            "seller_agent_id": seller_agent_id,
+        }
+
+    agent_id = seller_agent.get("agent_id")
+
+    runtime_actions = get_seller_agent_runtime_actions_db(
+        seller_agent_id=seller_agent_id,
+        limit=20,
+    )
+
+    runtime_governance_reviews = get_seller_agent_runtime_governance_reviews_db(
+        seller_agent_id=seller_agent_id,
+        limit=20,
+    )
+
+    runtime_risk_events = get_seller_runtime_risk_events_db(
+        seller_id=seller_id,
+        seller_agent_id=seller_agent_id,
+        limit=20,
+    )
+
+    activation_reviews = get_seller_agent_activation_governance_reviews_db(
+        seller_agent_id=seller_agent_id,
+        limit=20,
+    )
+
+    activation_approvals = get_seller_agent_activation_approvals_db(
+        seller_agent_id=seller_agent_id,
+        limit=20,
+    )
+
+    factory_request_id = None
+    catalog_item_id = None
+
+    try:
+        metadata = json.loads(seller_agent.get("metadata") or "{}")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        factory_request_id = metadata.get("factory_request_id")
+        catalog_item_id = metadata.get("catalog_item_id")
+    except Exception:
+        metadata = {}
+
+    factory_request = None
+    catalog_item = None
+
+    if factory_request_id:
+        factory_request = get_seller_agent_factory_request_db(factory_request_id)
+
+    if catalog_item_id:
+        catalog_item = get_seller_catalog_item_db(catalog_item_id)
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "seller_agent_id": seller_agent_id,
+        "agent_id": agent_id,
+        "seller_agent": seller_agent,
+        "origin": {
+            "factory_request_id": factory_request_id,
+            "catalog_item_id": catalog_item_id,
+            "factory_request": factory_request,
+            "catalog_item": catalog_item,
+        },
+        "runtime": {
+            "actions": runtime_actions,
+            "governance_reviews": runtime_governance_reviews,
+            "risk_events": runtime_risk_events,
+        },
+        "activation": {
+            "governance_reviews": activation_reviews,
+            "approvals": activation_approvals,
+        },
+        "policy": {
+            "seller_can_observe_agent_detail": True,
+            "seller_cannot_execute_runtime_action": True,
+            "seller_cannot_self_approve_agent": True,
+            "seller_cannot_bypass_foundation_governance": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
+
+
+
+@app.get("/seller/governance-history/{event_id}")
+def seller_governance_event_detail(
+    event_id: str,
+    api_key: str | None = None,
+    x_seller_api_key: str | None = Header(default=None),
+):
+    effective_api_key = x_seller_api_key or api_key
+
+    auth = authenticate_seller_api_key_db(
+        effective_api_key
+    )
+
+    if auth.get("status") != "ok":
+        return auth
+
+    seller = auth["seller"]
+    seller_id = seller["seller_id"]
+
+    events = list_seller_governance_events_db(
+        seller_id=seller_id,
+        limit=500,
+    )
+
+    for event in events.get("events", []):
+        if event.get("event_id") == event_id:
+            parsed_metadata = {}
+            try:
+                parsed_metadata = json.loads(event.get("metadata") or "{}")
+            except Exception:
+                parsed_metadata = {}
+
+            return {
+                "status": "ok",
+                "seller_id": seller_id,
+                "event_id": event_id,
+                "event": event,
+                "parsed_metadata": parsed_metadata,
+                "policy": {
+                    "seller_can_view_governance_event_detail": True,
+                    "seller_cannot_modify_governance_event": True,
+                    "seller_cannot_execute_governance_action": True,
+                    "protocol_core_sovereignty_reserved": True,
+                },
+            }
+
+    return {
+        "status": "error",
+        "message": "governance_event_not_found",
+        "event_id": event_id,
+    }
+
+
+
+
+
+@app.get("/seller/risk-history/{event_id}")
+def seller_risk_event_detail(
+    event_id: int,
+    api_key: str | None = None,
+    x_seller_api_key: str | None = Header(default=None),
+):
+    effective_api_key = x_seller_api_key or api_key
+
+    auth = authenticate_seller_api_key_db(
+        effective_api_key
+    )
+
+    if auth.get("status") != "ok":
+        return auth
+
+    seller = auth["seller"]
+    seller_id = seller["seller_id"]
+
+    events = get_seller_runtime_risk_events_db(
+        seller_id=seller_id,
+        limit=500,
+    )
+
+    for event in events.get("events", []):
+        if int(event.get("event_id") or 0) == int(event_id):
+            parsed_metadata = {}
+            try:
+                parsed_metadata = json.loads(event.get("metadata") or "{}")
+            except Exception:
+                parsed_metadata = {}
+
+            return {
+                "status": "ok",
+                "seller_id": seller_id,
+                "event_id": event_id,
+                "event": event,
+                "parsed_metadata": parsed_metadata,
+                "policy": {
+                    "seller_can_view_risk_event_detail": True,
+                    "seller_cannot_modify_risk_event": True,
+                    "seller_cannot_execute_risk_action": True,
+                    "protocol_core_sovereignty_reserved": True,
+                },
+            }
+
+    return {
+        "status": "error",
+        "message": "risk_event_not_found",
+        "event_id": event_id,
+    }
+
+
+
+
+
+
+
+
+@app.get("/seller/orders")
+def seller_orders(
+    limit: int = 50,
+    api_key: str | None = None,
+    x_seller_api_key: str | None = Header(default=None),
+):
+    effective_api_key = x_seller_api_key or api_key
+
+    auth = authenticate_seller_api_key_db(
+        effective_api_key
+    )
+
+    if auth.get("status") != "ok":
+        return auth
+
+    seller = auth["seller"]
+    seller_id = seller["seller_id"]
+
+    all_orders = list_orders_db()
+
+    seller_orders_list = []
+
+    for order_id, order in (all_orders or {}).items():
+        if order.get("seller_id") == seller_id:
+            seller_orders_list.append(order)
+
+    seller_orders_list = sorted(
+        seller_orders_list,
+        key=lambda o: int(o.get("created_at", 0) or 0),
+        reverse=True,
+    )[: int(limit or 50)]
+
+    redacted_orders = []
+
+    for order in seller_orders_list:
+        safe_order = dict(order)
+
+        for sensitive_key in [
+            "buyer_secret",
+            "buyer_wallet",
+            "buyer_context",
+            "foundation_context",
+            "execution_context",
+        ]:
+            safe_order.pop(sensitive_key, None)
+
+        safe_order.pop("query", None)
+        safe_order["query_redacted"] = True
+
+        if safe_order.get("buyer_intent"):
+            safe_order["buyer_request_summary"] = {
+                "service": safe_order.get("buyer_intent", {}).get("service"),
+                "category": safe_order.get("buyer_intent", {}).get("category"),
+                "capabilities": safe_order.get("buyer_intent", {}).get("capabilities"),
+            }
+
+        safe_order.pop("buyer_intent", None)
+
+        if safe_order.get("requirements"):
+            safe_order["requirements_summary"] = {
+                "keys": list(safe_order.get("requirements", {}).keys())
+                if isinstance(safe_order.get("requirements"), dict)
+                else []
+            }
+
+        safe_order.pop("requirements", None)
+
+        safe_order["buyer_data_redacted"] = True
+        safe_order["seller_view_only"] = True
+
+        redacted_orders.append(safe_order)
+
+    seller_orders_list = redacted_orders
+
+    status_counts = {}
+    delivered_count = 0
+    pending_count = 0
+    total_volume = 0.0
+
+    for order in seller_orders_list:
+        status = str(order.get("status") or "unknown")
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+        if status == "delivered":
+            delivered_count += 1
+            total_volume += float(order.get("price", 0) or 0)
+        else:
+            pending_count += 1
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "count": len(seller_orders_list),
+        "summary": {
+            "delivered_orders": delivered_count,
+            "pending_orders": pending_count,
+            "status_counts": status_counts,
+            "total_delivered_volume_iat": total_volume,
+        },
+        "orders": seller_orders_list,
+        "policy": {
+            "seller_can_view_own_orders": True,
+            "seller_cannot_view_other_seller_orders": True,
+            "seller_cannot_modify_orders": True,
+            "buyer_contact_hidden_from_seller": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
+
+@app.get("/seller/runtime-health")
+def seller_runtime_health(
+    api_key: str | None = None,
+    x_seller_api_key: str | None = Header(default=None),
+):
+    effective_api_key = x_seller_api_key or api_key
+
+    auth = authenticate_seller_api_key_db(
+        effective_api_key
+    )
+
+    if auth.get("status") != "ok":
+        return auth
+
+    seller = auth["seller"]
+    seller_id = seller["seller_id"]
+
+    agents = list_seller_agents_db(seller_id)
+    agents_list = agents.get("agents", []) if isinstance(agents, dict) else agents
+
+    runtime_status_counts = {}
+    runtime_health_scores = []
+    unhealthy_agents = []
+    pending_review_agents = []
+
+    runtime_relevant_statuses = [
+        "active",
+        "throttled",
+        "limited",
+        "quarantined",
+        "capacity_frozen",
+    ]
+
+    for agent in agents_list or []:
+        seller_agent_status = str(
+            agent.get("seller_agent_status") or "unknown"
+        )
+
+        runtime_status = str(
+            agent.get("runtime_validation_status") or "unknown"
+        )
+
+        runtime_status_counts[runtime_status] = (
+            runtime_status_counts.get(runtime_status, 0) + 1
+        )
+
+        if seller_agent_status not in runtime_relevant_statuses:
+            pending_review_agents.append({
+                "seller_agent_id": agent.get("seller_agent_id"),
+                "agent_id": agent.get("agent_id"),
+                "seller_agent_status": seller_agent_status,
+                "runtime_validation_status": runtime_status,
+            })
+            continue
+
+        health_score = float(
+            agent.get("runtime_health_score", 0) or 0
+        )
+
+        runtime_health_scores.append(health_score)
+
+        if (
+            runtime_status not in ["validated", "runtime_throttled"]
+            or health_score < 0.5
+        ):
+            unhealthy_agents.append({
+                "seller_agent_id": agent.get("seller_agent_id"),
+                "agent_id": agent.get("agent_id"),
+                "seller_agent_status": seller_agent_status,
+                "runtime_validation_status": runtime_status,
+                "runtime_health_score": health_score,
+                "runtime_failure_count": agent.get("runtime_failure_count"),
+                "runtime_last_checked_at": agent.get("runtime_last_checked_at"),
+            })
+
+    average_runtime_health = 0.0
+    if runtime_health_scores:
+        average_runtime_health = round(
+            sum(runtime_health_scores) / len(runtime_health_scores),
+            4
+        )
+
+    runtime_state = "healthy"
+
+    if not agents_list:
+        runtime_state = "no_agents"
+    elif average_runtime_health < 0.5:
+        runtime_state = "degraded"
+    elif len(unhealthy_agents) > 0:
+        runtime_state = "partial_degradation"
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "runtime_state": runtime_state,
+        "agent_count": len(agents_list or []),
+        "average_runtime_health": average_runtime_health,
+        "runtime_status_counts": runtime_status_counts,
+        "runtime_relevant_agent_count": len(runtime_health_scores),
+        "pending_review_agent_count": len(pending_review_agents),
+        "pending_review_agents": pending_review_agents,
+        "unhealthy_agents": unhealthy_agents,
+        "policy": {
+            "seller_can_view_runtime_health": True,
+            "seller_cannot_self_validate_runtime": True,
+            "seller_cannot_self_reactivate_runtime": True,
+            "runtime_governance_controlled_by_protocol": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
+
+@app.get("/seller/exposure-status")
+def seller_exposure_status(
+    api_key: str | None = None,
+    x_seller_api_key: str | None = Header(default=None),
+):
+    effective_api_key = x_seller_api_key or api_key
+
+    auth = authenticate_seller_api_key_db(
+        effective_api_key
+    )
 
     if auth.get("status") != "ok":
         return auth
 
     seller = auth["seller"]
 
+    seller_id = seller["seller_id"]
+
+    exposure_limit = float(
+        seller.get("dynamic_exposure_limit")
+        or seller.get("exposure_limit")
+        or 0
+    )
+
+    risk_score = float(
+        seller.get("risk_score", 0) or 0
+    )
+
+    trust_score = float(
+        seller.get("trust_score", 0) or 0
+    )
+
+    seller_status = str(
+        seller.get("seller_status") or ""
+    ).lower()
+
+    exposure_state = "healthy"
+
+    if exposure_limit <= 0:
+        exposure_state = "restricted"
+
+    if risk_score >= 0.75:
+        exposure_state = "high_risk"
+
+    if seller_status in [
+        "restricted",
+        "contained",
+        "banned",
+    ]:
+        exposure_state = "governance_limited"
+
+    metadata = {}
+    try:
+        metadata = json.loads(
+            seller.get("metadata") or "{}"
+        )
+        if not isinstance(metadata, dict):
+            metadata = {}
+    except Exception:
+        metadata = {}
+
     return {
         "status": "ok",
-        "seller_id": seller.get("seller_id"),
+        "seller_id": seller_id,
+        "seller_status": seller_status,
+        "exposure_state": exposure_state,
+        "dynamic_exposure_limit": exposure_limit,
+        "risk_score": risk_score,
+        "trust_score": trust_score,
+        "metadata": metadata,
+        "policy": {
+            "seller_can_view_exposure_status": True,
+            "seller_cannot_modify_exposure": True,
+            "seller_cannot_self_raise_exposure": True,
+            "exposure_controlled_by_protocol": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
+
+@app.get("/seller/capacity-status")
+def seller_capacity_status(
+    api_key: str | None = None,
+    x_seller_api_key: str | None = Header(default=None),
+):
+    effective_api_key = x_seller_api_key or api_key
+
+    auth = authenticate_seller_api_key_db(effective_api_key)
+
+    if auth.get("status") != "ok":
+        return auth
+
+    seller = auth["seller"]
+    seller_id = seller["seller_id"]
+
+    agents = list_seller_agents_db(seller_id)
+    agents_list = agents.get("agents", []) if isinstance(agents, dict) else agents
+
+    agent_status_counts = {}
+    for agent in agents_list or []:
+        status = str(agent.get("seller_agent_status") or "unknown")
+        agent_status_counts[status] = agent_status_counts.get(status, 0) + 1
+
+    metadata = {}
+    try:
+        metadata = json.loads(seller.get("metadata") or "{}")
+        if not isinstance(metadata, dict):
+            metadata = {}
+    except Exception:
+        metadata = {}
+
+    last_capacity_report = metadata.get("last_dynamic_capacity_report") or {}
+
+    max_agents_allowed = int(seller.get("max_agents_allowed", 0) or 0)
+    active_agents = int(seller.get("active_agents", 0) or 0)
+    total_agents = int(seller.get("total_agents", 0) or 0)
+
+    remaining_capacity = max(0, max_agents_allowed - active_agents)
+    over_capacity = max(0, active_agents - max_agents_allowed)
+
+    capacity_state = "healthy"
+    if over_capacity > 0:
+        capacity_state = "over_capacity"
+    elif max_agents_allowed == 0:
+        capacity_state = "blocked"
+    elif remaining_capacity == 0:
+        capacity_state = "full"
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "capacity_state": capacity_state,
+        "max_agents_allowed": max_agents_allowed,
+        "active_agents": active_agents,
+        "total_agents": total_agents,
+        "remaining_capacity": remaining_capacity,
+        "over_capacity": over_capacity,
+        "agent_status_counts": agent_status_counts,
+        "last_dynamic_capacity_report": last_capacity_report,
+        "policy": {
+            "seller_can_view_capacity_status": True,
+            "seller_cannot_modify_capacity": True,
+            "seller_cannot_self_increase_capacity": True,
+            "capacity_controlled_by_protocol": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
+
+@app.get("/seller/recovery-status")
+def seller_recovery_status(
+    api_key: str | None = None,
+    x_seller_api_key: str | None = Header(default=None),
+):
+    effective_api_key = x_seller_api_key or api_key
+
+    auth = authenticate_seller_api_key_db(effective_api_key)
+
+    if auth.get("status") != "ok":
+        return auth
+
+    seller = auth["seller"]
+    seller_id = seller["seller_id"]
+
+    governance_events = list_seller_governance_events_db(
+        seller_id=seller_id,
+        limit=100,
+    )
+
+    risk_events = get_seller_runtime_risk_events_db(
+        seller_id=seller_id,
+        limit=100,
+    )
+
+    recent_governance = governance_events.get("events", [])
+    recent_risk_events = risk_events.get("events", [])
+
+    seller_status = str(seller.get("seller_status") or "").lower()
+    risk_score = float(seller.get("risk_score", 0) or 0)
+    max_agents_allowed = int(seller.get("max_agents_allowed", 0) or 0)
+    active_agents = int(seller.get("active_agents", 0) or 0)
+
+    blocked_statuses = ["banned", "rejected", "contained"]
+    degraded_statuses = [
+        "restricted",
+        "limited",
+        "watchlist",
+        "contained",
+    ]
+
+    recovery_reasons = []
+
+    if seller_status in blocked_statuses:
+        recovery_reasons.append("seller_terminal_or_contained_status")
+
+    if seller_status in degraded_statuses:
+        recovery_reasons.append("seller_status_degraded")
+
+    if risk_score >= 0.85:
+        recovery_reasons.append("critical_risk_score_requires_foundation_review")
+    elif risk_score >= 0.35:
+        recovery_reasons.append("risk_score_above_recovery_threshold")
+
+    if max_agents_allowed < active_agents:
+        recovery_reasons.append("active_agents_exceed_current_capacity")
+
+    has_recoverable_condition = any(
+        reason in recovery_reasons
+        for reason in [
+            "seller_status_degraded",
+            "risk_score_above_recovery_threshold",
+            "active_agents_exceed_current_capacity",
+        ]
+    )
+
+    can_request_recovery = (
+        seller_status not in blocked_statuses
+        and risk_score < 0.85
+        and has_recoverable_condition
+    )
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "seller_status": seller_status,
+        "risk_score": risk_score,
+        "max_agents_allowed": max_agents_allowed,
+        "active_agents": active_agents,
+        "can_request_recovery": can_request_recovery,
+        "recovery_reasons": recovery_reasons,
+        "recent_governance_events_count": len(recent_governance),
+        "recent_risk_events_count": len(recent_risk_events),
+        "policy": {
+            "seller_can_view_recovery_status": True,
+            "seller_can_request_recovery_separately": True,
+            "seller_cannot_self_recover": True,
+            "seller_cannot_self_reactivate_agents": True,
+            "foundation_must_review_recovery": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
+
+@app.get("/seller/risk-history")
+def seller_risk_history(
+    limit: int = 50,
+    api_key: str | None = None,
+    x_seller_api_key: str | None = Header(default=None),
+):
+    effective_api_key = x_seller_api_key or api_key
+
+    auth = authenticate_seller_api_key_db(
+        effective_api_key
+    )
+
+    if auth.get("status") != "ok":
+        return auth
+
+    seller = auth["seller"]
+    seller_id = seller["seller_id"]
+
+    events = get_seller_runtime_risk_events_db(
+        seller_id=seller_id,
+        limit=limit,
+    )
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "count": events.get("count", 0),
+        "events": events.get("events", []),
+        "policy": {
+            "seller_can_view_risk_history": True,
+            "seller_cannot_modify_risk_history": True,
+            "seller_cannot_execute_risk_action": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
+
+@app.get("/seller/governance-history")
+def seller_governance_history(
+    limit: int = 50,
+    api_key: str | None = None,
+    x_seller_api_key: str | None = Header(default=None),
+):
+    effective_api_key = x_seller_api_key or api_key
+
+    auth = authenticate_seller_api_key_db(
+        effective_api_key
+    )
+
+    if auth.get("status") != "ok":
+        return auth
+
+    seller = auth["seller"]
+
+    events = list_seller_governance_events_db(
+        seller_id=seller["seller_id"],
+        limit=limit,
+    )
+
+    return {
+        "status": "ok",
+        "seller_id": seller["seller_id"],
+        "events": events.get("events", []),
+        "count": len(events.get("events", [])),
+        "policy": {
+            "seller_can_view_governance_history": True,
+            "seller_cannot_modify_governance_history": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
+
+@app.get("/seller/my-agents")
+def seller_my_agents(
+    api_key: str | None = None,
+    x_seller_api_key: str | None = Header(default=None),
+):
+    effective_api_key = x_seller_api_key or api_key
+
+    auth = authenticate_seller_api_key_db(effective_api_key)
+
+    if auth.get("status") != "ok":
+        return auth
+
+    seller = auth.get("seller")
+    seller_id = seller.get("seller_id")
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
         "seller_status": seller.get("seller_status"),
         "verification_status": seller.get("verification_status"),
-        "agents": list_seller_agents_db(
-            seller.get("seller_id")
-        ),
+        "agents": list_seller_agents_db(seller_id),
+        "policy": {
+            "seller_can_observe_agents": True,
+            "seller_cannot_self_approve_agents": True,
+            "seller_cannot_bypass_foundation_governance": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
     }
+
 
 
 class SellerRejectRequest(BaseModel):

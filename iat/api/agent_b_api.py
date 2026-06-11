@@ -7794,6 +7794,46 @@ def seller_risk_event_detail(
 
 
 
+
+def sanitize_order_for_seller(order):
+    safe_order = dict(order or {})
+
+    for sensitive_key in [
+        "buyer_secret",
+        "buyer_wallet",
+        "buyer_context",
+        "foundation_context",
+        "execution_context",
+    ]:
+        safe_order.pop(sensitive_key, None)
+
+    safe_order.pop("query", None)
+    safe_order["query_redacted"] = True
+
+    if safe_order.get("buyer_intent"):
+        buyer_intent = safe_order.get("buyer_intent")
+        safe_order["buyer_request_summary"] = {
+            "service": buyer_intent.get("service") if isinstance(buyer_intent, dict) else None,
+            "category": buyer_intent.get("category") if isinstance(buyer_intent, dict) else None,
+            "capabilities": buyer_intent.get("capabilities") if isinstance(buyer_intent, dict) else None,
+        }
+
+    safe_order.pop("buyer_intent", None)
+
+    if safe_order.get("requirements"):
+        requirements = safe_order.get("requirements")
+        safe_order["requirements_summary"] = {
+            "keys": list(requirements.keys()) if isinstance(requirements, dict) else []
+        }
+
+    safe_order.pop("requirements", None)
+
+    safe_order["buyer_data_redacted"] = True
+    safe_order["seller_view_only"] = True
+
+    return safe_order
+
+
 @app.get("/seller/orders")
 def seller_orders(
     limit: int = 50,
@@ -7829,42 +7869,7 @@ def seller_orders(
     redacted_orders = []
 
     for order in seller_orders_list:
-        safe_order = dict(order)
-
-        for sensitive_key in [
-            "buyer_secret",
-            "buyer_wallet",
-            "buyer_context",
-            "foundation_context",
-            "execution_context",
-        ]:
-            safe_order.pop(sensitive_key, None)
-
-        safe_order.pop("query", None)
-        safe_order["query_redacted"] = True
-
-        if safe_order.get("buyer_intent"):
-            safe_order["buyer_request_summary"] = {
-                "service": safe_order.get("buyer_intent", {}).get("service"),
-                "category": safe_order.get("buyer_intent", {}).get("category"),
-                "capabilities": safe_order.get("buyer_intent", {}).get("capabilities"),
-            }
-
-        safe_order.pop("buyer_intent", None)
-
-        if safe_order.get("requirements"):
-            safe_order["requirements_summary"] = {
-                "keys": list(safe_order.get("requirements", {}).keys())
-                if isinstance(safe_order.get("requirements"), dict)
-                else []
-            }
-
-        safe_order.pop("requirements", None)
-
-        safe_order["buyer_data_redacted"] = True
-        safe_order["seller_view_only"] = True
-
-        redacted_orders.append(safe_order)
+        redacted_orders.append(sanitize_order_for_seller(order))
 
     seller_orders_list = redacted_orders
 
@@ -9084,3 +9089,53 @@ def db_status_admin():
         }
     finally:
         release_conn(conn)
+
+
+@app.get("/seller/order/{order_id}")
+def seller_order_detail(
+    order_id: str,
+    api_key: str | None = None,
+    x_seller_api_key: str | None = Header(default=None),
+):
+    effective_api_key = x_seller_api_key or api_key
+
+    auth = authenticate_seller_api_key_db(effective_api_key)
+
+    if auth.get("status") != "ok":
+        return auth
+
+    seller = auth["seller"]
+    seller_id = seller["seller_id"]
+
+    order = get_order_db(order_id)
+
+    if not order:
+        return {
+            "status": "error",
+            "message": "order_not_found",
+        }
+
+    if order.get("seller_id") != seller_id:
+        return {
+            "status": "error",
+            "message": "seller_order_access_denied",
+            "policy": {
+                "seller_can_view_own_orders": True,
+                "seller_cannot_view_other_seller_orders": True,
+                "buyer_contact_hidden_from_seller": True,
+                "protocol_core_sovereignty_reserved": True,
+            },
+        }
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "order": sanitize_order_for_seller(order),
+        "policy": {
+            "seller_can_view_own_orders": True,
+            "seller_cannot_view_other_seller_orders": True,
+            "seller_cannot_modify_orders": True,
+            "buyer_contact_hidden_from_seller": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }

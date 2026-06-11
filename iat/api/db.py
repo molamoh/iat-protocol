@@ -9,7 +9,7 @@ import time
 import uuid
 from pathlib import Path
 
-DB_PATH = Path("iat_protocol.db")
+DB_PATH = Path(os.getenv("IAT_DB_PATH", "iat_protocol.db"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 USE_POSTGRES = bool(DATABASE_URL)
 

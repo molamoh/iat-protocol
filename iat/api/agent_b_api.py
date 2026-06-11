@@ -9051,3 +9051,36 @@ def admin_rehabilitation_execution_gate(
         seller_id
     )
 
+
+
+@app.get("/admin/db-status")
+def db_status_admin():
+    from iat.api.db import USE_POSTGRES, DATABASE_URL, DB_PATH, get_conn, release_conn
+
+    conn = None
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT 1 AS ok")
+        row = cur.fetchone()
+
+        return {
+            "status": "ok",
+            "db_backend": "postgres" if USE_POSTGRES else "sqlite",
+            "postgres_enabled": bool(USE_POSTGRES),
+            "database_url_present": bool(DATABASE_URL),
+            "sqlite_path": str(DB_PATH),
+            "connection_test": dict(row) if isinstance(row, dict) else {"ok": row[0] if row else None},
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "db_backend": "postgres" if USE_POSTGRES else "sqlite",
+            "postgres_enabled": bool(USE_POSTGRES),
+            "database_url_present": bool(DATABASE_URL),
+            "sqlite_path": str(DB_PATH),
+            "error_type": type(e).__name__,
+            "error": str(e),
+        }
+    finally:
+        release_conn(conn)

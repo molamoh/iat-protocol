@@ -9139,3 +9139,91 @@ def seller_order_detail(
             "protocol_core_sovereignty_reserved": True,
         },
     }
+
+
+@app.get("/seller/analytics")
+def seller_analytics(
+    api_key: str | None = None,
+    x_seller_api_key: str | None = Header(default=None),
+):
+    effective_api_key = x_seller_api_key or api_key
+
+    auth = authenticate_seller_api_key_db(effective_api_key)
+
+    if auth.get("status") != "ok":
+        return auth
+
+    seller = auth["seller"]
+    seller_id = seller["seller_id"]
+
+    all_orders = list_orders_db()
+    seller_orders_list = [
+        order for order in (all_orders or {}).values()
+        if order.get("seller_id") == seller_id
+    ]
+
+    total_orders = len(seller_orders_list)
+    delivered_orders = 0
+    pending_orders = 0
+    failed_orders = 0
+    total_revenue_iat = 0.0
+    pending_revenue_iat = 0.0
+
+    status_counts = {}
+
+    for order in seller_orders_list:
+        status = str(order.get("status") or "unknown")
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+        price = float(order.get("price", 0) or 0)
+
+        if status == "delivered":
+            delivered_orders += 1
+            total_revenue_iat += price
+        elif status in ["failed", "cancelled", "refunded"]:
+            failed_orders += 1
+        else:
+            pending_orders += 1
+            pending_revenue_iat += price
+
+    success_rate = round((delivered_orders / total_orders * 100), 2) if total_orders else 0
+    average_order_value = round((total_revenue_iat / delivered_orders), 4) if delivered_orders else 0
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "analytics": {
+            "orders": {
+                "total_orders": total_orders,
+                "delivered_orders": delivered_orders,
+                "pending_orders": pending_orders,
+                "failed_orders": failed_orders,
+                "status_counts": status_counts,
+            },
+            "revenue": {
+                "total_delivered_revenue_iat": round(total_revenue_iat, 4),
+                "pending_revenue_iat": round(pending_revenue_iat, 4),
+                "average_delivered_order_value_iat": average_order_value,
+            },
+            "performance": {
+                "success_rate_percent": success_rate,
+            },
+            "seller_profile": {
+                "seller_status": seller.get("seller_status"),
+                "verification_status": seller.get("verification_status"),
+                "trust_tier": seller.get("trust_tier"),
+                "reputation": seller.get("reputation"),
+                "risk_score": seller.get("risk_score"),
+                "runtime_health_score": seller.get("runtime_health_score"),
+                "max_agents_allowed": seller.get("max_agents_allowed"),
+                "active_agents": seller.get("active_agents"),
+                "exposure_limit": seller.get("exposure_limit"),
+            },
+        },
+        "policy": {
+            "seller_can_view_own_analytics": True,
+            "seller_cannot_view_buyer_identity": True,
+            "seller_cannot_view_other_seller_analytics": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }

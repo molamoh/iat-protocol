@@ -76,6 +76,27 @@ def qmark():
     return "%s" if USE_POSTGRES else "?"
 
 
+def sql_pk_int(column_name):
+    if USE_POSTGRES:
+        return f"{column_name} SERIAL PRIMARY KEY"
+    return f"{column_name} INTEGER PRIMARY KEY AUTOINCREMENT"
+
+
+def sql_add_column(table, column, definition):
+    if USE_POSTGRES:
+        return f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {definition}"
+    return f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+
+
+def sql_insert_ignore(table, columns, conflict_columns):
+    cols = ", ".join(columns)
+    placeholders = ", ".join([qmark()] * len(columns))
+    if USE_POSTGRES:
+        conflicts = ", ".join(conflict_columns)
+        return f"INSERT INTO {table} ({cols}) VALUES ({placeholders}) ON CONFLICT ({conflicts}) DO NOTHING"
+    return f"INSERT OR IGNORE INTO {table} ({cols}) VALUES ({placeholders})"
+
+
 
 def get_last_insert_id_db(cur):
     if USE_POSTGRES:

@@ -5327,6 +5327,57 @@ def seller_dashboard(
     governance_list = governance_events.get("events", []) if isinstance(governance_events, dict) else governance_events
     runtime_risk_list = runtime_risk_events.get("events", [])
 
+    all_orders = list_orders_db()
+    seller_orders_list = [
+        order for order in (all_orders or {}).values()
+        if order.get("seller_id") == seller_id
+    ]
+
+    total_orders = len(seller_orders_list)
+    delivered_orders = 0
+    pending_orders = 0
+    failed_orders = 0
+    delivered_revenue_iat = 0.0
+    pending_revenue_iat = 0.0
+    order_status_counts = {}
+
+    for order in seller_orders_list:
+        order_status = str(order.get("status") or "unknown")
+        order_status_counts[order_status] = order_status_counts.get(order_status, 0) + 1
+
+        price = float(order.get("price", 0) or 0)
+
+        if order_status == "delivered":
+            delivered_orders += 1
+            delivered_revenue_iat += price
+        elif order_status in ["failed", "cancelled", "refunded"]:
+            failed_orders += 1
+        else:
+            pending_orders += 1
+            pending_revenue_iat += price
+
+    success_rate_percent = round((delivered_orders / total_orders * 100), 2) if total_orders else 0
+    average_delivered_order_value_iat = round((delivered_revenue_iat / delivered_orders), 4) if delivered_orders else 0
+
+    runtime_summary = get_seller_runtime_summary_db(seller_id)
+
+    exposure_limit = float(
+        seller.get("dynamic_exposure_limit")
+        or seller.get("exposure_limit")
+        or 0
+    )
+    risk_score = float(seller.get("risk_score", 0) or 0)
+    trust_score = float(seller.get("trust_score", 0) or 0)
+    seller_status = str(seller.get("seller_status") or "").lower()
+
+    exposure_state = "healthy"
+    if exposure_limit <= 0:
+        exposure_state = "restricted"
+    if risk_score >= 0.75:
+        exposure_state = "high_risk"
+    if seller_status in ["restricted", "contained", "banned"]:
+        exposure_state = "governance_limited"
+
     agent_status_counts = {}
     for agent in agents_list or []:
         status = str(agent.get("seller_agent_status") or "unknown")
@@ -5421,6 +5472,39 @@ def seller_dashboard(
             "factory_status_counts": factory_status_counts,
             "governance_event_count": len(governance_list or []),
             "runtime_risk_event_count": len(runtime_risk_list or []),
+        },
+        "orders": {
+            "total_orders": total_orders,
+            "delivered_orders": delivered_orders,
+            "pending_orders": pending_orders,
+            "failed_orders": failed_orders,
+            "status_counts": order_status_counts,
+            "success_rate_percent": success_rate_percent,
+        },
+        "revenue": {
+            "delivered_revenue_iat": round(delivered_revenue_iat, 4),
+            "pending_revenue_iat": round(pending_revenue_iat, 4),
+            "average_delivered_order_value_iat": average_delivered_order_value_iat,
+        },
+        "runtime": runtime_summary,
+        "capacity": {
+            "capacity_state": (
+                "over_capacity" if active_agents_count > max_agents_allowed
+                else "blocked" if max_agents_allowed == 0
+                else "full" if active_agents_count >= max_agents_allowed
+                else "healthy"
+            ),
+            "max_agents_allowed": max_agents_allowed,
+            "active_agents": active_agents_count,
+            "remaining_capacity": max(0, max_agents_allowed - active_agents_count),
+            "over_capacity": max(0, active_agents_count - max_agents_allowed),
+            "agent_status_counts": agent_status_counts,
+        },
+        "exposure": {
+            "exposure_state": exposure_state,
+            "dynamic_exposure_limit": exposure_limit,
+            "risk_score": risk_score,
+            "trust_score": trust_score,
         },
         "recent": {
             "factory_requests": (factory_list or [])[:10],

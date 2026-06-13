@@ -73,6 +73,7 @@ from iat.api.db import (
     get_seller_by_email_db,
     get_seller_by_api_key_db,
     get_seller_db,
+    list_sellers_db,
     authenticate_seller_api_key_db,
     approve_seller_db,
     reject_seller_db,
@@ -9422,6 +9423,67 @@ def seller_payouts(
             "seller_cannot_trigger_payout_directly": True,
             "seller_cannot_bypass_escrow": True,
             "protocol_controls_release": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
+@app.get("/admin/sellers/pending")
+def admin_pending_sellers(
+    limit: int = 100,
+    x_api_key: str = Header(default="")
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    sellers = list_sellers_db(limit=limit)
+
+    pending_statuses = [
+        "pending",
+        "pending_review",
+        "unverified",
+        "watchlist",
+    ]
+
+    pending = []
+
+    for seller in sellers:
+        seller_status = str(seller.get("seller_status") or "").lower()
+        verification_status = str(seller.get("verification_status") or "").lower()
+
+        if (
+            seller_status in pending_statuses
+            or verification_status in ["unverified", "not_provided", "pending"]
+        ):
+            pending.append({
+                "seller_id": seller.get("seller_id"),
+                "seller_name": seller.get("seller_name"),
+                "wallet": seller.get("wallet"),
+                "email": seller.get("email"),
+                "seller_status": seller.get("seller_status"),
+                "verification_status": seller.get("verification_status"),
+                "trust_tier": seller.get("trust_tier"),
+                "reputation": seller.get("reputation"),
+                "risk_score": seller.get("risk_score"),
+                "trust_score": seller.get("trust_score"),
+                "max_agents_allowed": seller.get("max_agents_allowed"),
+                "active_agents": seller.get("active_agents"),
+                "exposure_limit": seller.get("exposure_limit"),
+                "created_at": seller.get("created_at"),
+                "updated_at": seller.get("updated_at"),
+            })
+
+    return {
+        "status": "ok",
+        "count": len(pending),
+        "sellers": pending,
+        "policy": {
+            "admin_can_review_pending_sellers": True,
+            "seller_approval_requires_foundation_authority": True,
+            "seller_cannot_self_approve": True,
             "protocol_core_sovereignty_reserved": True,
         },
     }

@@ -13809,12 +13809,21 @@ def reject_seller_db(
         seller_id,
     ))
 
-    audit_metadata = json.dumps({
+    seller_before = get_seller_db(seller_id) or {}
+    existing_metadata = {}
+    try:
+        existing_metadata = json.loads(seller_before.get("metadata") or "{}")
+        if not isinstance(existing_metadata, dict):
+            existing_metadata = {}
+    except Exception:
+        existing_metadata = {}
+
+    existing_metadata["last_governance_action"] = {
         "event": "seller_rejected",
         "reviewer": reviewer,
         "reason": reason,
         "timestamp": now,
-    })
+    }
 
     cur.execute(f"""
     UPDATE sellers
@@ -13822,7 +13831,7 @@ def reject_seller_db(
         metadata = {p}
     WHERE seller_id = {p}
     """, (
-        audit_metadata,
+        json.dumps(existing_metadata, sort_keys=True),
         seller_id,
     ))
 
@@ -13911,12 +13920,20 @@ def approve_seller_db(
         seller_id,
     ))
 
-    audit_metadata = json.dumps({
+    existing_metadata = {}
+    try:
+        existing_metadata = json.loads(seller.get("metadata") or "{}")
+        if not isinstance(existing_metadata, dict):
+            existing_metadata = {}
+    except Exception:
+        existing_metadata = {}
+
+    existing_metadata["last_governance_action"] = {
         "event": "seller_approved",
         "reviewer": reviewer,
         "override_terminal": override_terminal,
         "timestamp": now,
-    })
+    }
 
     cur.execute(f"""
     UPDATE sellers
@@ -13924,7 +13941,7 @@ def approve_seller_db(
         metadata = {p}
     WHERE seller_id = {p}
     """, (
-        audit_metadata,
+        json.dumps(existing_metadata, sort_keys=True),
         seller_id,
     ))
 

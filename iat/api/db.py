@@ -16523,6 +16523,146 @@ def approve_seller_agent_activation_request_db(
     }
 
 
+def manual_activate_seller_agent_db(
+    seller_agent_id,
+    approved_by="iat_manual_activation_governance",
+    approval_reason="manual_activation_approval",
+):
+    if not seller_agent_id:
+        return {"status": "error", "message": "seller_agent_id_required"}
+
+    seller_agent = get_seller_agent_db(seller_agent_id)
+    if not seller_agent:
+        return {
+            "status": "error",
+            "message": "seller_agent_not_found",
+            "seller_agent_id": seller_agent_id,
+        }
+
+    agent_id = seller_agent.get("agent_id")
+    seller_id = seller_agent.get("seller_id")
+
+    review_evaluation = evaluate_seller_agent_activation_governance_reviews_db(
+        seller_agent_id=seller_agent_id
+    )
+
+    if review_evaluation.get("readiness") != "ready_for_activation_approval":
+        return {
+            "status": "blocked",
+            "message": "activation_reviews_threshold_not_met",
+            "seller_agent_id": seller_agent_id,
+            "review_evaluation": review_evaluation,
+        }
+
+    approvals = get_seller_agent_activation_approvals_db(
+        seller_agent_id=seller_agent_id,
+        status="approved",
+        limit=1,
+    )
+
+    if approvals.get("count", 0) <= 0:
+        return {
+            "status": "blocked",
+            "message": "activation_approval_required",
+            "seller_agent_id": seller_agent_id,
+            "review_evaluation": review_evaluation,
+            "approvals": approvals,
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    UPDATE seller_agents
+    SET seller_agent_status = {p},
+        runtime_validation_status = {p},
+        runtime_health_score = {p},
+        updated_at = {p}
+    WHERE seller_agent_id = {p}
+    """, (
+        "active",
+        "active",
+        100,
+        now,
+        seller_agent_id,
+    ))
+
+    cur.execute(f"""
+    UPDATE agents
+    SET available = {p},
+        verification_status = {p},
+        trust_tier = {p},
+        seller_status = {p},
+        updated_at = {p}
+    WHERE agent_id = {p}
+    """, (
+        1,
+        "foundation_verified",
+        "verified",
+        "active",
+        now,
+        agent_id,
+    ))
+
+    cur.execute(f"""
+    UPDATE sellers
+    SET active_agents = (
+            SELECT COUNT(*)
+            FROM seller_agents
+            WHERE seller_id = {p}
+              AND seller_agent_status = 'active'
+        ),
+        total_agents = (
+            SELECT COUNT(*)
+            FROM seller_agents
+            WHERE seller_id = {p}
+        ),
+        updated_at = {p}
+    WHERE seller_id = {p}
+    """, (
+        seller_id,
+        seller_id,
+        now,
+        seller_id,
+    ))
+
+    event_result = create_seller_governance_event_with_cursor(
+        cur=cur,
+        seller_id=seller_id,
+        event_type="seller_agent_manual_activated",
+        reviewer=approved_by,
+        reason=approval_reason,
+        old_status=str(seller_agent.get("seller_agent_status") or "unknown"),
+        new_status="active",
+        metadata={
+            "seller_agent_id": seller_agent_id,
+            "agent_id": agent_id,
+            "manual_foundation_activation": True,
+            "review_evaluation": review_evaluation,
+            "activation_approval": approvals.get("approvals", [None])[0],
+            "seller_cannot_self_approve": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    )
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "seller_agent_id": seller_agent_id,
+        "agent_id": agent_id,
+        "seller_id": seller_id,
+        "seller_agent_status": "active",
+        "runtime_validation_status": "active",
+        "event": event_result,
+        "seller_agent": get_seller_agent_db(seller_agent_id),
+    }
+
+
+
 
 def store_seller_agent_activation_governance_review_db(
     seller_agent_id,

@@ -140,6 +140,7 @@ from iat.api.db import (
     get_seller_agent_activation_governance_reviews_db,
     evaluate_seller_agent_activation_governance_reviews_db,
     approve_seller_agent_activation_request_db,
+    manual_activate_seller_agent_db,
     get_seller_agent_activation_approvals_db,
     store_seller_agent_runtime_review_db,
     get_seller_agent_runtime_reviews_db,
@@ -9506,6 +9507,27 @@ def admin_seller_agent_factory_manual_approve(
 
     return manual_approve_seller_agent_factory_request_db(
         factory_request_id=factory_request_id,
+        approved_by=req.approved_by,
+        approval_reason=req.approval_reason,
+    )
+
+
+class SellerAgentManualActivateRequest(BaseModel):
+    approved_by: str = "iat_manual_activation_governance"
+    approval_reason: str = "manual_activation_approval"
+
+
+@app.post("/admin/seller-agent/manual-activate/{seller_agent_id}")
+def admin_seller_agent_manual_activate(
+    seller_agent_id: str,
+    req: SellerAgentManualActivateRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    return manual_activate_seller_agent_db(
+        seller_agent_id=seller_agent_id,
         approved_by=req.approved_by,
         approval_reason=req.approval_reason,
     )

@@ -29,7 +29,7 @@ def get_conn():
         if pool is None:
             pool = SimpleConnectionPool(
                 1,
-                10,
+                20,
                 DATABASE_URL,
                 cursor_factory=RealDictCursor
             )
@@ -9177,19 +9177,23 @@ def get_buyer_db(buyer_wallet):
     if not buyer_wallet:
         return None
 
-    conn = get_conn()
-    cur = conn.cursor()
-    p = qmark()
+    conn = None
 
-    cur.execute(f"SELECT * FROM buyers WHERE buyer_wallet = {p}", (buyer_wallet,))
-    row = cur.fetchone()
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        p = qmark()
 
-    release_conn(locals().get("conn"))
+        cur.execute(f"SELECT * FROM buyers WHERE buyer_wallet = {p}", (buyer_wallet,))
+        row = cur.fetchone()
 
-    if not row:
-        return None
+        if not row:
+            return None
 
-    return dict(row)
+        return dict(row)
+
+    finally:
+        release_conn(conn)
 
 
 def is_buyer_banned_db(buyer_wallet):

@@ -124,6 +124,7 @@ from iat.api.db import (
     get_seller_agent_factory_reviews_db,
     evaluate_seller_agent_factory_reviews_db,
     approve_seller_agent_factory_request_db,
+    manual_approve_seller_agent_factory_request_db,
     get_seller_agent_factory_approvals_db,
     store_seller_agent_sandbox_review_db,
     get_seller_agent_sandbox_reviews_db,
@@ -9487,3 +9488,24 @@ def admin_pending_sellers(
             "protocol_core_sovereignty_reserved": True,
         },
     }
+
+
+class SellerAgentFactoryManualApproveRequest(BaseModel):
+    approved_by: str = "iat_manual_foundation_governance"
+    approval_reason: str = "manual_foundation_approval"
+
+
+@app.post("/admin/seller-agent-factory/manual-approve/{factory_request_id}")
+def admin_seller_agent_factory_manual_approve(
+    factory_request_id: str,
+    req: SellerAgentFactoryManualApproveRequest,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    return manual_approve_seller_agent_factory_request_db(
+        factory_request_id=factory_request_id,
+        approved_by=req.approved_by,
+        approval_reason=req.approval_reason,
+    )

@@ -8661,6 +8661,127 @@ def run_seller_agent_factory_review_db(factory_request_id):
 
 
 
+def manual_approve_seller_agent_factory_request_db(
+    factory_request_id,
+    approved_by="iat_manual_foundation_governance",
+    approval_reason="manual_foundation_approval",
+):
+    if not factory_request_id:
+        return {
+            "status": "error",
+            "message": "factory_request_id_required",
+        }
+
+    factory_request = get_seller_agent_factory_request_db(factory_request_id)
+    if not factory_request:
+        return {
+            "status": "error",
+            "message": "factory_request_not_found",
+        }
+
+    current_governance_status = str(
+        factory_request.get("governance_status") or ""
+    ).lower()
+
+    if current_governance_status not in [
+        "manual_review",
+        "pending_factory_approval",
+        "pending_factory_reviews",
+    ]:
+        return {
+            "status": "error",
+            "message": "factory_request_not_in_manual_review_state",
+            "factory_request_id": factory_request_id,
+            "governance_status": factory_request.get("governance_status"),
+            "factory_status": factory_request.get("factory_status"),
+        }
+
+    review_evaluation = evaluate_seller_agent_factory_reviews_db(
+        factory_request_id=factory_request_id
+    )
+
+    if review_evaluation.get("readiness") != "ready_for_factory_approval":
+        return {
+            "status": "blocked",
+            "message": "factory_reviews_threshold_not_met",
+            "factory_request_id": factory_request_id,
+            "review_evaluation": review_evaluation,
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    UPDATE seller_agent_factory_requests
+    SET factory_status = {p},
+        sandbox_status = {p},
+        simulation_status = {p},
+        governance_status = {p},
+        updated_at = {p}
+    WHERE factory_request_id = {p}
+    """, (
+        "governance_approved",
+        "queued",
+        "waiting_for_sandbox",
+        "approved_for_sandbox",
+        now,
+        factory_request_id,
+    ))
+
+    catalog_item_id = factory_request.get("catalog_item_id")
+
+    if catalog_item_id:
+        cur.execute(f"""
+        UPDATE seller_catalog_items
+        SET agent_creation_status = {p},
+            availability_status = {p},
+            verification_status = {p},
+            updated_at = {p}
+        WHERE catalog_item_id = {p}
+        """, (
+            "approved_for_sandbox",
+            "active",
+            "foundation_verified",
+            now,
+            catalog_item_id,
+        ))
+
+    event_result = create_seller_governance_event_with_cursor(
+        cur=cur,
+        seller_id=factory_request.get("seller_id"),
+        event_type="factory_manual_approved_for_sandbox",
+        reviewer=approved_by,
+        reason=approval_reason,
+        old_status=str(factory_request.get("governance_status") or "unknown"),
+        new_status="approved_for_sandbox",
+        metadata={
+            "factory_request_id": factory_request_id,
+            "catalog_item_id": catalog_item_id,
+            "manual_foundation_approval": True,
+            "review_evaluation": review_evaluation,
+            "seller_cannot_self_approve": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    )
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "factory_request_id": factory_request_id,
+        "governance_status": "approved_for_sandbox",
+        "factory_status": "governance_approved",
+        "sandbox_status": "queued",
+        "simulation_status": "waiting_for_sandbox",
+        "event": event_result,
+        "factory_request": get_seller_agent_factory_request_db(factory_request_id),
+    }
+
+
+
 def init_delegations_table():
     conn = get_conn()
     cur = conn.cursor()

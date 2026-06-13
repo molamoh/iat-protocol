@@ -9312,3 +9312,116 @@ def seller_analytics(
             "protocol_core_sovereignty_reserved": True,
         },
     }
+
+
+@app.get("/seller/payouts")
+def seller_payouts(
+    api_key: str | None = None,
+    x_seller_api_key: str | None = Header(default=None),
+):
+    effective_api_key = x_seller_api_key or api_key
+
+    auth = authenticate_seller_api_key_db(effective_api_key)
+
+    if auth.get("status") != "ok":
+        return auth
+
+    seller = auth["seller"]
+    seller_id = seller["seller_id"]
+
+    all_orders = list_orders_db()
+    seller_orders_list = [
+        order for order in (all_orders or {}).values()
+        if order.get("seller_id") == seller_id
+    ]
+
+    delivered_iat = 0.0
+    pending_iat = 0.0
+    failed_iat = 0.0
+    withheld_iat = 0.0
+
+    payout_events = []
+
+    for order in seller_orders_list:
+        status = str(order.get("status") or "unknown")
+        price = float(order.get("price", 0) or 0)
+
+        if status == "delivered":
+            delivered_iat += price
+            payout_state = "earned_pending_payout"
+        elif status in ["failed", "cancelled", "refunded"]:
+            failed_iat += price
+            payout_state = "not_payable"
+        else:
+            pending_iat += price
+            payout_state = "pending_delivery_or_escrow"
+
+        payout_events.append({
+            "order_id": order.get("order_id"),
+            "service": order.get("service"),
+            "status": status,
+            "amount_iat": price,
+            "payout_state": payout_state,
+            "created_at": order.get("created_at"),
+            "delivered_at": order.get("delivered_at"),
+        })
+
+    risk_score = float(seller.get("risk_score", 0) or 0)
+    seller_status = str(seller.get("seller_status") or "pending").lower()
+    verification_status = str(seller.get("verification_status") or "unverified").lower()
+
+    payout_hold_reasons = []
+
+    if seller_status not in ["active", "approved"]:
+        payout_hold_reasons.append("seller_not_active")
+
+    if verification_status not in ["verified", "foundation_verified"]:
+        payout_hold_reasons.append("seller_not_verified")
+
+    if risk_score >= 0.75:
+        payout_hold_reasons.append("high_risk_score")
+
+    if seller_status in ["restricted", "contained", "banned", "rejected"]:
+        payout_hold_reasons.append("governance_restricted_status")
+
+    payout_eligible = len(payout_hold_reasons) == 0
+
+    if not payout_eligible:
+        withheld_iat = delivered_iat
+        payable_iat = 0.0
+    else:
+        payable_iat = delivered_iat
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "payouts": {
+            "currency": "IAT",
+            "earned_iat": round(delivered_iat, 4),
+            "pending_iat": round(pending_iat, 4),
+            "failed_or_cancelled_iat": round(failed_iat, 4),
+            "withheld_iat": round(withheld_iat, 4),
+            "payable_iat": round(payable_iat, 4),
+            "payout_eligible": payout_eligible,
+            "hold_reasons": payout_hold_reasons,
+        },
+        "escrow": {
+            "mode": "protocol_accounting_placeholder",
+            "onchain_escrow_enabled": False,
+            "future_onchain_escrow_required": True,
+            "release_requires_protocol_confirmation": True,
+            "seller_cannot_self_release_funds": True,
+        },
+        "events": sorted(
+            payout_events,
+            key=lambda e: int(e.get("created_at", 0) or 0),
+            reverse=True,
+        )[:50],
+        "policy": {
+            "seller_can_view_payouts": True,
+            "seller_cannot_trigger_payout_directly": True,
+            "seller_cannot_bypass_escrow": True,
+            "protocol_controls_release": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }

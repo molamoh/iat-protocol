@@ -6749,6 +6749,12 @@ def init_db():
         "buyer_intent": "TEXT",
         "requirements": "TEXT",
         "buyer_context": "TEXT",
+        "foundation_context": "TEXT",
+        "execution_mode": "TEXT",
+        "execution_context": "TEXT",
+        "delivered_at": "INTEGER",
+        "delivery_result": "TEXT",
+        "used": "INTEGER DEFAULT 0",
     }
 
     for column, col_type in order_columns.items():

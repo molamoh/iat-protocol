@@ -9905,6 +9905,18 @@ def register_agent_db(agent):
                 now,
             ))
 
+        if str(agent.get("agent_type", "")).lower() == "foundation":
+            cur.execute(f"""
+            UPDATE agents
+            SET foundation_role = {p},
+                foundation_priority = {p}
+            WHERE agent_id = {p}
+            """, (
+                agent.get("foundation_role"),
+                int(agent.get("foundation_priority", 100) or 100),
+                agent.get("agent_id"),
+            ))
+
         conn.commit()
 
     except Exception:

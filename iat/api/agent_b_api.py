@@ -303,6 +303,9 @@ class RegisterAgentRequest(BaseModel):
     capabilities: str = "[]"
     specialties: str = "[]"
 
+    foundation_role: str | None = None
+    foundation_priority: int | None = None
+
 
 class LegacySellerRegisterRequest(BaseModel):
     seller_id: str

@@ -6728,6 +6728,97 @@ def init_seller_graph_edges_table():
     release_conn(conn)
 
 
+
+def init_threat_memory_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    if USE_POSTGRES:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS threat_memory (
+            id SERIAL PRIMARY KEY,
+            scope TEXT,
+            subject_id TEXT,
+            threat_level TEXT,
+            attack_vector TEXT,
+            recommended_guardrail TEXT,
+            signal_to_monitor TEXT,
+            policy_update TEXT,
+            confidence REAL DEFAULT 0,
+            source TEXT,
+            status TEXT DEFAULT 'active',
+            memory_strength REAL DEFAULT 0.5,
+            times_reinforced INTEGER DEFAULT 0,
+            times_observed INTEGER DEFAULT 0,
+            times_false_positive INTEGER DEFAULT 0,
+            last_validated_at INTEGER,
+            last_decay_at INTEGER,
+            archived_at INTEGER,
+            created_at INTEGER,
+            updated_at INTEGER
+        )
+        """)
+    else:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS threat_memory (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope TEXT,
+            subject_id TEXT,
+            threat_level TEXT,
+            attack_vector TEXT,
+            recommended_guardrail TEXT,
+            signal_to_monitor TEXT,
+            policy_update TEXT,
+            confidence REAL DEFAULT 0,
+            source TEXT,
+            status TEXT DEFAULT 'active',
+            memory_strength REAL DEFAULT 0.5,
+            times_reinforced INTEGER DEFAULT 0,
+            times_observed INTEGER DEFAULT 0,
+            times_false_positive INTEGER DEFAULT 0,
+            last_validated_at INTEGER,
+            last_decay_at INTEGER,
+            archived_at INTEGER,
+            created_at INTEGER,
+            updated_at INTEGER
+        )
+        """)
+
+    columns = {
+        "scope": "TEXT",
+        "subject_id": "TEXT",
+        "threat_level": "TEXT",
+        "attack_vector": "TEXT",
+        "recommended_guardrail": "TEXT",
+        "signal_to_monitor": "TEXT",
+        "policy_update": "TEXT",
+        "confidence": "REAL DEFAULT 0",
+        "source": "TEXT",
+        "status": "TEXT DEFAULT 'active'",
+        "memory_strength": "REAL DEFAULT 0.5",
+        "times_reinforced": "INTEGER DEFAULT 0",
+        "times_observed": "INTEGER DEFAULT 0",
+        "times_false_positive": "INTEGER DEFAULT 0",
+        "last_validated_at": "INTEGER",
+        "last_decay_at": "INTEGER",
+        "archived_at": "INTEGER",
+        "created_at": "INTEGER",
+        "updated_at": "INTEGER",
+    }
+
+    for column, definition in columns.items():
+        try:
+            if USE_POSTGRES:
+                cur.execute(f"ALTER TABLE threat_memory ADD COLUMN IF NOT EXISTS {column} {definition}")
+            else:
+                cur.execute(f"ALTER TABLE threat_memory ADD COLUMN {column} {definition}")
+        except Exception:
+            pass
+
+    conn.commit()
+    release_conn(conn)
+
+
 def init_db():
     conn = get_conn()
     cur = conn.cursor()
@@ -6834,6 +6925,7 @@ def init_db():
     init_seller_agent_runtime_actions_table()
     init_seller_agent_execution_sessions_table()
     init_seller_governance_events_table()
+    init_threat_memory_table()
     init_threat_memory_nodes_table()
     init_adversarial_mutation_signatures_table()
     init_seller_containment_events_table()

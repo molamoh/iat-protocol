@@ -579,6 +579,23 @@ def generate_service_result(service_name, query=None):
 
 
 
+
+def _ensure_dict(value, default=None):
+    default = default or {}
+
+    if isinstance(value, dict):
+        return value
+
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else default
+        except Exception:
+            return default
+
+    return default
+
+
 def run_foundation_supplier_pipeline(order):
     """
     Foundation-mediated supplier pipeline.
@@ -589,9 +606,9 @@ def run_foundation_supplier_pipeline(order):
     """
     order = order or {}
 
-    execution_context = order.get("execution_context") or {}
-    buyer_intent = order.get("buyer_intent") or {}
-    requirements = order.get("requirements") or {}
+    execution_context = _ensure_dict(order.get("execution_context"))
+    buyer_intent = _ensure_dict(order.get("buyer_intent"))
+    requirements = _ensure_dict(order.get("requirements"))
 
     foundation_task = (
         execution_context.get("task")

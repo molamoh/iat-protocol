@@ -1290,6 +1290,46 @@ def foundation_web_research_engine(agent, order, profile):
 
     query = order.get("query") or ""
 
+    if phase == "verification":
+        return {
+            "delivery_type": "foundation_verification_fallback",
+            "summary": "Foundation verification Groq execution unavailable; fallback verification result returned.",
+            "verified_claims": [],
+            "rejected_claims": [],
+            "uncertain_claims": [],
+            "source_quality": "unknown",
+            "confidence_adjustment": -0.25,
+            "final_confidence": 0.35,
+            "recommendations": [],
+            "final_recommendation": "Manual or stronger foundation verification required before high-confidence buyer delivery.",
+            "confidence": 0.35,
+            "sources": [],
+            "claims": [
+                {
+                    "claim": "Verification Groq execution did not return a usable result.",
+                    "confidence": 1.0
+                }
+            ],
+            "metrics": {
+                "foundation_verification_fallback": True
+            },
+            "structured_signals": {
+                "engine": profile.get("engine"),
+                "role": profile.get("role"),
+                "specialty": profile.get("specialty"),
+                "phase": phase,
+                "provider": "fallback"
+            },
+            "entities": [],
+            "raw": {
+                "query": query,
+                "execution_layer": "foundation_internal",
+                "engine": profile.get("engine"),
+                "phase": phase,
+                "provider": "fallback"
+            },
+        }
+
     return {
         "delivery_type": "foundation_web_research",
         "summary": (

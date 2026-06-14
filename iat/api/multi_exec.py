@@ -1196,7 +1196,32 @@ Your output must include:
         )
 
         if r.status_code != 200:
-            return None
+            return {
+                "delivery_type": "foundation_groq_error",
+                "summary": "Groq foundation execution failed before producing a usable result.",
+                "recommendations": [],
+                "final_recommendation": "Foundation Groq execution requires debugging before high-confidence delivery.",
+                "confidence": 0.0,
+                "sources": [],
+                "claims": [],
+                "metrics": {
+                    "groq_status_code": r.status_code,
+                    "groq_error_text": r.text[:1000],
+                },
+                "structured_signals": {
+                    "provider": "groq",
+                    "phase": phase,
+                    "error": True,
+                },
+                "entities": [],
+                "raw": {
+                    "query": query,
+                    "provider": "groq",
+                    "phase": phase,
+                    "status_code": r.status_code,
+                    "error_text": r.text[:1000],
+                },
+            }
 
         content = r.json()["choices"][0]["message"]["content"]
         parsed = json.loads(content)
@@ -1265,8 +1290,33 @@ Your output must include:
 
         return parsed
 
-    except Exception:
-        return None
+    except Exception as exc:
+        return {
+            "delivery_type": "foundation_groq_exception",
+            "summary": "Groq foundation execution raised an exception.",
+            "recommendations": [],
+            "final_recommendation": "Foundation Groq execution requires debugging before high-confidence delivery.",
+            "confidence": 0.0,
+            "sources": [],
+            "claims": [],
+            "metrics": {
+                "exception_type": type(exc).__name__,
+                "exception": str(exc),
+            },
+            "structured_signals": {
+                "provider": "groq",
+                "phase": phase,
+                "error": True,
+            },
+            "entities": [],
+            "raw": {
+                "query": query,
+                "provider": "groq",
+                "phase": phase,
+                "exception_type": type(exc).__name__,
+                "exception": str(exc),
+            },
+        }
 
 
 def foundation_web_research_engine(agent, order, profile):

@@ -578,6 +578,95 @@ def generate_service_result(service_name, query=None):
     }
 
 
+
+def run_foundation_supplier_pipeline(order):
+    """
+    Foundation-mediated supplier pipeline.
+
+    Buyer never contacts sellers.
+    Seller agents are internal suppliers only.
+    Foundation agents keep final buyer delivery authority.
+    """
+    order = order or {}
+
+    execution_context = order.get("execution_context") or {}
+    buyer_intent = order.get("buyer_intent") or {}
+    requirements = order.get("requirements") or {}
+
+    foundation_task = (
+        execution_context.get("task")
+        or buyer_intent.get("goal")
+        or order.get("query")
+        or f"Execute service: {order.get('service')}"
+    )
+
+    sanitized_execution_context = {
+        "task": foundation_task,
+        "scope": requirements,
+        "required_format": "structured_supplier_contribution",
+        "service": order.get("service"),
+        "trusted_input_only": True,
+        "foundation_mediated": True,
+        "buyer_data_stripped": True,
+    }
+
+    supplier_execution = run_foundation_controlled_seller_execution_db(
+        service=order.get("service"),
+        execution_context=sanitized_execution_context,
+        specialization=None,
+        order_id=order.get("order_id"),
+    )
+
+    if supplier_execution.get("status") != "ok":
+        fallback = generate_service_result(
+            order.get("service"),
+            query=order.get("query"),
+        )
+
+        return {
+            "status": "foundation_supplier_pipeline_fallback",
+            "execution_mode": "foundation_supplier_pipeline",
+            "reason": "no_eligible_internal_supplier_or_supplier_execution_failed",
+            "buyer_delivery_authority": "foundation_only",
+            "seller_role": "internal_supplier_only",
+            "seller_direct_buyer_contact": False,
+            "supplier_execution": supplier_execution,
+            "foundation_fallback_result": fallback,
+            "policy": {
+                "buyer_never_contacts_seller": True,
+                "seller_never_contacts_buyer": True,
+                "seller_agents_are_suppliers_only": True,
+                "buyer_satisfaction_priority": True,
+                "foundation_agents_keep_final_authority": True,
+                "protocol_core_sovereignty_reserved": True,
+            },
+        }
+
+    verification = verify_seller_execution_result_db(
+        supplier_execution.get("execution_session_id")
+    )
+
+    foundation_decision = run_foundation_decision_db(order.get("order_id"))
+
+    return {
+        "status": "foundation_supplier_pipeline_completed",
+        "execution_mode": "foundation_supplier_pipeline",
+        "buyer_delivery_authority": "foundation_only",
+        "seller_role": "internal_supplier_only",
+        "seller_direct_buyer_contact": False,
+        "supplier_execution": supplier_execution,
+        "supplier_verification": verification,
+        "foundation_decision": foundation_decision,
+        "policy": {
+            "buyer_never_contacts_seller": True,
+            "seller_never_contacts_buyer": True,
+            "seller_agents_are_suppliers_only": True,
+            "foundation_agents_keep_final_authority": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
 def deliver_service(order, tx_signature):
     # Buyer delivery must only be executed by foundation agents.
     # Seller agents are never allowed to directly receive buyer requests.
@@ -592,6 +681,12 @@ def deliver_service(order, tx_signature):
     execution_mode = str(
         order.get("execution_mode") or "foundation_direct"
     ).lower()
+
+    # Foundation-mediated supplier pipeline.
+    # Buyer-facing delivery remains foundation-only.
+    # Seller agents are internal suppliers and never receive raw buyer access.
+    if execution_mode == "foundation_supplier_pipeline":
+        return run_foundation_supplier_pipeline(order)
 
     # Foundation consensus execution pipeline.
     if execution_mode == "foundation_consensus":
@@ -3818,7 +3913,7 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
     execution_mode = (
         "foundation_consensus"
         if consensus_preference == "strict"
-        else "foundation_direct"
+        else "foundation_supplier_pipeline"
     )
 
     order = {

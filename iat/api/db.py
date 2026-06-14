@@ -6706,6 +6706,28 @@ def init_foundation_agent_columns():
     release_conn(conn)
 
 
+
+def init_seller_graph_edges_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS seller_graph_edges (
+        source_agent_id TEXT NOT NULL,
+        target_agent_id TEXT NOT NULL,
+        edge_type TEXT NOT NULL,
+        weight REAL DEFAULT 0,
+        evidence TEXT,
+        created_at INTEGER,
+        updated_at INTEGER,
+        PRIMARY KEY (source_agent_id, target_agent_id, edge_type)
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
 def init_db():
     conn = get_conn()
     cur = conn.cursor()
@@ -6776,6 +6798,7 @@ def init_db():
     conn.commit()
     release_conn(locals().get("conn"))
     init_agents_table()
+    init_seller_graph_edges_table()
     init_foundation_agent_columns()
     init_protocol_memory_table()
     init_protocol_knowledge_table()

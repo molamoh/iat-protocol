@@ -60,6 +60,21 @@ import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
+
+def parse_json_dict(value):
+    if isinstance(value, dict):
+        return value
+
+    if not value:
+        return {}
+
+    try:
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
 def parse_json_list(value):
     import json
 
@@ -1037,24 +1052,115 @@ def foundation_groq_execute(agent, order, profile, phase="research"):
         return None
 
     query = order.get("query") or ""
-    buyer_intent = order.get("buyer_intent") or {}
-    requirements = order.get("requirements") or {}
+    buyer_intent = parse_json_dict(order.get("buyer_intent"))
+    requirements = parse_json_dict(order.get("requirements"))
 
-    system_prompt = """
-You are an IAT Protocol foundation agent.
+    if phase == "verification":
+        system_prompt = """
+You are an IAT Protocol foundation verification agent.
 
 Core rules:
 - You are controlled by IAT Protocol.
-- You are buyer-facing only through the foundation layer.
+- You verify research evidence before any buyer delivery.
 - Sellers are internal suppliers only.
 - Never expose internal seller details to the buyer.
-- Produce structured, buyer-friendly evidence.
-- Be honest about uncertainty.
-- Do not invent sources.
-- If you cannot verify live facts, say so clearly.
+- Never claim live verification if you cannot actually verify live facts.
+- Be strict, skeptical, and evidence-focused.
+- Identify weak claims, missing sources, contradictions, stale information, and unsafe conclusions.
+- Return valid JSON only.
 
-Return valid JSON only.
+Your output must include:
+- summary
+- verified_claims
+- rejected_claims
+- uncertain_claims
+- source_quality
+- confidence_adjustment
+- final_confidence
+- recommendations
+- final_recommendation
+- sources
+- claims
+- metrics
+- structured_signals
+- entities
 """
+        expected_output = {
+            "delivery_type": "foundation_verification",
+            "summary": "verification summary",
+            "verified_claims": [],
+            "rejected_claims": [],
+            "uncertain_claims": [],
+            "source_quality": "low|medium|high",
+            "confidence_adjustment": 0.0,
+            "final_confidence": 0.0,
+            "recommendations": [],
+            "final_recommendation": "verification verdict",
+            "confidence": 0.0,
+            "sources": [],
+            "claims": [],
+            "metrics": {},
+            "structured_signals": {},
+            "entities": []
+        }
+    else:
+        system_prompt = """
+You are an IAT Protocol foundation research agent.
+
+Core rules:
+- You are controlled by IAT Protocol.
+- You produce research evidence for the foundation layer.
+- Sellers are internal suppliers only.
+- Never expose internal seller details to the buyer.
+- Do not invent sources.
+- If live/current facts cannot be verified, clearly mark uncertainty.
+- Prefer structured, comparable, buyer-useful evidence.
+- Return valid JSON only.
+
+For product/comparison/research requests, produce:
+- summary
+- ranked recommendations with reasons
+- concrete comparison criteria
+- claims with confidence
+- sources when available
+- uncertainty notes
+- final recommendation
+- entities
+- metrics
+- structured signals
+
+Your output must include:
+- summary
+- recommendations
+- final_recommendation
+- confidence
+- sources
+- claims
+- metrics
+- structured_signals
+- entities
+"""
+        expected_output = {
+            "delivery_type": "foundation_web_research",
+            "summary": "useful research summary",
+            "recommendations": [
+                {
+                    "name": "",
+                    "reason": "",
+                    "estimated_price": None,
+                    "pros": [],
+                    "cons": [],
+                    "confidence": 0.0
+                }
+            ],
+            "final_recommendation": "best final answer",
+            "confidence": 0.0,
+            "sources": [],
+            "claims": [],
+            "metrics": {},
+            "structured_signals": {},
+            "entities": []
+        }
 
     user_prompt = json.dumps({
         "phase": phase,
@@ -1064,18 +1170,10 @@ Return valid JSON only.
         "query": query,
         "buyer_intent": buyer_intent,
         "requirements": requirements,
-        "expected_output": {
-            "delivery_type": "foundation_web_research",
-            "summary": "short useful summary",
-            "recommendations": [],
-            "final_recommendation": "best final answer",
-            "confidence": 0.0,
-            "sources": [],
-            "claims": [],
-            "metrics": {},
-            "structured_signals": {},
-            "entities": []
-        }
+        "foundation_research_results": order.get("foundation_research_results"),
+        "foundation_research_consensus": order.get("foundation_research_consensus"),
+        "foundation_research_strength": order.get("foundation_research_strength"),
+        "expected_output": expected_output
     }, ensure_ascii=False)
 
     try:
@@ -1106,11 +1204,43 @@ Return valid JSON only.
         if not isinstance(parsed, dict):
             return None
 
-        parsed.setdefault("delivery_type", "foundation_web_research")
-        parsed.setdefault("summary", "Foundation agent produced a structured result.")
+        # Normalize common Groq shapes into the protocol evidence schema.
+        if not parsed.get("summary"):
+            parsed["summary"] = (
+                parsed.get("research_summary")
+                or parsed.get("verification_summary")
+                or parsed.get("answer")
+                or parsed.get("result")
+                or ""
+            )
+
+        if not parsed.get("recommendations"):
+            if isinstance(parsed.get("ranked_recommendations"), list):
+                parsed["recommendations"] = parsed.get("ranked_recommendations")
+            elif isinstance(parsed.get("options"), list):
+                parsed["recommendations"] = parsed.get("options")
+            elif isinstance(parsed.get("results"), list):
+                parsed["recommendations"] = parsed.get("results")
+
+        if not parsed.get("final_recommendation"):
+            parsed["final_recommendation"] = (
+                parsed.get("best_choice")
+                or parsed.get("verdict")
+                or parsed.get("summary")
+                or ""
+            )
+
+        if not parsed.get("confidence") and parsed.get("final_confidence") is not None:
+            parsed["confidence"] = parsed.get("final_confidence")
+
+        parsed.setdefault(
+            "delivery_type",
+            "foundation_verification" if phase == "verification" else "foundation_web_research"
+        )
+        parsed.setdefault("summary", "")
         parsed.setdefault("recommendations", [])
-        parsed.setdefault("final_recommendation", parsed.get("summary"))
-        parsed.setdefault("confidence", 0.65)
+        parsed.setdefault("final_recommendation", parsed.get("summary") or "")
+        parsed.setdefault("confidence", parsed.get("final_confidence", 0.65))
         parsed.setdefault("sources", [])
         parsed.setdefault("claims", [])
         parsed.setdefault("metrics", {})
@@ -1140,11 +1270,19 @@ Return valid JSON only.
 
 
 def foundation_web_research_engine(agent, order, profile):
+    execution_phase = str(order.get("execution_phase") or "").lower()
+    foundation_role = str(agent.get("foundation_role") or profile.get("role") or "").lower()
+
+    phase = "verification" if (
+        execution_phase == "foundation_verification"
+        or foundation_role == "verification"
+    ) else "research"
+
     groq_result = foundation_groq_execute(
         agent,
         order,
         profile,
-        phase="research",
+        phase=phase,
     )
 
     if groq_result:

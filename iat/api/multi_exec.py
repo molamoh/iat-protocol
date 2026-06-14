@@ -26,18 +26,36 @@ FOUNDATION_AGENT_CAPABILITIES = {
 
 def get_foundation_agent_profile(agent):
     agent_id = str(agent.get("agent_id", "") or "")
+    mapped = FOUNDATION_AGENT_CAPABILITIES.get(agent_id)
+    if mapped:
+        return mapped
 
-    return FOUNDATION_AGENT_CAPABILITIES.get(
-        agent_id,
-        {
-            "role": agent.get("service", "foundation"),
-            "specialty": "generic_foundation_execution",
-            "engine": "foundation_generic",
-        },
-    )
+    foundation_role = str(agent.get("foundation_role") or "").lower()
+
+    if foundation_role == "research":
+        return {
+            "role": "web_research",
+            "specialty": "foundation_research",
+            "engine": "foundation_web_research",
+        }
+
+    if foundation_role == "verification":
+        return {
+            "role": "verification",
+            "specialty": "foundation_verification",
+            "engine": "foundation_web_research",
+        }
+
+    return {
+        "role": agent.get("service", "foundation"),
+        "specialty": "generic_foundation_execution",
+        "engine": "foundation_generic",
+    }
 
 
 import time
+import os
+import json
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -1011,7 +1029,127 @@ def is_foundation_agent(agent):
 
 
 
+
+def foundation_groq_execute(agent, order, profile, phase="research"):
+    api_key = os.getenv("GROQ_API_KEY")
+
+    if not api_key:
+        return None
+
+    query = order.get("query") or ""
+    buyer_intent = order.get("buyer_intent") or {}
+    requirements = order.get("requirements") or {}
+
+    system_prompt = """
+You are an IAT Protocol foundation agent.
+
+Core rules:
+- You are controlled by IAT Protocol.
+- You are buyer-facing only through the foundation layer.
+- Sellers are internal suppliers only.
+- Never expose internal seller details to the buyer.
+- Produce structured, buyer-friendly evidence.
+- Be honest about uncertainty.
+- Do not invent sources.
+- If you cannot verify live facts, say so clearly.
+
+Return valid JSON only.
+"""
+
+    user_prompt = json.dumps({
+        "phase": phase,
+        "agent_id": agent.get("agent_id"),
+        "foundation_role": agent.get("foundation_role"),
+        "profile": profile,
+        "query": query,
+        "buyer_intent": buyer_intent,
+        "requirements": requirements,
+        "expected_output": {
+            "delivery_type": "foundation_web_research",
+            "summary": "short useful summary",
+            "recommendations": [],
+            "final_recommendation": "best final answer",
+            "confidence": 0.0,
+            "sources": [],
+            "claims": [],
+            "metrics": {},
+            "structured_signals": {},
+            "entities": []
+        }
+    }, ensure_ascii=False)
+
+    try:
+        r = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"),
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0.2,
+                "response_format": {"type": "json_object"},
+            },
+            timeout=30,
+        )
+
+        if r.status_code != 200:
+            return None
+
+        content = r.json()["choices"][0]["message"]["content"]
+        parsed = json.loads(content)
+
+        if not isinstance(parsed, dict):
+            return None
+
+        parsed.setdefault("delivery_type", "foundation_web_research")
+        parsed.setdefault("summary", "Foundation agent produced a structured result.")
+        parsed.setdefault("recommendations", [])
+        parsed.setdefault("final_recommendation", parsed.get("summary"))
+        parsed.setdefault("confidence", 0.65)
+        parsed.setdefault("sources", [])
+        parsed.setdefault("claims", [])
+        parsed.setdefault("metrics", {})
+        parsed.setdefault("structured_signals", {})
+
+        parsed["structured_signals"].update({
+            "engine": profile.get("engine"),
+            "role": profile.get("role"),
+            "specialty": profile.get("specialty"),
+            "provider": "groq",
+            "phase": phase,
+        })
+
+        parsed.setdefault("entities", [])
+        parsed["raw"] = {
+            "query": query,
+            "execution_layer": "foundation_internal",
+            "engine": profile.get("engine"),
+            "provider": "groq",
+            "phase": phase,
+        }
+
+        return parsed
+
+    except Exception:
+        return None
+
+
 def foundation_web_research_engine(agent, order, profile):
+    groq_result = foundation_groq_execute(
+        agent,
+        order,
+        profile,
+        phase="research",
+    )
+
+    if groq_result:
+        return groq_result
+
     query = order.get("query") or ""
 
     return {

@@ -6890,6 +6890,7 @@ def init_db():
     release_conn(locals().get("conn"))
     init_agents_table()
     init_seller_graph_edges_table()
+    init_seller_clusters_tables()
     init_foundation_agent_columns()
     init_protocol_memory_table()
     init_protocol_knowledge_table()

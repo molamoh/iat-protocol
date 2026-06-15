@@ -2308,11 +2308,34 @@ def compute_consensus(results):
 
             token = token.strip(".,:;!?()[]{}'\"")
 
+            synonym_map = {
+                "ev": "electric",
+                "evs": "electric",
+                "vehicle": "car",
+                "vehicles": "car",
+                "automobile": "car",
+                "automobiles": "car",
+                "auto": "car",
+                "autos": "car",
+                "euro": "eur",
+                "euros": "eur",
+                "€": "eur",
+                "under": "budget",
+                "below": "budget",
+                "less": "budget",
+                "within": "budget",
+                "european": "europe",
+            }
+
+            token = synonym_map.get(token, token)
+
             if token.endswith("s") and len(token) > 4:
                 token = token[:-1]
 
             if token.endswith("ing") and len(token) > 5:
                 token = token[:-3]
+
+            token = synonym_map.get(token, token)
 
             return token
 
@@ -2345,11 +2368,52 @@ def compute_consensus(results):
                 ):
                     title_words.add(token)
 
+        normalized_for_relevance = r.get("data", {}) or {}
+
+        structured_for_relevance = normalized_for_relevance.get("structured_signals", {}) or {}
+        for key, value in structured_for_relevance.items():
+            for raw_token in f"{key} {value}".replace("-", " ").replace("_", " ").split():
+                token = normalize_token(raw_token)
+                if (
+                    len(token) >= 3
+                    and token not in stopwords
+                    and not token.isdigit()
+                ):
+                    title_words.add(token)
+
+        for field in ["summary", "final_recommendation"]:
+            value = normalized_for_relevance.get(field)
+            if value:
+                for raw_token in str(value).replace("-", " ").replace("_", " ").split():
+                    token = normalize_token(raw_token)
+                    if (
+                        len(token) >= 3
+                        and token not in stopwords
+                        and not token.isdigit()
+                    ):
+                        title_words.add(token)
+
+        raw_for_relevance = normalized_for_relevance.get("raw", {}) or {}
+        web_evidence_for_relevance = (
+            normalized_for_relevance.get("web_evidence")
+            or raw_for_relevance.get("web_evidence")
+            or {}
+        )
+
         query = (
             data.get("query")
             or r.get("query")
+            or raw_for_relevance.get("query")
+            or web_evidence_for_relevance.get("query")
+            or normalized_for_relevance.get("query")
             or ""
         ).lower()
+
+        if not query.strip():
+            query = " ".join(
+                str(normalized_for_relevance.get(field) or "")
+                for field in ["summary", "final_recommendation"]
+            ).lower()
 
         query_words = set()
         for raw_token in query.replace("-", " ").replace("_", " ").split():
@@ -2460,6 +2524,8 @@ def compute_consensus(results):
             "final_recommendation": final_recommendation,
 
             "query_relevance": round(query_relevance, 4),
+            "query_terms": sorted(query_words),
+            "matched_query_terms": sorted(title_words.intersection(query_words)),
             "result_validity": round(result_validity, 4),
             "base_weight": base_weight,
             "weight": base_weight,

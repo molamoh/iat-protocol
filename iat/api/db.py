@@ -11682,6 +11682,9 @@ def record_cluster_snapshot_db(
     p = qmark()
     now = int(time.time())
 
+    cluster_id = cluster.get("cluster_id") or f"cluster:{cluster.get('root_agent_id') or 'unknown'}"
+    snapshot_id = cluster.get("snapshot_id") or f"{cluster_id}:snapshot:{now}"
+
     members = cluster.get("members", []) or []
 
     # Edges are not always returned directly in cluster.
@@ -11693,6 +11696,7 @@ def record_cluster_snapshot_db(
 
     cur.execute(f"""
     INSERT INTO cluster_snapshots (
+        snapshot_id,
         cluster_id,
         root_agent_id,
         member_count,
@@ -11709,10 +11713,11 @@ def record_cluster_snapshot_db(
         created_at
     )
     VALUES (
-        {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}
+        {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}
     )
     """, (
-        cluster.get("cluster_id"),
+        snapshot_id,
+        cluster_id,
         cluster.get("root_agent_id"),
         int(cluster.get("member_count", 0) or 0),
         int(cluster.get("edge_count", 0) or 0),
@@ -11733,7 +11738,8 @@ def record_cluster_snapshot_db(
 
     return {
         "status": "cluster_snapshot_recorded",
-        "cluster_id": cluster.get("cluster_id"),
+        "snapshot_id": snapshot_id,
+        "cluster_id": cluster_id,
         "root_agent_id": cluster.get("root_agent_id"),
         "member_count": cluster.get("member_count"),
         "edge_count": cluster.get("edge_count"),

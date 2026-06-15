@@ -12427,6 +12427,9 @@ def evaluate_foundation_evidence_package_db(evidence_package):
 
         if verification_status == "failed":
             warnings.append("verification_consensus_failed")
+        elif verification_status == "single_agent_review":
+            confidence_cap += 0.10
+            warnings.append("verification_single_agent_review")
         elif verification_valid_agents >= 2 and verification_status == "passed":
             confidence_cap += 0.25
             reasons.append("verification_consensus_passed")
@@ -12453,6 +12456,9 @@ def evaluate_foundation_evidence_package_db(evidence_package):
     elif verification_status == "failed":
         foundation_evidence_status = "verification_failed"
         decision_ready = False
+    elif verification_status == "single_agent_review" and research_status == "passed":
+        foundation_evidence_status = "decision_ready_with_single_verification"
+        decision_ready = True
     elif verification_valid_agents == 0:
         foundation_evidence_status = "research_only"
         decision_ready = False
@@ -15342,6 +15348,95 @@ def run_foundation_decision_db(order_id):
         decision_confidence = 0.35
         decision_reason = "seller_contribution_quality_too_low"
 
+    verification_signals = {
+        "verified_claims": [],
+        "rejected_claims": [],
+        "uncertain_claims": [],
+        "source_quality": None,
+        "confidence_adjustment": 0.0,
+        "final_confidence": None,
+    }
+
+    if isinstance(foundation_execution_result, dict):
+        evidence_package = foundation_execution_result.get("evidence_package", {}) or {}
+        best_verification_result = evidence_package.get("best_verification_result") or {}
+        verification_data = best_verification_result.get("data", {}) or {}
+        verification_raw = verification_data.get("raw", {}) or {}
+
+        verification_signals["verified_claims"] = (
+            verification_raw.get("verified_claims")
+            or verification_data.get("verified_claims")
+            or []
+        )
+        verification_signals["rejected_claims"] = (
+            verification_raw.get("rejected_claims")
+            or verification_data.get("rejected_claims")
+            or []
+        )
+        verification_signals["uncertain_claims"] = (
+            verification_raw.get("uncertain_claims")
+            or verification_data.get("uncertain_claims")
+            or []
+        )
+        verification_signals["source_quality"] = (
+            verification_raw.get("source_quality")
+            or verification_data.get("source_quality")
+        )
+
+        try:
+            verification_signals["confidence_adjustment"] = float(
+                verification_raw.get("confidence_adjustment")
+                if verification_raw.get("confidence_adjustment") is not None
+                else verification_data.get("confidence_adjustment", 0.0)
+            )
+        except Exception:
+            verification_signals["confidence_adjustment"] = 0.0
+
+        final_conf = (
+            verification_raw.get("final_confidence")
+            if verification_raw.get("final_confidence") is not None
+            else verification_data.get("final_confidence")
+        )
+
+        if final_conf is not None:
+            try:
+                verification_signals["final_confidence"] = float(final_conf)
+            except Exception:
+                verification_signals["final_confidence"] = None
+
+    rejected_count = len(verification_signals.get("rejected_claims") or [])
+    uncertain_count = len(verification_signals.get("uncertain_claims") or [])
+    verified_count = len(verification_signals.get("verified_claims") or [])
+
+    if verification_signals.get("final_confidence") is not None:
+        decision_confidence = min(
+            float(decision_confidence),
+            float(verification_signals["final_confidence"]),
+        )
+
+    confidence_adjustment = float(
+        verification_signals.get("confidence_adjustment", 0.0) or 0.0
+    )
+
+    if confidence_adjustment < 0:
+        decision_confidence = max(
+            0.0,
+            float(decision_confidence) + confidence_adjustment,
+        )
+
+    if verification_signals.get("source_quality") == "low":
+        decision_confidence = min(float(decision_confidence), 0.45)
+        decision_reason = "verification_source_quality_low"
+
+    if rejected_count > 0:
+        foundation_verdict = "foundation_verification_rejected_claims"
+        decision_confidence = min(float(decision_confidence), 0.35)
+        decision_reason = "verification_rejected_claims_present"
+    elif uncertain_count > verified_count and uncertain_count > 0:
+        foundation_verdict = "foundation_verification_uncertain"
+        decision_confidence = min(float(decision_confidence), 0.50)
+        decision_reason = "verification_uncertain_claims_exceed_verified_claims"
+
     if isinstance(foundation_evidence_evaluation, dict):
         confidence_cap = float(
             foundation_evidence_evaluation.get("confidence_cap", 1.0) or 1.0
@@ -15380,6 +15475,7 @@ def run_foundation_decision_db(order_id):
             and foundation_execution_result.get("status") == "ok"
         ),
         "foundation_evidence_evaluation": foundation_evidence_evaluation,
+        "foundation_verification_signals": verification_signals,
         "foundation_execution_result": foundation_execution_result,
 
         # Existing protocol consensus engine applied to seller contributions.

@@ -43,7 +43,7 @@ def get_foundation_agent_profile(agent):
         return {
             "role": "verification",
             "specialty": "foundation_verification",
-            "engine": "foundation_web_research",
+            "engine": "foundation_verification",
         }
 
     return {
@@ -922,6 +922,15 @@ def normalize_agent_delivery(data):
 
     claims = []
 
+    for c in payload.get("verified_claims", []) or data.get("verified_claims", []) or []:
+        claims.append(f"verified:{c}")
+
+    for c in payload.get("rejected_claims", []) or data.get("rejected_claims", []) or []:
+        claims.append(f"rejected:{c}")
+
+    for c in payload.get("uncertain_claims", []) or data.get("uncertain_claims", []) or []:
+        claims.append(f"uncertain:{c}")
+
     if payload.get("recommendation"):
         claims.append(str(payload.get("recommendation")))
 
@@ -935,6 +944,8 @@ def normalize_agent_delivery(data):
 
     for k in [
         "confidence",
+        "final_confidence",
+        "confidence_adjustment",
         "risk_level",
         "volatility",
         "asset",
@@ -944,6 +955,8 @@ def normalize_agent_delivery(data):
     ]:
         if payload.get(k) is not None:
             metrics[k] = payload.get(k)
+        elif data.get(k) is not None:
+            metrics[k] = data.get(k)
 
     structured_signals = {}
 
@@ -953,9 +966,12 @@ def normalize_agent_delivery(data):
         "bias",
         "market_regime",
         "risk_level",
+        "source_quality",
     ]:
         if payload.get(k) is not None:
             structured_signals[k] = payload.get(k)
+        elif data.get(k) is not None:
+            structured_signals[k] = data.get(k)
 
     entities = []
 
@@ -1019,6 +1035,8 @@ def normalize_agent_delivery(data):
         "confidence": float(
             payload.get("confidence")
             or data.get("confidence")
+            or payload.get("final_confidence")
+            or data.get("final_confidence")
             or 0.5
         ),
         "sources": normalized_sources,
@@ -1386,6 +1404,13 @@ Your output must include:
             "provider": "groq",
             "phase": phase,
             "web_evidence": web_evidence,
+
+            "verified_claims": parsed.get("verified_claims", []),
+            "rejected_claims": parsed.get("rejected_claims", []),
+            "uncertain_claims": parsed.get("uncertain_claims", []),
+            "source_quality": parsed.get("source_quality"),
+            "confidence_adjustment": parsed.get("confidence_adjustment"),
+            "final_confidence": parsed.get("final_confidence"),
         }
 
         parsed["web_evidence"] = web_evidence
@@ -1419,6 +1444,48 @@ Your output must include:
                 "exception": str(exc),
             },
         }
+
+
+def foundation_verification_engine(agent, order, profile):
+    return foundation_groq_execute(
+        agent,
+        order,
+        profile,
+        phase="verification",
+    ) or {
+        "delivery_type": "foundation_verification_fallback",
+        "summary": "Foundation verification engine could not produce a Groq result.",
+        "verified_claims": [],
+        "rejected_claims": [],
+        "uncertain_claims": [],
+        "source_quality": "unknown",
+        "confidence_adjustment": -0.25,
+        "final_confidence": 0.35,
+        "recommendations": [],
+        "final_recommendation": "Additional foundation verification required before high-confidence buyer delivery.",
+        "confidence": 0.35,
+        "sources": [],
+        "claims": [],
+        "metrics": {
+            "foundation_verification_fallback": True
+        },
+        "structured_signals": {
+            "engine": profile.get("engine"),
+            "role": profile.get("role"),
+            "specialty": profile.get("specialty"),
+            "phase": "verification",
+            "provider": "fallback"
+        },
+        "entities": [],
+        "raw": {
+            "query": order.get("query") or "",
+            "execution_layer": "foundation_internal",
+            "engine": profile.get("engine"),
+            "phase": "verification",
+            "provider": "fallback"
+        },
+    }
+
 
 
 def foundation_web_research_engine(agent, order, profile):
@@ -1590,6 +1657,9 @@ def foundation_generic_engine(agent, order, profile):
 def route_foundation_engine(agent, order):
     profile = get_foundation_agent_profile(agent)
     engine = profile.get("engine")
+
+    if engine == "foundation_verification":
+        return foundation_verification_engine(agent, order, profile)
 
     if engine == "foundation_web_research":
         return foundation_web_research_engine(agent, order, profile)
@@ -2530,6 +2600,71 @@ def compute_consensus(results):
             "base_weight": base_weight,
             "weight": base_weight,
         })
+
+    if len(agent_sets) == 1:
+        agent = agent_sets[0]
+        single_query_relevance = float(agent.get("query_relevance", 0) or 0)
+        single_result_validity = float(agent.get("result_validity", 0) or 0)
+
+        single_usable = (
+            single_result_validity >= 0.30
+            and single_query_relevance >= 0.15
+        )
+
+        return {
+            "status": "single_agent_review" if single_usable else "failed",
+            "score": round(
+                (
+                    single_query_relevance * 0.45
+                    + single_result_validity * 0.55
+                ) if single_usable else 0,
+                4,
+            ),
+            "total_weight": round(float(agent.get("weight", 0) or 0), 4),
+            "weighted_overlap": 0,
+            "valid_agents": len(valid),
+            "consensus_failure_reason": None if single_usable else "single_agent_result_not_usable",
+            "consensus_gates": {
+                "usable_agents": 1 if single_usable else 0,
+                "low_risk_usable_agents": 1 if single_usable else 0,
+                "high_overlap_agents": 0,
+                "quorum_passed": False,
+                "single_agent_review": True,
+            },
+            "agent_overlaps": [
+                {
+                    "agent_id": agent.get("agent_id"),
+                    "overlap": 0,
+                    "base_weight": round(float(agent.get("base_weight", 0) or 0), 4),
+                    "weight": round(float(agent.get("weight", 0) or 0), 4),
+                    "overlap_details": {
+                        "query_relevance": round(single_query_relevance, 4),
+                        "result_validity": round(single_result_validity, 4),
+                        "independent_quality": round(
+                            single_query_relevance * 0.45
+                            + single_result_validity * 0.55,
+                            4,
+                        ),
+                        "single_agent_review": True,
+                    },
+                }
+            ],
+            "sybil_wallet_caps": {},
+            "agent_trust": [
+                {
+                    "agent_id": agent.get("agent_id"),
+                    "tier": agent.get("trust_tier", "free"),
+                    "stake_amount": agent.get("stake_amount", 0),
+                    "stake_required": agent.get("stake_required", 0),
+                    "risk_score": agent.get("risk_score", 0),
+                }
+            ],
+            "wallet_weights": {
+                agent.get("wallet") or "UNKNOWN": round(float(agent.get("weight", 0) or 0), 4)
+            },
+            "suspicious_agents": [],
+            "collusion_flags": [],
+        }
 
     # --- WALLET DIAGNOSTIC ONLY ---
     wallet_weights = {}

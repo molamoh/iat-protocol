@@ -20826,10 +20826,19 @@ def init_seller_clusters_tables():
         average_edge_weight REAL DEFAULT 0,
         strongest_edge_weight REAL DEFAULT 0,
         threat_memory_count INTEGER DEFAULT 0,
+        status TEXT DEFAULT 'active',
         created_at INTEGER,
         updated_at INTEGER
     )
     """)
+
+    try:
+        if USE_POSTGRES:
+            cur.execute("ALTER TABLE seller_clusters ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active'")
+        else:
+            cur.execute("ALTER TABLE seller_clusters ADD COLUMN status TEXT DEFAULT 'active'")
+    except Exception:
+        pass
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS cluster_snapshots (

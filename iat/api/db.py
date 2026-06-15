@@ -20852,10 +20852,28 @@ def init_seller_clusters_tables():
         average_edge_weight REAL DEFAULT 0,
         strongest_edge_weight REAL DEFAULT 0,
         threat_memory_count INTEGER DEFAULT 0,
+        members_json TEXT DEFAULT '[]',
+        edges_json TEXT DEFAULT '[]',
         snapshot_reason TEXT,
+        source TEXT DEFAULT 'protocol',
         created_at INTEGER
     )
     """)
+
+    cluster_snapshot_columns = {
+        "members_json": "TEXT DEFAULT '[]'",
+        "edges_json": "TEXT DEFAULT '[]'",
+        "source": "TEXT DEFAULT 'protocol'",
+    }
+
+    for column, definition in cluster_snapshot_columns.items():
+        try:
+            if USE_POSTGRES:
+                cur.execute(f"ALTER TABLE cluster_snapshots ADD COLUMN IF NOT EXISTS {column} {definition}")
+            else:
+                cur.execute(f"ALTER TABLE cluster_snapshots ADD COLUMN {column} {definition}")
+        except Exception:
+            pass
 
     conn.commit()
     release_conn(conn)

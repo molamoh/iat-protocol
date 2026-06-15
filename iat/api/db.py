@@ -12414,7 +12414,9 @@ def evaluate_foundation_evidence_package_db(evidence_package):
     if not ready:
         reasons.append("foundation_package_not_ready")
     else:
-        if research_valid_agents >= 2 and research_status == "passed":
+        if research_status == "failed":
+            warnings.append("research_consensus_failed")
+        elif research_valid_agents >= 2 and research_status == "passed":
             confidence_cap += 0.20
             reasons.append("research_consensus_passed")
         elif research_valid_agents >= 1:
@@ -12423,7 +12425,9 @@ def evaluate_foundation_evidence_package_db(evidence_package):
         else:
             warnings.append("no_research_foundation_results")
 
-        if verification_valid_agents >= 2 and verification_status == "passed":
+        if verification_status == "failed":
+            warnings.append("verification_consensus_failed")
+        elif verification_valid_agents >= 2 and verification_status == "passed":
             confidence_cap += 0.25
             reasons.append("verification_consensus_passed")
         elif verification_valid_agents == 1:
@@ -12442,6 +12446,12 @@ def evaluate_foundation_evidence_package_db(evidence_package):
 
     if not ready:
         foundation_evidence_status = "not_ready"
+        decision_ready = False
+    elif research_status == "failed":
+        foundation_evidence_status = "research_failed"
+        decision_ready = False
+    elif verification_status == "failed":
+        foundation_evidence_status = "verification_failed"
         decision_ready = False
     elif verification_valid_agents == 0:
         foundation_evidence_status = "research_only"

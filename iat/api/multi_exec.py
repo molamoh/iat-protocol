@@ -2550,6 +2550,31 @@ def compute_consensus(results):
                 if own_tokens else 0
             )
 
+        final_recommendation_overlap = 0
+        if final_recommendation:
+            own_tokens = {
+                t for t in final_recommendation.replace("-", " ").replace("_", " ").split()
+                if len(t) >= 4
+            }
+
+            other_tokens = set()
+            for other in agent_sets:
+                if other["agent_id"] == agent["agent_id"]:
+                    continue
+
+                other_tokens.update(
+                    t for t in str(other.get("final_recommendation") or "")
+                    .replace("-", " ")
+                    .replace("_", " ")
+                    .split()
+                    if len(t) >= 4
+                )
+
+            final_recommendation_overlap = (
+                len(own_tokens.intersection(other_tokens)) / len(own_tokens)
+                if own_tokens else 0
+            )
+
         fake_penalty = 0
         if any("fake" in link for link in links) or any("fake" in word for word in title_words):
             fake_penalty = 0.8
@@ -2561,17 +2586,24 @@ def compute_consensus(results):
         )
 
         semantic_overlap = (
-            claims_overlap * 0.25 +
-            entities_overlap * 0.20 +
-            signal_overlap * 0.25 +
-            metrics_overlap * 0.15 +
-            recommendation_overlap * 0.15
+            claims_overlap * 0.20 +
+            entities_overlap * 0.15 +
+            signal_overlap * 0.20 +
+            metrics_overlap * 0.10 +
+            recommendation_overlap * 0.15 +
+            final_recommendation_overlap * 0.20
         )
 
         independent_quality = (
             query_relevance * 0.45 +
             result_validity * 0.55
         )
+
+        if query_relevance < 0.15:
+            independent_quality = 0
+
+        if result_validity < 0.30:
+            independent_quality = 0
 
         # Multi-format consensus:
         # - web agents agree through sources/titles
@@ -2595,6 +2627,7 @@ def compute_consensus(results):
             "signal_overlap": round(signal_overlap, 4),
             "metrics_overlap": round(metrics_overlap, 4),
             "recommendation_overlap": round(recommendation_overlap, 4),
+            "final_recommendation_overlap": round(final_recommendation_overlap, 4),
             "web_overlap": round(web_overlap, 4),
             "semantic_overlap": round(semantic_overlap, 4),
             "query_relevance": round(query_relevance, 4),
@@ -2691,18 +2724,38 @@ def compute_consensus(results):
         if float(a.get("overlap", 0) or 0) >= 0.75
     ]
 
-    low_risk_agents = [
+    usable_agents = [
         a for a in agent_sets
+        if (
+            float(a.get("result_validity", 0) or 0) >= 0.30
+            and float(a.get("query_relevance", 0) or 0) >= 0.15
+            and float(a.get("overlap", 0) or 0) > 0
+        )
+    ]
+
+    low_risk_usable_agents = [
+        a for a in usable_agents
         if float(a.get("effective_risk_score", a.get("risk_score", 0)) or 0) < 0.5
     ]
 
     quorum_passed = (
-        score >= 0.60
+        (score >= 0.60 and len(usable_agents) >= 2)
         or len(high_overlap_agents) >= 2
-        or len(low_risk_agents) >= 2
+        or (
+            len(low_risk_usable_agents) >= 2
+            and score >= 0.30
+        )
     )
 
-    status = "passed" if quorum_passed else "suspicious"
+    if len(usable_agents) == 0:
+        status = "failed"
+        consensus_failure_reason = "no_usable_foundation_results"
+    elif score < 0.10:
+        status = "failed"
+        consensus_failure_reason = "consensus_score_too_low"
+    else:
+        status = "passed" if quorum_passed else "suspicious"
+        consensus_failure_reason = None
 
     suspicious_agents = [
         agent["agent_id"]
@@ -2774,6 +2827,13 @@ def compute_consensus(results):
         "total_weight": round(total_weight, 4),
         "weighted_overlap": round(weighted_score, 4),
         "valid_agents": len(valid),
+        "consensus_failure_reason": consensus_failure_reason,
+        "consensus_gates": {
+            "usable_agents": len(usable_agents),
+            "low_risk_usable_agents": len(low_risk_usable_agents),
+            "high_overlap_agents": len(high_overlap_agents),
+            "quorum_passed": quorum_passed,
+        },
         "agent_overlaps": [
             {
                 "agent_id": a["agent_id"],

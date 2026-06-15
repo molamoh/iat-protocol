@@ -1385,7 +1385,10 @@ Your output must include:
             "engine": profile.get("engine"),
             "provider": "groq",
             "phase": phase,
+            "web_evidence": web_evidence,
         }
+
+        parsed["web_evidence"] = web_evidence
 
         return parsed
 

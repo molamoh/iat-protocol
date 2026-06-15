@@ -57,6 +57,7 @@ import time
 import os
 import json
 import requests
+from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
@@ -1045,6 +1046,99 @@ def is_foundation_agent(agent):
 
 
 
+
+def foundation_google_search(query, limit=5):
+    api_key = os.getenv("GOOGLE_API_KEY")
+    cse_id = os.getenv("GOOGLE_CSE_ID")
+
+    if not query:
+        return []
+
+    if not api_key or not cse_id:
+        return []
+
+    try:
+        r = requests.get(
+            "https://www.googleapis.com/customsearch/v1",
+            params={
+                "key": api_key,
+                "cx": cse_id,
+                "q": query,
+                "num": max(1, min(int(limit or 5), 10)),
+            },
+            timeout=15,
+        )
+
+        if r.status_code != 200:
+            return []
+
+        results = []
+        for item in r.json().get("items", [])[:limit]:
+            results.append({
+                "source": "google_custom_search",
+                "title": item.get("title"),
+                "snippet": item.get("snippet"),
+                "link": item.get("link"),
+                "display_link": item.get("displayLink"),
+            })
+
+        return results
+
+    except Exception:
+        return []
+
+
+def foundation_duckduckgo_search(query, limit=5):
+    if not query:
+        return []
+
+    try:
+        r = requests.get(
+            "https://html.duckduckgo.com/html/",
+            params={"q": query},
+            headers={"User-Agent": "Mozilla/5.0"},
+            timeout=10,
+        )
+
+        soup = BeautifulSoup(r.text, "html.parser")
+        results = []
+
+        for result in soup.select(".result")[:limit]:
+            title = result.select_one(".result__title")
+            snippet = result.select_one(".result__snippet")
+            link = result.select_one("a.result__a")
+
+            if title and link:
+                results.append({
+                    "source": "duckduckgo_html",
+                    "title": title.get_text(strip=True),
+                    "snippet": snippet.get_text(strip=True) if snippet else "",
+                    "link": link.get("href"),
+                    "display_link": None,
+                })
+
+        return results
+
+    except Exception:
+        return []
+
+
+def foundation_web_evidence_search(query, limit=5):
+    results = foundation_google_search(query, limit=limit)
+    provider = "google_custom_search" if results else None
+
+    if not results:
+        results = foundation_duckduckgo_search(query, limit=limit)
+        provider = "duckduckgo_html" if results else None
+
+    return {
+        "provider": provider or "none",
+        "query": query,
+        "result_count": len(results),
+        "results": results,
+    }
+
+
 def foundation_groq_execute(agent, order, profile, phase="research"):
     api_key = os.getenv("GROQ_API_KEY")
 
@@ -1054,6 +1148,10 @@ def foundation_groq_execute(agent, order, profile, phase="research"):
     query = order.get("query") or ""
     buyer_intent = parse_json_dict(order.get("buyer_intent"))
     requirements = parse_json_dict(order.get("requirements"))
+
+    web_evidence = {}
+    if phase == "research":
+        web_evidence = foundation_web_evidence_search(query, limit=5)
 
     if phase == "verification":
         system_prompt = """
@@ -1173,6 +1271,7 @@ Your output must include:
         "foundation_research_results": order.get("foundation_research_results"),
         "foundation_research_consensus": order.get("foundation_research_consensus"),
         "foundation_research_strength": order.get("foundation_research_strength"),
+        "web_evidence": web_evidence,
         "expected_output": expected_output
     }, ensure_ascii=False)
 

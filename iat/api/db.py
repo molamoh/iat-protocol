@@ -12291,7 +12291,7 @@ def execute_foundation_plan_db(order):
     plan_result = build_foundation_execution_plan_db(
         service=service,
         required_research_agents=2,
-        required_verification_agents=1,
+        required_verification_agents=2,
     )
 
     plan = plan_result.get("plan") or {}

@@ -12257,6 +12257,28 @@ def build_foundation_execution_plan_db(
 
 
 
+def compact_foundation_research_results_for_verification(research_results, max_agents=3, max_claims=8, max_sources=6):
+    compact = []
+
+    for result in (research_results or [])[:max_agents]:
+        data = result.get("data", {}) or {}
+
+        compact.append({
+            "agent_id": result.get("agent_id"),
+            "summary": str(data.get("summary") or "")[:900],
+            "final_recommendation": str(data.get("final_recommendation") or "")[:500],
+            "confidence": data.get("confidence"),
+            "sources": (data.get("sources") or [])[:max_sources],
+            "claims": (data.get("claims") or [])[:max_claims],
+            "entities": (data.get("entities") or [])[:max_claims],
+            "recommendations": (data.get("recommendations") or [])[:5],
+            "metrics": data.get("metrics") or {},
+        })
+
+    return compact
+
+
+
 def execute_foundation_plan_db(order):
     if not isinstance(order, dict):
         return {
@@ -12297,9 +12319,14 @@ def execute_foundation_plan_db(order):
         research_strength = compute_consensus_strength(research_results)
         best_research_result = select_best_result(research_results)
 
+        compact_research_results = compact_foundation_research_results_for_verification(
+            research_results
+        )
+
         verification_order = {
             **order,
-            "foundation_research_results": research_results,
+            "foundation_research_results": compact_research_results,
+            "foundation_research_results_full_count": len(research_results or []),
             "foundation_research_consensus": research_consensus,
             "foundation_research_strength": research_strength,
             "execution_phase": "foundation_verification",

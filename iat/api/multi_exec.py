@@ -1161,7 +1161,11 @@ def extract_research_claims_for_verification(order, limit=20):
     claims = []
 
     for result in order.get("foundation_research_results", []) or []:
-        data = result.get("data", {}) or {}
+
+        if "data" in result:
+            data = result.get("data", {}) or {}
+        else:
+            data = result
 
         for field in ["summary", "final_recommendation"]:
             value = data.get(field)

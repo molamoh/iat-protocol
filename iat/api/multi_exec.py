@@ -515,7 +515,7 @@ def compute_buyer_agent_score(agent, order=None):
         routing_topics = extract_topics_from_result(
             {"data": {
                 "entities": [],
-                "claims": [],
+                "claims": [f"uncertain:{c}" for c in extracted_claims[:10]],
                 "structured_signals": {},
                 "metrics": {},
             }},
@@ -1157,6 +1157,55 @@ def foundation_web_evidence_search(query, limit=5):
     }
 
 
+def extract_research_claims_for_verification(order, limit=20):
+    claims = []
+
+    for result in order.get("foundation_research_results", []) or []:
+        data = result.get("data", {}) or {}
+
+        for field in ["summary", "final_recommendation"]:
+            value = data.get(field)
+            if value:
+                claims.append(str(value))
+
+        for claim in data.get("claims", []) or []:
+            claims.append(str(claim))
+
+        for rec in data.get("recommendations", []) or []:
+            if isinstance(rec, dict):
+                for field in ["name", "title", "reason"]:
+                    value = rec.get(field)
+                    if value:
+                        claims.append(str(value))
+            elif rec:
+                claims.append(str(rec))
+
+        metrics = data.get("metrics", {}) or {}
+        for key, value in metrics.items():
+            claims.append(f"{key}: {value}")
+
+    cleaned = []
+    seen = set()
+
+    for claim in claims:
+        claim = " ".join(str(claim).split())
+        if not claim:
+            continue
+
+        key = claim.lower()
+        if key in seen:
+            continue
+
+        seen.add(key)
+        cleaned.append(claim)
+
+        if len(cleaned) >= int(limit or 20):
+            break
+
+    return cleaned
+
+
+
 def foundation_groq_execute(agent, order, profile, phase="research"):
     api_key = os.getenv("GROQ_API_KEY")
 
@@ -1184,6 +1233,19 @@ Core rules:
 - Be strict, skeptical, and evidence-focused.
 - Identify weak claims, missing sources, contradictions, stale information, and unsafe conclusions.
 - Return valid JSON only.
+
+Claim-level verification rules:
+- Read foundation_research_results carefully.
+- Extract concrete claims from research summaries, recommendations, claims, sources, metrics and final_recommendation.
+- Put supported claims in verified_claims.
+- Put contradicted, unsafe, hallucinated or unsupported claims in rejected_claims.
+- Put plausible but weakly sourced claims in uncertain_claims.
+- Always populate at least one of verified_claims, rejected_claims or uncertain_claims when research_results exist.
+- Set source_quality to low, medium or high.
+- Set confidence_adjustment:
+  - positive only when verification is strong
+  - negative when claims are weak, stale, contradictory or poorly sourced
+- Set final_confidence between 0 and 1.
 
 Your output must include:
 - summary
@@ -1278,6 +1340,12 @@ Your output must include:
             "entities": []
         }
 
+    research_claims_for_verification = (
+        extract_research_claims_for_verification(order)
+        if phase == "verification"
+        else []
+    )
+
     user_prompt = json.dumps({
         "phase": phase,
         "agent_id": agent.get("agent_id"),
@@ -1289,6 +1357,7 @@ Your output must include:
         "foundation_research_results": order.get("foundation_research_results"),
         "foundation_research_consensus": order.get("foundation_research_consensus"),
         "foundation_research_strength": order.get("foundation_research_strength"),
+        "research_claims_for_verification": research_claims_for_verification,
         "web_evidence": web_evidence,
         "expected_output": expected_output
     }, ensure_ascii=False)
@@ -1396,6 +1465,28 @@ Your output must include:
             "phase": phase,
         })
 
+        if phase == "verification":
+            extracted_claims = research_claims_for_verification
+
+            if (
+                not parsed.get("verified_claims")
+                and not parsed.get("rejected_claims")
+                and not parsed.get("uncertain_claims")
+                and extracted_claims
+            ):
+                parsed["uncertain_claims"] = extracted_claims[:10]
+                parsed["source_quality"] = parsed.get("source_quality") or "medium"
+                parsed["confidence_adjustment"] = parsed.get("confidence_adjustment", -0.10)
+                parsed["final_confidence"] = parsed.get("final_confidence", 0.55)
+                parsed["summary"] = parsed.get("summary") or "Verification reviewed research claims but could not fully validate all claims."
+
+            parsed.setdefault("verified_claims", [])
+            parsed.setdefault("rejected_claims", [])
+            parsed.setdefault("uncertain_claims", [])
+            parsed.setdefault("source_quality", "medium")
+            parsed.setdefault("confidence_adjustment", 0.0)
+            parsed.setdefault("final_confidence", parsed.get("confidence", 0.60))
+
         parsed.setdefault("entities", [])
         parsed["raw"] = {
             "query": query,
@@ -1447,25 +1538,32 @@ Your output must include:
 
 
 def foundation_verification_engine(agent, order, profile):
-    return foundation_groq_execute(
+    groq_result = foundation_groq_execute(
         agent,
         order,
         profile,
         phase="verification",
-    ) or {
+    )
+
+    if groq_result:
+        return groq_result
+
+    extracted_claims = extract_research_claims_for_verification(order)
+
+    return {
         "delivery_type": "foundation_verification_fallback",
-        "summary": "Foundation verification engine could not produce a Groq result.",
+        "summary": "Foundation verification engine fallback reviewed extracted research claims.",
         "verified_claims": [],
         "rejected_claims": [],
-        "uncertain_claims": [],
-        "source_quality": "unknown",
-        "confidence_adjustment": -0.25,
-        "final_confidence": 0.35,
+        "uncertain_claims": extracted_claims[:10],
+        "source_quality": "medium" if extracted_claims else "unknown",
+        "confidence_adjustment": -0.10 if extracted_claims else -0.25,
+        "final_confidence": 0.55 if extracted_claims else 0.35,
         "recommendations": [],
         "final_recommendation": "Additional foundation verification required before high-confidence buyer delivery.",
         "confidence": 0.35,
         "sources": [],
-        "claims": [],
+        "claims": [f"uncertain:{c}" for c in extracted_claims[:10]],
         "metrics": {
             "foundation_verification_fallback": True
         },
@@ -1474,7 +1572,8 @@ def foundation_verification_engine(agent, order, profile):
             "role": profile.get("role"),
             "specialty": profile.get("specialty"),
             "phase": "verification",
-            "provider": "fallback"
+            "provider": "fallback",
+            "claim_extraction_fallback": True,
         },
         "entities": [],
         "raw": {

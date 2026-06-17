@@ -1065,6 +1065,52 @@ def is_foundation_agent(agent):
 
 
 
+def foundation_serper_search(query, limit=5):
+    api_key = os.getenv("SERPER_API_KEY")
+
+    if not query:
+        return []
+
+    if not api_key:
+        return []
+
+    try:
+        r = requests.post(
+            "https://google.serper.dev/search",
+            headers={
+                "X-API-KEY": api_key,
+                "Content-Type": "application/json",
+            },
+            json={
+                "q": query,
+                "num": max(1, min(int(limit or 5), 10)),
+            },
+            timeout=15,
+        )
+
+        if r.status_code != 200:
+            return []
+
+        results = []
+
+        for item in r.json().get("organic", [])[:limit]:
+            results.append({
+                "source": "serper_google",
+                "title": item.get("title"),
+                "snippet": item.get("snippet"),
+                "link": item.get("link"),
+                "display_link": item.get("link"),
+                "date": item.get("date"),
+                "position": item.get("position"),
+            })
+
+        return results
+
+    except Exception:
+        return []
+
+
+
 def foundation_google_search(query, limit=5):
     api_key = os.getenv("GOOGLE_API_KEY")
     cse_id = os.getenv("GOOGLE_CSE_ID")
@@ -1142,8 +1188,12 @@ def foundation_duckduckgo_search(query, limit=5):
 
 
 def foundation_web_evidence_search(query, limit=5):
-    results = foundation_google_search(query, limit=limit)
-    provider = "google_custom_search" if results else None
+    results = foundation_serper_search(query, limit=limit)
+    provider = "serper_google" if results else None
+
+    if not results:
+        results = foundation_google_search(query, limit=limit)
+        provider = "google_custom_search" if results else None
 
     if not results:
         results = foundation_duckduckgo_search(query, limit=limit)

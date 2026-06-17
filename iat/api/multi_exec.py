@@ -1436,6 +1436,9 @@ Your output must include:
         )
 
         if r.status_code != 200:
+            if phase == "verification":
+                return None
+
             return {
                 "delivery_type": "foundation_groq_error",
                 "summary": "Groq foundation execution failed before producing a usable result.",

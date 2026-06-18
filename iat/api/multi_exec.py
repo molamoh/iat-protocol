@@ -1594,6 +1594,176 @@ Your output must include:
         }
 
 
+def foundation_local_claim_verification(order, extracted_claims, max_claims=12):
+    research_results = order.get("foundation_research_results", []) or []
+
+    sources = []
+
+    for result in research_results:
+        data = result.get("data", {}) if isinstance(result, dict) and "data" in result else result
+
+        for src in data.get("sources", []) or []:
+            if isinstance(src, dict):
+                sources.append(src)
+
+        web_evidence = (
+            data.get("web_evidence")
+            or (data.get("raw", {}) or {}).get("web_evidence")
+            or {}
+        )
+
+        for src in web_evidence.get("results", []) or []:
+            if isinstance(src, dict):
+                sources.append(src)
+
+    def norm_words(value):
+        stop = {
+            "the","and","for","with","that","this","from","into","under","over",
+            "best","good","option","options","based","provided","evidence",
+            "europe","european","euros","euro","cars","electric","vehicle","vehicles",
+            "research","source","sources","claim","claims","price"
+        }
+
+        words = set()
+
+        for raw in str(value or "").lower().replace("-", " ").replace("_", " ").split():
+            token = raw.strip(".,:;!?()[]{}'\\\"/|")
+            if len(token) < 3:
+                continue
+            if token.isdigit():
+                continue
+            if token in stop:
+                continue
+            if token.endswith("s") and len(token) > 4:
+                token = token[:-1]
+            words.add(token)
+
+        return words
+
+    source_profiles = []
+
+    for src in sources:
+        text_blob = " ".join([
+            str(src.get("title") or ""),
+            str(src.get("snippet") or ""),
+            str(src.get("link") or ""),
+            str(src.get("display_link") or ""),
+        ])
+
+        source_profiles.append({
+            "source": src,
+            "terms": norm_words(text_blob),
+            "domain": str(src.get("display_link") or src.get("link") or "").split("/")[2]
+            if "/" in str(src.get("display_link") or src.get("link") or "")
+            else str(src.get("display_link") or src.get("link") or ""),
+        })
+
+    verified = []
+    rejected = []
+    uncertain = []
+
+    unique_domains = {
+        p.get("domain")
+        for p in source_profiles
+        if p.get("domain")
+    }
+
+    for claim in (extracted_claims or [])[:max_claims]:
+        claim_text = str(claim)
+        claim_terms = norm_words(claim_text)
+
+        if not claim_terms:
+            uncertain.append(claim_text)
+            continue
+
+        support_count = 0
+        supporting_sources = []
+
+        for src_profile in source_profiles:
+            source_terms = src_profile.get("terms") or set()
+            if not source_terms:
+                continue
+
+            overlap = len(claim_terms.intersection(source_terms)) / max(len(claim_terms), 1)
+
+            if overlap >= 0.18 or len(claim_terms.intersection(source_terms)) >= 2:
+                support_count += 1
+                supporting_sources.append(src_profile.get("source"))
+
+        weak_or_meta = any(
+            marker in claim_text.lower()
+            for marker in [
+                "lack of concrete",
+                "not enough",
+                "could not",
+                "requires additional",
+                "uncertain",
+                "unknown",
+                "fallback",
+                "internal foundation",
+            ]
+        )
+
+        if weak_or_meta:
+            uncertain.append(claim_text)
+        elif support_count >= 2:
+            verified.append({
+                "claim": claim_text,
+                "supporting_source_count": support_count,
+                "confidence": min(0.90, 0.55 + support_count * 0.10),
+                "verification_method": "local_cross_source_overlap",
+            })
+        elif support_count == 1:
+            uncertain.append({
+                "claim": claim_text,
+                "supporting_source_count": support_count,
+                "confidence": 0.45,
+                "verification_method": "single_source_overlap",
+            })
+        else:
+            uncertain.append(claim_text)
+
+    if len(source_profiles) >= 4 and len(unique_domains) >= 3:
+        source_quality = "high"
+    elif len(source_profiles) >= 2:
+        source_quality = "medium"
+    elif len(source_profiles) == 1:
+        source_quality = "low"
+    else:
+        source_quality = "unknown"
+
+    final_confidence = 0.35
+
+    if verified:
+        final_confidence += min(0.35, len(verified) * 0.08)
+
+    if uncertain:
+        final_confidence -= min(0.15, len(uncertain) * 0.01)
+
+    if rejected:
+        final_confidence -= min(0.30, len(rejected) * 0.10)
+
+    if source_quality == "high":
+        final_confidence += 0.10
+    elif source_quality == "medium":
+        final_confidence += 0.05
+    elif source_quality == "low":
+        final_confidence -= 0.05
+
+    final_confidence = round(min(max(final_confidence, 0.20), 0.85), 4)
+
+    return {
+        "verified_claims": verified,
+        "rejected_claims": rejected,
+        "uncertain_claims": uncertain[:max_claims],
+        "source_quality": source_quality,
+        "final_confidence": final_confidence,
+        "source_count": len(source_profiles),
+        "unique_domain_count": len(unique_domains),
+    }
+
+
+
 def foundation_verification_engine(agent, order, profile):
     groq_result = foundation_groq_execute(
         agent,
@@ -1606,23 +1776,47 @@ def foundation_verification_engine(agent, order, profile):
         return groq_result
 
     extracted_claims = extract_research_claims_for_verification(order)
+    local_verification = foundation_local_claim_verification(
+        order,
+        extracted_claims,
+        max_claims=12,
+    )
+
+    verified_claims = local_verification.get("verified_claims", [])
+    rejected_claims = local_verification.get("rejected_claims", [])
+    uncertain_claims = local_verification.get("uncertain_claims", [])
 
     return {
         "delivery_type": "foundation_verification_fallback",
-        "summary": "Foundation verification engine fallback reviewed extracted research claims.",
-        "verified_claims": [],
-        "rejected_claims": [],
-        "uncertain_claims": extracted_claims[:10],
-        "source_quality": "medium" if extracted_claims else "unknown",
-        "confidence_adjustment": -0.10 if extracted_claims else -0.25,
-        "final_confidence": 0.55 if extracted_claims else 0.35,
+        "summary": "Foundation verification fallback reviewed extracted research claims using local cross-source evidence.",
+        "verified_claims": verified_claims,
+        "rejected_claims": rejected_claims,
+        "uncertain_claims": uncertain_claims,
+        "source_quality": local_verification.get("source_quality"),
+        "confidence_adjustment": (
+            0.05 if verified_claims and not rejected_claims
+            else -0.20 if rejected_claims
+            else -0.10 if uncertain_claims
+            else -0.25
+        ),
+        "final_confidence": local_verification.get("final_confidence"),
         "recommendations": [],
-        "final_recommendation": "Additional foundation verification required before high-confidence buyer delivery.",
-        "confidence": 0.35,
+        "final_recommendation": "Foundation verification completed with local evidence fallback.",
+        "confidence": local_verification.get("final_confidence", 0.35),
         "sources": [],
-        "claims": [f"uncertain:{c}" for c in extracted_claims[:10]],
+        "claims": (
+            [f"verified:{c.get('claim') if isinstance(c, dict) else c}" for c in verified_claims]
+            + [f"rejected:{c.get('claim') if isinstance(c, dict) else c}" for c in rejected_claims]
+            + [f"uncertain:{c.get('claim') if isinstance(c, dict) else c}" for c in uncertain_claims]
+        ),
         "metrics": {
-            "foundation_verification_fallback": True
+            "foundation_verification_fallback": True,
+            "local_claim_verification": True,
+            "verified_claim_count": len(verified_claims),
+            "rejected_claim_count": len(rejected_claims),
+            "uncertain_claim_count": len(uncertain_claims),
+            "source_count": local_verification.get("source_count"),
+            "unique_domain_count": local_verification.get("unique_domain_count"),
         },
         "structured_signals": {
             "engine": profile.get("engine"),
@@ -1705,37 +1899,71 @@ def foundation_web_research_engine(agent, order, profile):
             },
         }
 
+    web_evidence = foundation_web_evidence_search(query, limit=5)
+    evidence_results = web_evidence.get("results", []) or []
+
+    sources = [
+        {
+            "title": item.get("title"),
+            "snippet": item.get("snippet"),
+            "link": item.get("link"),
+            "source": item.get("source"),
+            "display_link": item.get("display_link"),
+            "date": item.get("date"),
+            "position": item.get("position"),
+        }
+        for item in evidence_results
+        if isinstance(item, dict)
+    ]
+
+    claims = [
+        {
+            "claim": item.get("title"),
+            "confidence": 0.55,
+            "source": item.get("source"),
+            "link": item.get("link"),
+        }
+        for item in evidence_results
+        if isinstance(item, dict) and item.get("title")
+    ]
+
     return {
         "delivery_type": "foundation_web_research",
         "summary": (
-            "Foundation web research engine processed the buyer request "
-            "inside the protocol execution layer."
+            "Foundation web research engine processed the buyer request using external evidence sources."
+            if evidence_results else
+            "Foundation web research engine processed the buyer request inside the protocol execution layer."
         ),
         "recommendations": [],
         "final_recommendation": (
             f"Foundation web research result for query: {query}"
         ),
-        "confidence": 0.70,
-        "sources": [],
-        "claims": [
+        "confidence": 0.75 if evidence_results else 0.70,
+        "sources": sources,
+        "web_evidence": web_evidence,
+        "claims": claims or [
             {
                 "claim": "Request handled by internal foundation web research engine.",
                 "confidence": 0.70,
             }
         ],
         "metrics": {
-            "foundation_engine_confidence": 0.70,
+            "foundation_engine_confidence": 0.75 if evidence_results else 0.70,
+            "external_evidence_count": len(evidence_results),
+            "external_evidence_provider": web_evidence.get("provider"),
         },
         "structured_signals": {
             "engine": profile.get("engine"),
             "role": profile.get("role"),
             "specialty": profile.get("specialty"),
+            "external_evidence_provider": web_evidence.get("provider"),
         },
         "entities": [],
         "raw": {
             "query": query,
             "execution_layer": "foundation_internal",
             "engine": profile.get("engine"),
+            "web_evidence": web_evidence,
         },
     }
 

@@ -12263,12 +12263,21 @@ def compact_foundation_research_results_for_verification(research_results, max_a
     for result in (research_results or [])[:max_agents]:
         data = result.get("data", {}) or {}
 
+        raw = data.get("raw", {}) or {}
+        web_evidence = data.get("web_evidence") or raw.get("web_evidence") or {}
+
         compact.append({
             "agent_id": result.get("agent_id"),
             "summary": str(data.get("summary") or "")[:900],
             "final_recommendation": str(data.get("final_recommendation") or "")[:500],
             "confidence": data.get("confidence"),
             "sources": (data.get("sources") or [])[:max_sources],
+            "web_evidence": {
+                "provider": web_evidence.get("provider"),
+                "query": web_evidence.get("query"),
+                "result_count": web_evidence.get("result_count"),
+                "results": (web_evidence.get("results") or [])[:max_sources],
+            },
             "claims": (data.get("claims") or [])[:max_claims],
             "entities": (data.get("entities") or [])[:max_claims],
             "recommendations": (data.get("recommendations") or [])[:5],

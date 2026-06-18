@@ -15261,6 +15261,80 @@ def build_foundation_decision_context_db(order_id):
 
 
 
+
+def build_foundation_decision_explanation_db(
+    foundation_verdict,
+    decision_reason,
+    decision_confidence,
+    verification_signals,
+    foundation_evidence_evaluation,
+    approved_contributions,
+    seller_input_quality_score,
+):
+    verified_claims = (
+        verification_signals.get("verified_claims") or []
+    )
+
+    rejected_claims = (
+        verification_signals.get("rejected_claims") or []
+    )
+
+    uncertain_claims = (
+        verification_signals.get("uncertain_claims") or []
+    )
+
+    evidence_quality = {
+        "source_quality": verification_signals.get("source_quality"),
+        "verified_claim_count": len(verified_claims),
+        "rejected_claim_count": len(rejected_claims),
+        "uncertain_claim_count": len(uncertain_claims),
+    }
+
+    confidence_reasoning = [
+        f"decision_confidence={decision_confidence}",
+        f"foundation_verdict={foundation_verdict}",
+        f"decision_reason={decision_reason}",
+    ]
+
+    risk_factors = []
+
+    if rejected_claims:
+        risk_factors.append("rejected_claims_present")
+
+    if len(uncertain_claims) > len(verified_claims):
+        risk_factors.append("uncertainty_exceeds_verified_claims")
+
+    if verification_signals.get("source_quality") == "low":
+        risk_factors.append("low_source_quality")
+
+    if (
+        isinstance(foundation_evidence_evaluation, dict)
+        and foundation_evidence_evaluation.get("foundation_decision_ready") is False
+    ):
+        risk_factors.append("foundation_evidence_not_ready")
+
+    return {
+        "explanation_type": "foundation_decision_explanation",
+        "decision_summary": (
+            f"Foundation verdict '{foundation_verdict}' "
+            f"because '{decision_reason}'."
+        ),
+        "accepted_claims": verified_claims[:25],
+        "rejected_claims": rejected_claims[:25],
+        "uncertain_claims": uncertain_claims[:25],
+        "evidence_quality": evidence_quality,
+        "confidence_reasoning": confidence_reasoning,
+        "risk_factors": risk_factors,
+        "authority_statement": {
+            "foundation_final_authority": True,
+            "seller_decision_power": False,
+            "buyer_decision_power": False,
+            "seller_input_count": len(approved_contributions),
+            "seller_input_quality_score": seller_input_quality_score,
+        },
+    }
+
+
 def run_foundation_decision_db(order_id):
     if not order_id:
         return {
@@ -15451,6 +15525,23 @@ def run_foundation_decision_db(order_id):
     uncertain_count = len(verification_signals.get("uncertain_claims") or [])
     verified_count = len(verification_signals.get("verified_claims") or [])
 
+    foundation_ready_for_positive_decision = (
+        isinstance(foundation_evidence_evaluation, dict)
+        and foundation_evidence_evaluation.get("foundation_decision_ready") is True
+        and verification_signals.get("source_quality") == "high"
+        and verified_count > rejected_count
+        and verified_count >= uncertain_count
+        and verified_count > 0
+    )
+
+    if foundation_ready_for_positive_decision:
+        foundation_verdict = "foundation_verified_with_evidence"
+        decision_reason = "verified_claims_supported_by_foundation_evidence"
+        decision_confidence = max(
+            float(decision_confidence),
+            float(verification_signals.get("final_confidence") or 0.0),
+        )
+
     if verification_signals.get("final_confidence") is not None:
         decision_confidence = min(
             float(decision_confidence),
@@ -15493,12 +15584,23 @@ def run_foundation_decision_db(order_id):
                 "foundation_evidence_not_ready",
             )
 
+    foundation_decision_explanation = build_foundation_decision_explanation_db(
+        foundation_verdict=foundation_verdict,
+        decision_reason=decision_reason,
+        decision_confidence=round(float(decision_confidence), 4),
+        verification_signals=verification_signals,
+        foundation_evidence_evaluation=foundation_evidence_evaluation,
+        approved_contributions=approved_contributions,
+        seller_input_quality_score=seller_input_quality_score,
+    )
+
     foundation_decision = {
         "decision_type": "foundation_decision",
         "order_id": order_id,
         "foundation_verdict": foundation_verdict,
         "decision_reason": decision_reason,
         "decision_confidence": round(float(decision_confidence), 4),
+        "foundation_decision_explanation": foundation_decision_explanation,
 
         "governance_authority": "iat_protocol_core_only",
         "decision_authority": "foundation_agents_only",

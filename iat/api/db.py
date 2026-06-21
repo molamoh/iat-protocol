@@ -6933,6 +6933,7 @@ def init_db():
     init_seller_recovery_requests_table()
     init_seller_governance_events_table()
     init_adaptive_defense_tables()
+    init_settlements_table()
     init_buyers_table()
     init_agent_topic_stats_table()
     init_delegations_table()
@@ -9239,6 +9240,132 @@ def init_agent_topic_stats_table():
 
     conn.commit()
     release_conn(locals().get("conn"))
+
+
+
+def init_settlements_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS settlements (
+        settlement_id TEXT PRIMARY KEY,
+        order_id TEXT NOT NULL,
+        winner_id TEXT,
+        winner_wallet TEXT,
+        treasury_wallet TEXT,
+        gross_amount_iat REAL DEFAULT 0,
+        protocol_commission_rate REAL DEFAULT 0,
+        protocol_commission_amount_iat REAL DEFAULT 0,
+        seller_payout_amount_iat REAL DEFAULT 0,
+        settlement_status TEXT DEFAULT 'created',
+        winner_payment_status TEXT,
+        onchain_settlement_enabled INTEGER DEFAULT 0,
+        commission_tx_signature TEXT,
+        seller_payout_tx_signature TEXT,
+        settlement_payload TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+def record_settlement_db(order_id, settlement):
+    if not order_id or not isinstance(settlement, dict):
+        return None
+
+    settlement_execution = settlement.get("settlement_execution") or {}
+    now = int(time.time())
+    settlement_id = str(uuid.uuid4())
+    p = qmark()
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(f"""
+    INSERT INTO settlements (
+        settlement_id,
+        order_id,
+        winner_id,
+        winner_wallet,
+        treasury_wallet,
+        gross_amount_iat,
+        protocol_commission_rate,
+        protocol_commission_amount_iat,
+        seller_payout_amount_iat,
+        settlement_status,
+        winner_payment_status,
+        onchain_settlement_enabled,
+        commission_tx_signature,
+        seller_payout_tx_signature,
+        settlement_payload,
+        created_at,
+        updated_at
+    )
+    VALUES (
+        {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p},
+        {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}
+    )
+    """, (
+        settlement_id,
+        order_id,
+        settlement.get("winner_id"),
+        settlement.get("winner_wallet"),
+        settlement.get("protocol_treasury_wallet")
+        or settlement_execution.get("treasury_wallet"),
+        float(settlement.get("gross_amount_iat", 0) or 0),
+        float(settlement.get("protocol_commission_rate", 0) or 0),
+        float(settlement.get("protocol_commission_amount_iat", 0) or 0),
+        float(settlement.get("seller_payout_amount_iat", 0) or 0),
+        settlement_execution.get("status")
+        or settlement.get("winner_payment_status")
+        or "created",
+        settlement.get("winner_payment_status"),
+        1 if settlement_execution.get("onchain_settlement_enabled") else 0,
+        settlement_execution.get("commission_tx_signature"),
+        settlement_execution.get("seller_payout_tx_signature"),
+        json.dumps(settlement),
+        now,
+        now,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "settlement_recorded",
+        "settlement_id": settlement_id,
+        "order_id": order_id,
+    }
+
+
+def list_settlements_db(limit=100):
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    SELECT *
+    FROM settlements
+    ORDER BY created_at DESC
+    """)
+
+    rows = cur.fetchall()
+    release_conn(conn)
+
+    results = []
+    for row in rows[:int(limit or 100)]:
+        item = dict(row)
+        try:
+            item["settlement_payload"] = json.loads(item.get("settlement_payload") or "{}")
+        except Exception:
+            pass
+        results.append(item)
+
+    return results
+
 
 
 def init_buyers_table():

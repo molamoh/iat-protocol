@@ -47,6 +47,8 @@ from iat.api.db import (
     get_order_db,
     list_orders_db,
     update_order_delivered_db,
+    record_settlement_db,
+    list_settlements_db,
     is_tx_processed_db,
     save_processed_tx_db,
     get_stats_db,
@@ -4642,6 +4644,15 @@ def payout_winner_if_escrow(order, best, agents):
         or best.get("wallet")
     )
 
+    def finalize_settlement(result):
+        try:
+            record = record_settlement_db(order_id, result)
+            if record:
+                result["settlement_record"] = record
+        except Exception as exc:
+            result["settlement_record_error"] = str(exc)
+        return result
+
     settlement = {
         "settlement_type": "escrow_winner_payout",
         "winner_payment_status": "pending_escrow_release",
@@ -4666,27 +4677,27 @@ def payout_winner_if_escrow(order, best, agents):
     if not winner_id:
         settlement["winner_payment_status"] = "blocked_no_winner"
         settlement["reason"] = "winner_agent_missing"
-        return settlement
+        return finalize_settlement(settlement)
 
     if not winner_wallet:
         settlement["winner_payment_status"] = "blocked_no_winner_wallet"
         settlement["reason"] = "winner_wallet_missing"
-        return settlement
+        return finalize_settlement(settlement)
 
     if amount <= 0:
         settlement["winner_payment_status"] = "no_payment_due"
         settlement["reason"] = "zero_amount_order"
-        return settlement
+        return finalize_settlement(settlement)
 
     if not escrow_wallet:
         settlement["winner_payment_status"] = "direct_payment_mode_no_escrow_release"
         settlement["reason"] = "escrow_wallet_not_configured"
-        return settlement
+        return finalize_settlement(settlement)
 
     if not escrow_key:
         settlement["winner_payment_status"] = "pending_manual_escrow_release"
         settlement["reason"] = "escrow_signing_key_not_configured"
-        return settlement
+        return finalize_settlement(settlement)
 
     treasury_wallet = os.getenv("IAT_PROTOCOL_TREASURY_WALLET")
 
@@ -4711,7 +4722,7 @@ def payout_winner_if_escrow(order, best, agents):
         settlement["winner_payment_status"] = "blocked_or_failed_onchain_release"
         settlement["reason"] = settlement_execution.get("reason") or settlement_execution.get("error")
 
-    return settlement
+    return finalize_settlement(settlement)
 
 
 

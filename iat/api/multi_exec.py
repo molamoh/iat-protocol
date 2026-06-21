@@ -2289,6 +2289,101 @@ def compute_quality(result):
     return quality * 2 + latency_score
 
 
+
+def build_foundation_buyer_report(foundation_decision, fallback_delivery=None):
+    fallback_delivery = fallback_delivery or {}
+
+    if not isinstance(foundation_decision, dict):
+        return fallback_delivery
+
+    fd = foundation_decision.get("foundation_decision") or foundation_decision
+    explanation = fd.get("foundation_decision_explanation") or {}
+
+    accepted_claims = explanation.get("accepted_claims") or []
+    rejected_claims = explanation.get("rejected_claims") or []
+    uncertain_claims = explanation.get("uncertain_claims") or []
+    evidence_quality = explanation.get("evidence_quality") or {}
+
+    def claim_text(item):
+        if isinstance(item, dict):
+            raw_claim = item.get("claim")
+        else:
+            raw_claim = item
+
+        if isinstance(raw_claim, dict):
+            return str(raw_claim.get("claim") or raw_claim)
+
+        text_value = str(raw_claim or "")
+
+        # Some earlier pipeline stages may store Python-dict-like claim strings.
+        # Keep this safe: parse only simple literal dicts, never eval.
+        if text_value.strip().startswith("{") and "'claim'" in text_value:
+            try:
+                import ast
+
+                parsed = ast.literal_eval(text_value)
+                if isinstance(parsed, dict) and parsed.get("claim"):
+                    return str(parsed.get("claim"))
+            except Exception:
+                pass
+
+        return text_value
+
+    recommendations = [
+        {
+            "title": claim_text(c),
+            "reason": (
+                "Accepted by Foundation verification using cross-source evidence."
+            ),
+            "confidence": c.get("confidence") if isinstance(c, dict) else None,
+            "supporting_source_count": (
+                c.get("supporting_source_count") if isinstance(c, dict) else None
+            ),
+        }
+        for c in accepted_claims[:8]
+    ]
+
+    if rejected_claims:
+        final_recommendation = (
+            "Foundation verification found rejected claims. Treat the result as unsafe "
+            "for high-confidence buyer delivery until the rejected claims are resolved."
+        )
+    elif accepted_claims:
+        final_recommendation = (
+            "Foundation verification accepted multiple claims using cross-source evidence. "
+            "Use the accepted claims as the buyer-facing verified research base."
+        )
+    elif uncertain_claims:
+        final_recommendation = (
+            "Foundation verification found only uncertain claims. Use this as a cautious "
+            "research draft, not a high-confidence final answer."
+        )
+    else:
+        final_recommendation = fallback_delivery.get("final_recommendation")
+
+    summary = explanation.get("decision_summary") or fallback_delivery.get("summary")
+
+    return {
+        "status": "success",
+        "delivery_mode": "foundation_verified_report",
+        "summary": summary,
+        "recommendations": recommendations,
+        "final_recommendation": final_recommendation,
+        "confidence": fd.get("decision_confidence", fallback_delivery.get("confidence", 0.5)),
+        "foundation_verdict": fd.get("foundation_verdict"),
+        "decision_reason": fd.get("decision_reason"),
+        "evidence_quality": evidence_quality,
+        "accepted_claims": accepted_claims[:12],
+        "rejected_claims": rejected_claims[:12],
+        "uncertain_claims": uncertain_claims[:12],
+        "authority_statement": explanation.get("authority_statement"),
+        "risk_factors": explanation.get("risk_factors", []),
+        "sources": fallback_delivery.get("sources", []),
+        "fallback_delivery_used": bool(fallback_delivery),
+    }
+
+
+
 def build_final_buyer_delivery(best_result, all_results=None):
     if not best_result:
         return {

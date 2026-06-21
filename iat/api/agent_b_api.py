@@ -668,6 +668,32 @@ def run_foundation_supplier_pipeline(order):
 
     foundation_decision = run_foundation_decision_db(order.get("order_id"))
 
+    try:
+        from iat.api.multi_exec import build_foundation_buyer_report
+
+        foundation_report = build_foundation_buyer_report(
+            foundation_decision,
+            fallback_delivery={
+                "status": "success",
+                "summary": "Foundation-mediated supplier execution completed.",
+                "final_recommendation": "Use the Foundation decision and verified evidence as the buyer-facing delivery.",
+                "confidence": (
+                    foundation_decision.get("foundation_decision", {})
+                    .get("decision_confidence", 0.5)
+                    if isinstance(foundation_decision, dict)
+                    else 0.5
+                ),
+                "sources": [],
+            },
+        )
+    except Exception as exc:
+        foundation_report = {
+            "status": "success",
+            "delivery_mode": "foundation_supplier_report_fallback",
+            "summary": "Foundation-mediated supplier execution completed.",
+            "foundation_report_error": str(exc),
+        }
+
     return {
         "status": "foundation_supplier_pipeline_completed",
         "execution_mode": "foundation_supplier_pipeline",
@@ -677,6 +703,7 @@ def run_foundation_supplier_pipeline(order):
         "supplier_execution": supplier_execution,
         "supplier_verification": verification,
         "foundation_decision": foundation_decision,
+        "result": foundation_report,
         "policy": {
             "buyer_never_contacts_seller": True,
             "seller_never_contacts_buyer": True,
@@ -757,6 +784,22 @@ def deliver_service(order, tx_signature):
             results,
         )
 
+        foundation_decision = run_foundation_decision_db(order.get("order_id"))
+
+        try:
+            from iat.api.multi_exec import build_foundation_buyer_report
+
+            foundation_report = build_foundation_buyer_report(
+                foundation_decision,
+                fallback_delivery=final_delivery,
+            )
+        except Exception as exc:
+            foundation_report = {
+                **final_delivery,
+                "delivery_mode": "foundation_report_fallback",
+                "foundation_report_error": str(exc),
+            }
+
         return {
             "status": "consensus_delivered",
             "execution_mode": execution_mode,
@@ -766,7 +809,8 @@ def deliver_service(order, tx_signature):
             ],
             "consensus_agents_count": len(selected_agents),
             "consensus_strength": consensus_strength,
-            "result": final_delivery,
+            "foundation_decision": foundation_decision,
+            "result": foundation_report,
         }
 
     if order.get("seller_url"):

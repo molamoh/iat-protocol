@@ -4858,6 +4858,42 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
 
 
 
+
+@app.post("/admin/test-settlement-safety")
+def admin_test_settlement_safety(request: Request):
+    expected_key = os.getenv("IAT_ADMIN_API_KEY")
+    provided_key = request.headers.get("x-api-key")
+
+    if expected_key and provided_key != expected_key:
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    order = {
+        "order_id": "ADMIN_SETTLEMENT_TEST",
+        "price": 1.2,
+    }
+
+    best = {
+        "agent_id": "foundation_web_research_1",
+        "wallet": "IAT_PROTOCOL_CORE",
+    }
+
+    agents = [
+        {
+            "agent_id": "foundation_web_research_1",
+            "wallet": "IAT_PROTOCOL_CORE",
+        }
+    ]
+
+    return {
+        "status": "ok",
+        "settlement": payout_winner_if_escrow(order, best, agents),
+    }
+
+
+
 @app.post("/admin/test-onchain-slash-agent/{agent_id}")
 def admin_test_onchain_slash_agent(agent_id: str, request: Request, amount: float = 0.1):
     expected_key = os.getenv("IAT_ADMIN_API_KEY")

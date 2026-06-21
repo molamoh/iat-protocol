@@ -4512,6 +4512,79 @@ def execute_onchain_slash(agent_id, amount, order_id):
 
 
 
+
+def execute_escrow_split_release(
+    escrow_key,
+    treasury_wallet,
+    winner_wallet,
+    commission_amount,
+    seller_payout_amount,
+    order_id,
+):
+    onchain_enabled = str(
+        os.getenv("IAT_ENABLE_ONCHAIN_SETTLEMENT", "false")
+    ).lower() == "true"
+
+    result = {
+        "settlement_execution_type": "escrow_split_release",
+        "onchain_settlement_enabled": onchain_enabled,
+        "order_id": order_id,
+        "treasury_wallet": treasury_wallet,
+        "winner_wallet": winner_wallet,
+        "commission_amount_iat": float(commission_amount or 0),
+        "seller_payout_amount_iat": float(seller_payout_amount or 0),
+        "commission_tx_signature": None,
+        "seller_payout_tx_signature": None,
+    }
+
+    if not onchain_enabled:
+        result["status"] = "dry_run_ready"
+        result["reason"] = "IAT_ENABLE_ONCHAIN_SETTLEMENT_not_enabled"
+        return result
+
+    if not escrow_key:
+        result["status"] = "blocked"
+        result["reason"] = "escrow_key_missing"
+        return result
+
+    if not treasury_wallet:
+        result["status"] = "blocked"
+        result["reason"] = "treasury_wallet_missing"
+        return result
+
+    if not winner_wallet:
+        result["status"] = "blocked"
+        result["reason"] = "winner_wallet_missing"
+        return result
+
+    try:
+        if float(commission_amount or 0) > 0:
+            result["commission_tx_signature"] = send_iat(
+                escrow_key,
+                treasury_wallet,
+                float(commission_amount),
+                memo_text=f"COMMISSION:{order_id}",
+            )
+
+        if float(seller_payout_amount or 0) > 0:
+            result["seller_payout_tx_signature"] = send_iat(
+                escrow_key,
+                winner_wallet,
+                float(seller_payout_amount),
+                memo_text=f"PAYOUT:{order_id}",
+            )
+
+        result["status"] = "sent"
+        result["reason"] = "escrow_split_release_executed"
+        return result
+
+    except Exception as exc:
+        result["status"] = "error"
+        result["error"] = str(exc)
+        return result
+
+
+
 def payout_winner_if_escrow(order, best, agents):
     """
     Settlement safety layer.
@@ -4615,10 +4688,28 @@ def payout_winner_if_escrow(order, best, agents):
         settlement["reason"] = "escrow_signing_key_not_configured"
         return settlement
 
-    # On-chain payout will be enabled in a controlled follow-up.
-    # For now, this path remains explicit and safe.
-    settlement["winner_payment_status"] = "ready_for_onchain_release"
-    settlement["reason"] = "escrow_ready_but_onchain_release_not_enabled_in_v1"
+    treasury_wallet = os.getenv("IAT_PROTOCOL_TREASURY_WALLET")
+
+    settlement_execution = execute_escrow_split_release(
+        escrow_key=escrow_key,
+        treasury_wallet=treasury_wallet,
+        winner_wallet=winner_wallet,
+        commission_amount=protocol_commission_amount,
+        seller_payout_amount=seller_payout_amount,
+        order_id=order_id,
+    )
+
+    settlement["settlement_execution"] = settlement_execution
+
+    if settlement_execution.get("status") == "sent":
+        settlement["winner_payment_status"] = "released_onchain"
+        settlement["reason"] = "escrow_split_release_sent"
+    elif settlement_execution.get("status") == "dry_run_ready":
+        settlement["winner_payment_status"] = "ready_for_onchain_release_dry_run"
+        settlement["reason"] = "onchain_settlement_disabled_dry_run"
+    else:
+        settlement["winner_payment_status"] = "blocked_or_failed_onchain_release"
+        settlement["reason"] = settlement_execution.get("reason") or settlement_execution.get("error")
 
     return settlement
 

@@ -4961,6 +4961,29 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
 
 
 
+
+@app.get("/admin/settlements")
+def admin_list_settlements(
+    limit: int = 20,
+    request: Request = None,
+):
+    expected_key = os.getenv("IAT_ADMIN_API_KEY")
+    provided_key = request.headers.get("x-api-key") if request else None
+
+    if expected_key and provided_key != expected_key:
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return {
+        "status": "ok",
+        "count": len(list_settlements_db(limit)),
+        "settlements": list_settlements_db(limit),
+    }
+
+
+
 @app.post("/admin/test-settlement-safety")
 def admin_test_settlement_safety(request: Request):
     expected_key = os.getenv("IAT_ADMIN_API_KEY")

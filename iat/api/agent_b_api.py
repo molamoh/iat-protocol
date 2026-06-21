@@ -4511,6 +4511,119 @@ def execute_onchain_slash(agent_id, amount, order_id):
         }
 
 
+
+def payout_winner_if_escrow(order, best, agents):
+    """
+    Settlement safety layer.
+
+    Current role:
+    - prevent payout path from crashing
+    - centralize escrow payout decision
+    - prepare protocol commission / treasury split
+
+    This function does NOT release funds unless escrow signing credentials
+    are explicitly configured.
+    """
+    order = order or {}
+    best = best or {}
+    agents = agents or []
+
+    winner_id = best.get("agent_id")
+    order_id = order.get("order_id")
+    amount = float(order.get("price", 0) or 0)
+
+    escrow_wallet = os.getenv("IAT_ESCROW_WALLET")
+    escrow_key = (
+        os.getenv("IAT_ESCROW_KEYPAIR_JSON")
+        or os.getenv("IAT_ESCROW_KEYPAIR_PATH")
+    )
+
+    protocol_commission_rate = float(
+        os.getenv("IAT_PROTOCOL_COMMISSION_RATE", "0.10")
+    )
+
+    protocol_commission_rate = min(
+        max(protocol_commission_rate, 0.0),
+        0.50,
+    )
+
+    protocol_commission_amount = round(
+        amount * protocol_commission_rate,
+        6,
+    )
+
+    seller_payout_amount = round(
+        max(amount - protocol_commission_amount, 0.0),
+        6,
+    )
+
+    winner_agent = None
+
+    for agent in agents:
+        if agent.get("agent_id") == winner_id:
+            winner_agent = agent
+            break
+
+    winner_wallet = (
+        (winner_agent or {}).get("wallet")
+        or best.get("wallet")
+    )
+
+    settlement = {
+        "settlement_type": "escrow_winner_payout",
+        "winner_payment_status": "pending_escrow_release",
+        "order_id": order_id,
+        "winner_id": winner_id,
+        "winner_wallet": winner_wallet,
+        "gross_amount_iat": amount,
+        "protocol_commission_rate": protocol_commission_rate,
+        "protocol_commission_amount_iat": protocol_commission_amount,
+        "seller_payout_amount_iat": seller_payout_amount,
+        "escrow_wallet_configured": bool(escrow_wallet),
+        "escrow_signing_configured": bool(escrow_key),
+        "protocol_treasury_wallet": os.getenv("IAT_PROTOCOL_TREASURY_WALLET"),
+        "release_policy": {
+            "seller_cannot_self_release": True,
+            "protocol_controls_release": True,
+            "release_requires_consensus_passed": True,
+            "release_requires_foundation_delivery": True,
+        },
+    }
+
+    if not winner_id:
+        settlement["winner_payment_status"] = "blocked_no_winner"
+        settlement["reason"] = "winner_agent_missing"
+        return settlement
+
+    if not winner_wallet:
+        settlement["winner_payment_status"] = "blocked_no_winner_wallet"
+        settlement["reason"] = "winner_wallet_missing"
+        return settlement
+
+    if amount <= 0:
+        settlement["winner_payment_status"] = "no_payment_due"
+        settlement["reason"] = "zero_amount_order"
+        return settlement
+
+    if not escrow_wallet:
+        settlement["winner_payment_status"] = "direct_payment_mode_no_escrow_release"
+        settlement["reason"] = "escrow_wallet_not_configured"
+        return settlement
+
+    if not escrow_key:
+        settlement["winner_payment_status"] = "pending_manual_escrow_release"
+        settlement["reason"] = "escrow_signing_key_not_configured"
+        return settlement
+
+    # On-chain payout will be enabled in a controlled follow-up.
+    # For now, this path remains explicit and safe.
+    settlement["winner_payment_status"] = "ready_for_onchain_release"
+    settlement["reason"] = "escrow_ready_but_onchain_release_not_enabled_in_v1"
+
+    return settlement
+
+
+
 @app.post("/verify-payment-multicall")
 @app.post("/verify-payment")
 def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = Header(default=None)):

@@ -49,6 +49,8 @@ from iat.api.db import (
     update_order_delivered_db,
     record_settlement_db,
     list_settlements_db,
+    update_settlement_status_db,
+    validate_settlement_transition,
     is_tx_processed_db,
     save_processed_tx_db,
     get_stats_db,
@@ -4587,6 +4589,49 @@ def execute_escrow_split_release(
 
 
 
+
+def authorize_settlement_release(order_id):
+    foundation_decision_result = run_foundation_decision_db(order_id)
+
+    fd = (
+        foundation_decision_result.get("foundation_decision", {})
+        if isinstance(foundation_decision_result, dict)
+        else {}
+    )
+
+    verdict = fd.get("foundation_verdict")
+    confidence = float(fd.get("decision_confidence", 0) or 0)
+
+    signals = fd.get("foundation_verification_signals") or {}
+    verified_count = len(signals.get("verified_claims") or [])
+    rejected_count = len(signals.get("rejected_claims") or [])
+
+    release_authorized = (
+        verdict == "foundation_verified_with_evidence"
+        and confidence >= 0.70
+        and verified_count > 0
+        and rejected_count == 0
+    )
+
+    return {
+        "authorization_type": "foundation_settlement_authorization",
+        "release_authorized": bool(release_authorized),
+        "authorized_by": "foundation" if release_authorized else None,
+        "authorization_reason": (
+            "foundation_verified_with_sufficient_confidence"
+            if release_authorized
+            else "foundation_authorization_requirements_not_met"
+        ),
+        "order_id": order_id,
+        "foundation_verdict": verdict,
+        "decision_confidence": confidence,
+        "verified_claim_count": verified_count,
+        "rejected_claim_count": rejected_count,
+        "foundation_decision": foundation_decision_result,
+    }
+
+
+
 def payout_winner_if_escrow(order, best, agents):
     """
     Settlement safety layer.
@@ -4697,6 +4742,17 @@ def payout_winner_if_escrow(order, best, agents):
     if not escrow_key:
         settlement["winner_payment_status"] = "pending_manual_escrow_release"
         settlement["reason"] = "escrow_signing_key_not_configured"
+        return finalize_settlement(settlement)
+
+    settlement_authorization = authorize_settlement_release(order_id)
+    settlement["settlement_authorization"] = settlement_authorization
+
+    if settlement_authorization.get("release_authorized") is not True:
+        settlement["winner_payment_status"] = "blocked_foundation_authorization"
+        settlement["reason"] = settlement_authorization.get(
+            "authorization_reason",
+            "foundation_authorization_failed",
+        )
         return finalize_settlement(settlement)
 
     treasury_wallet = os.getenv("IAT_PROTOCOL_TREASURY_WALLET")
@@ -4959,6 +5015,60 @@ def verify_payment_multicall(req: VerifyPaymentRequest, x_api_key: str | None = 
 
 
 
+
+
+
+
+class AdminSettlementStatusUpdateRequest(BaseModel):
+    settlement_id: str
+    next_status: str
+    reason: str = "admin_transition_test"
+    commission_tx_signature: str | None = None
+    seller_payout_tx_signature: str | None = None
+
+
+@app.post("/admin/settlement/update-status")
+def admin_update_settlement_status(
+    req: AdminSettlementStatusUpdateRequest,
+    request: Request,
+):
+    expected_key = os.getenv("IAT_ADMIN_API_KEY")
+    provided_key = request.headers.get("x-api-key")
+
+    if expected_key and provided_key != expected_key:
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return update_settlement_status_db(
+        settlement_id=req.settlement_id,
+        next_status=req.next_status,
+        reason=req.reason,
+        commission_tx_signature=req.commission_tx_signature,
+        seller_payout_tx_signature=req.seller_payout_tx_signature,
+    )
+
+
+@app.get("/admin/settlement/validate-transition")
+def admin_validate_settlement_transition(
+    current_status: str,
+    next_status: str,
+    request: Request,
+):
+    expected_key = os.getenv("IAT_ADMIN_API_KEY")
+    provided_key = request.headers.get("x-api-key")
+
+    if expected_key and provided_key != expected_key:
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return validate_settlement_transition(
+        current_status,
+        next_status,
+    )
 
 
 

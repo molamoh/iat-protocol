@@ -9391,6 +9391,145 @@ def record_settlement_db(order_id, settlement):
     }
 
 
+
+SETTLEMENT_ALLOWED_TRANSITIONS = {
+    "created": [
+        "authorized",
+        "blocked",
+        "dry_run_ready",
+        "direct_payment_mode_no_escrow_release",
+    ],
+    "dry_run_ready": [
+        "authorized",
+        "ready_for_release",
+        "blocked",
+    ],
+    "authorized": [
+        "ready_for_release",
+        "blocked",
+    ],
+    "ready_for_release": [
+        "release_submitted",
+        "blocked",
+    ],
+    "release_submitted": [
+        "release_confirmed",
+        "release_failed",
+    ],
+    "release_confirmed": [
+        "settled",
+    ],
+    "release_failed": [
+        "blocked",
+        "ready_for_release",
+    ],
+    "blocked": [
+        "authorized",
+    ],
+    "direct_payment_mode_no_escrow_release": [
+        "blocked",
+    ],
+    "settled": [],
+}
+
+
+def validate_settlement_transition(current_status, next_status):
+    current_status = str(current_status or "created")
+    next_status = str(next_status or "")
+
+    allowed = SETTLEMENT_ALLOWED_TRANSITIONS.get(current_status, [])
+
+    return {
+        "status": "ok" if next_status in allowed else "rejected",
+        "current_status": current_status,
+        "next_status": next_status,
+        "allowed_next_statuses": allowed,
+        "transition_allowed": next_status in allowed,
+    }
+
+
+def update_settlement_status_db(
+    settlement_id,
+    next_status,
+    reason="manual_update",
+    commission_tx_signature=None,
+    seller_payout_tx_signature=None,
+):
+    if not settlement_id or not next_status:
+        return {
+            "status": "error",
+            "message": "settlement_id_and_next_status_required",
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM settlements
+    WHERE settlement_id = {p}
+    """, (
+        settlement_id,
+    ))
+
+    row = cur.fetchone()
+
+    if not row:
+        release_conn(conn)
+        return {
+            "status": "not_found",
+            "settlement_id": settlement_id,
+        }
+
+    item = dict(row)
+    current_status = item.get("settlement_status") or "created"
+
+    transition = validate_settlement_transition(
+        current_status,
+        next_status,
+    )
+
+    if not transition.get("transition_allowed"):
+        release_conn(conn)
+        return {
+            "status": "transition_rejected",
+            "settlement_id": settlement_id,
+            "transition": transition,
+            "reason": reason,
+        }
+
+    now = int(time.time())
+
+    cur.execute(f"""
+    UPDATE settlements
+    SET settlement_status = {p},
+        commission_tx_signature = COALESCE({p}, commission_tx_signature),
+        seller_payout_tx_signature = COALESCE({p}, seller_payout_tx_signature),
+        updated_at = {p}
+    WHERE settlement_id = {p}
+    """, (
+        next_status,
+        commission_tx_signature,
+        seller_payout_tx_signature,
+        now,
+        settlement_id,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "settlement_status_updated",
+        "settlement_id": settlement_id,
+        "previous_status": current_status,
+        "next_status": next_status,
+        "transition": transition,
+        "reason": reason,
+    }
+
+
+
 def list_settlements_db(limit=100):
     conn = get_conn()
     cur = conn.cursor()

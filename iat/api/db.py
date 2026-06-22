@@ -9273,9 +9273,58 @@ def init_settlements_table():
     release_conn(conn)
 
 
+
+def get_settlement_by_order_id_db(order_id):
+    if not order_id:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM settlements
+    WHERE order_id = {p}
+    ORDER BY created_at DESC
+    LIMIT 1
+    """, (
+        order_id,
+    ))
+
+    row = cur.fetchone()
+    release_conn(conn)
+
+    if not row:
+        return None
+
+    item = dict(row)
+
+    try:
+        item["settlement_payload"] = json.loads(
+            item.get("settlement_payload") or "{}"
+        )
+    except Exception:
+        pass
+
+    return item
+
+
+
 def record_settlement_db(order_id, settlement):
     if not order_id or not isinstance(settlement, dict):
         return None
+
+    existing = get_settlement_by_order_id_db(order_id)
+
+    if existing:
+        return {
+            "status": "settlement_already_recorded",
+            "settlement_id": existing.get("settlement_id"),
+            "order_id": order_id,
+            "existing_settlement": existing,
+            "idempotent": True,
+        }
 
     settlement_execution = settlement.get("settlement_execution") or {}
     now = int(time.time())

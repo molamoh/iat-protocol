@@ -9217,6 +9217,13 @@ def internal_runtime_heartbeat_scan(
 def runtime_heartbeat_governance_loop():
     while True:
         try:
+            if str(os.getenv("IAT_ENABLE_AUTONOMOUS_SETTLEMENT_ORCHESTRATOR", "false")).lower() == "true":
+                try:
+                    settlement_run = run_settlement_orchestrator_once_db(limit=50)
+                    print("[IAT_AUTONOMOUS_SETTLEMENT_ORCHESTRATOR]", settlement_run)
+                except Exception as settlement_error:
+                    print("[IAT_AUTONOMOUS_SETTLEMENT_ORCHESTRATOR_ERROR]", str(settlement_error))
+
             agents = list_runtime_monitored_seller_agents_db()
 
             for agent in agents:

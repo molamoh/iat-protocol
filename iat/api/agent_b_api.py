@@ -14,6 +14,7 @@ from iat.transfer import send_iat
 from iat.onchain import (
     verify_tx_signature,
     get_tx_details,
+    get_iat_balance,
     extract_transfer_checked_info,
     extract_memo,
 )
@@ -4518,6 +4519,108 @@ def execute_onchain_slash(agent_id, amount, order_id):
 
 
 
+
+def safe_send_iat(
+    from_keypair,
+    to_wallet,
+    amount,
+    memo_text,
+    sender_wallet=None,
+):
+    """
+    Protocol-safe IAT transfer wrapper.
+
+    This is the financial safety layer above raw send_iat().
+    It validates inputs, checks balance when possible, sends the tx,
+    verifies that the signature exists on-chain, and always returns
+    a structured result.
+    """
+    result = {
+        "status": "created",
+        "to_wallet": to_wallet,
+        "amount_iat": float(amount or 0),
+        "memo_text": memo_text,
+        "sender_wallet": sender_wallet,
+        "tx_signature": None,
+        "verified_onchain": False,
+        "error": None,
+    }
+
+    try:
+        if not from_keypair:
+            result["status"] = "blocked"
+            result["reason"] = "from_keypair_missing"
+            return result
+
+        if not to_wallet:
+            result["status"] = "blocked"
+            result["reason"] = "recipient_wallet_missing"
+            return result
+
+        try:
+            Pubkey.from_string(str(to_wallet))
+        except Exception:
+            result["status"] = "blocked"
+            result["reason"] = "recipient_wallet_invalid"
+            return result
+
+        amount = float(amount or 0)
+
+        if amount <= 0:
+            result["status"] = "blocked"
+            result["reason"] = "amount_must_be_positive"
+            return result
+
+        if sender_wallet:
+            try:
+                balance = get_iat_balance(sender_wallet)
+                result["sender_balance_iat"] = balance
+
+                if balance is not None and float(balance) < amount:
+                    result["status"] = "blocked"
+                    result["reason"] = "insufficient_sender_iat_balance"
+                    return result
+            except Exception as balance_error:
+                result["balance_check_error"] = str(balance_error)
+
+        tx_signature = send_iat(
+            from_keypair,
+            to_wallet,
+            amount,
+            memo_text=memo_text,
+        )
+
+        result["tx_signature"] = tx_signature
+
+        if not tx_signature:
+            result["status"] = "error"
+            result["reason"] = "send_iat_returned_empty_signature"
+            return result
+
+        # Give RPC a short moment to index transaction.
+        time.sleep(2)
+
+        verified = verify_tx_signature(tx_signature)
+
+        result["verified_onchain"] = bool(verified)
+
+        if verified:
+            result["status"] = "sent_verified"
+            result["reason"] = "transaction_sent_and_verified"
+        else:
+            result["status"] = "sent_unverified"
+            result["reason"] = "transaction_sent_but_not_yet_verified"
+
+        return result
+
+    except Exception as exc:
+        result["status"] = "error"
+        result["error"] = str(exc)
+        result["reason"] = "safe_send_iat_exception"
+        return result
+
+
+
 def execute_escrow_split_release(
     escrow_key,
     treasury_wallet,
@@ -4564,20 +4667,49 @@ def execute_escrow_split_release(
 
     try:
         if float(commission_amount or 0) > 0:
-            result["commission_tx_signature"] = send_iat(
+            commission_result = safe_send_iat(
                 escrow_key,
                 treasury_wallet,
                 float(commission_amount),
                 memo_text=f"COMMISSION:{order_id}",
+                sender_wallet=os.getenv("IAT_ESCROW_WALLET"),
             )
 
+            result["commission_transfer"] = commission_result
+            result["commission_tx_signature"] = commission_result.get("tx_signature")
+
         if float(seller_payout_amount or 0) > 0:
-            result["seller_payout_tx_signature"] = send_iat(
+            seller_result = safe_send_iat(
                 escrow_key,
                 winner_wallet,
                 float(seller_payout_amount),
                 memo_text=f"PAYOUT:{order_id}",
+                sender_wallet=os.getenv("IAT_ESCROW_WALLET"),
             )
+
+            result["seller_transfer"] = seller_result
+            result["seller_payout_tx_signature"] = seller_result.get("tx_signature")
+
+        commission_ok = (
+            float(commission_amount or 0) <= 0
+            or (
+                result.get("commission_transfer", {}).get("status")
+                in ["sent_verified", "sent_unverified"]
+            )
+        )
+
+        seller_ok = (
+            float(seller_payout_amount or 0) <= 0
+            or (
+                result.get("seller_transfer", {}).get("status")
+                in ["sent_verified", "sent_unverified"]
+            )
+        )
+
+        if not commission_ok or not seller_ok:
+            result["status"] = "partial_failure"
+            result["reason"] = "one_or_more_transfers_failed"
+            return result
 
         result["status"] = "sent"
         result["reason"] = "escrow_split_release_executed"

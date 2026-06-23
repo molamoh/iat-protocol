@@ -51,6 +51,7 @@ from iat.api.db import (
     list_settlements_db,
     update_settlement_status_db,
     validate_settlement_transition,
+    run_settlement_orchestrator_once_db,
     is_tx_processed_db,
     save_processed_tx_db,
     get_stats_db,
@@ -5068,6 +5069,27 @@ def admin_validate_settlement_transition(
     return validate_settlement_transition(
         current_status,
         next_status,
+    )
+
+
+
+
+@app.post("/admin/settlement/orchestrator/run-once")
+def admin_run_settlement_orchestrator_once(
+    limit: int = 50,
+    request: Request = None,
+):
+    expected_key = os.getenv("IAT_ADMIN_API_KEY")
+    provided_key = request.headers.get("x-api-key") if request else None
+
+    if expected_key and provided_key != expected_key:
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    return run_settlement_orchestrator_once_db(
+        limit=limit,
     )
 
 

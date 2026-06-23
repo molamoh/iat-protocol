@@ -9530,6 +9530,175 @@ def update_settlement_status_db(
 
 
 
+
+def run_settlement_orchestrator_once_db(limit=50):
+    """
+    Autonomous Settlement Orchestrator v1.
+
+    Goal:
+    - Move settlements through the safe financial state machine.
+    - Never skip required states.
+    - Never mark on-chain settlement as confirmed without signatures.
+    - Never touch settled records.
+    """
+    settlements = list_settlements_db(limit=limit)
+    actions = []
+
+    for settlement in settlements:
+        settlement_id = settlement.get("settlement_id")
+        order_id = settlement.get("order_id")
+        current_status = settlement.get("settlement_status") or "created"
+
+        action = {
+            "settlement_id": settlement_id,
+            "order_id": order_id,
+            "current_status": current_status,
+            "action_taken": None,
+            "reason": None,
+        }
+
+        if current_status == "settled":
+            action["action_taken"] = "skipped"
+            action["reason"] = "already_settled_final_state"
+            actions.append(action)
+            continue
+
+        if current_status in [
+            "direct_payment_mode_no_escrow_release",
+            "blocked",
+        ]:
+            action["action_taken"] = "skipped"
+            action["reason"] = "non_autonomous_state_requires_manual_or_foundation_review"
+            actions.append(action)
+            continue
+
+        payload = settlement.get("settlement_payload") or {}
+        execution = payload.get("settlement_execution") or {}
+
+        onchain_enabled = bool(
+            execution.get("onchain_settlement_enabled")
+        )
+
+        commission_tx = (
+            settlement.get("commission_tx_signature")
+            or execution.get("commission_tx_signature")
+        )
+
+        payout_tx = (
+            settlement.get("seller_payout_tx_signature")
+            or execution.get("seller_payout_tx_signature")
+        )
+
+        # State: dry-run result exists. If the record has a valid dry-run,
+        # move it to ready_for_release. Real on-chain execution remains gated
+        # by IAT_ENABLE_ONCHAIN_SETTLEMENT and future release executor.
+        if current_status == "dry_run_ready":
+            result = update_settlement_status_db(
+                settlement_id=settlement_id,
+                next_status="ready_for_release",
+                reason="autonomous_orchestrator_dry_run_ready_to_release_ready",
+            )
+
+            action["action_taken"] = "transition_attempted"
+            action["target_status"] = "ready_for_release"
+            action["result"] = result
+            actions.append(action)
+            continue
+
+        # State: authorized. Move to ready_for_release.
+        if current_status == "authorized":
+            result = update_settlement_status_db(
+                settlement_id=settlement_id,
+                next_status="ready_for_release",
+                reason="autonomous_orchestrator_authorized_to_ready",
+            )
+
+            action["action_taken"] = "transition_attempted"
+            action["target_status"] = "ready_for_release"
+            action["result"] = result
+            actions.append(action)
+            continue
+
+        # State: ready_for_release.
+        # If onchain is disabled, keep it there safely.
+        # If onchain is enabled but no tx signatures exist yet, wait for release executor.
+        # If tx signatures exist, move to release_submitted.
+        if current_status == "ready_for_release":
+            if not onchain_enabled:
+                action["action_taken"] = "waiting"
+                action["reason"] = "onchain_settlement_disabled_waiting_for_enable"
+                actions.append(action)
+                continue
+
+            if commission_tx and payout_tx:
+                result = update_settlement_status_db(
+                    settlement_id=settlement_id,
+                    next_status="release_submitted",
+                    reason="autonomous_orchestrator_tx_signatures_detected",
+                    commission_tx_signature=commission_tx,
+                    seller_payout_tx_signature=payout_tx,
+                )
+
+                action["action_taken"] = "transition_attempted"
+                action["target_status"] = "release_submitted"
+                action["result"] = result
+                actions.append(action)
+                continue
+
+            action["action_taken"] = "waiting"
+            action["reason"] = "onchain_enabled_but_release_tx_missing"
+            actions.append(action)
+            continue
+
+        # State: release_submitted.
+        # V1 only confirms if both tx signatures are present.
+        if current_status == "release_submitted":
+            if commission_tx and payout_tx:
+                result = update_settlement_status_db(
+                    settlement_id=settlement_id,
+                    next_status="release_confirmed",
+                    reason="autonomous_orchestrator_release_signatures_present",
+                )
+
+                action["action_taken"] = "transition_attempted"
+                action["target_status"] = "release_confirmed"
+                action["result"] = result
+                actions.append(action)
+                continue
+
+            action["action_taken"] = "waiting"
+            action["reason"] = "release_submitted_waiting_for_tx_signatures"
+            actions.append(action)
+            continue
+
+        # State: release_confirmed.
+        # Move to final settled state.
+        if current_status == "release_confirmed":
+            result = update_settlement_status_db(
+                settlement_id=settlement_id,
+                next_status="settled",
+                reason="autonomous_orchestrator_release_confirmed_to_settled",
+            )
+
+            action["action_taken"] = "transition_attempted"
+            action["target_status"] = "settled"
+            action["result"] = result
+            actions.append(action)
+            continue
+
+        action["action_taken"] = "skipped"
+        action["reason"] = "state_not_supported_by_orchestrator_v1"
+        actions.append(action)
+
+    return {
+        "status": "ok",
+        "orchestrator": "autonomous_settlement_orchestrator_v1",
+        "processed_count": len(actions),
+        "actions": actions,
+    }
+
+
+
 def list_settlements_db(limit=100):
     conn = get_conn()
     cur = conn.cursor()

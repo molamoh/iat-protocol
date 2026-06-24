@@ -16083,12 +16083,32 @@ def run_foundation_decision_db(order_id):
         and verified_count > 0
     )
 
+    foundation_ready_for_partial_positive_decision = (
+        isinstance(foundation_evidence_evaluation, dict)
+        and foundation_evidence_evaluation.get("foundation_decision_ready") is True
+        and verification_signals.get("source_quality") == "high"
+        and verified_count > 0
+        and rejected_count == 0
+        and uncertain_count > verified_count
+    )
+
     if foundation_ready_for_positive_decision:
         foundation_verdict = "foundation_verified_with_evidence"
         decision_reason = "verified_claims_supported_by_foundation_evidence"
         decision_confidence = max(
             float(decision_confidence),
             float(verification_signals.get("final_confidence") or 0.0),
+        )
+
+    elif foundation_ready_for_partial_positive_decision:
+        foundation_verdict = "foundation_verified_partial_evidence"
+        decision_reason = "partial_verified_claims_no_rejections"
+        decision_confidence = max(
+            float(decision_confidence),
+            min(
+                0.65,
+                float(verification_signals.get("final_confidence") or 0.0),
+            ),
         )
 
     if verification_signals.get("final_confidence") is not None:
@@ -16115,7 +16135,11 @@ def run_foundation_decision_db(order_id):
         foundation_verdict = "foundation_verification_rejected_claims"
         decision_confidence = min(float(decision_confidence), 0.35)
         decision_reason = "verification_rejected_claims_present"
-    elif uncertain_count > verified_count and uncertain_count > 0:
+    elif (
+        uncertain_count > verified_count
+        and uncertain_count > 0
+        and foundation_verdict != "foundation_verified_partial_evidence"
+    ):
         foundation_verdict = "foundation_verification_uncertain"
         decision_confidence = min(float(decision_confidence), 0.50)
         decision_reason = "verification_uncertain_claims_exceed_verified_claims"

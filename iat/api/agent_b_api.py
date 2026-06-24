@@ -4776,9 +4776,25 @@ def authorize_settlement_release(order_id):
         4,
     )
 
+    release_cap = float(decision_confidence or 0)
+
+    if (
+        verdict == "foundation_verified_with_evidence"
+        and verified_count >= 5
+        and rejected_count == 0
+    ):
+        release_cap = max(release_cap, 0.80)
+
+    elif (
+        verdict == "foundation_verified_partial_evidence"
+        and verified_count >= 3
+        and rejected_count == 0
+    ):
+        release_cap = max(release_cap, 0.68)
+
     financial_release_confidence_ceiling = round(
         min(
-            decision_confidence,
+            release_cap,
             verification_confidence,
         ),
         4,
@@ -4813,6 +4829,7 @@ def authorize_settlement_release(order_id):
         "decision_confidence": decision_confidence,
         "verification_confidence": verification_confidence,
         "financial_release_confidence_raw": financial_release_confidence_raw,
+        "release_cap": release_cap,
         "financial_release_confidence_ceiling": financial_release_confidence_ceiling,
         "financial_release_confidence": financial_release_confidence,
         "verified_claim_count": verified_count,

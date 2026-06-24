@@ -12974,15 +12974,62 @@ def evaluate_foundation_evidence_package_db(evidence_package):
 
     confidence_cap = round(min(max(confidence_cap, 0.0), 0.90), 4)
 
+    best_verification = (
+        evidence_package.get("best_verification_result") or {}
+    )
+
+    best_verification_data = (
+        best_verification.get("data") or {}
+    )
+
+    best_verification_metrics = (
+        best_verification_data.get("metrics") or {}
+    )
+
+    verified_claim_count = int(
+        best_verification.get("verified_claim_count")
+        or best_verification_data.get("verified_claim_count")
+        or best_verification_metrics.get("verified_claim_count")
+        or 0
+    )
+
+    rejected_claim_count = int(
+        best_verification.get("rejected_claim_count")
+        or best_verification_data.get("rejected_claim_count")
+        or best_verification_metrics.get("rejected_claim_count")
+        or 0
+    )
+
+    claim_validation_status = "failed"
+
+    if (
+        verified_claim_count > 0
+        and rejected_claim_count == 0
+    ):
+        claim_validation_status = "passed"
+
     if not ready:
         foundation_evidence_status = "not_ready"
         decision_ready = False
     elif research_status == "failed":
         foundation_evidence_status = "research_failed"
         decision_ready = False
-    elif verification_status == "failed":
+    elif (
+        verification_status == "failed"
+        and claim_validation_status != "passed"
+    ):
         foundation_evidence_status = "verification_failed"
         decision_ready = False
+
+    elif (
+        verification_status == "failed"
+        and claim_validation_status == "passed"
+    ):
+        foundation_evidence_status = "decision_ready_with_caution"
+        decision_ready = True
+        warnings.append(
+            "verification_consensus_failed_but_claims_verified"
+        )
     elif verification_status == "single_agent_review" and research_status == "passed":
         foundation_evidence_status = "decision_ready_with_single_verification"
         decision_ready = True

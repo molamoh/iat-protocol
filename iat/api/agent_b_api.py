@@ -4771,8 +4771,24 @@ def authorize_settlement_release(order_id):
     elif uncertain_count <= max(1, verified_count // 5):
         evidence_strength_bonus += 0.01
 
-    financial_release_confidence = round(
+    financial_release_confidence_raw = round(
         min(financial_release_confidence + evidence_strength_bonus, 1.0),
+        4,
+    )
+
+    financial_release_confidence_ceiling = round(
+        min(
+            decision_confidence,
+            verification_confidence,
+        ),
+        4,
+    )
+
+    financial_release_confidence = round(
+        min(
+            financial_release_confidence_raw,
+            financial_release_confidence_ceiling,
+        ),
         4,
     )
 
@@ -4796,6 +4812,8 @@ def authorize_settlement_release(order_id):
         "foundation_verdict": verdict,
         "decision_confidence": decision_confidence,
         "verification_confidence": verification_confidence,
+        "financial_release_confidence_raw": financial_release_confidence_raw,
+        "financial_release_confidence_ceiling": financial_release_confidence_ceiling,
         "financial_release_confidence": financial_release_confidence,
         "verified_claim_count": verified_count,
         "rejected_claim_count": rejected_count,

@@ -4733,15 +4733,52 @@ def authorize_settlement_release(order_id):
     )
 
     verdict = fd.get("foundation_verdict")
-    confidence = float(fd.get("decision_confidence", 0) or 0)
+    decision_confidence = float(fd.get("decision_confidence", 0) or 0)
 
     signals = fd.get("foundation_verification_signals") or {}
     verified_count = len(signals.get("verified_claims") or [])
     rejected_count = len(signals.get("rejected_claims") or [])
+    uncertain_count = len(signals.get("uncertain_claims") or [])
+
+    try:
+        verification_confidence = float(
+            signals.get("final_confidence")
+            if signals.get("final_confidence") is not None
+            else decision_confidence
+        )
+    except Exception:
+        verification_confidence = decision_confidence
+
+    financial_release_confidence = round(
+        min(
+            max(
+                (decision_confidence * 0.40)
+                + (verification_confidence * 0.60),
+                0.0,
+            ),
+            1.0,
+        ),
+        4,
+    )
+
+    evidence_strength_bonus = 0.0
+
+    if verified_count >= 5 and rejected_count == 0:
+        evidence_strength_bonus += 0.05
+
+    if uncertain_count == 0:
+        evidence_strength_bonus += 0.03
+    elif uncertain_count <= max(1, verified_count // 5):
+        evidence_strength_bonus += 0.01
+
+    financial_release_confidence = round(
+        min(financial_release_confidence + evidence_strength_bonus, 1.0),
+        4,
+    )
 
     release_authorized = (
         verdict == "foundation_verified_with_evidence"
-        and confidence >= 0.70
+        and financial_release_confidence >= 0.70
         and verified_count > 0
         and rejected_count == 0
     )
@@ -4757,9 +4794,12 @@ def authorize_settlement_release(order_id):
         ),
         "order_id": order_id,
         "foundation_verdict": verdict,
-        "decision_confidence": confidence,
+        "decision_confidence": decision_confidence,
+        "verification_confidence": verification_confidence,
+        "financial_release_confidence": financial_release_confidence,
         "verified_claim_count": verified_count,
         "rejected_claim_count": rejected_count,
+        "uncertain_claim_count": uncertain_count,
         "foundation_decision": foundation_decision_result,
     }
 

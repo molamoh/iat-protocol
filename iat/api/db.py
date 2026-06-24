@@ -12925,7 +12925,12 @@ def evaluate_foundation_evidence_package_db(evidence_package):
     verification_valid_agents = int(verification_consensus.get("valid_agents", 0) or 0)
 
     research_status = str(research_consensus.get("status") or "").lower()
-    verification_status = str(verification_consensus.get("status") or "").lower()
+
+    verification_consensus_status = str(
+        verification_consensus.get("status") or ""
+    ).lower()
+
+    verification_status = verification_consensus_status
 
     research_score = float(research_consensus.get("score", 0) or 0)
     verification_score = float(verification_consensus.get("score", 0) or 0)
@@ -13008,6 +13013,15 @@ def evaluate_foundation_evidence_package_db(evidence_package):
     ):
         claim_validation_status = "passed"
 
+    if (
+        claim_validation_status == "passed"
+        and verification_status == "failed"
+    ):
+        verification_status = "passed_with_consensus_warning"
+        warnings.append(
+            "verification_consensus_failed_but_evidence_passed"
+        )
+
     if not ready:
         foundation_evidence_status = "not_ready"
         decision_ready = False
@@ -13069,7 +13083,11 @@ def evaluate_foundation_evidence_package_db(evidence_package):
         "research_valid_agents": research_valid_agents,
         "research_score": research_score,
 
+        "verification_consensus_status": verification_consensus_status,
         "verification_status": verification_status,
+        "claim_validation_status": claim_validation_status,
+        "verified_claim_count": verified_claim_count,
+        "rejected_claim_count": rejected_claim_count,
         "verification_valid_agents": verification_valid_agents,
         "verification_score": verification_score,
 

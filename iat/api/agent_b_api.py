@@ -4935,6 +4935,28 @@ def payout_winner_if_escrow(order, best, agents):
     if not winner_wallet:
         settlement["winner_payment_status"] = "blocked_no_winner_wallet"
         settlement["reason"] = "winner_wallet_missing"
+        settlement["wallet_validation"] = {
+            "wallet": winner_wallet,
+            "valid": False,
+            "reason": "winner_wallet_missing",
+        }
+        return finalize_settlement(settlement)
+
+    try:
+        Pubkey.from_string(str(winner_wallet))
+        settlement["wallet_validation"] = {
+            "wallet": winner_wallet,
+            "valid": True,
+            "reason": "winner_wallet_valid",
+        }
+    except Exception:
+        settlement["winner_payment_status"] = "blocked_invalid_winner_wallet"
+        settlement["reason"] = "winner_wallet_invalid"
+        settlement["wallet_validation"] = {
+            "wallet": winner_wallet,
+            "valid": False,
+            "reason": "winner_wallet_invalid",
+        }
         return finalize_settlement(settlement)
 
     if amount <= 0:

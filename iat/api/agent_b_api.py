@@ -4852,6 +4852,7 @@ def authorize_settlement_release(order_id):
 
     financial_release_confidence_ceiling = round(
         min(
+            decision_confidence,
             release_cap,
             verification_confidence,
         ),

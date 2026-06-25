@@ -4520,6 +4520,64 @@ def execute_onchain_slash(agent_id, amount, order_id):
 
 
 
+def is_valid_solana_wallet(wallet):
+    if not wallet:
+        return False
+
+    try:
+        Pubkey.from_string(str(wallet))
+        return True
+    except Exception:
+        return False
+
+
+def resolve_payment_wallet(raw_wallet, agent=None):
+    """
+    Resolve a logical protocol wallet/id into a real payment wallet.
+
+    v1 rule:
+    - real Solana pubkeys are accepted directly
+    - logical identifiers like IAT_PROTOCOL_CORE are rejected unless explicitly
+      mapped through environment configuration
+    """
+    raw_wallet = str(raw_wallet or "").strip()
+
+    result = {
+        "raw_wallet": raw_wallet,
+        "resolved_wallet": None,
+        "valid": False,
+        "resolution_type": "unresolved",
+        "reason": None,
+    }
+
+    if not raw_wallet:
+        result["reason"] = "wallet_missing"
+        return result
+
+    if is_valid_solana_wallet(raw_wallet):
+        result["resolved_wallet"] = raw_wallet
+        result["valid"] = True
+        result["resolution_type"] = "direct_solana_wallet"
+        result["reason"] = "wallet_valid"
+        return result
+
+    protocol_core_wallet = os.getenv("IAT_PROTOCOL_CORE_PAYMENT_WALLET")
+
+    if (
+        raw_wallet == "IAT_PROTOCOL_CORE"
+        and protocol_core_wallet
+        and is_valid_solana_wallet(protocol_core_wallet)
+    ):
+        result["resolved_wallet"] = protocol_core_wallet
+        result["valid"] = True
+        result["resolution_type"] = "protocol_core_wallet_mapping"
+        result["reason"] = "logical_wallet_resolved"
+        return result
+
+    result["reason"] = "wallet_unresolved_or_invalid"
+    return result
+
+
 def safe_send_iat(
     from_keypair,
     to_wallet,
@@ -4942,22 +5000,23 @@ def payout_winner_if_escrow(order, best, agents):
         }
         return finalize_settlement(settlement)
 
-    try:
-        Pubkey.from_string(str(winner_wallet))
-        settlement["wallet_validation"] = {
-            "wallet": winner_wallet,
-            "valid": True,
-            "reason": "winner_wallet_valid",
-        }
-    except Exception:
+    wallet_resolution = resolve_payment_wallet(
+        winner_wallet,
+        agent=winner_agent,
+    )
+
+    settlement["wallet_validation"] = wallet_resolution
+
+    if wallet_resolution.get("valid") is not True:
         settlement["winner_payment_status"] = "blocked_invalid_winner_wallet"
-        settlement["reason"] = "winner_wallet_invalid"
-        settlement["wallet_validation"] = {
-            "wallet": winner_wallet,
-            "valid": False,
-            "reason": "winner_wallet_invalid",
-        }
+        settlement["reason"] = wallet_resolution.get(
+            "reason",
+            "winner_wallet_invalid",
+        )
         return finalize_settlement(settlement)
+
+    winner_wallet = wallet_resolution.get("resolved_wallet")
+    settlement["winner_wallet"] = winner_wallet
 
     if amount <= 0:
         settlement["winner_payment_status"] = "no_payment_due"

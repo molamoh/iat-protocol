@@ -4781,6 +4781,143 @@ def execute_escrow_split_release(
 
 
 
+def compute_financial_release_risk(
+    verdict,
+    decision_confidence,
+    verification_confidence,
+    verified_count,
+    rejected_count,
+    uncertain_count,
+):
+    risk_score = 50.0
+    risk_factors = []
+
+    if verdict == "foundation_verified_with_evidence":
+        risk_score -= 20
+    elif verdict == "foundation_verified_partial_evidence":
+        risk_score -= 10
+        risk_factors.append("partial_evidence")
+    else:
+        risk_score += 25
+        risk_factors.append("foundation_verdict_not_positive")
+
+    if rejected_count > 0:
+        risk_score += 40
+        risk_factors.append("rejected_claims_present")
+
+    if verified_count <= 0:
+        risk_score += 30
+        risk_factors.append("no_verified_claims")
+    elif verified_count >= 5:
+        risk_score -= 10
+
+    total_claims = max(
+        verified_count + rejected_count + uncertain_count,
+        1,
+    )
+
+    uncertain_ratio = float(uncertain_count or 0) / float(total_claims)
+
+    if uncertain_ratio >= 0.60:
+        risk_score += 20
+        risk_factors.append("high_uncertain_claim_ratio")
+    elif uncertain_ratio >= 0.40:
+        risk_score += 10
+        risk_factors.append("moderate_uncertain_claim_ratio")
+    elif uncertain_ratio <= 0.20:
+        risk_score -= 5
+
+    if decision_confidence < 0.50:
+        risk_score += 25
+        risk_factors.append("low_decision_confidence")
+    elif decision_confidence < 0.70:
+        risk_score += 10
+        risk_factors.append("moderate_decision_confidence")
+    else:
+        risk_score -= 10
+
+    if verification_confidence < 0.50:
+        risk_score += 20
+        risk_factors.append("low_verification_confidence")
+    elif verification_confidence >= 0.70:
+        risk_score -= 10
+
+    risk_score = round(
+        max(0.0, min(risk_score, 100.0)),
+        4,
+    )
+
+    if risk_score <= 20:
+        risk_level = "low"
+    elif risk_score <= 45:
+        risk_level = "medium"
+    elif risk_score <= 70:
+        risk_level = "high"
+    else:
+        risk_level = "critical"
+
+    return {
+        "risk_engine": "financial_release_risk_v1",
+        "release_risk_score": risk_score,
+        "release_risk_level": risk_level,
+        "release_risk_factors": risk_factors,
+        "uncertain_claim_ratio": round(uncertain_ratio, 4),
+    }
+
+
+def authorize_release_from_risk(
+    verdict,
+    financial_release_confidence,
+    verified_count,
+    rejected_count,
+    risk_result,
+):
+    risk_score = float(risk_result.get("release_risk_score", 100) or 100)
+    risk_level = risk_result.get("release_risk_level")
+
+    block_reasons = []
+
+    if verdict != "foundation_verified_with_evidence":
+        block_reasons.append("foundation_verdict_not_fully_verified")
+
+    if financial_release_confidence < 0.70:
+        block_reasons.append("financial_release_confidence_below_threshold")
+
+    if verified_count <= 0:
+        block_reasons.append("no_verified_claims")
+
+    if rejected_count > 0:
+        block_reasons.append("rejected_claims_present")
+
+    if risk_score > 20:
+        block_reasons.append("release_risk_score_above_low_threshold")
+
+    release_authorized = len(block_reasons) == 0
+
+    if release_authorized:
+        authorization_reason = "foundation_verified_low_risk_release_authorized"
+        authorization_mode = "authorized"
+    elif (
+        verdict == "foundation_verified_with_evidence"
+        and rejected_count == 0
+        and verified_count > 0
+        and risk_level == "medium"
+    ):
+        authorization_reason = "foundation_verified_but_requires_caution"
+        authorization_mode = "requires_caution"
+    else:
+        authorization_reason = "foundation_authorization_requirements_not_met"
+        authorization_mode = "blocked"
+
+    return {
+        "authority_engine": "settlement_authority_v2",
+        "release_authorized": bool(release_authorized),
+        "authorization_mode": authorization_mode,
+        "authorization_reason": authorization_reason,
+        "release_block_reasons": block_reasons,
+    }
+
+
 def authorize_settlement_release(order_id):
     foundation_decision_result = run_foundation_decision_db(order_id)
 
@@ -4867,22 +5004,33 @@ def authorize_settlement_release(order_id):
         4,
     )
 
-    release_authorized = (
-        verdict == "foundation_verified_with_evidence"
-        and financial_release_confidence >= 0.70
-        and verified_count > 0
-        and rejected_count == 0
+    financial_risk = compute_financial_release_risk(
+        verdict=verdict,
+        decision_confidence=decision_confidence,
+        verification_confidence=verification_confidence,
+        verified_count=verified_count,
+        rejected_count=rejected_count,
+        uncertain_count=uncertain_count,
     )
+
+    authority = authorize_release_from_risk(
+        verdict=verdict,
+        financial_release_confidence=financial_release_confidence,
+        verified_count=verified_count,
+        rejected_count=rejected_count,
+        risk_result=financial_risk,
+    )
+
+    release_authorized = authority.get("release_authorized") is True
 
     return {
         "authorization_type": "foundation_settlement_authorization",
         "release_authorized": bool(release_authorized),
         "authorized_by": "foundation" if release_authorized else None,
-        "authorization_reason": (
-            "foundation_verified_with_sufficient_confidence"
-            if release_authorized
-            else "foundation_authorization_requirements_not_met"
-        ),
+        "authorization_reason": authority.get("authorization_reason"),
+        "authorization_mode": authority.get("authorization_mode"),
+        "release_block_reasons": authority.get("release_block_reasons"),
+        "financial_risk": financial_risk,
         "order_id": order_id,
         "foundation_verdict": verdict,
         "decision_confidence": decision_confidence,

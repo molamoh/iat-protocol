@@ -4789,27 +4789,36 @@ def compute_financial_release_risk(
     rejected_count,
     uncertain_count,
 ):
-    risk_score = 50.0
+    base_risk = 50.0
     risk_factors = []
+    risk_breakdown = {
+        "base_risk": base_risk,
+        "verdict_component": 0.0,
+        "rejected_claims_component": 0.0,
+        "verified_claims_component": 0.0,
+        "uncertain_claims_component": 0.0,
+        "decision_confidence_component": 0.0,
+        "verification_confidence_component": 0.0,
+    }
 
     if verdict == "foundation_verified_with_evidence":
-        risk_score -= 20
+        risk_breakdown["verdict_component"] = -20.0
     elif verdict == "foundation_verified_partial_evidence":
-        risk_score -= 10
+        risk_breakdown["verdict_component"] = -10.0
         risk_factors.append("partial_evidence")
     else:
-        risk_score += 25
+        risk_breakdown["verdict_component"] = 25.0
         risk_factors.append("foundation_verdict_not_positive")
 
     if rejected_count > 0:
-        risk_score += 40
+        risk_breakdown["rejected_claims_component"] = 40.0
         risk_factors.append("rejected_claims_present")
 
     if verified_count <= 0:
-        risk_score += 30
+        risk_breakdown["verified_claims_component"] = 30.0
         risk_factors.append("no_verified_claims")
     elif verified_count >= 5:
-        risk_score -= 10
+        risk_breakdown["verified_claims_component"] = -10.0
 
     total_claims = max(
         verified_count + rejected_count + uncertain_count,
@@ -4819,31 +4828,36 @@ def compute_financial_release_risk(
     uncertain_ratio = float(uncertain_count or 0) / float(total_claims)
 
     if uncertain_ratio >= 0.60:
-        risk_score += 20
+        risk_breakdown["uncertain_claims_component"] = 20.0
         risk_factors.append("high_uncertain_claim_ratio")
     elif uncertain_ratio >= 0.40:
-        risk_score += 10
+        risk_breakdown["uncertain_claims_component"] = 10.0
         risk_factors.append("moderate_uncertain_claim_ratio")
     elif uncertain_ratio <= 0.20:
-        risk_score -= 5
+        risk_breakdown["uncertain_claims_component"] = -5.0
 
     if decision_confidence < 0.50:
-        risk_score += 25
+        risk_breakdown["decision_confidence_component"] = 25.0
         risk_factors.append("low_decision_confidence")
     elif decision_confidence < 0.70:
-        risk_score += 10
+        risk_breakdown["decision_confidence_component"] = 10.0
         risk_factors.append("moderate_decision_confidence")
     else:
-        risk_score -= 10
+        risk_breakdown["decision_confidence_component"] = -10.0
 
     if verification_confidence < 0.50:
-        risk_score += 20
+        risk_breakdown["verification_confidence_component"] = 20.0
         risk_factors.append("low_verification_confidence")
     elif verification_confidence >= 0.70:
-        risk_score -= 10
+        risk_breakdown["verification_confidence_component"] = -10.0
+
+    risk_score_before_clamp = round(
+        sum(float(v or 0) for v in risk_breakdown.values()),
+        4,
+    )
 
     risk_score = round(
-        max(0.0, min(risk_score, 100.0)),
+        max(0.0, min(risk_score_before_clamp, 100.0)),
         4,
     )
 
@@ -4862,6 +4876,10 @@ def compute_financial_release_risk(
         "release_risk_level": risk_level,
         "release_risk_factors": risk_factors,
         "uncertain_claim_ratio": round(uncertain_ratio, 4),
+        "risk_breakdown": risk_breakdown,
+        "risk_formula": "clamp_0_100(sum(risk_breakdown_components))",
+        "risk_score_before_clamp": risk_score_before_clamp,
+        "risk_score_after_clamp": risk_score,
     }
 
 

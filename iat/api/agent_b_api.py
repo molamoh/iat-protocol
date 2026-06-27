@@ -4874,6 +4874,9 @@ def compute_release_policy(
     rejected_count,
     uncertain_count,
     financial_risk,
+    foundation_evidence_status=None,
+    foundation_warnings=None,
+    verification_consensus_status=None,
 ):
     risk_score = float(financial_risk.get("release_risk_score", 100) or 100)
     risk_level = financial_risk.get("release_risk_level")
@@ -4930,6 +4933,25 @@ def compute_release_policy(
         max_payout_mode = "none"
         policy_reasons.append("foundation_verdict_not_releasable")
 
+    foundation_warnings = foundation_warnings or []
+
+    caution_required = (
+        foundation_evidence_status == "decision_ready_with_caution"
+        or verification_consensus_status == "failed"
+        or len(foundation_warnings) > 0
+    )
+
+    if caution_required:
+        if "foundation_caution_required" not in policy_reasons:
+            policy_reasons.append("foundation_caution_required")
+
+    if caution_required and release_policy_mode == "automatic":
+        release_policy_mode = "requires_caution"
+        max_payout_mode = "limited"
+        minimum_release_confidence = max(minimum_release_confidence, 0.70)
+        release_cap = min(release_cap, 0.75)
+        policy_reasons.append("foundation_caution_prevents_automatic_release")
+
     financial_release_confidence_ceiling = round(
         min(
             release_cap,
@@ -4954,6 +4976,10 @@ def compute_release_policy(
         "max_payout_mode": max_payout_mode,
         "policy_reasons": policy_reasons,
         "risk_level": risk_level,
+        "foundation_evidence_status": foundation_evidence_status,
+        "verification_consensus_status": verification_consensus_status,
+        "foundation_warnings": foundation_warnings,
+        "caution_required": caution_required,
         "financial_release_confidence_ceiling": financial_release_confidence_ceiling,
         "financial_release_confidence": financial_release_confidence,
     }
@@ -5038,6 +5064,11 @@ def authorize_settlement_release(order_id):
     verdict = fd.get("foundation_verdict")
     decision_confidence = float(fd.get("decision_confidence", 0) or 0)
 
+    evidence_eval = fd.get("foundation_evidence_evaluation") or {}
+    foundation_evidence_status = evidence_eval.get("foundation_evidence_status")
+    foundation_warnings = evidence_eval.get("warnings") or []
+    verification_consensus_status = evidence_eval.get("verification_consensus_status")
+
     signals = fd.get("foundation_verification_signals") or {}
     verified_count = len(signals.get("verified_claims") or [])
     rejected_count = len(signals.get("rejected_claims") or [])
@@ -5113,6 +5144,9 @@ def authorize_settlement_release(order_id):
         rejected_count=rejected_count,
         uncertain_count=uncertain_count,
         financial_risk=financial_risk,
+        foundation_evidence_status=foundation_evidence_status,
+        foundation_warnings=foundation_warnings,
+        verification_consensus_status=verification_consensus_status,
     )
 
     financial_release_confidence_ceiling = release_policy.get(

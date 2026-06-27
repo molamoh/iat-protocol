@@ -4865,23 +4865,128 @@ def compute_financial_release_risk(
     }
 
 
+def compute_release_policy(
+    verdict,
+    decision_confidence,
+    verification_confidence,
+    financial_release_confidence_raw,
+    verified_count,
+    rejected_count,
+    uncertain_count,
+    financial_risk,
+):
+    risk_score = float(financial_risk.get("release_risk_score", 100) or 100)
+    risk_level = financial_risk.get("release_risk_level")
+
+    release_policy_mode = "blocked"
+    minimum_release_confidence = 0.70
+    release_cap = float(decision_confidence or 0)
+    max_payout_mode = "none"
+    policy_reasons = []
+
+    if rejected_count > 0:
+        policy_reasons.append("rejected_claims_present")
+
+    elif verdict == "foundation_verified_with_evidence":
+        if risk_score <= 20:
+            release_policy_mode = "automatic"
+            minimum_release_confidence = 0.70
+            release_cap = max(release_cap, 0.85)
+            max_payout_mode = "full"
+            policy_reasons.append("verified_evidence_low_risk")
+
+        elif risk_score <= 45:
+            release_policy_mode = "requires_caution"
+            minimum_release_confidence = 0.60
+            release_cap = max(release_cap, 0.75)
+            max_payout_mode = "limited"
+            policy_reasons.append("verified_evidence_medium_risk")
+
+        else:
+            release_policy_mode = "manual_review"
+            minimum_release_confidence = 0.75
+            release_cap = min(release_cap, 0.55)
+            max_payout_mode = "none"
+            policy_reasons.append("verified_evidence_high_risk")
+
+    elif verdict == "foundation_verified_partial_evidence":
+        if risk_score <= 35 and verified_count >= 3:
+            release_policy_mode = "requires_caution"
+            minimum_release_confidence = 0.65
+            release_cap = max(release_cap, 0.68)
+            max_payout_mode = "limited"
+            policy_reasons.append("partial_evidence_acceptable_risk")
+        else:
+            release_policy_mode = "manual_review"
+            minimum_release_confidence = 0.75
+            release_cap = min(release_cap, 0.55)
+            max_payout_mode = "none"
+            policy_reasons.append("partial_evidence_manual_review_required")
+
+    else:
+        release_policy_mode = "blocked"
+        minimum_release_confidence = 0.70
+        release_cap = min(release_cap, 0.40)
+        max_payout_mode = "none"
+        policy_reasons.append("foundation_verdict_not_releasable")
+
+    financial_release_confidence_ceiling = round(
+        min(
+            release_cap,
+            verification_confidence,
+        ),
+        4,
+    )
+
+    financial_release_confidence = round(
+        min(
+            financial_release_confidence_raw,
+            financial_release_confidence_ceiling,
+        ),
+        4,
+    )
+
+    return {
+        "policy_engine": "release_policy_v1",
+        "release_policy_mode": release_policy_mode,
+        "minimum_release_confidence": minimum_release_confidence,
+        "release_cap": round(float(release_cap), 4),
+        "max_payout_mode": max_payout_mode,
+        "policy_reasons": policy_reasons,
+        "risk_level": risk_level,
+        "financial_release_confidence_ceiling": financial_release_confidence_ceiling,
+        "financial_release_confidence": financial_release_confidence,
+    }
+
+
 def authorize_release_from_risk(
     verdict,
     financial_release_confidence,
     verified_count,
     rejected_count,
     risk_result,
+    release_policy,
 ):
     risk_score = float(risk_result.get("release_risk_score", 100) or 100)
-    risk_level = risk_result.get("release_risk_level")
+
+    policy_mode = release_policy.get("release_policy_mode")
+    minimum_release_confidence = float(
+        release_policy.get("minimum_release_confidence", 0.70) or 0.70
+    )
 
     block_reasons = []
 
-    if verdict != "foundation_verified_with_evidence":
-        block_reasons.append("foundation_verdict_not_fully_verified")
+    if policy_mode in ["blocked", "manual_review"]:
+        block_reasons.append(f"release_policy_{policy_mode}")
 
-    if financial_release_confidence < 0.70:
-        block_reasons.append("financial_release_confidence_below_threshold")
+    if verdict not in [
+        "foundation_verified_with_evidence",
+        "foundation_verified_partial_evidence",
+    ]:
+        block_reasons.append("foundation_verdict_not_releasable")
+
+    if financial_release_confidence < minimum_release_confidence:
+        block_reasons.append("financial_release_confidence_below_policy_threshold")
 
     if verified_count <= 0:
         block_reasons.append("no_verified_claims")
@@ -4889,24 +4994,27 @@ def authorize_release_from_risk(
     if rejected_count > 0:
         block_reasons.append("rejected_claims_present")
 
-    if risk_score > 20:
-        block_reasons.append("release_risk_score_above_low_threshold")
+    if risk_score > 45:
+        block_reasons.append("release_risk_score_high")
 
-    release_authorized = len(block_reasons) == 0
+    release_authorized = (
+        len(block_reasons) == 0
+        and policy_mode == "automatic"
+    )
 
     if release_authorized:
-        authorization_reason = "foundation_verified_low_risk_release_authorized"
+        authorization_reason = "release_policy_automatic_authorized"
         authorization_mode = "authorized"
-    elif (
-        verdict == "foundation_verified_with_evidence"
-        and rejected_count == 0
-        and verified_count > 0
-        and risk_level == "medium"
-    ):
-        authorization_reason = "foundation_verified_but_requires_caution"
+    elif policy_mode == "requires_caution" and rejected_count == 0 and verified_count > 0:
+        authorization_reason = "release_policy_requires_caution"
         authorization_mode = "requires_caution"
+        if "release_policy_requires_caution" not in block_reasons:
+            block_reasons.append("release_policy_requires_caution")
+    elif policy_mode == "manual_review":
+        authorization_reason = "release_policy_manual_review_required"
+        authorization_mode = "manual_review"
     else:
-        authorization_reason = "foundation_authorization_requirements_not_met"
+        authorization_reason = "release_policy_blocked"
         authorization_mode = "blocked"
 
     return {
@@ -4987,23 +5095,6 @@ def authorize_settlement_release(order_id):
     ):
         release_cap = max(release_cap, 0.68)
 
-    financial_release_confidence_ceiling = round(
-        min(
-            decision_confidence,
-            release_cap,
-            verification_confidence,
-        ),
-        4,
-    )
-
-    financial_release_confidence = round(
-        min(
-            financial_release_confidence_raw,
-            financial_release_confidence_ceiling,
-        ),
-        4,
-    )
-
     financial_risk = compute_financial_release_risk(
         verdict=verdict,
         decision_confidence=decision_confidence,
@@ -5013,12 +5104,34 @@ def authorize_settlement_release(order_id):
         uncertain_count=uncertain_count,
     )
 
+    release_policy = compute_release_policy(
+        verdict=verdict,
+        decision_confidence=decision_confidence,
+        verification_confidence=verification_confidence,
+        financial_release_confidence_raw=financial_release_confidence_raw,
+        verified_count=verified_count,
+        rejected_count=rejected_count,
+        uncertain_count=uncertain_count,
+        financial_risk=financial_risk,
+    )
+
+    financial_release_confidence_ceiling = release_policy.get(
+        "financial_release_confidence_ceiling"
+    )
+
+    financial_release_confidence = release_policy.get(
+        "financial_release_confidence"
+    )
+
+    release_cap = release_policy.get("release_cap")
+
     authority = authorize_release_from_risk(
         verdict=verdict,
         financial_release_confidence=financial_release_confidence,
         verified_count=verified_count,
         rejected_count=rejected_count,
         risk_result=financial_risk,
+        release_policy=release_policy,
     )
 
     release_authorized = authority.get("release_authorized") is True
@@ -5031,6 +5144,7 @@ def authorize_settlement_release(order_id):
         "authorization_mode": authority.get("authorization_mode"),
         "release_block_reasons": authority.get("release_block_reasons"),
         "financial_risk": financial_risk,
+        "release_policy": release_policy,
         "order_id": order_id,
         "foundation_verdict": verdict,
         "decision_confidence": decision_confidence,

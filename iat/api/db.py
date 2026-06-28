@@ -9485,6 +9485,13 @@ def update_settlement_status_db(
     item = dict(row)
     current_status = item.get("settlement_status") or "created"
 
+    try:
+        settlement_payload = json.loads(item.get("settlement_payload") or "{}")
+        if not isinstance(settlement_payload, dict):
+            settlement_payload = {}
+    except Exception:
+        settlement_payload = {}
+
     transition = validate_settlement_transition(
         current_status,
         next_status,
@@ -9501,17 +9508,40 @@ def update_settlement_status_db(
 
     now = int(time.time())
 
+    state_history = settlement_payload.get("state_history") or []
+
+    if not isinstance(state_history, list):
+        state_history = []
+
+    transition_event = {
+        "from": current_status,
+        "to": next_status,
+        "reason": reason,
+        "timestamp": now,
+        "transition_allowed": True,
+        "commission_tx_signature_present": bool(commission_tx_signature),
+        "seller_payout_tx_signature_present": bool(seller_payout_tx_signature),
+    }
+
+    state_history.append(transition_event)
+
+    settlement_payload["state_history"] = state_history
+    settlement_payload["last_state_transition"] = transition_event
+    settlement_payload["state_machine_version"] = "settlement_state_machine_v1"
+
     cur.execute(f"""
     UPDATE settlements
     SET settlement_status = {p},
         commission_tx_signature = COALESCE({p}, commission_tx_signature),
         seller_payout_tx_signature = COALESCE({p}, seller_payout_tx_signature),
+        settlement_payload = {p},
         updated_at = {p}
     WHERE settlement_id = {p}
     """, (
         next_status,
         commission_tx_signature,
         seller_payout_tx_signature,
+        json.dumps(settlement_payload),
         now,
         settlement_id,
     ))

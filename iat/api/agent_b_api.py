@@ -53,6 +53,7 @@ from iat.api.db import (
     update_settlement_status_db,
     validate_settlement_transition,
     run_settlement_orchestrator_once_db,
+    advance_settlement_workflow_db,
     is_tx_processed_db,
     save_processed_tx_db,
     get_stats_db,
@@ -5694,6 +5695,81 @@ def admin_run_settlement_orchestrator_once(
     return run_settlement_orchestrator_once_db(
         limit=limit,
     )
+
+
+
+@app.post("/admin/settlements/{settlement_id}/advance-workflow")
+def admin_advance_settlement_workflow(
+    settlement_id: str,
+    request: Request = None,
+):
+    expected_key = os.getenv("IAT_ADMIN_API_KEY")
+    provided_key = request.headers.get("x-api-key") if request else None
+
+    if expected_key and provided_key != expected_key:
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    result = advance_settlement_workflow_db(
+        settlement_id=settlement_id,
+        reason="admin_workflow_advance",
+    )
+
+    return result
+
+
+
+@app.post("/admin/settlements/transition")
+def admin_transition_settlement_state(
+    req: AdminSettlementStatusUpdateRequest,
+    request: Request = None,
+):
+    expected_key = os.getenv("IAT_ADMIN_API_KEY")
+    provided_key = request.headers.get("x-api-key") if request else None
+
+    if expected_key and provided_key != expected_key:
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    result = update_settlement_status_db(
+        settlement_id=req.settlement_id,
+        next_status=req.next_status,
+        reason=req.reason,
+        commission_tx_signature=req.commission_tx_signature,
+        seller_payout_tx_signature=req.seller_payout_tx_signature,
+    )
+
+    return {
+        "status": result.get("status"),
+        "transition_result": result,
+        "state_machine": "settlement_state_machine_v1",
+    }
+
+
+
+@app.get("/admin/debug-db-env")
+def admin_debug_db_env(request: Request = None):
+    expected_key = os.getenv("IAT_ADMIN_API_KEY")
+    provided_key = request.headers.get("x-api-key") if request else None
+
+    if expected_key and provided_key != expected_key:
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    from iat.api.db import USE_POSTGRES
+
+    return {
+        "status": "ok",
+        "DATABASE_URL_present": bool(os.getenv("DATABASE_URL")),
+        "DATABASE_URL": os.getenv("DATABASE_URL"),
+        "USE_POSTGRES": bool(USE_POSTGRES),
+    }
 
 
 

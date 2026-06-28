@@ -9394,11 +9394,35 @@ def record_settlement_db(order_id, settlement):
 
 SETTLEMENT_ALLOWED_TRANSITIONS = {
     "created": [
+        "foundation_review",
         "authorized",
         "blocked",
         "dry_run_ready",
         "direct_payment_mode_no_escrow_release",
     ],
+
+    # Governance review path — State Machine V2.
+    "foundation_review": [
+        "risk_review",
+        "manual_review",
+        "blocked",
+    ],
+    "risk_review": [
+        "policy_review",
+        "manual_review",
+        "blocked",
+    ],
+    "policy_review": [
+        "authorized",
+        "manual_review",
+        "blocked",
+    ],
+    "manual_review": [
+        "authorized",
+        "blocked",
+    ],
+
+    # Legacy / execution path — kept for backward compatibility.
     "dry_run_ready": [
         "authorized",
         "ready_for_release",
@@ -9424,6 +9448,7 @@ SETTLEMENT_ALLOWED_TRANSITIONS = {
         "ready_for_release",
     ],
     "blocked": [
+        "foundation_review",
         "authorized",
     ],
     "direct_payment_mode_no_escrow_release": [
@@ -9558,6 +9583,83 @@ def update_settlement_status_db(
         "reason": reason,
     }
 
+
+
+
+def advance_settlement_workflow_db(
+    settlement_id,
+    reason="workflow_engine_advance",
+):
+    """
+    Settlement Workflow Engine v1.
+
+    Purpose:
+    - Move settlements through governance review states.
+    - Keep financial authorization separate.
+    - Never execute payout.
+    - Never skip state-machine validation.
+    """
+    if not settlement_id:
+        return {
+            "status": "error",
+            "message": "settlement_id_required",
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM settlements
+    WHERE settlement_id = {p}
+    """, (
+        settlement_id,
+    ))
+
+    row = cur.fetchone()
+    release_conn(conn)
+
+    if not row:
+        return {
+            "status": "not_found",
+            "settlement_id": settlement_id,
+        }
+
+    settlement = dict(row)
+    current_status = settlement.get("settlement_status") or "created"
+
+    workflow_next = {
+        "created": "foundation_review",
+        "foundation_review": "risk_review",
+        "risk_review": "policy_review",
+    }
+
+    if current_status not in workflow_next:
+        return {
+            "status": "no_workflow_transition",
+            "settlement_id": settlement_id,
+            "current_status": current_status,
+            "reason": "state_not_managed_by_workflow_engine_v1",
+            "managed_states": sorted(list(workflow_next.keys())),
+        }
+
+    next_status = workflow_next[current_status]
+
+    result = update_settlement_status_db(
+        settlement_id=settlement_id,
+        next_status=next_status,
+        reason=f"{reason}_{current_status}_to_{next_status}",
+    )
+
+    return {
+        "status": result.get("status"),
+        "workflow_engine": "settlement_workflow_engine_v1",
+        "settlement_id": settlement_id,
+        "previous_status": current_status,
+        "next_status": next_status,
+        "transition_result": result,
+    }
 
 
 
@@ -21608,6 +21710,7 @@ def init_seller_clusters_tables():
     """)
 
     cluster_snapshot_columns = {
+        "snapshot_id": "TEXT",
         "members_json": "TEXT DEFAULT '[]'",
         "edges_json": "TEXT DEFAULT '[]'",
         "source": "TEXT DEFAULT 'protocol'",

@@ -9586,15 +9586,49 @@ def update_settlement_status_db(
 
 
 
+def _settlement_workflow_created_handler(settlement):
+    return {
+        "next_status": "foundation_review",
+        "decision": "start_foundation_review",
+        "reason": "created_requires_foundation_review",
+        "handler": "created_handler_v1",
+    }
+
+
+def _settlement_workflow_foundation_review_handler(settlement):
+    return {
+        "next_status": "risk_review",
+        "decision": "foundation_review_completed",
+        "reason": "foundation_review_ready_for_risk_review",
+        "handler": "foundation_review_handler_v1",
+    }
+
+
+def _settlement_workflow_risk_review_handler(settlement):
+    return {
+        "next_status": "policy_review",
+        "decision": "risk_review_completed",
+        "reason": "risk_review_ready_for_policy_review",
+        "handler": "risk_review_handler_v1",
+    }
+
+
+SETTLEMENT_WORKFLOW_HANDLERS = {
+    "created": _settlement_workflow_created_handler,
+    "foundation_review": _settlement_workflow_foundation_review_handler,
+    "risk_review": _settlement_workflow_risk_review_handler,
+}
+
+
 def advance_settlement_workflow_db(
     settlement_id,
     reason="workflow_engine_advance",
 ):
     """
-    Settlement Workflow Engine v1.
+    Settlement Workflow Engine v2.
 
     Purpose:
-    - Move settlements through governance review states.
+    - Route each workflow state to a dedicated handler.
     - Keep financial authorization separate.
     - Never execute payout.
     - Never skip state-machine validation.
@@ -9629,22 +9663,29 @@ def advance_settlement_workflow_db(
     settlement = dict(row)
     current_status = settlement.get("settlement_status") or "created"
 
-    workflow_next = {
-        "created": "foundation_review",
-        "foundation_review": "risk_review",
-        "risk_review": "policy_review",
-    }
+    handler = SETTLEMENT_WORKFLOW_HANDLERS.get(current_status)
 
-    if current_status not in workflow_next:
+    if not handler:
         return {
             "status": "no_workflow_transition",
             "settlement_id": settlement_id,
             "current_status": current_status,
-            "reason": "state_not_managed_by_workflow_engine_v1",
-            "managed_states": sorted(list(workflow_next.keys())),
+            "reason": "state_not_managed_by_workflow_engine_v2",
+            "managed_states": sorted(list(SETTLEMENT_WORKFLOW_HANDLERS.keys())),
+            "workflow_engine": "settlement_workflow_engine_v2",
         }
 
-    next_status = workflow_next[current_status]
+    decision = handler(settlement) or {}
+    next_status = decision.get("next_status")
+
+    if not next_status:
+        return {
+            "status": "workflow_handler_no_transition",
+            "settlement_id": settlement_id,
+            "current_status": current_status,
+            "decision": decision,
+            "workflow_engine": "settlement_workflow_engine_v2",
+        }
 
     result = update_settlement_status_db(
         settlement_id=settlement_id,
@@ -9654,10 +9695,11 @@ def advance_settlement_workflow_db(
 
     return {
         "status": result.get("status"),
-        "workflow_engine": "settlement_workflow_engine_v1",
+        "workflow_engine": "settlement_workflow_engine_v2",
         "settlement_id": settlement_id,
         "previous_status": current_status,
         "next_status": next_status,
+        "workflow_decision": decision,
         "transition_result": result,
     }
 

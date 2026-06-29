@@ -9479,6 +9479,7 @@ def update_settlement_status_db(
     reason="manual_update",
     commission_tx_signature=None,
     seller_payout_tx_signature=None,
+    transition_metadata=None,
 ):
     if not settlement_id or not next_status:
         return {
@@ -9547,6 +9548,9 @@ def update_settlement_status_db(
         "commission_tx_signature_present": bool(commission_tx_signature),
         "seller_payout_tx_signature_present": bool(seller_payout_tx_signature),
     }
+
+    if isinstance(transition_metadata, dict):
+        transition_event["transition_metadata"] = transition_metadata
 
     state_history.append(transition_event)
 
@@ -9691,6 +9695,10 @@ def advance_settlement_workflow_db(
         settlement_id=settlement_id,
         next_status=next_status,
         reason=f"{reason}_{current_status}_to_{next_status}",
+        transition_metadata={
+            "workflow_engine": "settlement_workflow_engine_v2",
+            "workflow_decision": decision,
+        },
     )
 
     return {

@@ -6,7 +6,7 @@ import requests
 import threading
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
-from fastapi import FastAPI, Header, Request
+from fastapi import FastAPI, Header, Body, Request
 from pydantic import BaseModel, EmailStr, Field
 from solders.pubkey import Pubkey
 from spl.token.instructions import get_associated_token_address
@@ -5699,8 +5699,8 @@ def admin_run_settlement_orchestrator_once(
 
 
 @app.post("/admin/settlements/create-decision-test")
-def admin_create_decision_test_settlement(payload: dict = None, x_api_key: str = Header(default="")):
-    require_admin_api_key(x_api_key)
+def admin_create_decision_test_settlement(payload: dict = Body(default=None), x_api_key: str = Header(default="")):
+    require_admin_key(x_api_key)
 
     from iat.api.db import record_settlement_db
 

@@ -9590,6 +9590,158 @@ def update_settlement_status_db(
 
 
 
+def get_settlement_by_id_db(settlement_id):
+    if not settlement_id:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM settlements
+    WHERE settlement_id = {p}
+    """, (
+        settlement_id,
+    ))
+
+    row = cur.fetchone()
+    release_conn(conn)
+
+    if not row:
+        return None
+
+    item = dict(row)
+
+    try:
+        payload = json.loads(item.get("settlement_payload") or "{}")
+        if not isinstance(payload, dict):
+            payload = {}
+    except Exception:
+        payload = {}
+
+    item["settlement_payload"] = payload
+
+    return item
+
+
+
+def update_settlement_payload_db(
+    settlement_id,
+    payload_patch,
+    patch_reason="payload_update",
+):
+    if not settlement_id:
+        return {
+            "status": "error",
+            "message": "settlement_id_required",
+        }
+
+    if not isinstance(payload_patch, dict):
+        return {
+            "status": "error",
+            "message": "payload_patch_must_be_dict",
+        }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM settlements
+    WHERE settlement_id = {p}
+    """, (
+        settlement_id,
+    ))
+
+    row = cur.fetchone()
+
+    if not row:
+        release_conn(conn)
+        return {
+            "status": "not_found",
+            "settlement_id": settlement_id,
+        }
+
+    item = dict(row)
+
+    try:
+        settlement_payload = json.loads(item.get("settlement_payload") or "{}")
+        if not isinstance(settlement_payload, dict):
+            settlement_payload = {}
+    except Exception:
+        settlement_payload = {}
+
+    now = int(time.time())
+
+    for key, value in payload_patch.items():
+        settlement_payload[key] = value
+
+    payload_updates = settlement_payload.get("payload_updates") or []
+
+    if not isinstance(payload_updates, list):
+        payload_updates = []
+
+    payload_updates.append({
+        "patch_reason": patch_reason,
+        "keys": sorted(list(payload_patch.keys())),
+        "timestamp": now,
+    })
+
+    settlement_payload["payload_updates"] = payload_updates
+    settlement_payload["last_payload_update"] = payload_updates[-1]
+
+    cur.execute(f"""
+    UPDATE settlements
+    SET settlement_payload = {p},
+        updated_at = {p}
+    WHERE settlement_id = {p}
+    """, (
+        json.dumps(settlement_payload),
+        now,
+        settlement_id,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "settlement_payload_updated",
+        "settlement_id": settlement_id,
+        "updated_keys": sorted(list(payload_patch.keys())),
+        "patch_reason": patch_reason,
+        "updated_at": now,
+    }
+
+
+
+def compact_settlement_workflow_decision_db(decision):
+    if not isinstance(decision, dict):
+        return {}
+
+    decision_result = decision.get("decision_result")
+    compact = {
+        "handler": decision.get("handler"),
+        "decision": decision.get("decision"),
+        "reason": decision.get("reason"),
+        "next_status": decision.get("next_status"),
+    }
+
+    if isinstance(decision_result, dict):
+        compact["decision_engine"] = decision_result.get("decision_engine")
+        compact["final_decision"] = decision_result.get("final_decision")
+        compact["confidence"] = decision_result.get("confidence")
+        compact["consensus"] = decision_result.get("consensus")
+        compact["risk_score"] = decision_result.get("risk_score")
+        compact["reasons"] = decision_result.get("reasons", [])[:10]
+        compact["audit"] = decision_result.get("audit", {})
+
+    return compact
+
+
+
 def _settlement_workflow_created_handler(settlement):
     return {
         "next_status": "foundation_review",
@@ -9600,20 +9752,178 @@ def _settlement_workflow_created_handler(settlement):
 
 
 def _settlement_workflow_foundation_review_handler(settlement):
+    settlement_id = settlement.get("settlement_id")
+    now = int(time.time())
+
+    fresh_settlement = get_settlement_by_id_db(settlement_id)
+
+    if fresh_settlement:
+        settlement = fresh_settlement
+
+    payload = settlement.get("settlement_payload") or {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    foundation_input = payload.get("foundation_review_input") or {}
+    if not isinstance(foundation_input, dict):
+        foundation_input = {}
+
+    verdict = foundation_input.get("verdict") or "manual_review"
+    confidence = float(foundation_input.get("decision_confidence", 0.50) or 0.50)
+    decision_ready = foundation_input.get("foundation_decision_ready") is True
+    evidence_status = foundation_input.get("foundation_evidence_status") or "not_connected_yet"
+
+    foundation_review = {
+        "review_engine": "foundation_review_handler_v1",
+        "review_status": "completed",
+        "verdict": verdict,
+        "decision_confidence": max(0.0, min(confidence, 1.0)),
+        "foundation_decision_ready": decision_ready,
+        "foundation_evidence_status": evidence_status,
+        "verification_consensus": foundation_input.get("verification_consensus"),
+        "research_consensus": foundation_input.get("research_consensus"),
+        "reason": foundation_input.get("reason") or "foundation_engine_not_connected_yet",
+        "source": "foundation_review_input" if foundation_input else "default_conservative_placeholder",
+        "completed_at": now,
+    }
+
+    payload_update = update_settlement_payload_db(
+        settlement_id=settlement_id,
+        payload_patch={
+            "foundation_review": foundation_review,
+        },
+        patch_reason="foundation_review_completed",
+    )
+
     return {
         "next_status": "risk_review",
         "decision": "foundation_review_completed",
         "reason": "foundation_review_ready_for_risk_review",
         "handler": "foundation_review_handler_v1",
+        "foundation_review": foundation_review,
+        "payload_update": payload_update,
     }
 
 
 def _settlement_workflow_risk_review_handler(settlement):
+    settlement_id = settlement.get("settlement_id")
+    now = int(time.time())
+
+    fresh_settlement = get_settlement_by_id_db(settlement_id)
+
+    if fresh_settlement:
+        settlement = fresh_settlement
+
+    payload = settlement.get("settlement_payload") or {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    risk_input = payload.get("risk_review_input") or {}
+    if not isinstance(risk_input, dict):
+        risk_input = {}
+
+    risk_decision = risk_input.get("risk_decision") or "manual_review"
+    risk_score = float(risk_input.get("risk_score", 50.0) or 50.0)
+    confidence = float(risk_input.get("confidence", 0.50) or 0.50)
+
+    risk_review = {
+        "review_engine": "risk_review_handler_v1",
+        "review_status": "completed",
+        "risk_decision": risk_decision,
+        "risk_score": max(0.0, min(risk_score, 100.0)),
+        "risk_level": risk_input.get("risk_level") or "unknown",
+        "confidence": max(0.0, min(confidence, 1.0)),
+        "reason": risk_input.get("reason") or "risk_engine_not_connected_yet",
+        "source": "risk_review_input" if risk_input else "default_conservative_placeholder",
+        "completed_at": now,
+    }
+
+    payload_update = update_settlement_payload_db(
+        settlement_id=settlement_id,
+        payload_patch={
+            "risk_review": risk_review,
+        },
+        patch_reason="risk_review_completed",
+    )
+
     return {
         "next_status": "policy_review",
         "decision": "risk_review_completed",
         "reason": "risk_review_ready_for_policy_review",
         "handler": "risk_review_handler_v1",
+        "risk_review": risk_review,
+        "payload_update": payload_update,
+    }
+
+
+def _settlement_workflow_policy_review_handler(settlement):
+    from iat.settlement.decision_engine import evaluate_settlement_decision_v1
+
+    settlement_id = settlement.get("settlement_id")
+    now = int(time.time())
+
+    fresh_settlement = get_settlement_by_id_db(settlement_id)
+
+    if fresh_settlement:
+        settlement = fresh_settlement
+
+    payload = settlement.get("settlement_payload") or {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    policy_input = payload.get("policy_review_input") or {}
+    if not isinstance(policy_input, dict):
+        policy_input = {}
+
+    confidence = float(policy_input.get("confidence", 0.50) or 0.50)
+
+    policy_review = {
+        "review_engine": "policy_review_handler_v1",
+        "review_status": "completed",
+        "policy_decision": policy_input.get("policy_decision") or "manual_review",
+        "release_policy_mode": policy_input.get("release_policy_mode") or "manual_review",
+        "confidence": max(0.0, min(confidence, 1.0)),
+        "reason": policy_input.get("reason") or "policy_engine_not_connected_yet",
+        "source": "policy_review_input" if policy_input else "default_conservative_placeholder",
+        "completed_at": now,
+    }
+
+    payload_update = update_settlement_payload_db(
+        settlement_id=settlement_id,
+        payload_patch={
+            "policy_review": policy_review,
+        },
+        patch_reason="policy_review_completed",
+    )
+
+    fresh_settlement = get_settlement_by_id_db(settlement_id) or dict(settlement)
+
+    decision_result = evaluate_settlement_decision_v1(
+        fresh_settlement,
+        context={
+            "source": "settlement_workflow_policy_review_handler",
+            "handler": "policy_review_handler_v1",
+            "settlement_reload_source": "database_after_policy_review_payload_update",
+        },
+    )
+
+    final_decision = decision_result.get("final_decision")
+
+    if final_decision == "authorized":
+        next_status = "authorized"
+    elif final_decision == "blocked":
+        next_status = "blocked"
+    else:
+        next_status = "manual_review"
+
+    return {
+        "next_status": next_status,
+        "decision": final_decision,
+        "reason": "settlement_decision_engine_result",
+        "handler": "policy_review_handler_v1",
+        "decision_result": decision_result,
+        "policy_review": policy_review,
+        "payload_update": payload_update,
     }
 
 
@@ -9621,6 +9931,7 @@ SETTLEMENT_WORKFLOW_HANDLERS = {
     "created": _settlement_workflow_created_handler,
     "foundation_review": _settlement_workflow_foundation_review_handler,
     "risk_review": _settlement_workflow_risk_review_handler,
+    "policy_review": _settlement_workflow_policy_review_handler,
 }
 
 
@@ -9697,7 +10008,7 @@ def advance_settlement_workflow_db(
         reason=f"{reason}_{current_status}_to_{next_status}",
         transition_metadata={
             "workflow_engine": "settlement_workflow_engine_v2",
-            "workflow_decision": decision,
+            "workflow_decision": compact_settlement_workflow_decision_db(decision),
         },
     )
 

@@ -5698,6 +5698,84 @@ def admin_run_settlement_orchestrator_once(
 
 
 
+@app.post("/admin/settlements/create-decision-test")
+def admin_create_decision_test_settlement(payload: dict = None, x_api_key: str = Header(default="")):
+    require_admin_api_key(x_api_key)
+
+    from iat.api.db import record_settlement_db
+
+    payload = payload or {}
+
+    scenario = payload.get("scenario") or "authorized"
+    order_id = payload.get("order_id") or f"admin_decision_test_{scenario}_{int(time.time())}"
+
+    base = {
+        "winner_id": payload.get("winner_id") or "admin_decision_test_agent",
+        "winner_wallet": payload.get("winner_wallet") or "admin_decision_test_wallet",
+        "gross_amount_iat": float(payload.get("gross_amount_iat", 1.2)),
+        "protocol_commission_rate": float(payload.get("protocol_commission_rate", 0.1)),
+        "protocol_commission_amount_iat": float(payload.get("protocol_commission_amount_iat", 0.12)),
+        "seller_payout_amount_iat": float(payload.get("seller_payout_amount_iat", 1.08)),
+        "winner_payment_status": payload.get("winner_payment_status") or "admin_decision_test",
+        "settlement_execution": {
+            "status": "created",
+            "onchain_settlement_enabled": False,
+        },
+        "foundation_review_input": {
+            "verdict": "foundation_verified_with_evidence",
+            "decision_confidence": 0.82,
+            "foundation_decision_ready": True,
+            "foundation_evidence_status": "decision_ready",
+            "verification_consensus": "passed",
+            "research_consensus": "passed",
+            "reason": "admin_test_foundation_positive_evidence",
+        },
+        "risk_review_input": {
+            "risk_decision": "approve",
+            "risk_score": 30,
+            "risk_level": "medium",
+            "confidence": 0.78,
+            "reason": "admin_test_risk_acceptable",
+        },
+        "policy_review_input": {
+            "policy_decision": "approve",
+            "release_policy_mode": "automatic",
+            "confidence": 0.80,
+            "reason": "admin_test_policy_allows_release",
+        },
+    }
+
+    if scenario == "blocked":
+        base["policy_review_input"] = {
+            "policy_decision": "block",
+            "release_policy_mode": "blocked",
+            "confidence": 0.92,
+            "reason": "admin_test_policy_blocks_release",
+        }
+
+    elif scenario == "manual_review":
+        base["risk_review_input"] = {
+            "risk_decision": "manual_review",
+            "risk_score": 50,
+            "risk_level": "medium",
+            "confidence": 0.60,
+            "reason": "admin_test_risk_requires_manual_review",
+        }
+
+    for key in ("foundation_review_input", "risk_review_input", "policy_review_input"):
+        if isinstance(payload.get(key), dict):
+            base[key] = payload[key]
+
+    result = record_settlement_db(order_id, base)
+
+    return {
+        "status": "ok",
+        "scenario": scenario,
+        "settlement": result,
+    }
+
+
+
 @app.post("/admin/settlements/{settlement_id}/advance-workflow")
 def admin_advance_settlement_workflow(
     settlement_id: str,

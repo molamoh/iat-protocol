@@ -9856,6 +9856,135 @@ def _settlement_workflow_risk_review_handler(settlement):
     }
 
 
+def _settlement_workflow_release_confirmed_handler(settlement):
+    settlement_id = settlement.get("settlement_id")
+    now = int(time.time())
+
+    settlement_closure = {
+        "execution_engine": "settlement_execution_engine_v1",
+        "closure_status": "settled",
+        "closure_mode": "dry_run",
+        "reason": "dry_run_settlement_closed_after_release_confirmation",
+        "settled_at": now,
+    }
+
+    payload_update = update_settlement_payload_db(
+        settlement_id=settlement_id,
+        payload_patch={
+            "settlement_closure": settlement_closure,
+        },
+        patch_reason="release_confirmed_settled",
+    )
+
+    return {
+        "next_status": "settled",
+        "decision": "settled",
+        "reason": "dry_run_settlement_closed_after_release_confirmation",
+        "handler": "release_confirmed_handler_v1",
+        "settlement_closure": settlement_closure,
+        "payload_update": payload_update,
+    }
+
+
+
+def _settlement_workflow_release_submitted_handler(settlement):
+    settlement_id = settlement.get("settlement_id")
+    now = int(time.time())
+
+    release_confirmation = {
+        "execution_engine": "settlement_execution_engine_v1",
+        "confirmation_status": "release_confirmed",
+        "confirmation_mode": "dry_run",
+        "commission_tx_signature_present": bool(settlement.get("commission_tx_signature")),
+        "seller_payout_tx_signature_present": bool(settlement.get("seller_payout_tx_signature")),
+        "reason": "dry_run_release_confirmed_no_onchain_transaction",
+        "confirmed_at": now,
+    }
+
+    payload_update = update_settlement_payload_db(
+        settlement_id=settlement_id,
+        payload_patch={
+            "release_confirmation": release_confirmation,
+        },
+        patch_reason="release_submitted_confirmed",
+    )
+
+    return {
+        "next_status": "release_confirmed",
+        "decision": "release_confirmed",
+        "reason": "dry_run_release_confirmed_no_onchain_transaction",
+        "handler": "release_submitted_handler_v1",
+        "release_confirmation": release_confirmation,
+        "payload_update": payload_update,
+    }
+
+
+
+def _settlement_workflow_ready_for_release_handler(settlement):
+    settlement_id = settlement.get("settlement_id")
+    now = int(time.time())
+
+    release_execution = {
+        "execution_engine": "settlement_execution_engine_v1",
+        "execution_status": "release_submitted",
+        "execution_mode": "dry_run",
+        "onchain_settlement_enabled": bool(settlement.get("onchain_settlement_enabled")),
+        "commission_tx_signature": None,
+        "seller_payout_tx_signature": None,
+        "reason": "dry_run_release_submitted_no_onchain_transaction",
+        "submitted_at": now,
+    }
+
+    payload_update = update_settlement_payload_db(
+        settlement_id=settlement_id,
+        payload_patch={
+            "release_execution": release_execution,
+        },
+        patch_reason="ready_for_release_submitted",
+    )
+
+    return {
+        "next_status": "release_submitted",
+        "decision": "release_submitted",
+        "reason": "dry_run_release_submitted_no_onchain_transaction",
+        "handler": "ready_for_release_handler_v1",
+        "release_execution": release_execution,
+        "payload_update": payload_update,
+    }
+
+
+
+def _settlement_workflow_authorized_handler(settlement):
+    settlement_id = settlement.get("settlement_id")
+    now = int(time.time())
+
+    release_preparation = {
+        "execution_engine": "settlement_execution_engine_v1",
+        "execution_status": "ready_for_release",
+        "onchain_settlement_enabled": bool(settlement.get("onchain_settlement_enabled")),
+        "reason": "authorized_settlement_ready_for_release",
+        "prepared_at": now,
+    }
+
+    payload_update = update_settlement_payload_db(
+        settlement_id=settlement_id,
+        payload_patch={
+            "release_preparation": release_preparation,
+        },
+        patch_reason="authorized_ready_for_release",
+    )
+
+    return {
+        "next_status": "ready_for_release",
+        "decision": "ready_for_release",
+        "reason": "authorized_settlement_ready_for_release",
+        "handler": "authorized_handler_v1",
+        "release_preparation": release_preparation,
+        "payload_update": payload_update,
+    }
+
+
+
 def _settlement_workflow_policy_review_handler(settlement):
     from iat.settlement.decision_engine import evaluate_settlement_decision_v1
 
@@ -9932,6 +10061,10 @@ SETTLEMENT_WORKFLOW_HANDLERS = {
     "foundation_review": _settlement_workflow_foundation_review_handler,
     "risk_review": _settlement_workflow_risk_review_handler,
     "policy_review": _settlement_workflow_policy_review_handler,
+    "authorized": _settlement_workflow_authorized_handler,
+    "ready_for_release": _settlement_workflow_ready_for_release_handler,
+    "release_submitted": _settlement_workflow_release_submitted_handler,
+    "release_confirmed": _settlement_workflow_release_confirmed_handler,
 }
 
 

@@ -5776,6 +5776,29 @@ def admin_create_decision_test_settlement(payload: dict = Body(default=None), x_
 
 
 
+@app.post("/admin/settlements/{settlement_id}/execution-supervisor/run")
+def admin_run_settlement_execution_supervisor(settlement_id: str, x_api_key: str = Header(default="")):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import execute_settlement_supervisor_action_db
+
+    return execute_settlement_supervisor_action_db(
+        settlement_id,
+        reason="admin_execution_supervisor_run",
+    )
+
+
+
+@app.get("/admin/settlements/{settlement_id}/execution-supervisor")
+def admin_inspect_settlement_execution_supervisor(settlement_id: str, x_api_key: str = Header(default="")):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import inspect_settlement_execution_supervisor_db
+
+    return inspect_settlement_execution_supervisor_db(settlement_id)
+
+
+
 @app.post("/admin/settlements/{settlement_id}/advance-workflow")
 def admin_advance_settlement_workflow(
     settlement_id: str,

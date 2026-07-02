@@ -10068,6 +10068,260 @@ SETTLEMENT_WORKFLOW_HANDLERS = {
 }
 
 
+def inspect_settlement_execution_supervisor_db(settlement_id):
+    settlement = get_settlement_by_id_db(settlement_id)
+
+    if not settlement:
+        return {
+            "status": "not_found",
+            "settlement_id": settlement_id,
+        }
+
+    current_status = settlement.get("settlement_status") or "created"
+    payload = settlement.get("settlement_payload") or {}
+
+    if not isinstance(payload, dict):
+        payload = {}
+
+    release_execution = payload.get("release_execution") or {}
+    release_confirmation = payload.get("release_confirmation") or {}
+    settlement_closure = payload.get("settlement_closure") or {}
+
+    retry_policy = payload.get("retry_policy") or {}
+    if not isinstance(retry_policy, dict):
+        retry_policy = {}
+
+    retry_count = int(retry_policy.get("retry_count", 0) or 0)
+    max_retries = int(retry_policy.get("max_retries", 3) or 3)
+    now = int(time.time())
+
+    if current_status == "settled":
+        return {
+            "status": "terminal",
+            "settlement_id": settlement_id,
+            "current_status": current_status,
+            "supervisor_action": "none",
+            "reason": "settlement_already_settled",
+            "settlement_closure": settlement_closure,
+        }
+
+    if current_status in ("blocked", "blocked_invalid_winner_wallet"):
+        return {
+            "status": "terminal",
+            "settlement_id": settlement_id,
+            "current_status": current_status,
+            "supervisor_action": "none",
+            "reason": "settlement_blocked",
+        }
+
+    if current_status == "manual_review":
+        return {
+            "status": "waiting",
+            "settlement_id": settlement_id,
+            "current_status": current_status,
+            "supervisor_action": "wait_for_manual_review",
+            "reason": "manual_review_required",
+        }
+
+    if current_status == "authorized":
+        return {
+            "status": "ready",
+            "settlement_id": settlement_id,
+            "current_status": current_status,
+            "supervisor_action": "advance_workflow",
+            "expected_next_status": "ready_for_release",
+            "reason": "authorized_ready_for_release_preparation",
+        }
+
+    if current_status == "ready_for_release":
+        return {
+            "status": "ready",
+            "settlement_id": settlement_id,
+            "current_status": current_status,
+            "supervisor_action": "advance_workflow",
+            "expected_next_status": "release_submitted",
+            "reason": "ready_for_release_can_submit",
+        }
+
+    if current_status == "release_submitted":
+        submitted_at = int(release_execution.get("submitted_at", 0) or 0)
+        age_seconds = now - submitted_at if submitted_at else None
+        timeout_seconds = int(retry_policy.get("release_confirmation_timeout_seconds", 300) or 300)
+
+        if age_seconds is not None and age_seconds > timeout_seconds:
+            return {
+                "status": "timeout_detected",
+                "settlement_id": settlement_id,
+                "current_status": current_status,
+                "supervisor_action": "mark_release_failed_or_retry",
+                "expected_next_status_options": ["release_failed", "release_confirmed"],
+                "reason": "release_submitted_confirmation_timeout",
+                "age_seconds": age_seconds,
+                "timeout_seconds": timeout_seconds,
+                "retry_count": retry_count,
+                "max_retries": max_retries,
+                "release_execution": release_execution,
+            }
+
+        return {
+            "status": "waiting",
+            "settlement_id": settlement_id,
+            "current_status": current_status,
+            "supervisor_action": "advance_workflow",
+            "expected_next_status": "release_confirmed",
+            "reason": "dry_run_confirmation_can_be_advanced",
+            "age_seconds": age_seconds,
+            "timeout_seconds": timeout_seconds,
+            "retry_count": retry_count,
+            "max_retries": max_retries,
+            "release_execution": release_execution,
+        }
+
+    if current_status == "release_confirmed":
+        return {
+            "status": "ready",
+            "settlement_id": settlement_id,
+            "current_status": current_status,
+            "supervisor_action": "advance_workflow",
+            "expected_next_status": "settled",
+            "reason": "release_confirmed_ready_for_closure",
+            "release_confirmation": release_confirmation,
+        }
+
+    if current_status == "release_failed":
+        if retry_count >= max_retries:
+            return {
+                "status": "max_retry_reached",
+                "settlement_id": settlement_id,
+                "current_status": current_status,
+                "supervisor_action": "manual_review_or_block",
+                "expected_next_status_options": ["manual_review", "blocked"],
+                "reason": "release_failed_max_retry_reached",
+                "retry_count": retry_count,
+                "max_retries": max_retries,
+                "release_execution": release_execution,
+            }
+
+        return {
+            "status": "retryable",
+            "settlement_id": settlement_id,
+            "current_status": current_status,
+            "supervisor_action": "retry_release",
+            "expected_next_status": "ready_for_release",
+            "reason": "release_failed_retry_available",
+            "retry_count": retry_count,
+            "max_retries": max_retries,
+            "release_execution": release_execution,
+        }
+
+    return {
+        "status": "not_managed",
+        "settlement_id": settlement_id,
+        "current_status": current_status,
+        "supervisor_action": "none",
+        "reason": "state_not_managed_by_execution_supervisor_v1",
+    }
+
+
+
+def execute_settlement_supervisor_action_db(settlement_id, reason="execution_supervisor_action"):
+    inspection = inspect_settlement_execution_supervisor_db(settlement_id)
+
+    if inspection.get("status") == "not_found":
+        return {
+            "status": "not_found",
+            "settlement_id": settlement_id,
+            "inspection": inspection,
+            "executed": False,
+        }
+
+    action = inspection.get("supervisor_action")
+    current_status = inspection.get("current_status")
+
+    if action == "advance_workflow":
+        result = advance_settlement_workflow_db(
+            settlement_id,
+            reason=f"{reason}_{current_status}_advance_workflow",
+        )
+
+        return {
+            "status": "executed",
+            "settlement_id": settlement_id,
+            "action": action,
+            "previous_status": current_status,
+            "inspection": inspection,
+            "execution_result": result,
+            "executed": True,
+        }
+
+    if action == "retry_release":
+        retry_policy = {}
+
+        settlement = get_settlement_by_id_db(settlement_id)
+        if settlement:
+            payload = settlement.get("settlement_payload") or {}
+            if isinstance(payload, dict):
+                retry_policy = payload.get("retry_policy") or {}
+
+        retry_count = int(retry_policy.get("retry_count", 0) or 0)
+        max_retries = int(retry_policy.get("max_retries", 3) or 3)
+
+        if retry_count >= max_retries:
+            return {
+                "status": "not_executed",
+                "settlement_id": settlement_id,
+                "action": action,
+                "reason": "retry_count_already_at_or_above_max_retries",
+                "inspection": inspection,
+                "executed": False,
+            }
+
+        retry_policy["retry_count"] = retry_count + 1
+        retry_policy["max_retries"] = max_retries
+        retry_policy["last_retry_reason"] = reason
+        retry_policy["last_retry_at"] = int(time.time())
+
+        payload_update = update_settlement_payload_db(
+            settlement_id=settlement_id,
+            payload_patch={
+                "retry_policy": retry_policy,
+            },
+            patch_reason="execution_supervisor_retry_policy_incremented",
+        )
+
+        transition_result = update_settlement_status_db(
+            settlement_id=settlement_id,
+            next_status="ready_for_release",
+            reason=f"{reason}_retry_release_to_ready_for_release",
+        )
+
+        return {
+            "status": "executed" if transition_result.get("status") == "settlement_status_updated" else "not_executed",
+            "settlement_id": settlement_id,
+            "action": action,
+            "previous_status": current_status,
+            "next_status": "ready_for_release",
+            "retry_count_before": retry_count,
+            "retry_count_after": retry_policy.get("retry_count"),
+            "max_retries": max_retries,
+            "inspection": inspection,
+            "payload_update": payload_update,
+            "execution_result": transition_result,
+            "executed": transition_result.get("status") == "settlement_status_updated",
+        }
+
+    return {
+        "status": "not_executed",
+        "settlement_id": settlement_id,
+        "action": action,
+        "current_status": current_status,
+        "reason": "supervisor_action_not_auto_executable",
+        "inspection": inspection,
+        "executed": False,
+    }
+
+
+
 def advance_settlement_workflow_db(
     settlement_id,
     reason="workflow_engine_advance",

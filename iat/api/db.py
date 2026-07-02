@@ -9924,14 +9924,40 @@ def _settlement_workflow_ready_for_release_handler(settlement):
     settlement_id = settlement.get("settlement_id")
     now = int(time.time())
 
+    from iat.action_engine.executor import execute_action
+
+    action_result = execute_action(
+        action_type="settlement_release",
+        action_scope="financial_settlement",
+        payload={
+            "settlement_id": settlement_id,
+            "order_id": settlement.get("order_id"),
+            "gross_amount_iat": settlement.get("gross_amount_iat"),
+            "seller_payout_amount_iat": settlement.get("seller_payout_amount_iat"),
+            "protocol_commission_amount_iat": settlement.get("protocol_commission_amount_iat"),
+            "winner_wallet": settlement.get("winner_wallet"),
+            "treasury_wallet": settlement.get("treasury_wallet"),
+            "onchain_settlement_enabled": bool(settlement.get("onchain_settlement_enabled")),
+        },
+        metadata={
+            "execution_mode": "dry_run",
+            "called_by": "ready_for_release_handler_v1",
+            "resource_type": "settlement",
+            "resource_id": settlement_id,
+        },
+    )
+
     release_execution = {
-        "execution_engine": "settlement_execution_engine_v1",
+        "execution_engine": "iat_action_engine_v1",
         "execution_status": "release_submitted",
         "execution_mode": "dry_run",
+        "action_engine_status": action_result.get("status"),
+        "action_engine_reason": action_result.get("reason"),
+        "action_result": action_result,
         "onchain_settlement_enabled": bool(settlement.get("onchain_settlement_enabled")),
         "commission_tx_signature": None,
         "seller_payout_tx_signature": None,
-        "reason": "dry_run_release_submitted_no_onchain_transaction",
+        "reason": "action_engine_dry_run_release_submitted",
         "submitted_at": now,
     }
 
@@ -9940,13 +9966,13 @@ def _settlement_workflow_ready_for_release_handler(settlement):
         payload_patch={
             "release_execution": release_execution,
         },
-        patch_reason="ready_for_release_submitted",
+        patch_reason="ready_for_release_submitted_action_engine",
     )
 
     return {
         "next_status": "release_submitted",
         "decision": "release_submitted",
-        "reason": "dry_run_release_submitted_no_onchain_transaction",
+        "reason": "action_engine_dry_run_release_submitted",
         "handler": "ready_for_release_handler_v1",
         "release_execution": release_execution,
         "payload_update": payload_update,

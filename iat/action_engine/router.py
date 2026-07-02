@@ -1,19 +1,33 @@
 from iat.action_engine.adapters.dry_run import execute_dry_run_action
+from iat.action_engine.registry import resolve_adapter_for_action
 
 
 def route_action(action_request):
     action_request = action_request or {}
-    metadata = action_request.get("metadata") or {}
 
-    execution_mode = metadata.get("execution_mode", "dry_run")
+    adapter_resolution = resolve_adapter_for_action(action_request)
 
-    if execution_mode == "dry_run":
-        return execute_dry_run_action(action_request)
+    if adapter_resolution.get("status") != "adapter_resolved":
+        return {
+            "status": "action_rejected",
+            "action_type": action_request.get("action_type", "unknown"),
+            "action_scope": action_request.get("action_scope", "unknown"),
+            "reason": adapter_resolution.get("reason"),
+            "adapter_resolution": adapter_resolution,
+        }
+
+    adapter = adapter_resolution.get("adapter")
+
+    if adapter == "dry_run":
+        result = execute_dry_run_action(action_request)
+        result["adapter_resolution"] = adapter_resolution
+        return result
 
     return {
-        "status": "unsupported_execution_mode",
+        "status": "unsupported_adapter",
         "action_type": action_request.get("action_type", "unknown"),
         "action_scope": action_request.get("action_scope", "unknown"),
-        "reason": "execution_mode_not_supported_yet",
-        "execution_mode": execution_mode,
+        "reason": "adapter_not_supported_yet",
+        "adapter": adapter,
+        "adapter_resolution": adapter_resolution,
     }

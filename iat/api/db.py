@@ -26507,3 +26507,302 @@ def list_action_claims_db(action_id=None, worker_id=None, limit=50):
         "count": len(rows),
         "claims": [dict(row) for row in rows],
     }
+
+
+def init_action_dead_letter_queue_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS action_dead_letter_queue (
+        dlq_id TEXT PRIMARY KEY,
+        action_id TEXT NOT NULL,
+        action_type TEXT,
+        action_scope TEXT,
+        reason TEXT,
+        failure_status TEXT,
+        retry_count INTEGER DEFAULT 0,
+        max_retries INTEGER DEFAULT 0,
+        action_context TEXT NOT NULL,
+        failure_result TEXT,
+        created_at INTEGER NOT NULL
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+def move_action_to_dead_letter_queue_db(action_context, failure_result=None, reason="max_retry_reached"):
+    init_action_dead_letter_queue_table()
+
+    action_context = action_context or {}
+    failure_result = failure_result or {}
+
+    retry_policy = action_context.get("retry_policy") or {}
+    retry_count = int(retry_policy.get("retry_count") or 0)
+    max_retries = int(retry_policy.get("max_retries") or 0)
+
+    dlq_id = str(uuid.uuid4())
+    now = int(time.time())
+    p = qmark()
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(f"""
+    INSERT INTO action_dead_letter_queue (
+        dlq_id,
+        action_id,
+        action_type,
+        action_scope,
+        reason,
+        failure_status,
+        retry_count,
+        max_retries,
+        action_context,
+        failure_result,
+        created_at
+    )
+    VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})
+    """, (
+        dlq_id,
+        action_context.get("action_id"),
+        action_context.get("action_type"),
+        action_context.get("action_scope"),
+        reason,
+        failure_result.get("status"),
+        retry_count,
+        max_retries,
+        json.dumps(action_context),
+        json.dumps(failure_result),
+        now,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "moved_to_dead_letter_queue",
+        "reason": reason,
+        "dlq_id": dlq_id,
+        "action_id": action_context.get("action_id"),
+    }
+
+
+def list_action_dead_letter_queue_db(limit=50):
+    init_action_dead_letter_queue_table()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM action_dead_letter_queue
+    ORDER BY created_at DESC
+    LIMIT {p}
+    """, (int(limit or 50),))
+
+    rows = cur.fetchall()
+    release_conn(conn)
+
+    items = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["action_context"] = json.loads(item.get("action_context") or "{}")
+        except Exception:
+            pass
+        try:
+            item["failure_result"] = json.loads(item.get("failure_result") or "{}")
+        except Exception:
+            pass
+        items.append(item)
+
+    return {
+        "status": "ok",
+        "count": len(items),
+        "items": items,
+    }
+
+
+def init_action_runtime_events_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS action_runtime_events (
+        event_id TEXT PRIMARY KEY,
+        event_type TEXT NOT NULL,
+        action_id TEXT,
+        worker_id TEXT,
+        claim_id TEXT,
+        severity TEXT DEFAULT 'info',
+        event_payload TEXT,
+        created_at INTEGER NOT NULL
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+def record_action_runtime_event_db(
+    event_type,
+    action_id=None,
+    worker_id=None,
+    claim_id=None,
+    severity="info",
+    event_payload=None,
+):
+    if not event_type:
+        return {
+            "status": "event_rejected",
+            "reason": "event_type_missing",
+        }
+
+    init_action_runtime_events_table()
+
+    event_id = str(uuid.uuid4())
+    now = int(time.time())
+    p = qmark()
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(f"""
+    INSERT INTO action_runtime_events (
+        event_id,
+        event_type,
+        action_id,
+        worker_id,
+        claim_id,
+        severity,
+        event_payload,
+        created_at
+    )
+    VALUES ({p},{p},{p},{p},{p},{p},{p},{p})
+    """, (
+        event_id,
+        event_type,
+        action_id,
+        worker_id,
+        claim_id,
+        severity or "info",
+        json.dumps(event_payload or {}),
+        now,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "recorded",
+        "reason": "action_runtime_event_recorded",
+        "event_id": event_id,
+        "event_type": event_type,
+    }
+
+
+def list_action_runtime_events_db(limit=100, event_type=None, action_id=None, worker_id=None):
+    init_action_runtime_events_table()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    where = []
+    params = []
+
+    if event_type:
+        where.append(f"event_type = {p}")
+        params.append(event_type)
+
+    if action_id:
+        where.append(f"action_id = {p}")
+        params.append(action_id)
+
+    if worker_id:
+        where.append(f"worker_id = {p}")
+        params.append(worker_id)
+
+    where_sql = ""
+    if where:
+        where_sql = "WHERE " + " AND ".join(where)
+
+    params.append(int(limit or 100))
+
+    cur.execute(f"""
+    SELECT *
+    FROM action_runtime_events
+    {where_sql}
+    ORDER BY created_at DESC
+    LIMIT {p}
+    """, tuple(params))
+
+    rows = cur.fetchall()
+    release_conn(conn)
+
+    events = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["event_payload"] = json.loads(item.get("event_payload") or "{}")
+        except Exception:
+            pass
+        events.append(item)
+
+    return {
+        "status": "ok",
+        "count": len(events),
+        "events": events,
+    }
+
+
+def reactivate_action_queue_item_db(action_id, reason="recovery_requeue"):
+    if not action_id:
+        return {
+            "status": "reactivation_rejected",
+            "reason": "action_id_missing",
+            "reactivated": False,
+        }
+
+    init_action_queue_table()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    UPDATE action_queue
+    SET queue_status = 'queued',
+        dequeued_at = NULL,
+        completed_at = NULL,
+        last_result = {p},
+        queued_at = {p},
+        updated_at = {p}
+    WHERE action_id = {p}
+      AND queue_status NOT IN ('queued')
+    """, (
+        json.dumps({
+            "status": "reactivated",
+            "reason": reason,
+            "reactivated_at": now,
+        }),
+        now,
+        now,
+        action_id,
+    ))
+
+    conn.commit()
+    updated = cur.rowcount
+    release_conn(conn)
+
+    return {
+        "status": "reactivated" if updated else "not_reactivated",
+        "reason": reason if updated else "action_not_found_or_already_queued",
+        "action_id": action_id,
+        "reactivated": bool(updated),
+    }

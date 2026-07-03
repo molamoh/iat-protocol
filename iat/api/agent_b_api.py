@@ -5776,6 +5776,61 @@ def admin_create_decision_test_settlement(payload: dict = Body(default=None), x_
 
 
 
+@app.get("/admin/action-engine/runtime/supervisor")
+def admin_inspect_action_runtime_supervisor(x_api_key: str = Header(default="")):
+    require_admin_key(x_api_key)
+
+    from iat.action_engine.runtime_supervisor import inspect_runtime_supervisor
+
+    return inspect_runtime_supervisor()
+
+
+@app.post("/admin/action-engine/runtime/supervisor/run")
+def admin_run_action_runtime_supervisor(x_api_key: str = Header(default="")):
+    require_admin_key(x_api_key)
+
+    from iat.action_engine.runtime_supervisor import run_runtime_supervisor_cycle
+
+    return run_runtime_supervisor_cycle()
+
+
+@app.get("/admin/action-engine/runtime/metrics")
+def admin_get_action_runtime_metrics(x_api_key: str = Header(default="")):
+    require_admin_key(x_api_key)
+
+    from iat.action_engine.runtime_metrics import inspect_runtime_metrics
+
+    return inspect_runtime_metrics()
+
+
+@app.get("/admin/action-engine/runtime/events")
+def admin_list_action_runtime_events(x_api_key: str = Header(default="")):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import list_action_runtime_events_db
+
+    return list_action_runtime_events_db(limit=100)
+
+
+@app.get("/admin/action-engine/runtime/policy")
+def admin_get_action_runtime_policy(x_api_key: str = Header(default="")):
+    require_admin_key(x_api_key)
+
+    from iat.action_engine.runtime_policy_engine import inspect_runtime_policy_engine
+
+    return inspect_runtime_policy_engine()
+
+
+@app.get("/admin/action-engine/runtime/dead-letter")
+def admin_list_action_dead_letter_queue(x_api_key: str = Header(default="")):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import list_action_dead_letter_queue_db
+
+    return list_action_dead_letter_queue_db(limit=100)
+
+
+
 @app.get("/admin/action-engine/workers")
 def admin_list_action_workers(x_api_key: str = Header(default="")):
     require_admin_key(x_api_key)

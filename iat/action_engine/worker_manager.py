@@ -9,39 +9,40 @@ from iat.api.db import (
     expire_stale_action_claims_db,
 )
 from iat.action_engine.execution_core import process_next_core_action
+from iat.action_engine.runtime_policy_engine import evaluate_runtime_policy
 
 
-def select_available_worker() -> Dict[str, Any]:
+
+def select_available_worker(
+    required_capabilities=None,
+) -> Dict[str, Any]:
+
     workers_result = list_action_workers_db(limit=100)
     workers = workers_result.get("workers") or []
 
-    idle_workers = [
-        worker for worker in workers
-        if str(worker.get("worker_status") or "").lower() == "idle"
-    ]
-
-    if not idle_workers:
-        return {
-            "status": "no_available_worker",
-            "reason": "no_idle_action_worker_available",
-            "worker": None,
-            "workers_count": len(workers),
-        }
-
-    idle_workers.sort(
-        key=lambda worker: (
-            int(worker.get("processed_actions") or 0),
-            int(worker.get("last_heartbeat") or 0),
-        )
+    decision = evaluate_runtime_policy(
+        domain="worker",
+        context={
+            "workers": workers,
+            "required_capabilities": required_capabilities,
+        },
     )
 
-    worker = idle_workers[0]
+    if decision.get("status") != "worker_selected":
+        return {
+            "status": "no_available_worker",
+            "reason": decision.get("reason"),
+            "worker": None,
+            "workers_count": len(workers),
+            "policy_decision": decision,
+        }
 
     return {
         "status": "worker_selected",
-        "reason": "idle_action_worker_selected",
-        "worker": worker,
+        "reason": "runtime_policy_selected_worker",
+        "worker": decision.get("selected_worker"),
         "workers_count": len(workers),
+        "policy_decision": decision,
     }
 
 

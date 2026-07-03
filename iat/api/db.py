@@ -25655,3 +25655,581 @@ def compute_threat_correlated_execution_mode_db(subject_id):
         },
         "advisory_only": True,
     }
+
+
+def init_action_queue_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS action_queue (
+        action_id TEXT PRIMARY KEY,
+        action_type TEXT NOT NULL,
+        action_scope TEXT,
+        priority TEXT DEFAULT 'normal',
+        queue_status TEXT DEFAULT 'queued',
+        attempts INTEGER DEFAULT 0,
+        action_context TEXT NOT NULL,
+        last_result TEXT,
+        created_at INTEGER NOT NULL,
+        queued_at INTEGER NOT NULL,
+        dequeued_at INTEGER,
+        completed_at INTEGER,
+        updated_at INTEGER NOT NULL
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+def enqueue_action_db(action_context):
+    if not isinstance(action_context, dict):
+        return {
+            "status": "enqueue_rejected",
+            "reason": "action_context_must_be_dict",
+            "queued": False,
+        }
+
+    init_action_queue_table()
+
+    action_id = action_context.get("action_id") or str(uuid.uuid4())
+    now = int(time.time())
+    p = qmark()
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(f"""
+    INSERT INTO action_queue (
+        action_id,
+        action_type,
+        action_scope,
+        priority,
+        queue_status,
+        attempts,
+        action_context,
+        created_at,
+        queued_at,
+        updated_at
+    )
+    VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p})
+    """, (
+        action_id,
+        action_context.get("action_type"),
+        action_context.get("action_scope"),
+        action_context.get("priority") or "normal",
+        "queued",
+        0,
+        json.dumps(action_context),
+        int(action_context.get("created_at") or now),
+        now,
+        now,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "queued",
+        "reason": "action_enqueued_db",
+        "action_id": action_id,
+        "queued": True,
+    }
+
+
+def list_action_queue_db(limit=50):
+    init_action_queue_table()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM action_queue
+    ORDER BY
+        CASE priority
+            WHEN 'critical' THEN 100
+            WHEN 'high' THEN 80
+            WHEN 'normal' THEN 50
+            WHEN 'low' THEN 10
+            ELSE 50
+        END DESC,
+        queued_at ASC
+    LIMIT {p}
+    """, (int(limit or 50),))
+
+    rows = cur.fetchall()
+    release_conn(conn)
+
+    actions = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["action_context"] = json.loads(item.get("action_context") or "{}")
+        except Exception:
+            pass
+
+        try:
+            item["last_result"] = json.loads(item.get("last_result") or "{}")
+        except Exception:
+            pass
+
+        actions.append(item)
+
+    return {
+        "status": "ok",
+        "queue_size": len(actions),
+        "actions": actions,
+    }
+
+
+def dequeue_next_action_db():
+    init_action_queue_table()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    SELECT *
+    FROM action_queue
+    WHERE queue_status = 'queued'
+    ORDER BY
+        CASE priority
+            WHEN 'critical' THEN 100
+            WHEN 'high' THEN 80
+            WHEN 'normal' THEN 50
+            WHEN 'low' THEN 10
+            ELSE 50
+        END DESC,
+        queued_at ASC
+    LIMIT 1
+    """)
+
+    row = cur.fetchone()
+
+    if not row:
+        release_conn(conn)
+        return {
+            "status": "empty",
+            "reason": "action_queue_db_empty",
+            "item": None,
+        }
+
+    item = dict(row)
+    action_id = item.get("action_id")
+
+    cur.execute(f"""
+    UPDATE action_queue
+    SET queue_status = 'dequeued',
+        attempts = attempts + 1,
+        dequeued_at = {p},
+        updated_at = {p}
+    WHERE action_id = {p}
+    """, (now, now, action_id))
+
+    conn.commit()
+    release_conn(conn)
+
+    try:
+        item["action_context"] = json.loads(item.get("action_context") or "{}")
+    except Exception:
+        pass
+
+    return {
+        "status": "dequeued",
+        "reason": "action_dequeued_db",
+        "item": item,
+    }
+
+
+def complete_action_queue_item_db(action_id, result):
+    if not action_id:
+        return {
+            "status": "completion_rejected",
+            "reason": "action_id_missing",
+        }
+
+    init_action_queue_table()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+    UPDATE action_queue
+    SET queue_status = 'completed',
+        last_result = {p},
+        completed_at = {p},
+        updated_at = {p}
+    WHERE action_id = {p}
+    """, (
+        json.dumps(result or {}),
+        now,
+        now,
+        action_id,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "completed",
+        "reason": "action_queue_item_completed_db",
+        "action_id": action_id,
+    }
+
+
+def clear_action_queue_db():
+    init_action_queue_table()
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("DELETE FROM action_queue")
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "cleared",
+        "reason": "action_queue_db_cleared",
+    }
+
+
+def init_action_execution_history_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS action_execution_history (
+        history_id TEXT PRIMARY KEY,
+        action_id TEXT NOT NULL,
+        action_type TEXT,
+        action_scope TEXT,
+        execution_status TEXT,
+        execution_reason TEXT,
+        executed INTEGER DEFAULT 0,
+        pipeline_status TEXT,
+        adapter TEXT,
+        full_result TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+def record_action_execution_history_db(action_context, execution_result):
+    init_action_execution_history_table()
+
+    action_context = action_context or {}
+    execution_result = execution_result or {}
+
+    action_id = action_context.get("action_id") or execution_result.get("action_id")
+    history_id = str(uuid.uuid4())
+    now = int(time.time())
+
+    adapter_resolution = execution_result.get("adapter_resolution") or {}
+    pipeline = execution_result.get("pipeline") or {}
+
+    p = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(f"""
+    INSERT INTO action_execution_history (
+        history_id,
+        action_id,
+        action_type,
+        action_scope,
+        execution_status,
+        execution_reason,
+        executed,
+        pipeline_status,
+        adapter,
+        full_result,
+        created_at
+    )
+    VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})
+    """, (
+        history_id,
+        action_id,
+        action_context.get("action_type") or execution_result.get("action_type"),
+        action_context.get("action_scope") or execution_result.get("action_scope"),
+        execution_result.get("status"),
+        execution_result.get("reason"),
+        1 if execution_result.get("executed") else 0,
+        pipeline.get("status"),
+        adapter_resolution.get("adapter"),
+        json.dumps(execution_result),
+        now,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "recorded",
+        "reason": "action_execution_history_recorded",
+        "history_id": history_id,
+        "action_id": action_id,
+    }
+
+
+def list_action_execution_history_db(action_id=None, limit=50):
+    init_action_execution_history_table()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    if action_id:
+        cur.execute(f"""
+        SELECT *
+        FROM action_execution_history
+        WHERE action_id = {p}
+        ORDER BY created_at DESC
+        LIMIT {p}
+        """, (action_id, int(limit or 50)))
+    else:
+        cur.execute(f"""
+        SELECT *
+        FROM action_execution_history
+        ORDER BY created_at DESC
+        LIMIT {p}
+        """, (int(limit or 50),))
+
+    rows = cur.fetchall()
+    release_conn(conn)
+
+    history = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["full_result"] = json.loads(item.get("full_result") or "{}")
+        except Exception:
+            pass
+        history.append(item)
+
+    return {
+        "status": "ok",
+        "count": len(history),
+        "history": history,
+    }
+
+
+def summarize_action_execution_result(execution_result):
+    execution_result = execution_result or {}
+    pipeline = execution_result.get("pipeline") or {}
+    adapter_resolution = execution_result.get("adapter_resolution") or {}
+
+    return {
+        "status": execution_result.get("status"),
+        "reason": execution_result.get("reason"),
+        "executed": bool(execution_result.get("executed")),
+        "pipeline_status": pipeline.get("status"),
+        "adapter": adapter_resolution.get("adapter"),
+        "executed_at": execution_result.get("executed_at"),
+    }
+
+
+def init_action_workers_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS action_workers (
+        worker_id TEXT PRIMARY KEY,
+        worker_name TEXT,
+        worker_status TEXT DEFAULT 'idle',
+        current_action_id TEXT,
+        hostname TEXT,
+        capabilities TEXT,
+        processed_actions INTEGER DEFAULT 0,
+        failed_actions INTEGER DEFAULT 0,
+        started_at INTEGER NOT NULL,
+        last_heartbeat INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+def register_action_worker_db(worker_id=None, worker_name=None, hostname=None, capabilities=None):
+    init_action_workers_table()
+
+    worker_id = worker_id or str(uuid.uuid4())
+    now = int(time.time())
+    p = qmark()
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(f"""
+    INSERT INTO action_workers (
+        worker_id,
+        worker_name,
+        worker_status,
+        current_action_id,
+        hostname,
+        capabilities,
+        processed_actions,
+        failed_actions,
+        started_at,
+        last_heartbeat,
+        updated_at
+    )
+    VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})
+    """, (
+        worker_id,
+        worker_name or worker_id,
+        "idle",
+        None,
+        hostname,
+        json.dumps(capabilities or {}),
+        0,
+        0,
+        now,
+        now,
+        now,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "registered",
+        "reason": "action_worker_registered",
+        "worker_id": worker_id,
+    }
+
+
+def heartbeat_action_worker_db(worker_id, worker_status=None, current_action_id=None):
+    if not worker_id:
+        return {
+            "status": "heartbeat_rejected",
+            "reason": "worker_id_missing",
+        }
+
+    init_action_workers_table()
+
+    now = int(time.time())
+    p = qmark()
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(f"""
+    UPDATE action_workers
+    SET worker_status = COALESCE({p}, worker_status),
+        current_action_id = {p},
+        last_heartbeat = {p},
+        updated_at = {p}
+    WHERE worker_id = {p}
+    """, (
+        worker_status,
+        current_action_id,
+        now,
+        now,
+        worker_id,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "heartbeat_recorded",
+        "reason": "action_worker_heartbeat_updated",
+        "worker_id": worker_id,
+        "worker_status": worker_status,
+        "current_action_id": current_action_id,
+        "last_heartbeat": now,
+    }
+
+
+def list_action_workers_db(limit=50):
+    init_action_workers_table()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM action_workers
+    ORDER BY last_heartbeat DESC
+    LIMIT {p}
+    """, (int(limit or 50),))
+
+    rows = cur.fetchall()
+    release_conn(conn)
+
+    workers = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["capabilities"] = json.loads(item.get("capabilities") or "{}")
+        except Exception:
+            pass
+        workers.append(item)
+
+    return {
+        "status": "ok",
+        "count": len(workers),
+        "workers": workers,
+    }
+
+
+def mark_action_worker_result_db(worker_id, success=True, current_action_id=None):
+    if not worker_id:
+        return {
+            "status": "worker_result_rejected",
+            "reason": "worker_id_missing",
+        }
+
+    init_action_workers_table()
+
+    now = int(time.time())
+    p = qmark()
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    if success:
+        cur.execute(f"""
+        UPDATE action_workers
+        SET worker_status = 'idle',
+            current_action_id = NULL,
+            processed_actions = processed_actions + 1,
+            last_heartbeat = {p},
+            updated_at = {p}
+        WHERE worker_id = {p}
+        """, (now, now, worker_id))
+    else:
+        cur.execute(f"""
+        UPDATE action_workers
+        SET worker_status = 'idle',
+            current_action_id = NULL,
+            failed_actions = failed_actions + 1,
+            last_heartbeat = {p},
+            updated_at = {p}
+        WHERE worker_id = {p}
+        """, (now, now, worker_id))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "worker_result_recorded",
+        "reason": "action_worker_result_updated",
+        "worker_id": worker_id,
+        "success": bool(success),
+        "current_action_id": current_action_id,
+    }

@@ -1,7 +1,14 @@
 from typing import Any, Dict
 
 from iat.action_engine.context import build_action_context, validate_action_context
-from iat.action_engine.queue import enqueue_action, dequeue_next_action, list_queued_actions
+from iat.api.db import (
+    enqueue_action_db,
+    dequeue_next_action_db,
+    list_action_queue_db,
+    complete_action_queue_item_db,
+    record_action_execution_history_db,
+    summarize_action_execution_result,
+)
 from iat.action_engine.pipeline_executor import execute_pipeline
 
 
@@ -36,7 +43,7 @@ def submit_action_to_core(
             "queued": False,
         }
 
-    enqueue_result = enqueue_action(validation.get("context"))
+    enqueue_result = enqueue_action_db(validation.get("context"))
 
     return {
         "status": "submitted",
@@ -49,7 +56,7 @@ def submit_action_to_core(
 
 
 def process_next_core_action() -> Dict[str, Any]:
-    dequeue_result = dequeue_next_action()
+    dequeue_result = dequeue_next_action_db()
 
     if dequeue_result.get("status") == "empty":
         return {
@@ -60,15 +67,26 @@ def process_next_core_action() -> Dict[str, Any]:
         }
 
     item = dequeue_result.get("item") or {}
-    action_context = item.get("context") or {}
+    action_context = item.get("action_context") or item.get("context") or {}
 
     result = execute_pipeline(action_context)
     result["dequeue"] = dequeue_result
+
+    action_id = action_context.get("action_id")
+
+    history = record_action_execution_history_db(action_context, result)
+    result_summary = summarize_action_execution_result(result)
+
+    completion = complete_action_queue_item_db(action_id, result_summary)
+
+    result["execution_history"] = history
+    result["queue_completion"] = completion
+
     return result
 
 
 def inspect_execution_core() -> Dict[str, Any]:
-    queue_state = list_queued_actions()
+    queue_state = list_action_queue_db()
 
     return {
         "status": "ok",
@@ -80,7 +98,7 @@ def inspect_execution_core() -> Dict[str, Any]:
             "dispatcher": True,
             "router": True,
             "worker": True,
-            "persistent_queue": False,
+            "persistent_queue": True,
             "distributed_workers": False,
         },
     }

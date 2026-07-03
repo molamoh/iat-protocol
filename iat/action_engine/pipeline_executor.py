@@ -35,7 +35,12 @@ def execute_pipeline(action_context: Dict[str, Any]) -> Dict[str, Any]:
         else:
             result = stage_runner(ctx)
 
-        stage_results.append(result)
+        stage_results.append({
+            "stage": result.get("stage"),
+            "status": result.get("status"),
+            "reason": result.get("reason"),
+            "continue_pipeline": result.get("continue_pipeline"),
+        })
         final_stage_result = result
 
         if not result.get("continue_pipeline"):

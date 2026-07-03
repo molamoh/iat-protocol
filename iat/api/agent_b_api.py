@@ -5776,6 +5776,45 @@ def admin_create_decision_test_settlement(payload: dict = Body(default=None), x_
 
 
 
+@app.get("/admin/action-engine/core")
+def admin_inspect_action_execution_core(x_api_key: str = Header(default="")):
+    require_admin_key(x_api_key)
+
+    from iat.action_engine.execution_core import inspect_execution_core
+
+    return inspect_execution_core()
+
+
+@app.post("/admin/action-engine/core/submit")
+def admin_submit_action_to_execution_core(payload: dict = Body(default=None), x_api_key: str = Header(default="")):
+    require_admin_key(x_api_key)
+
+    from iat.action_engine.execution_core import submit_action_to_core
+
+    payload = payload or {}
+
+    return submit_action_to_core(
+        action_type=payload.get("action_type"),
+        action_scope=payload.get("action_scope"),
+        payload=payload.get("payload") or {},
+        metadata=payload.get("metadata") or {},
+        requested_by=payload.get("requested_by") or "admin_api",
+        priority=payload.get("priority") or "normal",
+        timeout_seconds=int(payload.get("timeout_seconds") or 300),
+        retry_policy=payload.get("retry_policy"),
+    )
+
+
+@app.post("/admin/action-engine/core/process-next")
+def admin_process_next_action_core(x_api_key: str = Header(default="")):
+    require_admin_key(x_api_key)
+
+    from iat.action_engine.execution_core import process_next_core_action
+
+    return process_next_core_action()
+
+
+
 @app.post("/admin/settlements/{settlement_id}/execution-supervisor/run")
 def admin_run_settlement_execution_supervisor(settlement_id: str, x_api_key: str = Header(default="")):
     require_admin_key(x_api_key)

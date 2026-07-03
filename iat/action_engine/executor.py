@@ -1,6 +1,7 @@
 from iat.action_engine.context import build_action_context, validate_action_context
 from iat.action_engine.router import route_action
 from iat.action_engine.scheduler import compute_action_schedule
+from iat.action_engine.dispatcher import dispatch_action
 
 
 def execute_action(
@@ -43,7 +44,19 @@ def execute_action(
             "action_context": validation.get("context"),
         }
 
+    dispatch = dispatch_action(validation.get("context"))
+
+    if dispatch.get("status") != "dispatched":
+        return {
+            "status": "action_dispatch_failed",
+            "reason": dispatch.get("reason"),
+            "dispatch": dispatch,
+            "schedule": schedule,
+            "action_context": validation.get("context"),
+        }
+
     result = route_action(validation.get("context"))
     result["action_context"] = validation.get("context")
     result["schedule"] = schedule
+    result["dispatch"] = dispatch
     return result

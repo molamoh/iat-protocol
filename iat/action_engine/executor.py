@@ -1,4 +1,4 @@
-from iat.action_engine.models import build_action_request
+from iat.action_engine.context import build_action_context, validate_action_context
 from iat.action_engine.router import route_action
 
 
@@ -7,12 +7,31 @@ def execute_action(
     action_scope,
     payload=None,
     metadata=None,
+    requested_by="iat_protocol",
+    priority="normal",
+    timeout_seconds=300,
+    retry_policy=None,
 ):
-    action_request = build_action_request(
+    action_context = build_action_context(
         action_type=action_type,
         action_scope=action_scope,
         payload=payload or {},
         metadata=metadata or {},
+        requested_by=requested_by,
+        priority=priority,
+        timeout_seconds=timeout_seconds,
+        retry_policy=retry_policy,
     )
 
-    return route_action(action_request)
+    validation = validate_action_context(action_context)
+
+    if not validation.get("valid"):
+        return {
+            "status": "action_context_invalid",
+            "reason": validation.get("reason"),
+            "validation": validation,
+        }
+
+    result = route_action(validation.get("context"))
+    result["action_context"] = validation.get("context")
+    return result

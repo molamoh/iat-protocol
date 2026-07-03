@@ -1,5 +1,6 @@
 from iat.action_engine.context import build_action_context, validate_action_context
 from iat.action_engine.router import route_action
+from iat.action_engine.scheduler import compute_action_schedule
 
 
 def execute_action(
@@ -32,6 +33,17 @@ def execute_action(
             "validation": validation,
         }
 
+    schedule = compute_action_schedule(validation.get("context"))
+
+    if not schedule.get("ready_to_execute"):
+        return {
+            "status": "action_not_ready",
+            "reason": schedule.get("reason"),
+            "schedule": schedule,
+            "action_context": validation.get("context"),
+        }
+
     result = route_action(validation.get("context"))
     result["action_context"] = validation.get("context")
+    result["schedule"] = schedule
     return result

@@ -5776,6 +5776,62 @@ def admin_create_decision_test_settlement(payload: dict = Body(default=None), x_
 
 
 
+@app.get("/admin/action-engine/workers")
+def admin_list_action_workers(x_api_key: str = Header(default="")):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import list_action_workers_db
+
+    return list_action_workers_db()
+
+
+@app.post("/admin/action-engine/workers/register")
+def admin_register_action_worker(payload: dict = Body(default=None), x_api_key: str = Header(default="")):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import register_action_worker_db
+
+    payload = payload or {}
+
+    return register_action_worker_db(
+        worker_id=payload.get("worker_id"),
+        worker_name=payload.get("worker_name"),
+        hostname=payload.get("hostname"),
+        capabilities=payload.get("capabilities") or {},
+    )
+
+
+@app.post("/admin/action-engine/workers/heartbeat")
+def admin_heartbeat_action_worker(payload: dict = Body(default=None), x_api_key: str = Header(default="")):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import heartbeat_action_worker_db
+
+    payload = payload or {}
+
+    return heartbeat_action_worker_db(
+        worker_id=payload.get("worker_id"),
+        worker_status=payload.get("worker_status"),
+        current_action_id=payload.get("current_action_id"),
+    )
+
+
+@app.post("/admin/action-engine/workers/result")
+def admin_mark_action_worker_result(payload: dict = Body(default=None), x_api_key: str = Header(default="")):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import mark_action_worker_result_db
+
+    payload = payload or {}
+
+    return mark_action_worker_result_db(
+        worker_id=payload.get("worker_id"),
+        success=bool(payload.get("success", True)),
+        current_action_id=payload.get("current_action_id"),
+    )
+
+
+
 @app.get("/admin/action-engine/core")
 def admin_inspect_action_execution_core(x_api_key: str = Header(default="")):
     require_admin_key(x_api_key)

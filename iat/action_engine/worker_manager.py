@@ -4,6 +4,9 @@ from iat.api.db import (
     heartbeat_action_worker_db,
     list_action_workers_db,
     mark_action_worker_result_db,
+    claim_action_db,
+    release_action_claim_db,
+    expire_stale_action_claims_db,
 )
 from iat.action_engine.execution_core import process_next_core_action
 
@@ -82,6 +85,8 @@ def process_next_action_with_worker(worker_id: Optional[str] = None) -> Dict[str
 
     worker_id = selected.get("worker_id")
 
+    expire_stale_action_claims_db()
+
     heartbeat_action_worker_db(
         worker_id=worker_id,
         worker_status="busy",
@@ -95,7 +100,41 @@ def process_next_action_with_worker(worker_id: Optional[str] = None) -> Dict[str
         or result.get("dequeue", {}).get("item", {}).get("action_id")
     )
 
+    claim = None
+    claim_release = None
+
+    if action_id:
+        claim = claim_action_db(
+            action_id=action_id,
+            worker_id=worker_id,
+            lease_seconds=60,
+        )
+
+        if not claim.get("claimed"):
+            mark_action_worker_result_db(
+                worker_id=worker_id,
+                success=False,
+                current_action_id=action_id,
+            )
+
+            return {
+                "status": "action_claim_failed",
+                "reason": claim.get("reason"),
+                "worker_id": worker_id,
+                "action_id": action_id,
+                "claim": claim,
+                "execution_result": result,
+                "executed": False,
+            }
+
     success = bool(result.get("executed"))
+
+    if claim and claim.get("claim_id"):
+        claim_release = release_action_claim_db(
+            claim_id=claim.get("claim_id"),
+            worker_id=worker_id,
+            release_reason="worker_execution_completed" if success else "worker_execution_failed",
+        )
 
     worker_result = mark_action_worker_result_db(
         worker_id=worker_id,
@@ -109,6 +148,8 @@ def process_next_action_with_worker(worker_id: Optional[str] = None) -> Dict[str
         "worker_id": worker_id,
         "action_id": action_id,
         "executed": success,
+        "claim": claim,
+        "claim_release": claim_release,
         "execution_result": result,
         "worker_result": worker_result,
     }

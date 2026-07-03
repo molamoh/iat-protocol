@@ -26233,3 +26233,277 @@ def mark_action_worker_result_db(worker_id, success=True, current_action_id=None
         "success": bool(success),
         "current_action_id": current_action_id,
     }
+
+
+def init_action_claims_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS action_claims (
+        claim_id TEXT PRIMARY KEY,
+        action_id TEXT NOT NULL,
+        worker_id TEXT NOT NULL,
+        claim_status TEXT DEFAULT 'claimed',
+        claimed_at INTEGER NOT NULL,
+        lease_until INTEGER NOT NULL,
+        heartbeat_at INTEGER NOT NULL,
+        released_at INTEGER,
+        release_reason TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+def claim_action_db(action_id, worker_id, lease_seconds=60):
+    if not action_id or not worker_id:
+        return {
+            "status": "claim_rejected",
+            "reason": "action_id_or_worker_id_missing",
+            "claimed": False,
+        }
+
+    init_action_claims_table()
+
+    now = int(time.time())
+    lease_until = now + int(lease_seconds or 60)
+    claim_id = str(uuid.uuid4())
+    p = qmark()
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(f"""
+    SELECT *
+    FROM action_claims
+    WHERE action_id = {p}
+      AND claim_status IN ('claimed', 'running')
+      AND lease_until > {p}
+    ORDER BY claimed_at DESC
+    LIMIT 1
+    """, (action_id, now))
+
+    existing = cur.fetchone()
+
+    if existing:
+        release_conn(conn)
+        return {
+            "status": "already_claimed",
+            "reason": "active_claim_exists_for_action",
+            "claimed": False,
+            "existing_claim": dict(existing),
+        }
+
+    cur.execute(f"""
+    INSERT INTO action_claims (
+        claim_id,
+        action_id,
+        worker_id,
+        claim_status,
+        claimed_at,
+        lease_until,
+        heartbeat_at,
+        created_at,
+        updated_at
+    )
+    VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p})
+    """, (
+        claim_id,
+        action_id,
+        worker_id,
+        "claimed",
+        now,
+        lease_until,
+        now,
+        now,
+        now,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "claimed",
+        "reason": "action_claim_created",
+        "claimed": True,
+        "claim_id": claim_id,
+        "action_id": action_id,
+        "worker_id": worker_id,
+        "lease_until": lease_until,
+    }
+
+
+def heartbeat_action_claim_db(claim_id, worker_id=None, extend_seconds=60):
+    if not claim_id:
+        return {
+            "status": "claim_heartbeat_rejected",
+            "reason": "claim_id_missing",
+        }
+
+    init_action_claims_table()
+
+    now = int(time.time())
+    lease_until = now + int(extend_seconds or 60)
+    p = qmark()
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    if worker_id:
+        cur.execute(f"""
+        UPDATE action_claims
+        SET heartbeat_at = {p},
+            lease_until = {p},
+            updated_at = {p}
+        WHERE claim_id = {p}
+          AND worker_id = {p}
+          AND claim_status IN ('claimed', 'running')
+        """, (now, lease_until, now, claim_id, worker_id))
+    else:
+        cur.execute(f"""
+        UPDATE action_claims
+        SET heartbeat_at = {p},
+            lease_until = {p},
+            updated_at = {p}
+        WHERE claim_id = {p}
+          AND claim_status IN ('claimed', 'running')
+        """, (now, lease_until, now, claim_id))
+
+    conn.commit()
+    updated = cur.rowcount
+    release_conn(conn)
+
+    return {
+        "status": "heartbeat_recorded" if updated else "claim_not_updated",
+        "reason": "action_claim_heartbeat_updated" if updated else "claim_not_found_or_not_active",
+        "claim_id": claim_id,
+        "worker_id": worker_id,
+        "lease_until": lease_until,
+        "updated": bool(updated),
+    }
+
+
+def release_action_claim_db(claim_id, worker_id=None, release_reason="released"):
+    if not claim_id:
+        return {
+            "status": "claim_release_rejected",
+            "reason": "claim_id_missing",
+        }
+
+    init_action_claims_table()
+
+    now = int(time.time())
+    p = qmark()
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    if worker_id:
+        cur.execute(f"""
+        UPDATE action_claims
+        SET claim_status = 'released',
+            released_at = {p},
+            release_reason = {p},
+            updated_at = {p}
+        WHERE claim_id = {p}
+          AND worker_id = {p}
+          AND claim_status IN ('claimed', 'running')
+        """, (now, release_reason, now, claim_id, worker_id))
+    else:
+        cur.execute(f"""
+        UPDATE action_claims
+        SET claim_status = 'released',
+            released_at = {p},
+            release_reason = {p},
+            updated_at = {p}
+        WHERE claim_id = {p}
+          AND claim_status IN ('claimed', 'running')
+        """, (now, release_reason, now, claim_id))
+
+    conn.commit()
+    updated = cur.rowcount
+    release_conn(conn)
+
+    return {
+        "status": "released" if updated else "claim_not_released",
+        "reason": "action_claim_released" if updated else "claim_not_found_or_not_active",
+        "claim_id": claim_id,
+        "worker_id": worker_id,
+        "updated": bool(updated),
+    }
+
+
+def expire_stale_action_claims_db():
+    init_action_claims_table()
+
+    now = int(time.time())
+    p = qmark()
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(f"""
+    UPDATE action_claims
+    SET claim_status = 'expired',
+        released_at = {p},
+        release_reason = 'lease_expired',
+        updated_at = {p}
+    WHERE claim_status IN ('claimed', 'running')
+      AND lease_until <= {p}
+    """, (now, now, now))
+
+    conn.commit()
+    expired_count = cur.rowcount
+    release_conn(conn)
+
+    return {
+        "status": "expired",
+        "reason": "stale_action_claims_expired",
+        "expired_count": expired_count,
+    }
+
+
+def list_action_claims_db(action_id=None, worker_id=None, limit=50):
+    init_action_claims_table()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    where = []
+    params = []
+
+    if action_id:
+        where.append(f"action_id = {p}")
+        params.append(action_id)
+
+    if worker_id:
+        where.append(f"worker_id = {p}")
+        params.append(worker_id)
+
+    where_sql = ""
+    if where:
+        where_sql = "WHERE " + " AND ".join(where)
+
+    params.append(int(limit or 50))
+
+    cur.execute(f"""
+    SELECT *
+    FROM action_claims
+    {where_sql}
+    ORDER BY created_at DESC
+    LIMIT {p}
+    """, tuple(params))
+
+    rows = cur.fetchall()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "count": len(rows),
+        "claims": [dict(row) for row in rows],
+    }

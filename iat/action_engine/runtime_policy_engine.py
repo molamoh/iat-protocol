@@ -1,4 +1,5 @@
 from typing import Any, Dict
+from iat.action_engine.unified_trust_engine import compute_unified_trust_score
 
 
 DEFAULT_RUNTIME_POLICY = {
@@ -162,7 +163,7 @@ def compute_worker_score(worker, required_capabilities=None):
         / int(policy.get("worker_score_heartbeat_divisor") or 50000),
     )
 
-    final_score = round(
+    local_worker_score = round(
         capability_score +
         load_score +
         reliability_score +
@@ -172,10 +173,37 @@ def compute_worker_score(worker, required_capabilities=None):
         6,
     )
 
+    unified = compute_unified_trust_score({
+        "entity_id": worker.get("worker_id"),
+        "entity_type": "runtime_worker",
+        "reputation": worker.get("reputation", 50),
+        "trust_score": worker.get("trust_score", 50),
+        "risk_score": worker.get(
+            "risk_score",
+            min(100, failure_ratio * 150),
+        ),
+        "reliability_score": success_rate * 100,
+        "runtime_health_score": local_worker_score,
+        "governance_score": 100 if str(worker.get("worker_status") or "").lower() == "idle" else 0,
+    })
+
+    final_score = round(
+        (local_worker_score * 0.65) + (unified.get("score", 50) * 0.35),
+        6,
+    )
+
+    if failure_ratio >= 0.30:
+        final_score = min(final_score, 35)
+
+    if failure_ratio >= 0.50:
+        final_score = min(final_score, 20)
+
     return {
         "status": "eligible",
         "score": final_score,
-        "reason": "worker_score_computed",
+        "reason": "worker_score_computed_with_unified_trust",
+        "local_worker_score": local_worker_score,
+        "unified_trust": unified,
         "components": {
             "capability_score": capability_score,
             "load_score": load_score,

@@ -445,7 +445,13 @@ def evaluate_unified_trust_review_v1(
             "governance_score": payload.get("governance_score", 50),
         }
 
-    trust = compute_unified_trust_score(entity)
+    trust = (
+        entity.get("trust_snapshot")
+        or entity.get("unified_trust")
+    )
+
+    if trust is None:
+        trust = compute_unified_trust_score(entity)
 
     score = float(trust.get("score", 50) or 50)
     tier = trust.get("tier")
@@ -510,6 +516,25 @@ def evaluate_settlement_decision_v1(
       are connected.
     """
     context = context if isinstance(context, dict) else {}
+
+
+    payload = settlement.get("settlement_payload") or {}
+
+    foundation_decision = payload.get("foundation_decision") or {}
+
+    decision_info = foundation_decision.get("decision") or {}
+
+    stored_hash = payload.get("foundation_decision_hash")
+    current_hash = decision_info.get("decision_hash")
+
+    if stored_hash and current_hash and stored_hash != current_hash:
+        return {
+            "decision_engine": "settlement_decision_engine_v1",
+            "final_decision": "blocked",
+            "reason": "foundation_decision_hash_mismatch",
+            "status": "rejected",
+            "context": context,
+        }
 
     reports = []
 

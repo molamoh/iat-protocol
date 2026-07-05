@@ -10,6 +10,7 @@ from iat.api.db import (
     summarize_action_execution_result,
 )
 from iat.action_engine.pipeline_executor import execute_pipeline
+from iat.action_engine.protocol_runtime import execute_protocol_order
 
 
 def submit_action_to_core(
@@ -69,7 +70,16 @@ def process_next_core_action() -> Dict[str, Any]:
     item = dequeue_result.get("item") or {}
     action_context = item.get("action_context") or item.get("context") or {}
 
-    result = execute_pipeline(action_context)
+    payload = action_context.get("payload") or {}
+
+    if action_context.get("action_type") == "protocol_order":
+        result = execute_protocol_order(
+            payload.get("order") or {},
+            payload.get("tx_signature"),
+        )
+    else:
+        result = execute_pipeline(action_context)
+
     result["dequeue"] = dequeue_result
 
     action_id = action_context.get("action_id")

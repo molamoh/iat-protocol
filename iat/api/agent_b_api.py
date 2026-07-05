@@ -452,6 +452,8 @@ def select_best_seller(service_name, order=None):
     if not dynamic_agents:
         return None
 
+    foundation_decision_payload = None
+
     locked_agent_id = None
     if order:
         locked_agent_id = (
@@ -479,18 +481,21 @@ def select_best_seller(service_name, order=None):
 
         best_agent = selected[0] if selected else None
     else:
-        foundation_decision = select_best_execution_agent(
-            dynamic_agents,
-            context={
-                "service_name": service_name,
-                "order_id": order.get("order_id") if isinstance(order, dict) else None,
-                "decision_authority": "foundation",
-            },
-        )
+        try:
+            foundation_decision_payload = select_best_execution_agent(
+                dynamic_agents,
+                context={
+                    "service_name": service_name,
+                    "order_id": order.get("order_id") if isinstance(order, dict) else None,
+                    "decision_authority": "foundation",
+                },
+            )
+        except Exception:
+            foundation_decision_payload = None
 
         best_agent = (
-            foundation_decision.get("selected_agent")
-            if foundation_decision.get("status") == "agent_selected"
+            foundation_decision_payload.get("selected_agent")
+            if foundation_decision_payload and foundation_decision_payload.get("status") == "agent_selected"
             else select_best_agent(dynamic_agents)
         )
 
@@ -507,6 +512,7 @@ def select_best_seller(service_name, order=None):
         "source": "dynamic_registry",
         "capabilities": best_agent.get("capabilities"),
         "specialties": best_agent.get("specialties"),
+        "foundation_decision": foundation_decision_payload,
     }
 
 
@@ -620,280 +626,9 @@ def _ensure_dict(value, default=None):
     return default
 
 
-def run_foundation_supplier_pipeline(order):
-    """
-    Foundation-mediated supplier pipeline.
+from iat.action_engine.protocol_runtime import run_foundation_supplier_pipeline
 
-    Buyer never contacts sellers.
-    Seller agents are internal suppliers only.
-    Foundation agents keep final buyer delivery authority.
-    """
-    order = order or {}
-
-    execution_context = _ensure_dict(order.get("execution_context"))
-    buyer_intent = _ensure_dict(order.get("buyer_intent"))
-    requirements = _ensure_dict(order.get("requirements"))
-
-    foundation_task = (
-        execution_context.get("task")
-        or buyer_intent.get("goal")
-        or order.get("query")
-        or f"Execute service: {order.get('service')}"
-    )
-
-    sanitized_execution_context = {
-        "task": foundation_task,
-        "scope": requirements,
-        "required_format": "structured_supplier_contribution",
-        "service": order.get("service"),
-        "trusted_input_only": True,
-        "foundation_mediated": True,
-        "buyer_data_stripped": True,
-    }
-
-    supplier_execution = run_foundation_controlled_seller_execution_db(
-        service=order.get("service"),
-        execution_context=sanitized_execution_context,
-        specialization=None,
-        order_id=order.get("order_id"),
-    )
-
-    if supplier_execution.get("status") != "ok":
-        fallback = generate_service_result(
-            order.get("service"),
-            query=order.get("query"),
-        )
-
-        return {
-            "status": "foundation_supplier_pipeline_fallback",
-            "execution_mode": "foundation_supplier_pipeline",
-            "reason": "no_eligible_internal_supplier_or_supplier_execution_failed",
-            "buyer_delivery_authority": "foundation_only",
-            "seller_role": "internal_supplier_only",
-            "seller_direct_buyer_contact": False,
-            "supplier_execution": supplier_execution,
-            "foundation_fallback_result": fallback,
-            "policy": {
-                "buyer_never_contacts_seller": True,
-                "seller_never_contacts_buyer": True,
-                "seller_agents_are_suppliers_only": True,
-                "buyer_satisfaction_priority": True,
-                "foundation_agents_keep_final_authority": True,
-                "protocol_core_sovereignty_reserved": True,
-            },
-        }
-
-    verification = verify_seller_execution_result_db(
-        supplier_execution.get("execution_session_id")
-    )
-
-    foundation_decision = run_foundation_decision_db(order.get("order_id"))
-
-    try:
-        from iat.api.multi_exec import build_foundation_buyer_report
-
-        foundation_report = build_foundation_buyer_report(
-            foundation_decision,
-            fallback_delivery={
-                "status": "success",
-                "summary": "Foundation-mediated supplier execution completed.",
-                "final_recommendation": "Use the Foundation decision and verified evidence as the buyer-facing delivery.",
-                "confidence": (
-                    foundation_decision.get("foundation_decision", {})
-                    .get("decision_confidence", 0.5)
-                    if isinstance(foundation_decision, dict)
-                    else 0.5
-                ),
-                "sources": [],
-            },
-        )
-    except Exception as exc:
-        foundation_report = {
-            "status": "success",
-            "delivery_mode": "foundation_supplier_report_fallback",
-            "summary": "Foundation-mediated supplier execution completed.",
-            "foundation_report_error": str(exc),
-        }
-
-    return {
-        "status": "foundation_supplier_pipeline_completed",
-        "execution_mode": "foundation_supplier_pipeline",
-        "buyer_delivery_authority": "foundation_only",
-        "seller_role": "internal_supplier_only",
-        "seller_direct_buyer_contact": False,
-        "supplier_execution": supplier_execution,
-        "supplier_verification": verification,
-        "foundation_decision": foundation_decision,
-        "result": foundation_report,
-        "policy": {
-            "buyer_never_contacts_seller": True,
-            "seller_never_contacts_buyer": True,
-            "seller_agents_are_suppliers_only": True,
-            "foundation_agents_keep_final_authority": True,
-            "protocol_core_sovereignty_reserved": True,
-        },
-    }
-
-
-def deliver_service(order, tx_signature):
-    # Buyer delivery must only be executed by foundation agents.
-    # Seller agents are never allowed to directly receive buyer requests.
-    if str(order.get("seller_source") or "") == "dynamic_registry":
-        agent = get_agent_db(order.get("seller_id"))
-        if not agent or str(agent.get("agent_type", "")).lower() != "foundation":
-            return {
-                "error": "non_foundation_buyer_delivery_blocked",
-                "message": "Buyer-facing delivery is restricted to protocol foundation agents.",
-            }
-
-    execution_mode = str(
-        order.get("execution_mode") or "foundation_direct"
-    ).lower()
-
-    # Foundation-mediated supplier pipeline.
-    # Buyer-facing delivery remains foundation-only.
-    # Seller agents are internal suppliers and never receive raw buyer access.
-    if execution_mode == "foundation_supplier_pipeline":
-        return run_foundation_supplier_pipeline(order)
-
-    # Foundation consensus execution pipeline.
-    if execution_mode == "foundation_consensus":
-        from iat.api.multi_exec import (
-            compute_required_agent_count,
-            select_top_agents,
-            multi_call,
-            select_best_result,
-            build_final_buyer_delivery,
-            compute_consensus_strength,
-        )
-
-        all_agents = get_agents_for_service_db(order.get("service"))
-
-        foundation_agents = [
-            a for a in all_agents
-            if str(a.get("agent_type", "")).lower() == "foundation"
-            and bool(a.get("available", True))
-        ]
-
-        required_count = compute_required_agent_count(order)
-
-        selected_agents = select_top_agents(
-            foundation_agents,
-            limit=required_count,
-            order=order,
-        )
-
-        results = multi_call(selected_agents, order)
-
-        consensus_strength = compute_consensus_strength(results)
-
-        best_result = select_best_result(results)
-
-        if not best_result:
-            return {
-                "error": "consensus_failed",
-                "message": "No valid consensus result produced.",
-                "execution_mode": execution_mode,
-                "agents_called": [
-                    a.get("agent_id")
-                    for a in selected_agents
-                ],
-            }
-
-        final_delivery = build_final_buyer_delivery(
-            best_result,
-            results,
-        )
-
-        foundation_decision = run_foundation_decision_db(order.get("order_id"))
-
-        try:
-            from iat.api.multi_exec import build_foundation_buyer_report
-
-            foundation_report = build_foundation_buyer_report(
-                foundation_decision,
-                fallback_delivery=final_delivery,
-            )
-        except Exception as exc:
-            foundation_report = {
-                **final_delivery,
-                "delivery_mode": "foundation_report_fallback",
-                "foundation_report_error": str(exc),
-            }
-
-        return {
-            "status": "consensus_delivered",
-            "execution_mode": execution_mode,
-            "agents_called": [
-                a.get("agent_id")
-                for a in selected_agents
-            ],
-            "consensus_agents_count": len(selected_agents),
-            "consensus_strength": consensus_strength,
-            "foundation_decision": foundation_decision,
-            "result": foundation_report,
-        }
-
-    if order.get("seller_url"):
-        payload = {
-            "order_id": order["order_id"],
-            "tx_signature": tx_signature,
-        }
-
-        foundation_context = order.get("foundation_context") or build_foundation_context(order)
-        execution_context = order.get("execution_context") or {}
-
-        if not order.get("foundation_context"):
-            order["foundation_context"] = foundation_context
-            try:
-                update_order_db(order.get("order_id"), order)
-            except Exception as e:
-                print("Foundation context persistence error:", e)
-
-        payload["context"] = {
-            "service": order.get("service"),
-            "execution_mode": order.get("execution_mode", "foundation_direct"),
-            "requirements": order.get("requirements", {}),
-            "buyer_context": order.get("buyer_context", {}),
-            "foundation_context": foundation_context,
-            "execution_context": execution_context,
-        }
-
-        # Foundation agents are trusted protocol agents and may receive the buyer query.
-        # Future seller agents must receive only sanitized execution_context.
-        agent = get_agent_db(order.get("seller_id"))
-        if agent and str(agent.get("agent_type", "")).lower() == "foundation":
-            if order.get("query"):
-                payload["query"] = order.get("query")
-
-        try:
-            r = requests.post(
-                f"{order['seller_url']}/execute",
-                json=payload,
-                timeout=30,
-            )
-
-            if r.status_code == 200:
-                response = r.json()
-                return response.get("data", response)
-
-            return {
-                "error": "seller_node_error",
-                "status_code": r.status_code,
-                "body": r.text,
-            }
-
-        except Exception as e:
-            return {
-                "error": "seller_node_unreachable",
-                "details": str(e),
-            }
-
-    return generate_service_result(order["service"], query=order.get("query"))
-
-
-
-
+from iat.action_engine.protocol_runtime import deliver_service
 
 @app.post("/internal/seller/apply-risk-decay/{seller_id}")
 def apply_seller_risk_decay(
@@ -3593,7 +3328,19 @@ def buyer_preview(req: BuyerPreviewRequest):
         reverse=True,
     )
 
-    best = ranked[0]
+    from iat.api.foundation_decision import select_best_execution_agent
+
+    foundation_decision = select_best_execution_agent(
+        ranked,
+        context={
+            "buyer_preview": True,
+            "service": service,
+            "buyer_intent": intent.get("goal"),
+            "routing_order": routing_order,
+        },
+    )
+
+    best = foundation_decision.get("selected_agent") or ranked[0]
 
     save_buyer_conversation_session_db(
         session_id,
@@ -3646,6 +3393,7 @@ def buyer_preview(req: BuyerPreviewRequest):
     if req.debug:
         debug_payload = {
             "selected_agent": best.get("agent_id"),
+            "foundation_decision": foundation_decision,
             "intent_strategy": intent.get("execution_strategy"),
             "intent_consensus": intent.get("consensus_preference"),
             "intent_quality": intent.get("quality_preference"),
@@ -3678,6 +3426,7 @@ def buyer_preview(req: BuyerPreviewRequest):
 
     response = {
         "status": "preview",
+        "foundation_decision": foundation_decision,
         "session_id": session_id,
         "session_ttl_seconds": 300,
         "buyer_summary": {
@@ -3870,6 +3619,7 @@ def make_buyer_order_response(order_response):
 
     return {
         "status": "order_created",
+        "foundation_decision": order_response.get("foundation_decision"),
         "order_id": order_id,
         "amount_iat": price,
         "payment": {
@@ -4001,6 +3751,8 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
         else "foundation_supplier_pipeline"
     )
 
+    foundation_decision = seller.get("foundation_decision")
+
     order = {
         "order_id": order_id,
         "service": req.service,
@@ -4008,6 +3760,7 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
         "price": seller["price"],
         "seller_id": seller["seller_id"],
         "seller_wallet": payment_wallet_for(seller["seller_wallet"]),
+        "foundation_decision": foundation_decision,
         "actual_agent_wallet": seller["seller_wallet"],
         "payment_target": payment_target(),
         "seller_url": seller.get("url") or "",
@@ -4177,7 +3930,12 @@ def verify_payment(req: VerifyPaymentRequest, x_api_key: str | None = Header(def
                 "data": None,
             }
 
-        result = deliver_service(order, req.tx_signature)
+        from iat.action_engine.protocol_runtime import execute_protocol_order
+
+        result = execute_protocol_order(
+            order,
+            req.tx_signature,
+        )
 
         delivery_failed = isinstance(result, dict) and result.get("error") is not None
 
@@ -4316,7 +4074,12 @@ def admin_test_consensus_delivery(order_id: str, x_api_key: str | None = Header(
             "status": "invalid_order",
         }
 
-    result = deliver_service(order, "DEV_TEST_TX")
+    from iat.action_engine.protocol_runtime import execute_protocol_order
+
+    result = execute_protocol_order(
+        order,
+        "DEV_TEST_TX",
+    )
 
     return {
         "status": "ok",
@@ -4375,7 +4138,12 @@ def admin_test_buyer_consensus(order_id: str, x_api_key: str | None = Header(def
             "status": "invalid_order",
         }
 
-    result = deliver_service(order, "DEV_TEST_TX")
+    from iat.action_engine.protocol_runtime import execute_protocol_order
+
+    result = execute_protocol_order(
+        order,
+        "DEV_TEST_TX",
+    )
 
     wrapped = {
         "status": "paid",

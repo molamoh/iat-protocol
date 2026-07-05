@@ -26,16 +26,19 @@ def compute_agent_score(agent, now=None):
         success_rate * 0.10
     )
 
-    unified = compute_unified_trust_score({
-        "entity_id": agent.get("agent_id") or agent.get("seller_agent_id") or agent.get("id"),
-        "entity_type": agent.get("agent_type") or "execution_agent",
-        "reputation": reputation * 100 if reputation <= 1 else reputation,
-        "trust_score": agent.get("trust_score", agent.get("trust", 50)),
-        "risk_score": agent.get("risk_score", agent.get("risk", 50)),
-        "reliability_score": success_rate * 100 if success_rate <= 1 else success_rate,
-        "runtime_health_score": agent.get("runtime_health_score", freshness_score * 100),
-        "governance_score": agent.get("governance_score", 50),
-    })
+    unified = agent.get("unified_trust")
+
+    if unified is None:
+        unified = compute_unified_trust_score({
+            "entity_id": agent.get("agent_id") or agent.get("seller_agent_id") or agent.get("id"),
+            "entity_type": agent.get("agent_type") or "execution_agent",
+            "reputation": reputation * 100 if reputation <= 1 else reputation,
+            "trust_score": agent.get("trust_score", agent.get("trust", 50)),
+            "risk_score": agent.get("risk_score", agent.get("risk", 50)),
+            "reliability_score": success_rate * 100 if success_rate <= 1 else success_rate,
+            "runtime_health_score": agent.get("runtime_health_score", freshness_score * 100),
+            "governance_score": agent.get("governance_score", 50),
+        })
 
     local_score_100 = max(0, min(100, local_score * 100))
 
@@ -53,7 +56,21 @@ def rank_agents(agents):
     ranked = []
     for agent in agents:
         item = dict(agent)
-        item["score"] = compute_agent_score(agent, now=now)
+
+        unified = compute_unified_trust_score({
+            "entity_id": item.get("agent_id"),
+            "entity_type": item.get("agent_type","seller_agent"),
+            "reputation": float(item.get("reputation",0))*100,
+            "trust_score": float(item.get("trust_score",50)),
+            "risk_score": float(item.get("risk_score",50)),
+            "reliability_score": float(item.get("success_rate",0))*100,
+            "runtime_health_score": float(item.get("runtime_health_score",50)),
+            "governance_score": float(item.get("governance_score",50)),
+        })
+
+        item["unified_trust"] = unified
+        item["score"] = compute_agent_score(item, now=now)
+
         ranked.append(item)
 
     ranked.sort(key=lambda a: a["score"], reverse=True)

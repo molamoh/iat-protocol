@@ -2,6 +2,23 @@ from typing import Any, Dict, List, Optional
 
 
 ACTION_REGISTRY: Dict[str, Dict[str, Any]] = {
+    "protocol_order": {
+        "action_type": "protocol_order",
+        "description": "Execute a paid IAT protocol order through the unified protocol runtime.",
+        "default_adapter": "protocol_runtime",
+        "allowed_adapters": ["protocol_runtime"],
+        "required_payload_fields": [
+            "order",
+            "tx_signature",
+        ],
+        "required_permissions": [
+            "protocol.order.execute",
+            "foundation.execute",
+        ],
+        "fallback_adapter": "protocol_runtime",
+        "status": "active",
+        "version": "1.0.0",
+    },
     "settlement_release": {
         "action_type": "settlement_release",
         "description": "Release a financial settlement through the protocol action layer.",

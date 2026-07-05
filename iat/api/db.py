@@ -7,6 +7,7 @@ import sqlite3
 import json
 import time
 import uuid
+from iat.api.execution_engine import rank_agents
 from pathlib import Path
 
 DB_PATH = Path(os.getenv("IAT_DB_PATH", "iat_protocol.db"))
@@ -16162,6 +16163,7 @@ def run_foundation_controlled_seller_execution_db(
     specialization=None,
     order_id=None,
     seller_agent_id=None,
+    preferred_agent_id=None,
 ):
     if not service:
         return {
@@ -16191,11 +16193,26 @@ def run_foundation_controlled_seller_execution_db(
 
     candidates = eligible_result.get("agents", [])
 
+    if preferred_agent_id:
+        preferred = [
+            a for a in candidates
+            if (
+                a.get("agent_id") == preferred_agent_id
+                or a.get("seller_agent_id") == preferred_agent_id
+            )
+        ]
+
+        if preferred:
+            candidates = preferred
+
     if seller_agent_id:
-        candidates = [
+        filtered = [
             a for a in candidates
             if a.get("seller_agent_id") == seller_agent_id
         ]
+
+        if filtered:
+            candidates = filtered
 
     if not candidates:
         return {
@@ -16205,7 +16222,30 @@ def run_foundation_controlled_seller_execution_db(
             "specialization": specialization,
         }
 
-    selected = candidates[0]
+    ranked = rank_agents([
+        {
+            **candidate,
+            "agent_id": candidate.get("agent_id"),
+            "agent_type": "seller_agent",
+            "price_iat": candidate.get("price") or candidate.get("price_iat"),
+            "trust_score": candidate.get("trust_score", 50),
+            "risk_score": candidate.get("risk_score", 50),
+            "runtime_health_score": candidate.get("runtime_health_score", 50),
+            "governance_score": candidate.get("governance_score", 50),
+            "reputation": candidate.get("reputation", 0.5),
+            "success_rate": candidate.get("success_rate", 0.5),
+            "latency": candidate.get("latency", 1),
+        }
+        for candidate in candidates
+    ])
+
+    if not ranked:
+        return {
+            "status": "error",
+            "message": "no_ranked_candidate",
+        }
+
+    selected = ranked[0]
 
     metadata = _safe_json_loads(selected.get("metadata"), {})
     execution_mode = str(metadata.get("execution_mode") or "").lower()

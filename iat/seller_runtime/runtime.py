@@ -2,6 +2,7 @@ from typing import Dict, Any
 
 from iat.seller_runtime.executor import execute_seller_agent
 from iat.seller_runtime.service_registry import resolve_service
+from iat.seller_runtime.adapter_registry import resolve_adapter
 
 
 def run_seller_runtime(
@@ -18,10 +19,12 @@ def run_seller_runtime(
 
     resolved = resolve_service(service)
 
-    seller_agent.setdefault(
-        "runtime_adapter",
-        resolved["preferred_adapter"],
+    adapter = resolve_adapter(
+        seller_agent.get("runtime_adapter")
+        or resolved["preferred_adapter"]
     )
+
+    seller_agent["runtime_adapter"] = adapter["adapter"]
 
     if not seller_agent.get("capabilities"):
         seller_agent["capabilities"] = [

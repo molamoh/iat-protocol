@@ -16303,6 +16303,31 @@ def run_foundation_controlled_seller_execution_db(
             sanitized_context,
         )
 
+        try:
+            create_seller_governance_event_db(
+                seller_id=selected.get("seller_id"),
+                event_type="seller_runtime_execution",
+                reviewer="iat_seller_runtime",
+                metadata={
+                    "seller_agent_id": selected.get("seller_agent_id"),
+                    "agent_id": selected.get("agent_id"),
+                    "service": service,
+                    "adapter": runtime_result.get("adapter"),
+                    "status": runtime_result.get("status"),
+                    "execution_mode": runtime_result.get("execution_mode"),
+                    "runtime_trust": runtime_result.get("runtime_trust"),
+                    "runtime_policy": runtime_result.get("runtime_policy"),
+                    "governance_policy": runtime_result.get("governance_policy"),
+                    "runtime_audit": runtime_result.get("runtime_audit"),
+                },
+            )
+            runtime_persistence = {"status": "persisted"}
+        except Exception as exc:
+            runtime_persistence = {
+                "status": "persist_failed",
+                "error": str(exc),
+            }
+
         execution_result = {
             "status": runtime_result.get("status"),
             "execution_mode": runtime_result.get("execution_mode") or execution_mode,
@@ -16314,6 +16339,7 @@ def run_foundation_controlled_seller_execution_db(
             "result_type": "seller_runtime_contribution",
             "result": runtime_result.get("result") or {},
             "runtime": runtime_result,
+            "runtime_persistence": runtime_persistence,
         }
 
         update_result = update_seller_agent_execution_session_db(

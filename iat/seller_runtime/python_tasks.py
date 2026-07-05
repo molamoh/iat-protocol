@@ -21,3 +21,22 @@ def summarize(ctx):
             "summary": f"Summary for: {ctx.get('task')}",
         },
     }
+
+
+@register_python_task("market_summary_stub")
+def market_summary_stub(ctx):
+    task = ctx.get("task") or ""
+    scope = ctx.get("scope") or {}
+
+    return {
+        "status": "ok",
+        "result": {
+            "summary": f"Market summary generated for: {task}",
+            "scope": scope,
+            "risk_notes": [
+                "This is a safe Python runtime stub.",
+                "Live market data adapter is not enabled yet."
+            ],
+            "confidence": 0.5,
+        },
+    }

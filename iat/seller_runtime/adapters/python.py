@@ -2,6 +2,7 @@ from typing import Dict, Any
 import time
 
 from iat.seller_runtime.python_registry import execute_python_task
+from iat.seller_runtime.capability_registry import resolve_python_task
 import iat.seller_runtime.python_tasks  # registers tasks
 
 
@@ -12,8 +13,12 @@ def execute_python_adapter(
     task_type = (
         seller_agent.get("python_task")
         or seller_agent.get("task_type")
-        or "echo"
     )
+
+    if not task_type:
+        task_type = resolve_python_task(
+            seller_agent.get("capabilities", [])
+        )
 
     started_at = int(time.time())
 

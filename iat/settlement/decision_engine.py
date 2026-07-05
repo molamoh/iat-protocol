@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from iat.action_engine.unified_trust_engine import compute_unified_trust_score
+
 
 VALID_ENGINE_DECISIONS = {
     "approve",
@@ -420,6 +422,81 @@ def evaluate_policy_review_v1(
 
 
 
+
+def evaluate_unified_trust_review_v1(
+    settlement: Dict[str, Any],
+) -> Dict[str, Any]:
+    payload = settlement.get("settlement_payload")
+
+    if not isinstance(payload, dict):
+        payload = {}
+
+    entity = payload.get("unified_trust_entity")
+
+    if not isinstance(entity, dict):
+        entity = {
+            "entity_id": settlement.get("seller_agent_id") or settlement.get("seller_id") or settlement.get("settlement_id"),
+            "entity_type": payload.get("entity_type") or "settlement_subject",
+            "reputation": payload.get("reputation", 50),
+            "trust_score": payload.get("trust_score", 50),
+            "risk_score": payload.get("risk_score", 50),
+            "reliability_score": payload.get("reliability_score", 50),
+            "runtime_health_score": payload.get("runtime_health_score", 50),
+            "governance_score": payload.get("governance_score", 50),
+        }
+
+    trust = compute_unified_trust_score(entity)
+
+    score = float(trust.get("score", 50) or 50)
+    tier = trust.get("tier")
+
+    reasons = [
+        f"unified_trust_tier:{tier}",
+        f"unified_trust_score:{round(score, 4)}",
+    ]
+
+    if score >= 75:
+        return normalize_decision_report(
+            engine="unified_trust_evaluator_v1",
+            decision="approve",
+            confidence=0.80,
+            risk_score=max(0.0, 100.0 - score),
+            weight=1.0,
+            reasons=reasons + ["unified_trust_accepts_settlement"],
+            metadata=trust,
+        )
+
+    if score <= 30:
+        return normalize_decision_report(
+            engine="unified_trust_evaluator_v1",
+            decision="block",
+            confidence=0.85,
+            risk_score=max(70.0, 100.0 - score),
+            weight=1.0,
+            reasons=reasons + ["unified_trust_blocks_settlement"],
+            metadata=trust,
+        )
+
+    return normalize_decision_report(
+        engine="unified_trust_evaluator_v1",
+        decision="manual_review",
+        confidence=0.60,
+        risk_score=100.0 - score,
+        weight=1.0,
+        reasons=reasons + ["unified_trust_requires_manual_review"],
+        metadata=trust,
+    )
+
+
+SETTLEMENT_EVALUATORS = [
+    evaluate_foundation_review_v1,
+    evaluate_risk_review_v1,
+    evaluate_policy_review_v1,
+    evaluate_unified_trust_review_v1,
+]
+
+
+
 def evaluate_settlement_decision_v1(
     settlement: Dict[str, Any],
     context: Dict[str, Any] | None = None,
@@ -434,11 +511,10 @@ def evaluate_settlement_decision_v1(
     """
     context = context if isinstance(context, dict) else {}
 
-    reports = [
-        evaluate_foundation_review_v1(settlement),
-        evaluate_risk_review_v1(settlement),
-        evaluate_policy_review_v1(settlement),
-    ]
+    reports = []
+
+    for evaluator in SETTLEMENT_EVALUATORS:
+        reports.append(evaluator(settlement))
 
     decision = aggregate_settlement_decisions(reports)
 

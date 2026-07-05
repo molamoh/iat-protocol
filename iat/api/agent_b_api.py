@@ -20,6 +20,7 @@ from iat.onchain import (
 )
 
 from iat.api.execution_engine import select_best_agent, compute_agent_score
+from iat.api.foundation_decision import select_best_execution_agent
 from iat.api.buyer_intent import (
     normalize_buyer_intent,
     merge_buyer_intent_with_session,
@@ -478,7 +479,20 @@ def select_best_seller(service_name, order=None):
 
         best_agent = selected[0] if selected else None
     else:
-        best_agent = select_best_agent(dynamic_agents)
+        foundation_decision = select_best_execution_agent(
+            dynamic_agents,
+            context={
+                "service_name": service_name,
+                "order_id": order.get("order_id") if isinstance(order, dict) else None,
+                "decision_authority": "foundation",
+            },
+        )
+
+        best_agent = (
+            foundation_decision.get("selected_agent")
+            if foundation_decision.get("status") == "agent_selected"
+            else select_best_agent(dynamic_agents)
+        )
 
     if not best_agent:
         return None

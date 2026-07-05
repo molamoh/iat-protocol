@@ -1,6 +1,7 @@
 from typing import Any, Dict
 
 from iat.action_engine.context import normalize_action_context, validate_action_context
+from iat.api.db import get_action_circuit_breaker_db
 
 
 def dispatch_action(action_context: Dict[str, Any]) -> Dict[str, Any]:
@@ -16,6 +17,23 @@ def dispatch_action(action_context: Dict[str, Any]) -> Dict[str, Any]:
 
     ctx = normalize_action_context(validation.get("context"))
     metadata = ctx.get("metadata") or {}
+    service_name = (
+        ctx.get("action_scope")
+        or ctx.get("action_type")
+        or "default"
+    )
+
+    breaker = get_action_circuit_breaker_db(service_name).get("breaker")
+
+    if breaker and breaker.get("state") == "OPEN":
+        return {
+            "status": "blocked_by_circuit_breaker",
+            "reason": "service_circuit_open",
+            "service_name": service_name,
+            "breaker": breaker,
+            "dispatch_target": None,
+        }
+
 
     requested_target = metadata.get("dispatch_target")
 

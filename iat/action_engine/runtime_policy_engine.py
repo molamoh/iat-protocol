@@ -170,6 +170,7 @@ def evaluate_worker_policy(
     candidates = []
 
     for worker in workers:
+
         if str(worker.get("worker_status") or "").lower() != "idle":
             continue
 

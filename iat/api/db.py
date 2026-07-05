@@ -26187,6 +26187,32 @@ def list_action_workers_db(limit=50):
     }
 
 
+
+
+def update_action_worker_status_db(worker_id, worker_status):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    UPDATE action_workers
+    SET worker_status={p}
+    WHERE worker_id={p}
+    """,(
+        worker_status,
+        worker_id,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status":"updated",
+        "worker_id":worker_id,
+        "worker_status":worker_status,
+    }
+
+
 def mark_action_worker_result_db(worker_id, success=True, current_action_id=None):
     if not worker_id:
         return {
@@ -26624,6 +26650,173 @@ def list_action_dead_letter_queue_db(limit=50):
         "status": "ok",
         "count": len(items),
         "items": items,
+    }
+
+
+
+
+
+
+def init_action_circuit_breakers_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS action_circuit_breakers (
+        service_name TEXT PRIMARY KEY,
+        state TEXT NOT NULL,
+        failure_count INTEGER DEFAULT 0,
+        success_count INTEGER DEFAULT 0,
+        opened_at INTEGER,
+        last_failure_at INTEGER,
+        cooldown_seconds INTEGER DEFAULT 300
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+def get_action_circuit_breaker_db(service_name):
+    init_action_circuit_breakers_table()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM action_circuit_breakers
+    WHERE service_name={p}
+    """,(service_name,))
+
+    row = cur.fetchone()
+
+    release_conn(conn)
+
+    return {
+        "status":"ok",
+        "breaker":dict(row) if row else None,
+    }
+
+
+def upsert_action_circuit_breaker_db(
+    service_name,
+    state,
+    failure_count,
+    success_count,
+    opened_at,
+    last_failure_at,
+    cooldown_seconds=300,
+):
+    init_action_circuit_breakers_table()
+
+    conn=get_conn()
+    cur=conn.cursor()
+    p=qmark()
+
+    cur.execute(f"""
+    INSERT INTO action_circuit_breakers(
+        service_name,
+        state,
+        failure_count,
+        success_count,
+        opened_at,
+        last_failure_at,
+        cooldown_seconds
+    )
+    VALUES({p},{p},{p},{p},{p},{p},{p})
+    ON CONFLICT(service_name)
+    DO UPDATE SET
+        state=excluded.state,
+        failure_count=excluded.failure_count,
+        success_count=excluded.success_count,
+        opened_at=excluded.opened_at,
+        last_failure_at=excluded.last_failure_at,
+        cooldown_seconds=excluded.cooldown_seconds
+    """,(
+        service_name,
+        state,
+        failure_count,
+        success_count,
+        opened_at,
+        last_failure_at,
+        cooldown_seconds,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status":"updated",
+        "service":service_name,
+        "state":state,
+    }
+
+
+def init_action_runtime_state_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS action_runtime_state (
+        state_key TEXT PRIMARY KEY,
+        state_value TEXT,
+        updated_at INTEGER
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+def set_action_runtime_state_db(state_key, state_value):
+    import time
+
+    init_action_runtime_state_table()
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    now = int(time.time())
+
+    cur.execute("""
+    INSERT INTO action_runtime_state(state_key,state_value,updated_at)
+    VALUES(?,?,?)
+    ON CONFLICT(state_key) DO UPDATE SET
+        state_value=excluded.state_value,
+        updated_at=excluded.updated_at
+    """,(state_key,str(state_value),now))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status":"updated",
+        "key":state_key,
+        "value":state_value,
+    }
+
+
+def get_action_runtime_state_db(state_key):
+    init_action_runtime_state_table()
+
+    conn=get_conn()
+    cur=conn.cursor()
+
+    cur.execute("""
+    SELECT *
+    FROM action_runtime_state
+    WHERE state_key=?
+    """,(state_key,))
+
+    row=cur.fetchone()
+
+    release_conn(conn)
+
+    return {
+        "status":"ok",
+        "state":dict(row) if row else None
     }
 
 

@@ -6,7 +6,7 @@ from iat.action_engine.claim_recovery import run_claim_recovery_cycle, inspect_c
 from iat.action_engine.recovery_planner import inspect_recovery_planner, plan_recovery_actions
 from iat.action_engine.recovery_executor import inspect_recovery_executor, execute_recovery_cycle
 from iat.action_engine.runtime_metrics import inspect_runtime_metrics, compute_runtime_metrics
-from iat.api.db import record_action_runtime_event_db
+from iat.action_engine.runtime_event_bus import publish_runtime_event
 
 
 def run_runtime_supervisor_cycle(
@@ -30,10 +30,10 @@ def run_runtime_supervisor_cycle(
     health = inspect_runtime_health(limit=50)
     metrics = compute_runtime_metrics(limit=200)
 
-    runtime_event = record_action_runtime_event_db(
+    runtime_event = publish_runtime_event(
         event_type="RuntimeSupervisorCycleCompleted",
         severity="info",
-        event_payload={
+        payload={
             "expired_claims_count": expired_claims.get("expired_count"),
             "recovery_plans_count": recovery_plan.get("plans_count"),
             "executed_recovery_plans_count": recovery_execution.get("executed_plans_count"),

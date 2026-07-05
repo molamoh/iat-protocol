@@ -10,6 +10,11 @@ from iat.api.db import (
 )
 from iat.action_engine.execution_core import process_next_core_action
 from iat.action_engine.runtime_policy_engine import evaluate_runtime_policy
+from iat.action_engine.runtime_event_bus import (
+    publish_worker_event,
+    publish_action_event,
+    publish_claim_event,
+)
 
 
 
@@ -86,12 +91,27 @@ def process_next_action_with_worker(worker_id: Optional[str] = None) -> Dict[str
 
     worker_id = selected.get("worker_id")
 
+    publish_worker_event(
+        event_type="WorkerSelected",
+        worker_id=worker_id,
+        payload={
+            "selection_source": "worker_manager",
+            "policy_decision": selection if not worker_id else None,
+        },
+    )
+
     expire_stale_action_claims_db()
 
     heartbeat_action_worker_db(
         worker_id=worker_id,
         worker_status="busy",
         current_action_id=None,
+    )
+
+    publish_worker_event(
+        event_type="WorkerBusy",
+        worker_id=worker_id,
+        payload={"reason": "worker_processing_next_action"},
     )
 
     result = process_next_core_action()
@@ -111,11 +131,33 @@ def process_next_action_with_worker(worker_id: Optional[str] = None) -> Dict[str
             lease_seconds=60,
         )
 
+        if claim.get("claimed"):
+            publish_claim_event(
+                event_type="ActionClaimCreated",
+                claim_id=claim.get("claim_id"),
+                action_id=action_id,
+                worker_id=worker_id,
+                payload={
+                    "lease_until": claim.get("lease_until"),
+                    "reason": claim.get("reason"),
+                },
+            )
+
         if not claim.get("claimed"):
             mark_action_worker_result_db(
                 worker_id=worker_id,
                 success=False,
                 current_action_id=action_id,
+            )
+
+            publish_action_event(
+                event_type="ActionClaimFailed",
+                action_id=action_id,
+                payload={
+                    "worker_id": worker_id,
+                    "claim": claim,
+                },
+                severity="warning",
             )
 
             return {
@@ -137,10 +179,32 @@ def process_next_action_with_worker(worker_id: Optional[str] = None) -> Dict[str
             release_reason="worker_execution_completed" if success else "worker_execution_failed",
         )
 
+        publish_claim_event(
+            event_type="ActionClaimReleased",
+            claim_id=claim.get("claim_id"),
+            action_id=action_id,
+            worker_id=worker_id,
+            payload={
+                "success": success,
+                "release": claim_release,
+            },
+        )
+
     worker_result = mark_action_worker_result_db(
         worker_id=worker_id,
         success=success,
         current_action_id=action_id,
+    )
+
+    publish_worker_event(
+        event_type="WorkerExecutionCompleted" if success else "WorkerExecutionFailed",
+        worker_id=worker_id,
+        payload={
+            "action_id": action_id,
+            "success": success,
+            "worker_result": worker_result,
+        },
+        severity="info" if success else "warning",
     )
 
     return {

@@ -5821,6 +5821,33 @@ def admin_get_action_runtime_policy(x_api_key: str = Header(default="")):
     return inspect_runtime_policy_engine()
 
 
+
+@app.get("/admin/action-engine/runtime/circuit-breaker/{service_name}")
+def admin_get_action_runtime_circuit_breaker(service_name: str, x_api_key: str = Header(default="")):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import get_action_circuit_breaker_db
+
+    return get_action_circuit_breaker_db(service_name)
+
+
+@app.post("/admin/action-engine/runtime/circuit-breaker/{service_name}/set")
+def admin_set_action_runtime_circuit_breaker(service_name: str, payload: dict, x_api_key: str = Header(default="")):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import upsert_action_circuit_breaker_db
+
+    return upsert_action_circuit_breaker_db(
+        service_name=service_name,
+        state=payload.get("state", "CLOSED"),
+        failure_count=int(payload.get("failure_count", 0)),
+        success_count=int(payload.get("success_count", 0)),
+        opened_at=payload.get("opened_at"),
+        last_failure_at=payload.get("last_failure_at"),
+        cooldown_seconds=int(payload.get("cooldown_seconds", 300)),
+    )
+
+
 @app.get("/admin/action-engine/runtime/dead-letter")
 def admin_list_action_dead_letter_queue(x_api_key: str = Header(default="")):
     require_admin_key(x_api_key)

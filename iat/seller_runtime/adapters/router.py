@@ -2,6 +2,7 @@ from typing import Dict, Any
 
 from iat.seller_runtime.adapters.internal import execute_internal_adapter
 from iat.seller_runtime.adapters.http import execute_http_adapter
+from iat.seller_runtime.adapters.python import execute_python_adapter
 
 
 def execute_adapter(
@@ -19,6 +20,12 @@ def execute_adapter(
 
     if adapter == "http":
         return execute_http_adapter(
+            seller_agent,
+            execution_context,
+        )
+
+    if adapter == "python":
+        return execute_python_adapter(
             seller_agent,
             execution_context,
         )

@@ -5803,6 +5803,26 @@ def admin_get_action_runtime_metrics(x_api_key: str = Header(default="")):
     return inspect_runtime_metrics()
 
 
+
+@app.get("/admin/action-engine/runtime/memory")
+def admin_list_action_runtime_memory(
+    limit: int = 100,
+    memory_type: str = None,
+    subject_id: str = None,
+    x_api_key: str = Header(default=""),
+):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import list_action_runtime_memory_db
+
+    return list_action_runtime_memory_db(
+        limit=limit,
+        memory_type=memory_type,
+        subject_id=subject_id,
+    )
+
+
+
 @app.get("/admin/action-engine/runtime/events")
 def admin_list_action_runtime_events(x_api_key: str = Header(default="")):
     require_admin_key(x_api_key)

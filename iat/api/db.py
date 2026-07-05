@@ -7,6 +7,7 @@ import sqlite3
 import json
 import time
 import uuid
+from iat.seller_runtime.runtime import run_seller_runtime
 from iat.api.execution_engine import rank_agents
 from pathlib import Path
 
@@ -16283,26 +16284,29 @@ def run_foundation_controlled_seller_execution_db(
     execution_session_id = session.get("execution_session_id")
 
     try:
-        # V1 internal execution:
-        # Seller agent does not call buyer, web, wallet, or external systems.
-        # It only transforms a foundation-normalized execution context into a
-        # structured seller contribution.
+        seller_runtime_agent = {
+            **selected,
+            "runtime_adapter": metadata.get("runtime_adapter") or "internal",
+            "capabilities": _safe_json_loads(selected.get("capabilities"), []),
+            "specialties": _safe_json_loads(selected.get("specialties"), []),
+        }
+
+        runtime_result = run_seller_runtime(
+            seller_runtime_agent,
+            sanitized_context,
+        )
+
         execution_result = {
-            "status": "ok",
-            "execution_mode": "iat_internal",
+            "status": runtime_result.get("status"),
+            "execution_mode": runtime_result.get("execution_mode") or execution_mode,
+            "adapter": runtime_result.get("adapter"),
             "seller_agent_id": selected.get("seller_agent_id"),
             "agent_id": selected.get("agent_id"),
             "service": service,
             "specialization": specialization,
-            "result_type": "seller_controlled_contribution",
-            "result": {
-                "task": sanitized_context.get("task"),
-                "scope": sanitized_context.get("scope"),
-                "requested_format": sanitized_context.get("required_format"),
-                "seller_capabilities": _safe_json_loads(selected.get("capabilities"), []),
-                "seller_specialties": _safe_json_loads(selected.get("specialties"), []),
-                "note": "V1 internal seller execution completed under foundation mediation.",
-            },
+            "result_type": "seller_runtime_contribution",
+            "result": runtime_result.get("result") or {},
+            "runtime": runtime_result,
         }
 
         update_result = update_seller_agent_execution_session_db(

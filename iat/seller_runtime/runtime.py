@@ -4,6 +4,7 @@ from iat.seller_runtime.executor import execute_seller_agent
 from iat.seller_runtime.service_registry import resolve_service
 from iat.seller_runtime.adapter_registry import resolve_adapter
 from iat.seller_runtime.runtime_policy import evaluate_seller_runtime_policy
+from iat.seller_runtime.governance_policy import evaluate_governance_policy
 
 
 def run_seller_runtime(
@@ -32,6 +33,17 @@ def run_seller_runtime(
             resolved["default_capability"]
         ]
 
+    governance = evaluate_governance_policy(
+        seller_agent,
+    )
+
+    if not governance.get("allowed"):
+        return {
+            "status": "governance_policy_blocked",
+            "adapter": seller_agent.get("runtime_adapter"),
+            "governance": governance,
+        }
+
     policy = evaluate_seller_runtime_policy(
         seller_agent,
         execution_context,
@@ -51,5 +63,6 @@ def run_seller_runtime(
 
     if isinstance(result, dict):
         result["runtime_policy"] = policy
+        result["governance_policy"] = governance
 
     return result

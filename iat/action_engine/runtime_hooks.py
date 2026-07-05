@@ -1,6 +1,6 @@
 from typing import Any, Dict
 from iat.action_engine.runtime_event_registry import get_runtime_event_definition
-from iat.api.db import set_action_runtime_state_db, get_action_runtime_state_db, update_action_worker_status_db, get_action_circuit_breaker_db, upsert_action_circuit_breaker_db, resolve_action_circuit_breaker_probe_db
+from iat.api.db import set_action_runtime_state_db, get_action_runtime_state_db, update_action_worker_status_db, get_action_circuit_breaker_db, upsert_action_circuit_breaker_db, resolve_action_circuit_breaker_probe_db, list_action_workers_db
 
 
 
@@ -120,24 +120,70 @@ def risk_hook(event: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def autoscaling_hook(event: Dict[str, Any]) -> Dict[str, Any]:
-    definition = get_runtime_event_definition(event.get("event_type"))
 
-    if event.get("event_type") != "WorkerBusy":
+def autoscaling_hook(event: Dict[str, Any]) -> Dict[str, Any]:
+    if event.get("event_type") not in {
+        "WorkerBusy",
+        "WorkerExecutionCompleted",
+        "WorkerExecutionFailed",
+        "RuntimeSupervisorCycleCompleted",
+    }:
         return {
             "status": "ignored",
             "hook": "autoscaling",
             "reason": "event_not_relevant_for_autoscaling",
         }
 
+    workers = list_action_workers_db(limit=200).get("workers") or []
+
+    total_workers = len(workers)
+    busy_workers = len([
+        w for w in workers
+        if str(w.get("worker_status") or "").lower() == "busy"
+    ])
+    idle_workers = len([
+        w for w in workers
+        if str(w.get("worker_status") or "").lower() == "idle"
+    ])
+    disabled_workers = len([
+        w for w in workers
+        if str(w.get("worker_status") or "").lower() == "disabled"
+    ])
+
+    load_ratio = (
+        busy_workers / total_workers
+        if total_workers > 0
+        else 0
+    )
+
+    decision = "hold"
+    recommended_workers = 0
+
+    if total_workers == 0:
+        decision = "scale_up"
+        recommended_workers = 1
+
+    elif load_ratio >= 0.8 and idle_workers == 0:
+        decision = "scale_up"
+        recommended_workers = 1
+
+    elif disabled_workers > 0 and idle_workers == 0:
+        decision = "scale_up_replacement"
+        recommended_workers = min(disabled_workers, 3)
+
     return {
         "status": "processed",
         "hook": "autoscaling",
-        "decision": "observe_runtime_load",
-        "recommended_workers": 0,
+        "decision": decision,
+        "recommended_workers": recommended_workers,
+        "workers": {
+            "total": total_workers,
+            "busy": busy_workers,
+            "idle": idle_workers,
+            "disabled": disabled_workers,
+            "load_ratio": round(load_ratio, 6),
+        },
     }
-
-
 
 
 def circuit_breaker_hook(event: Dict[str, Any]) -> Dict[str, Any]:

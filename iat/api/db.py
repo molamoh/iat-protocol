@@ -27059,3 +27059,127 @@ def reactivate_action_queue_item_db(action_id, reason="recovery_requeue"):
         "action_id": action_id,
         "reactivated": bool(updated),
     }
+
+
+def init_action_runtime_memory_table():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS action_runtime_memory (
+        memory_id TEXT PRIMARY KEY,
+        memory_type TEXT NOT NULL,
+        subject_type TEXT,
+        subject_id TEXT,
+        event_type TEXT,
+        severity TEXT DEFAULT 'info',
+        summary TEXT,
+        memory_payload TEXT,
+        created_at INTEGER NOT NULL
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+def record_action_runtime_memory_db(
+    memory_type,
+    subject_type=None,
+    subject_id=None,
+    event_type=None,
+    severity="info",
+    summary=None,
+    memory_payload=None,
+):
+    init_action_runtime_memory_table()
+
+    memory_id = str(uuid.uuid4())
+    now = int(time.time())
+    p = qmark()
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute(f"""
+    INSERT INTO action_runtime_memory (
+        memory_id,
+        memory_type,
+        subject_type,
+        subject_id,
+        event_type,
+        severity,
+        summary,
+        memory_payload,
+        created_at
+    )
+    VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p})
+    """, (
+        memory_id,
+        memory_type,
+        subject_type,
+        subject_id,
+        event_type,
+        severity or "info",
+        summary,
+        json.dumps(memory_payload or {}),
+        now,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "recorded",
+        "memory_id": memory_id,
+        "memory_type": memory_type,
+    }
+
+
+def list_action_runtime_memory_db(limit=100, memory_type=None, subject_id=None):
+    init_action_runtime_memory_table()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    where = []
+    params = []
+
+    if memory_type:
+        where.append(f"memory_type = {p}")
+        params.append(memory_type)
+
+    if subject_id:
+        where.append(f"subject_id = {p}")
+        params.append(subject_id)
+
+    where_sql = "WHERE " + " AND ".join(where) if where else ""
+
+    params.append(int(limit or 100))
+
+    cur.execute(f"""
+    SELECT *
+    FROM action_runtime_memory
+    {where_sql}
+    ORDER BY created_at DESC
+    LIMIT {p}
+    """, tuple(params))
+
+    rows = cur.fetchall()
+    release_conn(conn)
+
+    items = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["memory_payload"] = json.loads(item.get("memory_payload") or "{}")
+        except Exception:
+            pass
+        items.append(item)
+
+    return {
+        "status": "ok",
+        "count": len(items),
+        "items": items,
+    }

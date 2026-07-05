@@ -1,6 +1,6 @@
 from typing import Any, Dict
 from iat.action_engine.runtime_event_registry import get_runtime_event_definition
-from iat.api.db import set_action_runtime_state_db, get_action_runtime_state_db, update_action_worker_status_db, get_action_circuit_breaker_db, upsert_action_circuit_breaker_db, resolve_action_circuit_breaker_probe_db, list_action_workers_db
+from iat.api.db import record_action_runtime_memory_db, set_action_runtime_state_db, get_action_runtime_state_db, update_action_worker_status_db, get_action_circuit_breaker_db, upsert_action_circuit_breaker_db, resolve_action_circuit_breaker_probe_db, list_action_workers_db
 
 
 
@@ -66,12 +66,30 @@ def governance_hook(event: Dict[str, Any]) -> Dict[str, Any]:
             worker_status="disabled",
         )
 
+    memory = None
+
+    if decision in {"monitor", "limit_worker", "disable_worker"}:
+        memory = record_action_runtime_memory_db(
+            memory_type="governance_decision",
+            subject_type="worker",
+            subject_id=worker_id,
+            event_type=event.get("event_type"),
+            severity=definition.get("severity", "info"),
+            summary=f"Governance decision: {decision}",
+            memory_payload={
+                "risk_score": risk_score,
+                "decision": decision,
+                "governance_action": governance_action,
+            },
+        )
+
     return {
         "status":"processed",
         "hook":"governance",
         "runtime_risk_score":risk_score,
         "decision":decision,
         "governance_action":governance_action,
+        "memory":memory,
     }
 
 
@@ -254,12 +272,29 @@ def circuit_breaker_hook(event: Dict[str, Any]) -> Dict[str, Any]:
         last_failure_at=int(time.time()),
     )
 
+    memory = None
+
+    if state == "OPEN":
+        memory = record_action_runtime_memory_db(
+            memory_type="circuit_breaker_opened",
+            subject_type="service",
+            subject_id=service,
+            event_type=event.get("event_type"),
+            severity="warning",
+            summary=f"Circuit breaker opened for service: {service}",
+            memory_payload={
+                "failure_count": failure_count,
+                "state": state,
+            },
+        )
+
     return {
         "status":"processed",
         "hook":"circuit_breaker",
         "service":service,
         "failure_count":failure_count,
         "state":state,
+        "memory":memory,
     }
 
 

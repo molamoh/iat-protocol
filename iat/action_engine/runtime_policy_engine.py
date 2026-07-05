@@ -15,6 +15,8 @@ DEFAULT_RUNTIME_POLICY = {
     "worker_score_reliability_max": 30,
     "worker_score_heartbeat_max": 20,
     "worker_score_heartbeat_divisor": 50000,
+    "worker_score_success_rate_max": 30,
+    "worker_score_failure_ratio_penalty_max": 40,
 }
 
 
@@ -120,6 +122,29 @@ def compute_worker_score(worker, required_capabilities=None):
     failed_actions = int(worker.get("failed_actions") or 0)
     last_heartbeat = int(worker.get("last_heartbeat") or 0)
 
+    success_actions = max(0, processed_actions - failed_actions)
+    success_rate = (
+        success_actions / processed_actions
+        if processed_actions > 0
+        else 1
+    )
+
+    success_rate_score = round(
+        success_rate * int(policy.get("worker_score_success_rate_max") or 30),
+        6,
+    )
+
+    failure_ratio = (
+        failed_actions / processed_actions
+        if processed_actions > 0
+        else 0
+    )
+
+    failure_ratio_penalty = round(
+        failure_ratio * int(policy.get("worker_score_failure_ratio_penalty_max") or 40),
+        6,
+    )
+
     load_score = max(
         0,
         int(policy.get("worker_score_load_max") or 30) - processed_actions,
@@ -141,7 +166,9 @@ def compute_worker_score(worker, required_capabilities=None):
         capability_score +
         load_score +
         reliability_score +
-        heartbeat_score,
+        heartbeat_score +
+        success_rate_score -
+        failure_ratio_penalty,
         6,
     )
 
@@ -154,6 +181,10 @@ def compute_worker_score(worker, required_capabilities=None):
             "load_score": load_score,
             "reliability_score": reliability_score,
             "heartbeat_score": heartbeat_score,
+            "success_rate_score": success_rate_score,
+            "success_rate": round(success_rate, 6),
+            "failure_ratio": round(failure_ratio, 6),
+            "failure_ratio_penalty": failure_ratio_penalty,
         },
         "missing_capabilities": [],
     }

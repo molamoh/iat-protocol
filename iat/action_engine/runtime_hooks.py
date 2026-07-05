@@ -1,6 +1,6 @@
 from typing import Any, Dict
 from iat.action_engine.runtime_event_registry import get_runtime_event_definition
-from iat.api.db import set_action_runtime_state_db, get_action_runtime_state_db, update_action_worker_status_db, get_action_circuit_breaker_db, upsert_action_circuit_breaker_db
+from iat.api.db import set_action_runtime_state_db, get_action_runtime_state_db, update_action_worker_status_db, get_action_circuit_breaker_db, upsert_action_circuit_breaker_db, resolve_action_circuit_breaker_probe_db
 
 
 
@@ -160,9 +160,37 @@ def circuit_breaker_hook(event: Dict[str, Any]) -> Dict[str, Any]:
     if event.get("event_type") == "WorkerExecutionFailed":
         failure_count += 1
 
+        if breaker and breaker.get("state") == "HALF_OPEN":
+            resolved = resolve_action_circuit_breaker_probe_db(
+                service,
+                success=False,
+            )
+
+            return {
+                "status":"processed",
+                "hook":"circuit_breaker",
+                "service":service,
+                "probe_result":"failed",
+                "resolution":resolved,
+            }
+
     if event.get("event_type") == "WorkerExecutionCompleted":
         success_count += 1
         failure_count = max(0, failure_count - 1)
+
+        if breaker and breaker.get("state") == "HALF_OPEN":
+            resolved = resolve_action_circuit_breaker_probe_db(
+                service,
+                success=True,
+            )
+
+            return {
+                "status":"processed",
+                "hook":"circuit_breaker",
+                "service":service,
+                "probe_result":"success",
+                "resolution":resolved,
+            }
 
     state = "CLOSED"
 

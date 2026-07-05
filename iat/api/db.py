@@ -26678,6 +26678,8 @@ def init_action_circuit_breakers_table():
 
 
 def get_action_circuit_breaker_db(service_name):
+    import time
+
     init_action_circuit_breakers_table()
 
     conn = get_conn()
@@ -26692,11 +26694,32 @@ def get_action_circuit_breaker_db(service_name):
 
     row = cur.fetchone()
 
+    breaker = dict(row) if row else None
+
+    if breaker and breaker.get("state") == "OPEN":
+        opened_at = int(breaker.get("opened_at") or 0)
+        cooldown = int(breaker.get("cooldown_seconds") or 300)
+        now = int(time.time())
+
+        if opened_at and now - opened_at >= cooldown:
+            breaker["state"] = "HALF_OPEN"
+
+            cur.execute(f"""
+            UPDATE action_circuit_breakers
+            SET state={p}
+            WHERE service_name={p}
+            """,(
+                "HALF_OPEN",
+                service_name,
+            ))
+
+            conn.commit()
+
     release_conn(conn)
 
     return {
         "status":"ok",
-        "breaker":dict(row) if row else None,
+        "breaker":breaker,
     }
 
 
@@ -26752,6 +26775,43 @@ def upsert_action_circuit_breaker_db(
         "service":service_name,
         "state":state,
     }
+
+
+
+
+def resolve_action_circuit_breaker_probe_db(service_name, success):
+    import time
+
+    breaker = get_action_circuit_breaker_db(service_name).get("breaker")
+
+    if not breaker:
+        return {
+            "status": "no_breaker",
+            "service": service_name,
+        }
+
+    now = int(time.time())
+
+    if success:
+        state = "CLOSED"
+        failure_count = 0
+        success_count = int(breaker.get("success_count") or 0) + 1
+        opened_at = None
+    else:
+        state = "OPEN"
+        failure_count = int(breaker.get("failure_count") or 0) + 1
+        success_count = int(breaker.get("success_count") or 0)
+        opened_at = now
+
+    return upsert_action_circuit_breaker_db(
+        service_name=service_name,
+        state=state,
+        failure_count=failure_count,
+        success_count=success_count,
+        opened_at=opened_at,
+        last_failure_at=None if success else now,
+        cooldown_seconds=int(breaker.get("cooldown_seconds") or 300),
+    )
 
 
 def init_action_runtime_state_table():

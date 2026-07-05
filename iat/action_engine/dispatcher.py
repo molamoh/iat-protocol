@@ -34,6 +34,9 @@ def dispatch_action(action_context: Dict[str, Any]) -> Dict[str, Any]:
             "dispatch_target": None,
         }
 
+    if breaker and breaker.get("state") == "HALF_OPEN":
+        metadata["circuit_breaker_probe"] = True
+
 
     requested_target = metadata.get("dispatch_target")
 

@@ -82,6 +82,20 @@ def process_next_core_action() -> Dict[str, Any]:
 
     result["dequeue"] = dequeue_result
 
+    success_statuses = {
+        "ok",
+        "success",
+        "completed",
+        "pipeline_completed",
+        "foundation_supplier_pipeline_completed",
+        "consensus_delivered",
+    }
+
+    result["executed"] = bool(
+        result.get("executed")
+        or str(result.get("status") or "").lower() in success_statuses
+    )
+
     action_id = action_context.get("action_id")
 
     history = record_action_execution_history_db(action_context, result)

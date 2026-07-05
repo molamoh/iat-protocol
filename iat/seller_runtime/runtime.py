@@ -6,6 +6,7 @@ from iat.seller_runtime.adapter_registry import resolve_adapter
 from iat.seller_runtime.runtime_policy import evaluate_seller_runtime_policy
 from iat.seller_runtime.governance_policy import evaluate_governance_policy
 from iat.seller_runtime.trust_engine import compute_runtime_trust
+from iat.seller_runtime.audit import build_runtime_audit
 
 
 def run_seller_runtime(
@@ -72,5 +73,10 @@ def run_seller_runtime(
         result["runtime_policy"] = policy
         result["governance_policy"] = governance
         result["runtime_trust"] = trust
+        result["runtime_audit"] = build_runtime_audit(
+            seller_agent,
+            execution_context,
+            result,
+        )
 
     return result

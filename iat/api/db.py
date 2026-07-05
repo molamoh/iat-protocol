@@ -16284,9 +16284,16 @@ def run_foundation_controlled_seller_execution_db(
     execution_session_id = session.get("execution_session_id")
 
     try:
+        runtime_adapter = (
+            metadata.get("runtime_adapter")
+            or selected.get("runtime_adapter")
+            or ("http" if selected.get("url") else "internal")
+        )
+
         seller_runtime_agent = {
             **selected,
-            "runtime_adapter": metadata.get("runtime_adapter") or "internal",
+            "runtime_adapter": runtime_adapter,
+            "endpoint": selected.get("url"),
             "capabilities": _safe_json_loads(selected.get("capabilities"), []),
             "specialties": _safe_json_loads(selected.get("specialties"), []),
         }

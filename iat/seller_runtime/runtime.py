@@ -5,6 +5,7 @@ from iat.seller_runtime.service_registry import resolve_service
 from iat.seller_runtime.adapter_registry import resolve_adapter
 from iat.seller_runtime.runtime_policy import evaluate_seller_runtime_policy
 from iat.seller_runtime.governance_policy import evaluate_governance_policy
+from iat.seller_runtime.trust_engine import compute_runtime_trust
 
 
 def run_seller_runtime(
@@ -32,6 +33,12 @@ def run_seller_runtime(
         seller_agent["capabilities"] = [
             resolved["default_capability"]
         ]
+
+    trust = compute_runtime_trust(
+        seller_agent,
+    )
+
+    seller_agent.update(trust)
 
     governance = evaluate_governance_policy(
         seller_agent,
@@ -64,5 +71,6 @@ def run_seller_runtime(
     if isinstance(result, dict):
         result["runtime_policy"] = policy
         result["governance_policy"] = governance
+        result["runtime_trust"] = trust
 
     return result

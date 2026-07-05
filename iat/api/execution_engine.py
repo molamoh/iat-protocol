@@ -1,4 +1,5 @@
 import time
+from iat.action_engine.unified_trust_engine import compute_unified_trust_score
 
 
 def compute_agent_score(agent, now=None):
@@ -17,7 +18,7 @@ def compute_agent_score(agent, now=None):
     price_score = 1 / price if price > 0 else 0
     latency_score = 1 / latency if latency > 0 else 0
 
-    final_score = (
+    local_score = (
         reputation * 0.45 +
         price_score * 0.25 +
         freshness_score * 0.10 +
@@ -25,7 +26,25 @@ def compute_agent_score(agent, now=None):
         success_rate * 0.10
     )
 
-    return round(final_score, 6)
+    unified = compute_unified_trust_score({
+        "entity_id": agent.get("agent_id") or agent.get("seller_agent_id") or agent.get("id"),
+        "entity_type": agent.get("agent_type") or "execution_agent",
+        "reputation": reputation * 100 if reputation <= 1 else reputation,
+        "trust_score": agent.get("trust_score", agent.get("trust", 50)),
+        "risk_score": agent.get("risk_score", agent.get("risk", 50)),
+        "reliability_score": success_rate * 100 if success_rate <= 1 else success_rate,
+        "runtime_health_score": agent.get("runtime_health_score", freshness_score * 100),
+        "governance_score": agent.get("governance_score", 50),
+    })
+
+    local_score_100 = max(0, min(100, local_score * 100))
+
+    final_score = round(
+        (local_score_100 * 0.50) + (unified.get("score", 50) * 0.50),
+        6,
+    )
+
+    return final_score
 
 
 def rank_agents(agents):

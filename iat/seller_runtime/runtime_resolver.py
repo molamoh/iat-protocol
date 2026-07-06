@@ -3,6 +3,7 @@ from typing import Dict, Any
 from iat.seller_runtime.service_registry import resolve_service
 from iat.seller_runtime.adapter_registry import resolve_adapter
 from iat.seller_runtime.plugin_registry import find_plugin_by_capability
+from iat.seller_runtime.runtime_scoring import compute_runtime_score
 import iat.seller_runtime.python_plugins  # registers plugins
 
 
@@ -43,6 +44,8 @@ def build_virtual_runtime_agent(
     if plugin:
         agent["python_plugin"] = plugin.get("name")
 
+    agent["runtime_score"] = compute_runtime_score(agent)
+
     return agent
 
 
@@ -52,6 +55,8 @@ def resolve_seller_runtime_agent(
     selected_agent: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     if selected_agent:
+        selected_agent["runtime_score"] = compute_runtime_score(selected_agent)
+
         return {
             "status": "resolved",
             "source": "db_seller_agent",

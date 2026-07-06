@@ -2,7 +2,7 @@ from typing import Dict, Any
 
 CAPABILITY_REGISTRY: Dict[str, Dict[str, Any]] = {
     "market_summary": {
-        "python_task": "market_summary_stub",
+        "python_task": "market_summary_v1",
         "priority": 100,
     },
     "research": {

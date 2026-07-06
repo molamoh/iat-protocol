@@ -40,20 +40,42 @@ def research_summary_v1(ctx):
     }
 
 
-@register_python_task("market_summary_stub")
-def market_summary_stub(ctx):
-    task = ctx.get("task") or ""
+@register_python_task("market_summary_v1")
+def market_summary_v1(ctx):
+    task = str(ctx.get("task") or "")
     scope = ctx.get("scope") or {}
+
+    asset = None
+    horizon = None
+
+    if isinstance(scope, dict):
+        asset = scope.get("asset")
+        horizon = scope.get("horizon")
+
+    summary_parts = []
+
+    if asset:
+        summary_parts.append(f"Asset focus: {asset}")
+
+    if horizon:
+        summary_parts.append(f"Time horizon: {horizon}")
+
+    if task:
+        summary_parts.append(f"Requested analysis: {task}")
+
+    if not summary_parts:
+        summary_parts.append("Generic market analysis requested.")
 
     return {
         "status": "ok",
         "result": {
-            "summary": f"Market summary generated for: {task}",
-            "scope": scope,
+            "summary": "Foundation-safe market summary generated.",
+            "analysis_points": summary_parts,
             "risk_notes": [
-                "This is a safe Python runtime stub.",
-                "Live market data adapter is not enabled yet."
+                "No live market feed was used in this Python task.",
+                "Final buyer delivery must remain Foundation-verified.",
             ],
-            "confidence": 0.5,
+            "scope": scope,
+            "confidence": 0.65,
         },
     }

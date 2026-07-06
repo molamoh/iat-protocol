@@ -8,6 +8,7 @@ import json
 import time
 import uuid
 from iat.seller_runtime.runtime import run_seller_runtime
+from iat.seller_runtime.runtime_resolver import resolve_seller_runtime_agent
 from iat.api.execution_engine import rank_agents
 from pathlib import Path
 
@@ -16216,11 +16217,28 @@ def run_foundation_controlled_seller_execution_db(
             candidates = filtered
 
     if not candidates:
-        return {
-            "status": "error",
-            "message": "no_eligible_seller_execution_agent",
-            "service": service,
-            "specialization": specialization,
+        resolved_runtime = resolve_seller_runtime_agent(
+            service=service,
+            execution_context=sanitized_context,
+            selected_agent=None,
+        )
+
+        selected = resolved_runtime.get("agent") or {}
+
+        if not selected:
+            return {
+                "status": "error",
+                "message": "no_eligible_seller_execution_agent",
+                "service": service,
+                "specialization": specialization,
+            }
+
+        candidates = [selected]
+        runtime_resolution = resolved_runtime
+    else:
+        runtime_resolution = {
+            "status": "resolved",
+            "source": "db_seller_agent",
         }
 
     ranked = rank_agents([
@@ -16248,10 +16266,24 @@ def run_foundation_controlled_seller_execution_db(
 
     selected = ranked[0]
 
-    metadata = _safe_json_loads(selected.get("metadata"), {})
-    execution_mode = str(metadata.get("execution_mode") or "").lower()
+    runtime_resolution = locals().get("runtime_resolution") or {
+        "status": "resolved",
+        "source": "db_seller_agent",
+    }
 
-    if execution_mode != "iat_internal":
+    metadata = (
+        selected.get("metadata")
+        if isinstance(selected.get("metadata"), dict)
+        else _safe_json_loads(selected.get("metadata"), {})
+    )
+
+    execution_mode = str(
+        metadata.get("execution_mode")
+        or selected.get("execution_mode")
+        or "iat_internal"
+    ).lower()
+
+    if execution_mode not in ("iat_internal", "python_plugin_runtime"):
         return {
             "status": "error",
             "message": "unsupported_execution_mode",
@@ -16340,7 +16372,14 @@ def run_foundation_controlled_seller_execution_db(
             "result": runtime_result.get("result") or {},
             "runtime": runtime_result,
             "runtime_persistence": runtime_persistence,
+            "runtime_resolution": runtime_resolution,
         }
+
+        runtime_mode = (
+            (execution_result.get("runtime") or {}).get("execution_mode")
+            or execution_result.get("execution_mode")
+            or execution_mode
+        )
 
         update_result = update_seller_agent_execution_session_db(
             execution_session_id,
@@ -16351,7 +16390,8 @@ def run_foundation_controlled_seller_execution_db(
                 "risk_score": 0,
                 "metadata": {
                     "source": "foundation_controlled_seller_execution",
-                    "execution_mode": execution_mode,
+                    "execution_mode": runtime_mode,
+                    "base_execution_mode": execution_mode,
                     "buyer_data_stripped": True,
                     "foundation_mediated": True,
                     "completed_at": int(time.time()),
@@ -16367,7 +16407,7 @@ def run_foundation_controlled_seller_execution_db(
             seller_id=selected.get("seller_id"),
             event_type="seller_agent_execution_completed",
             reviewer="iat_foundation_execution_engine",
-            reason="foundation_controlled_internal_execution_completed",
+            reason=f"foundation_controlled_{runtime_mode}_execution_completed",
             old_status="executing",
             new_status="completed",
             metadata={
@@ -16502,12 +16542,21 @@ def verify_seller_execution_result_db(execution_session_id):
         risk_score += 20
         failed_checks.append("execution_result_status_not_ok")
 
-    if str(execution_result.get("execution_mode") or "").lower() == "iat_internal":
+    supported_execution_modes = {
+        "iat_internal",
+        "python_plugin_runtime",
+    }
+
+    execution_mode_check = str(
+        execution_result.get("execution_mode") or ""
+    ).lower()
+
+    if execution_mode_check in supported_execution_modes:
         trust_score += 10
-        passed_checks.append("execution_mode_iat_internal")
+        passed_checks.append(f"execution_mode_{execution_mode_check}")
     else:
         risk_score += 20
-        manual_review_checks.append("execution_mode_not_iat_internal")
+        manual_review_checks.append("execution_mode_not_supported")
 
     if metadata.get("buyer_data_stripped") is True:
         trust_score += 15

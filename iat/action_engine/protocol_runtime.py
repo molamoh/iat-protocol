@@ -262,6 +262,36 @@ def deliver_service(order, tx_signature):
 
 
 
+def infer_execution_scope(order, requirements=None):
+    order = order or {}
+    requirements = requirements or {}
+
+    query = str(order.get("query") or "").lower()
+    service = str(order.get("service") or "").lower()
+
+    scope = {}
+
+    if isinstance(requirements, dict):
+        scope.update(requirements)
+
+    if "btc" in query or "bitcoin" in query:
+        scope.setdefault("asset", "BTC")
+    elif "eth" in query or "ethereum" in query:
+        scope.setdefault("asset", "ETH")
+    elif "sol" in query or "solana" in query:
+        scope.setdefault("asset", "SOL")
+
+    if any(x in query for x in ["short term", "short-term", "court terme", "today", "now"]):
+        scope.setdefault("horizon", "short_term")
+    elif any(x in query for x in ["long term", "long-term", "long terme"]):
+        scope.setdefault("horizon", "long_term")
+
+    if service:
+        scope.setdefault("service", service)
+
+    return scope
+
+
 def run_foundation_supplier_pipeline(order):
     """
     Foundation-mediated supplier pipeline.
@@ -283,9 +313,14 @@ def run_foundation_supplier_pipeline(order):
         or f"Execute service: {order.get('service')}"
     )
 
+    inferred_scope = infer_execution_scope(
+        order,
+        requirements,
+    )
+
     sanitized_execution_context = {
         "task": foundation_task,
-        "scope": requirements,
+        "scope": inferred_scope,
         "required_format": "structured_supplier_contribution",
         "service": order.get("service"),
         "trusted_input_only": True,

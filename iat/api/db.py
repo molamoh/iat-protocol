@@ -16264,12 +16264,13 @@ def run_foundation_controlled_seller_execution_db(
             "message": "no_ranked_candidate",
         }
 
-    selected = ranked[0]
+    runtime_resolution = resolve_seller_runtime_agent(
+        service=service,
+        execution_context=sanitized_context,
+        candidate_agents=ranked,
+    )
 
-    runtime_resolution = locals().get("runtime_resolution") or {
-        "status": "resolved",
-        "source": "db_seller_agent",
-    }
+    selected = runtime_resolution.get("agent") or ranked[0]
 
     metadata = (
         selected.get("metadata")

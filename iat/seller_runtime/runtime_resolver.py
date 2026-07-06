@@ -53,21 +53,67 @@ def resolve_seller_runtime_agent(
     service: str,
     execution_context: Dict[str, Any],
     selected_agent: Dict[str, Any] | None = None,
+    candidate_agents=None,
 ) -> Dict[str, Any]:
-    if selected_agent:
-        selected_agent["runtime_score"] = compute_runtime_score(selected_agent)
 
-        return {
-            "status": "resolved",
+    candidates = []
+
+    for agent in candidate_agents or []:
+        item = dict(agent)
+        item["runtime_score"] = compute_runtime_score(item)
+        candidates.append({
             "source": "db_seller_agent",
-            "agent": selected_agent,
-        }
+            "agent": item,
+        })
+
+    if selected_agent:
+        item = dict(selected_agent)
+        item["runtime_score"] = compute_runtime_score(item)
+        candidates.append({
+            "source": "db_seller_agent",
+            "agent": item,
+        })
+
+    virtual_agent = build_virtual_runtime_agent(
+        service,
+        execution_context,
+    )
+
+    candidates.append({
+        "source": "virtual_runtime_agent",
+        "agent": virtual_agent,
+    })
+
+    candidates.sort(
+        key=lambda item: item.get("agent", {}).get("runtime_score", 0),
+        reverse=True,
+    )
+
+    selected = candidates[0]
+    selected_agent = selected.get("agent") or {}
+
+    selected_source = selected.get("source")
+    selected_metadata = selected_agent.get("metadata") or {}
+
+    if isinstance(selected_metadata, dict) and selected_metadata.get("virtual") is True:
+        selected_source = "virtual_runtime_agent"
 
     return {
         "status": "resolved",
-        "source": "virtual_runtime_agent",
-        "agent": build_virtual_runtime_agent(
-            service,
-            execution_context,
-        ),
+        "source": selected_source,
+        "agent": selected_agent,
+        "candidates": [
+            {
+                "source": (
+                    "virtual_runtime_agent"
+                    if isinstance(c.get("agent", {}).get("metadata"), dict)
+                    and c.get("agent", {}).get("metadata", {}).get("virtual") is True
+                    else c.get("source")
+                ),
+                "seller_agent_id": c.get("agent", {}).get("seller_agent_id"),
+                "adapter": c.get("agent", {}).get("runtime_adapter"),
+                "runtime_score": c.get("agent", {}).get("runtime_score"),
+            }
+            for c in candidates
+        ],
     }

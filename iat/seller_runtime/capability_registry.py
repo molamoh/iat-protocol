@@ -6,7 +6,7 @@ CAPABILITY_REGISTRY: Dict[str, Dict[str, Any]] = {
         "priority": 100,
     },
     "research": {
-        "python_task": "summarize_stub",
+        "python_task": "research_summary_v1",
         "priority": 90,
     },
     "echo": {

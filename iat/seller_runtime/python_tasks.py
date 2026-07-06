@@ -13,12 +13,29 @@ def task_echo(ctx):
     }
 
 
-@register_python_task("summarize_stub")
-def summarize(ctx):
+@register_python_task("research_summary_v1")
+def research_summary_v1(ctx):
+    task = str(ctx.get("task") or "")
+    scope = ctx.get("scope") or {}
+
+    key_points = []
+
+    if task:
+        key_points.append(f"Requested research task: {task}")
+
+    if isinstance(scope, dict) and scope:
+        key_points.append(f"Scope constraints: {scope}")
+
+    if not key_points:
+        key_points.append("No detailed task or scope was provided.")
+
     return {
         "status": "ok",
         "result": {
-            "summary": f"Summary for: {ctx.get('task')}",
+            "summary": "Foundation-safe research summary generated.",
+            "key_points": key_points,
+            "scope": scope,
+            "confidence": 0.6,
         },
     }
 

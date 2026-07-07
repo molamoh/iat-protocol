@@ -5585,6 +5585,38 @@ def admin_get_action_runtime_metrics(x_api_key: str = Header(default="")):
     return inspect_runtime_metrics()
 
 
+@app.get("/admin/action-engine/runtime/executions")
+def admin_list_action_execution_history(
+    action_id: str | None = None,
+    limit: int = 50,
+    x_api_key: str = Header(default=""),
+):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import list_action_execution_history_db
+
+    return list_action_execution_history_db(
+        action_id=action_id,
+        limit=limit,
+    )
+
+
+@app.get("/admin/action-engine/runtime/executions/{action_id}")
+def admin_get_action_execution_history(
+    action_id: str,
+    limit: int = 10,
+    x_api_key: str = Header(default=""),
+):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import list_action_execution_history_db
+
+    return list_action_execution_history_db(
+        action_id=action_id,
+        limit=limit,
+    )
+
+
 
 @app.get("/admin/action-engine/runtime/memory")
 def admin_list_action_runtime_memory(

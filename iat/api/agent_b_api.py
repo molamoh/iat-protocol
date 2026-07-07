@@ -3623,6 +3623,14 @@ def make_buyer_order_response(order_response):
         return order_response
 
     order_id = order_response.get("order_id")
+
+    if not order_id:
+        return {
+            "status": "order_creation_failed",
+            "reason": "missing_order_id",
+            "raw_order_response": order_response,
+        }
+
     price = order_response.get("price")
     payment_target_value = (
         order_response.get("seller_wallet")

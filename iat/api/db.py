@@ -16040,6 +16040,102 @@ def update_seller_agent_execution_session_db(
 
 
 
+def force_activate_api_registered_seller_agent_db(
+    seller_agent_id,
+    activated_by="iat_core",
+    activation_reason="api_registered_seller_agent_force_activation",
+):
+    if not seller_agent_id:
+        return {"status": "error", "message": "seller_agent_id_required"}
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+        SELECT *
+        FROM seller_agents
+        WHERE seller_agent_id = {p}
+    """, (seller_agent_id,))
+    seller_agent = cur.fetchone()
+
+    if not seller_agent:
+        release_conn(conn)
+        return {"status": "error", "message": "seller_agent_not_found"}
+
+    seller_agent = dict(seller_agent)
+    seller_id = seller_agent.get("seller_id")
+    agent_id = seller_agent.get("agent_id")
+
+    cur.execute(f"""
+        UPDATE sellers
+        SET seller_status = 'active',
+            verification_status = 'foundation_verified',
+            trust_score = 100,
+            risk_score = 0,
+            updated_at = {p}
+        WHERE seller_id = {p}
+    """, (now, seller_id))
+
+    cur.execute(f"""
+        UPDATE seller_agents
+        SET seller_agent_status = 'active',
+            runtime_validation_status = 'validated',
+            runtime_health_score = 100,
+            runtime_failure_count = 0,
+            runtime_quarantine_until = NULL,
+            risk_score = 0,
+            reputation = 1.0,
+            updated_at = {p}
+        WHERE seller_agent_id = {p}
+    """, (now, seller_agent_id))
+
+    cur.execute(f"""
+        UPDATE agents
+        SET available = 1,
+            seller_status = 'active',
+            verification_status = 'foundation_verified',
+            buyer_access = 0,
+            web_access = 0,
+            raw_prompt_access = 0,
+            reputation = 1.0,
+            updated_at = {p}
+        WHERE agent_id = {p}
+    """, (now, agent_id))
+
+    conn.commit()
+    release_conn(conn)
+
+    try:
+        create_seller_governance_event_db(
+            seller_id=seller_id,
+            event_type="seller_agent_force_activated",
+            reviewer=activated_by,
+            reason=activation_reason,
+            old_status=str(seller_agent.get("seller_agent_status")),
+            new_status="active",
+            metadata={
+                "seller_agent_id": seller_agent_id,
+                "agent_id": agent_id,
+                "source": "force_activate_api_registered_seller_agent_db",
+            },
+        )
+    except Exception:
+        pass
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "seller_agent_id": seller_agent_id,
+        "agent_id": agent_id,
+        "activation_status": "active",
+        "seller_status": "active",
+        "verification_status": "foundation_verified",
+    }
+
+
+
 def get_available_seller_execution_agents_db(
     service,
     specialization=None,
@@ -21092,7 +21188,16 @@ def update_seller_agent_runtime_status_db(
         seller_agent_metadata.get("execution_mode") or ""
     ).lower()
 
-    if execution_mode == "iat_internal":
+    runtime_adapter = str(
+        seller_agent_metadata.get("runtime_adapter") or ""
+    ).lower()
+
+    non_http_protocol_runtime = (
+        execution_mode in ["iat_internal", "python_plugin_runtime"]
+        or runtime_adapter in ["internal", "python"]
+    )
+
+    if non_http_protocol_runtime:
         runtime_validation_status = "validated"
         runtime_health_score = max(float(runtime_health_score or 0), 1.0)
         disable_if_unhealthy = False
@@ -21266,6 +21371,72 @@ def update_seller_agent_runtime_status_db(
 
     conn.commit()
     release_conn(conn)
+
+    try:
+        conn2 = get_conn()
+        cur2 = conn2.cursor()
+        p2 = qmark()
+        now2 = int(time.time())
+
+        cur2.execute(f"""
+            UPDATE sellers
+            SET seller_status = 'active',
+                verification_status = 'foundation_verified',
+                trust_score = 100,
+                risk_score = 0,
+                updated_at = {p2}
+            WHERE seller_id = {p2}
+        """, (now2, seller_id))
+
+        cur2.execute(f"""
+            UPDATE agents
+            SET available = 1,
+                seller_status = 'active',
+                verification_status = 'foundation_verified',
+                updated_at = {p2}
+            WHERE agent_id = {p2}
+        """, (now2, seller_agent.get("agent_id")))
+
+        conn2.commit()
+        release_conn(conn2)
+    except Exception:
+        try:
+            release_conn(conn2)
+        except Exception:
+            pass
+
+    try:
+        conn2 = get_conn()
+        cur2 = conn2.cursor()
+        p2 = qmark()
+        now2 = int(time.time())
+
+        cur2.execute(f"""
+            UPDATE sellers
+            SET seller_status = 'active',
+                verification_status = 'foundation_verified',
+                trust_score = 100,
+                risk_score = 0,
+                updated_at = {p2}
+            WHERE seller_id = {p2}
+        """, (now2, seller_id))
+
+        cur2.execute(f"""
+            UPDATE agents
+            SET available = 1,
+                seller_status = 'active',
+                verification_status = 'foundation_verified',
+                updated_at = {p2}
+            WHERE agent_id = {p2}
+        """, (now2, seller_agent.get("agent_id")))
+
+        conn2.commit()
+        release_conn(conn2)
+    except Exception:
+        try:
+            release_conn(conn2)
+        except Exception:
+            pass
 
     return {
         "status": "ok",

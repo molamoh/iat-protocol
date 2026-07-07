@@ -6354,6 +6354,71 @@ def seller_register(req: SellerRegisterRequest):
 
 
 
+def validate_seller_runtime_adapter(
+    runtime_adapter,
+    url=None,
+    python_plugin=None,
+):
+    adapter = str(runtime_adapter or "http").strip().lower()
+
+    if adapter == "http":
+        if not url:
+            return {
+                "status": "error",
+                "message": "runtime_url_required_for_http_adapter",
+            }
+
+        result = validate_seller_runtime(url)
+        result["runtime_adapter"] = "http"
+        return result
+
+    if adapter == "python":
+        try:
+            import iat.seller_runtime.python_plugins
+            from iat.seller_runtime.plugin_registry import get_plugin
+
+            plugin = get_plugin(python_plugin)
+
+            if not plugin:
+                return {
+                    "status": "error",
+                    "message": "python_plugin_not_found",
+                    "python_plugin": python_plugin,
+                }
+
+            return {
+                "status": "ok",
+                "runtime_adapter": "python",
+                "runtime_validation_status": "validated",
+                "runtime_latency": 0,
+                "runtime_health_score": 1.0,
+                "python_plugin": python_plugin,
+                "plugin_capability": plugin.get("capability"),
+            }
+
+        except Exception as exc:
+            return {
+                "status": "error",
+                "message": "python_plugin_validation_failed",
+                "error": str(exc),
+            }
+
+    if adapter == "internal":
+        return {
+            "status": "ok",
+            "runtime_adapter": "internal",
+            "runtime_validation_status": "validated",
+            "runtime_latency": 0,
+            "runtime_health_score": 1.0,
+        }
+
+    return {
+        "status": "error",
+        "message": "unsupported_runtime_adapter",
+        "runtime_adapter": adapter,
+    }
+
+
 def validate_seller_runtime(url):
     """
     Validate seller runtime before protocol integration.
@@ -6471,7 +6536,9 @@ class SellerRegisterAgentRequest(BaseModel):
     api_key: str = Field(min_length=16, max_length=200)
     agent_id: str = Field(min_length=3, max_length=120)
     service: str = Field(min_length=3, max_length=120)
-    url: str = Field(min_length=8, max_length=500)
+    url: str | None = Field(default=None, max_length=500)
+    runtime_adapter: str = Field(default="http", min_length=3, max_length=50)
+    python_plugin: str | None = Field(default=None, max_length=120)
     wallet: str | None = Field(default=None, max_length=256)
     price: float = 1.0
     capabilities: list[str] = []
@@ -6493,8 +6560,13 @@ def seller_register_agent(req: SellerRegisterAgentRequest):
     seller_id = seller["seller_id"]
     seller_agent_id = "seller_agent_" + str(uuid.uuid4())
 
-    runtime_validation = validate_seller_runtime(
-        req.url.strip()
+    runtime_adapter = str(req.runtime_adapter or "http").strip().lower()
+    runtime_url = req.url.strip() if req.url else ""
+
+    runtime_validation = validate_seller_runtime_adapter(
+        runtime_adapter=runtime_adapter,
+        url=runtime_url,
+        python_plugin=req.python_plugin,
     )
 
     if runtime_validation.get("status") != "ok":
@@ -6502,20 +6574,34 @@ def seller_register_agent(req: SellerRegisterAgentRequest):
 
     runtime_validation["runtime_last_checked_at"] = int(time.time())
 
+    agent_metadata = req.metadata or {}
+    agent_metadata.update({
+        "execution_mode": (
+            "python_plugin_runtime"
+            if runtime_adapter == "python"
+            else "iat_internal"
+            if runtime_adapter == "internal"
+            else "http_runtime"
+        ),
+        "runtime_adapter": runtime_adapter,
+        "python_plugin": req.python_plugin,
+        "runtime_registration_source": "seller_register_agent",
+    })
+
 
     result = create_seller_agent_db({
         "seller_agent_id": seller_agent_id,
         "seller_id": seller_id,
         "agent_id": req.agent_id.strip(),
         "service": req.service.strip(),
-        "url": req.url.strip(),
+        "url": runtime_url,
         "capabilities": req.capabilities,
         "specialties": req.specialties,
         "runtime_validation_status": runtime_validation.get("runtime_validation_status"),
-        "runtime_health_score": runtime_validation.get("runtime_health_score"),
+        "runtime_health_score": float(runtime_validation.get("runtime_health_score") or 0) * 100,
         "runtime_latency": runtime_validation.get("runtime_latency"),
         "runtime_last_checked_at": runtime_validation.get("runtime_last_checked_at"),
-        "metadata": req.metadata or {},
+        "metadata": agent_metadata,
     })
 
     if result.get("status") != "ok":
@@ -6534,7 +6620,7 @@ def seller_register_agent(req: SellerRegisterAgentRequest):
     registered_agent = {
         "agent_id": req.agent_id.strip(),
         "service": req.service.strip(),
-        "url": req.url.strip(),
+        "url": runtime_url,
         "wallet": req.wallet or seller.get("wallet"),
         "agent_type": "seller",
         "price": float(req.price or 1.0),
@@ -6545,6 +6631,7 @@ def seller_register_agent(req: SellerRegisterAgentRequest):
         "seller_agent_id": seller_agent_id,
         "capabilities": json.dumps(req.capabilities),
         "specialties": json.dumps(req.specialties),
+        "runtime_adapter": runtime_adapter,
     }
 
     try:

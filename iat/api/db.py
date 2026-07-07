@@ -16182,7 +16182,7 @@ def get_available_seller_execution_agents_db(
             OR sa.metadata LIKE '%"test": true%'
           )
       AND (
-            sa.runtime_validation_status IN ('healthy', 'validated', 'generated_pending_review')
+            sa.runtime_validation_status IN ('healthy', 'validated', 'active', 'generated_pending_review')
             OR sa.metadata LIKE '%"test": true%'
           )
       AND (

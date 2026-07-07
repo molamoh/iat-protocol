@@ -5617,6 +5617,24 @@ def admin_get_action_execution_history(
     )
 
 
+@app.get("/admin/seller-runtime/eligible-agents")
+def admin_debug_eligible_seller_runtime_agents(
+    service: str,
+    specialization: str | None = None,
+    limit: int = 20,
+    x_api_key: str = Header(default=""),
+):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import get_available_seller_execution_agents_db
+
+    return get_available_seller_execution_agents_db(
+        service=service,
+        specialization=specialization,
+        limit=limit,
+    )
+
+
 
 @app.get("/admin/action-engine/runtime/memory")
 def admin_list_action_runtime_memory(

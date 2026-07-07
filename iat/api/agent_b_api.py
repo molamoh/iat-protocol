@@ -439,20 +439,17 @@ class VerifyPaymentRequest(BaseModel):
     tx_signature: str
 
 
+
+def COALESCE_BUYER_ACCESS_SAFE(agent):
+    return (
+        int(agent.get("buyer_access") or 0) == 0
+        and int(agent.get("web_access") or 0) == 0
+        and int(agent.get("raw_prompt_access") or 0) == 0
+    )
+
+
 def select_best_seller(service_name, order=None):
     dynamic_agents = get_agents_for_service_db(service_name)
-
-    # Buyer-facing execution is foundation-only.
-    # External seller agents must never directly access buyers.
-    dynamic_agents = [
-        a for a in dynamic_agents
-        if str(a.get("agent_type", "")).lower() == "foundation"
-    ]
-
-    if not dynamic_agents:
-        return None
-
-    foundation_decision_payload = None
 
     locked_agent_id = None
     if order:
@@ -460,6 +457,37 @@ def select_best_seller(service_name, order=None):
             order.get("locked_agent_id")
             or order.get("selected_agent_id")
         )
+
+    # Buyer-facing authority stays foundation-only.
+    # Seller agents may be selected only as internal suppliers when locked by
+    # the Foundation preview decision. Sellers still never contact buyers.
+    if locked_agent_id:
+        locked = next(
+            (
+                a for a in dynamic_agents
+                if a.get("agent_id") == locked_agent_id
+                and bool(a.get("available", True))
+                and COALESCE_BUYER_ACCESS_SAFE(a)
+            ),
+            None,
+        )
+        if locked:
+            dynamic_agents = [locked]
+        else:
+            dynamic_agents = [
+                a for a in dynamic_agents
+                if str(a.get("agent_type", "")).lower() == "foundation"
+            ]
+    else:
+        dynamic_agents = [
+            a for a in dynamic_agents
+            if str(a.get("agent_type", "")).lower() == "foundation"
+        ]
+
+    if not dynamic_agents:
+        return None
+
+    foundation_decision_payload = None
 
     if locked_agent_id:
         best_agent = next(

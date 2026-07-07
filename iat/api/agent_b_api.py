@@ -5635,6 +5635,54 @@ def admin_debug_eligible_seller_runtime_agents(
     )
 
 
+@app.get("/admin/seller-runtime/debug-agent/{seller_agent_id}")
+def admin_debug_seller_runtime_agent(
+    seller_agent_id: str,
+    x_api_key: str = Header(default=""),
+):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import get_conn, release_conn, qmark
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+        SELECT
+            sa.seller_agent_id,
+            sa.seller_id,
+            sa.agent_id,
+            sa.service,
+            sa.seller_agent_status,
+            sa.runtime_validation_status,
+            sa.runtime_health_score,
+            sa.metadata,
+            a.available,
+            a.agent_type,
+            a.seller_status AS agent_seller_status,
+            a.verification_status AS agent_verification_status,
+            a.buyer_access,
+            a.web_access,
+            a.raw_prompt_access,
+            s.seller_status,
+            s.verification_status AS seller_verification_status
+        FROM seller_agents sa
+        LEFT JOIN agents a ON a.agent_id = sa.agent_id
+        LEFT JOIN sellers s ON s.seller_id = sa.seller_id
+        WHERE sa.seller_agent_id = {p}
+    """, (seller_agent_id,))
+
+    row = cur.fetchone()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "seller_agent_id": seller_agent_id,
+        "agent": dict(row) if row else None,
+    }
+
+
 
 @app.get("/admin/action-engine/runtime/memory")
 def admin_list_action_runtime_memory(

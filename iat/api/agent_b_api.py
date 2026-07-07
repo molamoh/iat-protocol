@@ -4195,6 +4195,110 @@ def admin_test_buyer_consensus(order_id: str, x_api_key: str | None = Header(def
     return make_buyer_payment_response(wrapped)
 
 
+@app.post("/admin/e2e/buyer-dry-run")
+def admin_buyer_e2e_dry_run(payload: dict = Body(default=None), x_api_key: str = Header(default="")):
+    require_admin_key(x_api_key)
+
+    payload = payload or {}
+
+    buyer_wallet = payload.get("buyer_wallet") or "dry_run_buyer_wallet"
+    prompt = payload.get("prompt") or "BTC volatility and liquidity short term with strict consensus"
+
+    preview_req = BuyerPreviewRequest(
+        buyer_wallet=buyer_wallet,
+        prompt=prompt,
+        session_id=payload.get("session_id"),
+        max_price=payload.get("max_price"),
+    )
+
+    preview = buyer_preview(preview_req)
+
+    if preview.get("status") not in ["preview", "ok", "ready"]:
+        return {
+            "status": "preview_not_ready",
+            "preview": preview,
+            "stage": "buyer_preview",
+        }
+
+    session_id = preview.get("session_id")
+
+    confirm_req = BuyerConfirmRequest(
+        buyer_wallet=buyer_wallet,
+        session_id=session_id,
+    )
+
+    confirm = buyer_confirm(confirm_req)
+
+    if confirm.get("status") != "order_created":
+        return {
+            "status": "confirm_failed",
+            "preview": preview,
+            "confirm": confirm,
+            "stage": "buyer_confirm",
+        }
+
+    order_id = confirm.get("order_id")
+    order = get_order_db(order_id)
+
+    from iat.action_engine.protocol_runtime import execute_protocol_order
+
+    execution = execute_protocol_order(
+        order,
+        payload.get("tx_signature") or "DRY_RUN_E2E_TX",
+    )
+
+    delivery = make_buyer_payment_response({
+        "status": "paid",
+        "data": execution,
+    })
+
+    settlement_result = None
+    try:
+        runtime_results = (
+            execution.get("multi_runtime", {}).get("results", [])
+            if isinstance(execution, dict)
+            else []
+        )
+
+        best_runtime = (
+            execution.get("best_result")
+            if isinstance(execution, dict)
+            else None
+        )
+
+        if best_runtime:
+            settlement_result = payout_winner_if_escrow(
+                order,
+                best_runtime,
+                runtime_results,
+            )
+    except Exception as exc:
+        settlement_result = {
+            "status": "error",
+            "reason": "dry_run_settlement_failed",
+            "error": str(exc),
+        }
+
+    return {
+        "status": "e2e_dry_run_completed",
+        "buyer_wallet": buyer_wallet,
+        "prompt": prompt,
+        "preview": preview,
+        "confirm": confirm,
+        "order_id": order_id,
+        "execution": execution,
+        "delivery": delivery,
+        "settlement": settlement_result,
+        "financial_state_machine": {
+            "real_onchain_payment": False,
+            "payment_verification_bypassed_for_dry_run": True,
+            "foundation_execution_completed": isinstance(execution, dict) and execution.get("error") is None,
+            "settlement_triggered": settlement_result is not None,
+            "onchain_settlement_enabled": str(os.getenv("IAT_ENABLE_ONCHAIN_SETTLEMENT", "false")).lower() == "true",
+        },
+    }
+
+
 @app.post("/buyer/verify-payment")
 def buyer_verify_payment(req: VerifyPaymentRequest):
     result = verify_payment(

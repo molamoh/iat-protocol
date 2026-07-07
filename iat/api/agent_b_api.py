@@ -4252,6 +4252,15 @@ def admin_buyer_e2e_dry_run(payload: dict = Body(default=None), x_api_key: str =
     order_id = confirm.get("order_id")
     order = get_order_db(order_id)
 
+    if not order:
+        return {
+            "status": "order_not_found_after_confirm",
+            "stage": "load_order_after_confirm",
+            "preview": preview,
+            "confirm": confirm,
+            "order_id": order_id,
+        }
+
     from iat.action_engine.protocol_runtime import execute_protocol_order
 
     execution = execute_protocol_order(

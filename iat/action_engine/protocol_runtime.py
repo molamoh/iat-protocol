@@ -97,6 +97,125 @@ def deliver_service(order, tx_signature):
             compute_consensus_strength,
         )
 
+        from iat.api.db import get_available_seller_execution_agents_db
+        from iat.api.execution_engine import rank_agents
+        from iat.seller_runtime.multi_runtime import run_multi_seller_runtime
+
+        service = order.get("service")
+        required_count = compute_required_agent_count(order)
+
+        eligible = get_available_seller_execution_agents_db(
+            service=service,
+            specialization=None,
+            limit=max(required_count, 3),
+        )
+
+        seller_candidates = eligible.get("agents", []) if eligible.get("status") == "ok" else []
+
+        ranked_sellers = rank_agents([
+            {
+                **candidate,
+                "agent_id": candidate.get("agent_id"),
+                "agent_type": "seller_agent",
+                "price_iat": candidate.get("price") or candidate.get("price_iat"),
+                "trust_score": candidate.get("trust_score", 50),
+                "risk_score": candidate.get("risk_score", 50),
+                "runtime_health_score": candidate.get("runtime_health_score", 50),
+                "governance_score": candidate.get("governance_score", 50),
+                "reputation": candidate.get("reputation", 0.5),
+                "success_rate": candidate.get("success_rate", 0.5),
+                "latency": candidate.get("latency", 1),
+            }
+            for candidate in seller_candidates
+        ])[:required_count]
+
+        if ranked_sellers:
+            runtime_context = {
+                "task": order.get("query"),
+                "scope": {
+                    "asset": "BTC" if "btc" in str(order.get("query", "")).lower() else None,
+                    "horizon": "short_term" if "short" in str(order.get("query", "")).lower() else None,
+                    "service": service,
+                },
+                "required_format": "structured_supplier_contribution",
+                "service": service,
+                "trusted_input_only": True,
+                "foundation_mediated": True,
+                "buyer_data_stripped": True,
+            }
+
+            multi_runtime = run_multi_seller_runtime(
+                service=service,
+                execution_context=runtime_context,
+                candidate_agents=ranked_sellers,
+                max_workers=required_count,
+            )
+
+            selected_agents = ranked_sellers
+            results = multi_runtime.get("results", [])
+            consensus_strength = compute_consensus_strength(results)
+            best_result = select_best_result(results)
+
+            if not best_result:
+                return {
+                    "error": "seller_runtime_consensus_failed",
+                    "message": "No valid seller runtime consensus result produced.",
+                    "execution_mode": execution_mode,
+                    "agents_called": [
+                        a.get("agent_id")
+                        for a in selected_agents
+                    ],
+                    "multi_runtime": multi_runtime,
+                }
+
+            final_delivery = build_final_buyer_delivery(
+                best_result,
+                results,
+            )
+
+            foundation_decision = (
+                order.get("foundation_decision")
+                or run_foundation_decision_db(order.get("order_id"))
+            )
+
+            try:
+                foundation_report = build_foundation_buyer_report(
+                    foundation_decision,
+                    fallback_delivery=final_delivery,
+                )
+            except Exception as exc:
+                foundation_report = {
+                    **final_delivery,
+                    "delivery_mode": "foundation_seller_runtime_consensus_report_fallback",
+                    "foundation_report_error": str(exc),
+                }
+
+            return {
+                "status": "seller_runtime_consensus_delivered",
+                "execution_mode": execution_mode,
+                "agents_called": [
+                    a.get("agent_id")
+                    for a in selected_agents
+                ],
+                "seller_agents_called": [
+                    a.get("seller_agent_id")
+                    for a in selected_agents
+                ],
+                "consensus_agents_count": len(selected_agents),
+                "consensus_strength": consensus_strength,
+                "foundation_decision": foundation_decision,
+                "multi_runtime": multi_runtime,
+                "best_result": best_result,
+                "result": foundation_report,
+                "policy": {
+                    "buyer_never_contacts_seller": True,
+                    "seller_never_contacts_buyer": True,
+                    "seller_agents_are_suppliers_only": True,
+                    "foundation_agents_keep_final_authority": True,
+                    "protocol_core_sovereignty_reserved": True,
+                },
+            }
+
         all_agents = get_agents_for_service_db(order.get("service"))
 
         foundation_agents = [
@@ -104,8 +223,6 @@ def deliver_service(order, tx_signature):
             if str(a.get("agent_type", "")).lower() == "foundation"
             and bool(a.get("available", True))
         ]
-
-        required_count = compute_required_agent_count(order)
 
         foundation_decision = order.get("foundation_decision") or {}
 
@@ -161,8 +278,6 @@ def deliver_service(order, tx_signature):
     )
 
         try:
-            from iat.api.multi_exec import build_foundation_buyer_report
-
             foundation_report = build_foundation_buyer_report(
                 foundation_decision,
                 fallback_delivery=final_delivery,
@@ -378,8 +493,6 @@ def run_foundation_supplier_pipeline(order):
     )
 
     try:
-        from iat.api.multi_exec import build_foundation_buyer_report
-
         foundation_report = build_foundation_buyer_report(
             foundation_decision,
             fallback_delivery={

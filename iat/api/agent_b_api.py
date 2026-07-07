@@ -3954,6 +3954,40 @@ def verify_payment(req: VerifyPaymentRequest, x_api_key: str | None = Header(def
         save_processed_tx_db(req.tx_signature)
         update_order_delivered_db(req.order_id, req.tx_signature, result)
 
+        settlement_result = None
+        try:
+            from iat.api.multi_exec import select_best_result
+
+            runtime_results = []
+            if isinstance(result, dict):
+                runtime_results = (
+                    result.get("multi_runtime", {}).get("results", [])
+                    or result.get("results", [])
+                    or []
+                )
+
+            best_runtime = (
+                result.get("best_result")
+                if isinstance(result, dict)
+                else None
+            )
+
+            if not best_runtime and runtime_results:
+                best_runtime = select_best_result(runtime_results)
+
+            if best_runtime:
+                settlement_result = payout_winner_if_escrow(
+                    order,
+                    best_runtime,
+                    runtime_results,
+                )
+        except Exception as settlement_error:
+            settlement_result = {
+                "status": "error",
+                "reason": "automatic_settlement_after_delivery_failed",
+                "error": str(settlement_error),
+            }
+
         return {
             "status": "paid",
             "service": order["service"],
@@ -3961,6 +3995,14 @@ def verify_payment(req: VerifyPaymentRequest, x_api_key: str | None = Header(def
             "seller_source": order.get("seller_source"),
             "new_reputation": new_reputation,
             "data": result,
+            "settlement": settlement_result,
+            "financial_state_machine": {
+                "payment_verified": True,
+                "foundation_execution_completed": True,
+                "foundation_delivery_recorded": True,
+                "settlement_triggered": settlement_result is not None,
+                "onchain_settlement_enabled": str(os.getenv("IAT_ENABLE_ONCHAIN_SETTLEMENT", "false")).lower() == "true",
+            },
         }
 
     return {

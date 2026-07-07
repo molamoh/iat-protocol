@@ -3219,14 +3219,26 @@ def buyer_preview(req: BuyerPreviewRequest):
         "hotel_search": "web_research",
         "restaurant": "web_research",
         "restaurant_search": "web_research",
-        "market_sentiment": "market_sentiment",
-        "risk_report": "web_research",
+        "market_sentiment": "market_analysis",
+        "market_analysis": "market_analysis",
+        "risk_report": "market_analysis",
+        "crypto_analysis": "market_analysis",
+        "finance_analysis": "market_analysis",
     }
 
     service = service_mapping.get(
         purchase_type,
         detect_buyer_service(req.prompt),
     )
+
+    market_keywords = [
+        "btc", "bitcoin", "crypto", "liquidity", "volatility",
+        "market analysis", "market risk", "liquidation", "sentiment",
+        "short term", "short-term", "trading", "price action",
+    ]
+
+    if any(k in combined_l for k in market_keywords):
+        service = "market_analysis"
 
     agents = get_agents_for_service_db(service)
 

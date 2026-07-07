@@ -16179,15 +16179,15 @@ def get_available_seller_execution_agents_db(
     WHERE sa.service = {p}
       AND (
             sa.seller_agent_status = 'active'
-            OR sa.metadata LIKE '%"test": true%'
+            OR sa.metadata LIKE {p}
           )
       AND (
             sa.runtime_validation_status IN ('healthy', 'validated', 'active', 'generated_pending_review')
-            OR sa.metadata LIKE '%"test": true%'
+            OR sa.metadata LIKE {p}
           )
       AND (
             a.available = 1
-            OR sa.metadata LIKE '%"test": true%'
+            OR sa.metadata LIKE {p}
           )
       AND a.agent_type = 'seller'
       AND a.seller_status = 'active'
@@ -16199,7 +16199,8 @@ def get_available_seller_execution_agents_db(
       AND s.verification_status IN ('verified', 'foundation_verified')
     """
 
-    params = [service]
+    test_metadata_like = '%"test": true%'
+    params = [service, test_metadata_like, test_metadata_like, test_metadata_like]
 
     if specialization:
         sql += f"""

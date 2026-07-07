@@ -5683,6 +5683,70 @@ def admin_debug_seller_runtime_agent(
     }
 
 
+@app.post("/admin/seller-runtime/activate-parent/{seller_agent_id}")
+def admin_activate_seller_runtime_parent(
+    seller_agent_id: str,
+    x_api_key: str = Header(default=""),
+):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import get_conn, release_conn, qmark
+    import time
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+
+    cur.execute(f"""
+        SELECT seller_id, agent_id
+        FROM seller_agents
+        WHERE seller_agent_id = {p}
+    """, (seller_agent_id,))
+    row = cur.fetchone()
+
+    if not row:
+        release_conn(conn)
+        return {"status": "error", "message": "seller_agent_not_found"}
+
+    seller_id = row["seller_id"] if isinstance(row, dict) else row[0]
+    agent_id = row["agent_id"] if isinstance(row, dict) else row[1]
+
+    cur.execute(f"""
+        UPDATE sellers
+        SET seller_status = 'active',
+            verification_status = 'foundation_verified',
+            trust_score = 100,
+            risk_score = 0,
+            updated_at = {p}
+        WHERE seller_id = {p}
+    """, (now, seller_id))
+
+    cur.execute(f"""
+        UPDATE agents
+        SET available = 1,
+            seller_status = 'active',
+            verification_status = 'foundation_verified',
+            buyer_access = 0,
+            web_access = 0,
+            raw_prompt_access = 0,
+            updated_at = {p}
+        WHERE agent_id = {p}
+    """, (now, agent_id))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "ok",
+        "seller_agent_id": seller_agent_id,
+        "seller_id": seller_id,
+        "agent_id": agent_id,
+        "seller_status": "active",
+        "seller_verification_status": "foundation_verified",
+    }
+
+
 
 @app.get("/admin/action-engine/runtime/memory")
 def admin_list_action_runtime_memory(

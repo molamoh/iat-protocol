@@ -3410,6 +3410,20 @@ def buyer_preview(req: BuyerPreviewRequest):
     quality_score = round(min(max(float(best.get("reputation", 0.8) or 0.8), 0), 1), 3)
     value_score = round(compute_agent_market_score(best) / max(recommended_price, 0.001), 6)
 
+    from iat.economy.governor import govern_economic_execution
+
+    economic_governance = govern_economic_execution(
+        {
+            "price": recommended_price,
+            "execution_mode": (
+                "foundation_consensus"
+                if str(intent.get("consensus_preference") or "").lower() == "strict"
+                else "foundation_supplier_pipeline"
+            ),
+        },
+        best,
+    )
+
     public_options = []
 
     for agent in ranked[:3]:
@@ -3500,6 +3514,15 @@ def buyer_preview(req: BuyerPreviewRequest):
             "quality_score": quality_score,
             "value_for_money": "excellent" if value_score >= 1 else "good",
             "why_this_offer": "This offer currently gives the best balance between request match, price, reputation, availability and reliability.",
+        },
+        "economic_governance": {
+            "engine": economic_governance.get("engine"),
+            "allow_execution": economic_governance.get("allow_execution"),
+            "economic_risk": economic_governance.get("economic_risk"),
+            "recommended_consensus": economic_governance.get("recommended_consensus"),
+            "recommended_execution_mode": economic_governance.get("recommended_execution_mode"),
+            "supplier_identity_hidden": True,
+            "recommendation_only": True,
         },
         "available_options": public_options,
         "next_step": {

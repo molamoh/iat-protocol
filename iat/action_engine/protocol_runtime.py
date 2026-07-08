@@ -66,15 +66,7 @@ def build_foundation_context(order):
 
 
 def deliver_service(order, tx_signature):
-    # Buyer delivery must only be executed by foundation agents.
-    # Seller agents are never allowed to directly receive buyer requests.
-    if str(order.get("seller_source") or "") == "dynamic_registry":
-        agent = get_agent_db(order.get("seller_id"))
-        if not agent or str(agent.get("agent_type", "")).lower() != "foundation":
-            return {
-                "error": "non_foundation_buyer_delivery_blocked",
-                "message": "Buyer-facing delivery is restricted to protocol foundation agents.",
-            }
+    order = order or {}
 
     execution_mode = str(
         order.get("execution_mode") or "foundation_direct"

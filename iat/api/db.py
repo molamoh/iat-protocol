@@ -13569,10 +13569,94 @@ def get_foundation_agent_profile_db(agent_id):
 
 
 
+def _foundation_agent_capability_score(agent, required_capabilities=None, preferred_specialties=None, service=None):
+    import json
+
+    required_capabilities = [
+        str(x).strip().lower()
+        for x in (required_capabilities or [])
+        if str(x).strip()
+    ]
+
+    preferred_specialties = [
+        str(x).strip().lower()
+        for x in (preferred_specialties or [])
+        if str(x).strip()
+    ]
+
+    def _loads_list(value):
+        if isinstance(value, list):
+            return [str(x).strip().lower() for x in value if str(x).strip()]
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, list):
+                    return [str(x).strip().lower() for x in parsed if str(x).strip()]
+            except Exception:
+                return [value.lower()]
+        return []
+
+    caps = set(_loads_list(agent.get("capabilities")))
+    specs = set(_loads_list(agent.get("specialties")))
+    service_l = str(service or "").strip().lower()
+
+    capability_hits = len(set(required_capabilities) & caps)
+    specialty_hits = len(set(preferred_specialties) & specs)
+
+    service_hint = 0
+    if service_l:
+        if service_l == str(agent.get("service") or "").strip().lower():
+            service_hint += 1
+        if service_l in caps or service_l in specs:
+            service_hint += 1
+
+    return {
+        "score": capability_hits * 10 + specialty_hits * 4 + service_hint * 2 + float(agent.get("reputation") or 0),
+        "capability_hits": capability_hits,
+        "specialty_hits": specialty_hits,
+        "service_hint": service_hint,
+        "capabilities": sorted(caps),
+        "specialties": sorted(specs),
+    }
+
+
+def _rank_foundation_agents_by_capabilities(agents, required_capabilities=None, preferred_specialties=None, service=None):
+    ranked = []
+
+    for agent in agents or []:
+        score = _foundation_agent_capability_score(
+            agent,
+            required_capabilities=required_capabilities,
+            preferred_specialties=preferred_specialties,
+            service=service,
+        )
+
+        # Keep broad Foundation agents even with zero direct hits,
+        # but rank capability matches first.
+        enriched = {
+            **agent,
+            "foundation_capability_match": score,
+        }
+        ranked.append(enriched)
+
+    ranked.sort(
+        key=lambda a: (
+            a.get("foundation_capability_match", {}).get("score", 0),
+            float(a.get("reputation") or 0),
+            -int(a.get("foundation_priority") or 100),
+        ),
+        reverse=True,
+    )
+
+    return ranked
+
+
 def build_foundation_execution_plan_db(
     service=None,
     required_research_agents=2,
     required_verification_agents=1,
+    required_capabilities=None,
+    preferred_specialties=None,
 ):
     service = str(service or "").strip()
 
@@ -13582,18 +13666,39 @@ def build_foundation_execution_plan_db(
     research_agents = research_result.get("foundation_agents", [])
     verification_agents = verification_result.get("foundation_agents", [])
 
-    if service:
-        research_agents = [
-            a for a in research_agents
-            if str(a.get("service") or "").lower() == service.lower()
-        ]
-        verification_agents = [
-            a for a in verification_agents
-            if str(a.get("service") or "").lower() == service.lower()
-        ]
+    research_agents = _rank_foundation_agents_by_capabilities(
+        research_agents,
+        required_capabilities=required_capabilities,
+        preferred_specialties=preferred_specialties,
+        service=service,
+    )
+    verification_agents = _rank_foundation_agents_by_capabilities(
+        verification_agents,
+        required_capabilities=required_capabilities,
+        preferred_specialties=preferred_specialties,
+        service=service,
+    )
 
     selected_research_agents = research_agents[:max(0, int(required_research_agents or 0))]
     selected_verification_agents = verification_agents[:max(0, int(required_verification_agents or 0))]
+
+    # Capability-driven fallback:
+    # If dedicated verification agents are insufficient, allow other Foundation
+    # agents with strong matching capabilities to act as verification support.
+    if len(selected_verification_agents) < int(required_verification_agents or 0):
+        already = {a.get("agent_id") for a in selected_verification_agents}
+        flexible_verifiers = [
+            a for a in research_agents
+            if a.get("agent_id") not in already
+        ]
+
+        needed = int(required_verification_agents or 0) - len(selected_verification_agents)
+        for a in flexible_verifiers[:needed]:
+            selected_verification_agents.append({
+                **a,
+                "foundation_role_effective": "verification_support",
+                "foundation_role_source": a.get("foundation_role"),
+            })
 
     missing_requirements = []
 
@@ -13631,6 +13736,9 @@ def build_foundation_execution_plan_db(
 
         "required_research_agents": int(required_research_agents or 0),
         "required_verification_agents": int(required_verification_agents or 0),
+        "required_capabilities": required_capabilities or [],
+        "preferred_specialties": preferred_specialties or [],
+        "selection_mode": "capability_driven_foundation_routing",
         "missing_requirements": missing_requirements,
 
         "foundation_policy": {
@@ -13690,10 +13798,36 @@ def execute_foundation_plan_db(order):
 
     service = order.get("service") or "web_research"
 
+    try:
+        from iat.api.multi_exec import infer_required_capabilities
+    except Exception:
+        infer_required_capabilities = None
+
+    buyer_intent = order.get("buyer_intent") or {}
+    required_capabilities = (
+        buyer_intent.get("required_capabilities")
+        if isinstance(buyer_intent, dict)
+        else []
+    ) or []
+
+    if infer_required_capabilities:
+        inferred = infer_required_capabilities(order)
+        required_capabilities = list(dict.fromkeys(
+            list(required_capabilities or []) + list(inferred or [])
+        ))
+
+    preferred_specialties = (
+        buyer_intent.get("preferred_specialties")
+        if isinstance(buyer_intent, dict)
+        else []
+    ) or []
+
     plan_result = build_foundation_execution_plan_db(
         service=service,
         required_research_agents=2,
         required_verification_agents=2,
+        required_capabilities=required_capabilities,
+        preferred_specialties=preferred_specialties,
     )
 
     plan = plan_result.get("plan") or {}

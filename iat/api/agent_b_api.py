@@ -3430,7 +3430,14 @@ def buyer_preview(req: BuyerPreviewRequest):
 
     debug_payload = None
 
-    if req.debug:
+    import os
+
+    debug_enabled = (
+        req.debug and
+        os.getenv("IAT_ENABLE_BUYER_DEBUG", "false").lower() == "true"
+    )
+
+    if debug_enabled:
         debug_payload = {
             "selected_agent": best.get("agent_id"),
             "foundation_decision": foundation_decision,
@@ -3464,9 +3471,21 @@ def buyer_preview(req: BuyerPreviewRequest):
             ]
         }
 
+    public_foundation_decision = {
+        "status": foundation_decision.get("status"),
+        "decision_hash": (
+            (foundation_decision.get("decision") or {}).get("decision_hash")
+        ),
+        "confidence": (
+            (foundation_decision.get("decision") or {}).get("confidence")
+        ),
+        "decision_authority": "foundation_agents_only",
+        "supplier_identity_hidden": True,
+    }
+
     response = {
         "status": "preview",
-        "foundation_decision": foundation_decision,
+        "foundation_decision": public_foundation_decision,
         "session_id": session_id,
         "session_ttl_seconds": 300,
         "buyer_summary": {

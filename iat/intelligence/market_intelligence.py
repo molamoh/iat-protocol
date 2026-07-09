@@ -187,9 +187,98 @@ def build_market_intelligence() -> Dict[str, Any]:
 
     market_health_score = round(max(0.0, min(100.0, market_health_score)), 4)
 
+    forecast_service_growth = {}
+    capacity_shortage_probability = {}
+    recommended_new_foundation_agents = []
+    recommended_new_seller_agents = []
+    recommended_factory_requests = []
+
+    for gap in service_gaps[:10]:
+        demand_count = gap.get("demand_count", 0)
+        supply_count = gap.get("supply_count", 0)
+        pending_count = gap.get("pending_count", 0)
+
+        growth_pressure = min(1.0, demand_count / max(total_orders, 1))
+        shortage_pressure = min(1.0, pending_count / max(supply_count, 1))
+
+        forecast_service_growth[gap["service"]] = round(growth_pressure, 6)
+        capacity_shortage_probability[gap["service"]] = round(shortage_pressure, 6)
+
+        if shortage_pressure >= 0.75:
+            recommended_new_seller_agents.append({
+                "service": gap["service"],
+                "recommended_count": max(1, min(5, int(shortage_pressure * 3))),
+                "reason": "high_pending_pressure_vs_supply",
+                "creation_mode": "recommendation_only",
+            })
+
+    for gap in capability_gaps[:10]:
+        demand_count = gap.get("demand_count", 0)
+        supply_count = gap.get("supply_count", 0)
+        gap_score = gap.get("gap_score", 0)
+
+        pressure = min(1.0, gap_score / max(demand_count, 1))
+
+        if pressure >= 0.50:
+            recommended_new_foundation_agents.append({
+                "capability": gap["capability"],
+                "recommended_count": 1 if pressure < 0.80 else 2,
+                "reason": "foundation_capability_gap_detected",
+                "creation_mode": "recommendation_only",
+            })
+
+        if supply_count <= 1 and demand_count >= 3:
+            recommended_factory_requests.append({
+                "target_capability": gap["capability"],
+                "recommended_supplier_count": min(5, max(1, int(gap_score / 3))),
+                "reason": "supplier_capability_under_supply",
+                "creation_mode": "recommendation_only",
+            })
+
+    predicted_market_health = market_health_score
+
+    if service_gaps:
+        predicted_market_health -= min(len(service_gaps) * 2.5, 10)
+
+    if capability_gaps:
+        predicted_market_health -= min(len(capability_gaps) * 1.5, 10)
+
+    if recommended_new_seller_agents or recommended_new_foundation_agents:
+        predicted_market_health += 5
+
+    predicted_market_health = round(max(0.0, min(100.0, predicted_market_health)), 4)
+
+    forecast_confidence = 0.35
+    if total_orders >= 10:
+        forecast_confidence += 0.20
+    if total_orders >= 50:
+        forecast_confidence += 0.20
+    if service_gaps or capability_gaps:
+        forecast_confidence += 0.10
+
+    forecast_confidence = round(max(0.0, min(0.85, forecast_confidence)), 4)
+
+    forecast = {
+        "forecast_type": "market_intelligence_forecast",
+        "forecast_horizon": "short_term",
+        "expected_service_growth": forecast_service_growth,
+        "capacity_shortage_probability": capacity_shortage_probability,
+        "recommended_new_foundation_agents": recommended_new_foundation_agents[:10],
+        "recommended_new_seller_agents": recommended_new_seller_agents[:10],
+        "recommended_factory_requests": recommended_factory_requests[:10],
+        "predicted_market_health_score": predicted_market_health,
+        "confidence": forecast_confidence,
+        "execution_policy": {
+            "forecast_does_not_create_agents": True,
+            "forecast_does_not_trigger_factory": True,
+            "foundation_approval_required": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
     return {
         "status": "ok",
-        "engine": "iat_market_intelligence_v1",
+        "engine": "iat_market_intelligence_v2",
         "mode": "observation_and_recommendation_only",
         "market_health_score": market_health_score,
         "stats": stats,
@@ -209,6 +298,7 @@ def build_market_intelligence() -> Dict[str, Any]:
             "capabilities": capability_gaps[:20],
             "specialties": specialty_gaps[:20],
         },
+        "forecast": forecast,
         "recommendations": recommendations[:30],
         "policy": {
             "does_not_create_agents": True,

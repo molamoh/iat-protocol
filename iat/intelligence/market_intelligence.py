@@ -313,6 +313,120 @@ def build_market_intelligence() -> Dict[str, Any]:
             "reason": rec["reason"],
         })
 
+    service_gap_index = {
+        g.get("service"): g
+        for g in service_gaps
+    }
+
+    capability_gap_index = {
+        g.get("capability"): g
+        for g in capability_gaps
+    }
+
+    shortage_index = forecast.get("capacity_shortage_probability", {}) or {}
+
+    strategic_actions = []
+
+    def _score_action(action, priority_level):
+        target = action.get("target")
+        service_gap = service_gap_index.get(target, {})
+        capability_gap = capability_gap_index.get(target, {})
+
+        demand_count = (
+            service_gap.get("demand_count")
+            or capability_gap.get("demand_count")
+            or 0
+        )
+        supply_count = (
+            service_gap.get("supply_count")
+            or capability_gap.get("supply_count")
+            or 0
+        )
+        pending_count = service_gap.get("pending_count") or 0
+        gap_score = (
+            service_gap.get("gap_score")
+            or capability_gap.get("gap_score")
+            or 0
+        )
+
+        demand_pressure = min(100.0, (float(demand_count) / max(total_orders, 1)) * 100.0)
+        supply_shortage = min(100.0, (float(gap_score) / max(float(demand_count), 1.0)) * 100.0)
+        pending_pressure = min(100.0, (float(pending_count) / max(float(demand_count), 1.0)) * 100.0)
+        shortage_probability = float(shortage_index.get(target, 0.0) or 0.0) * 100.0
+        market_health_pressure = max(0.0, 100.0 - float(market_health_score or 0.0))
+        forecast_pressure = max(0.0, 100.0 - float(predicted_market_health or 0.0))
+
+        if priority_level == 1:
+            priority_weight = 1.00
+        elif priority_level == 2:
+            priority_weight = 0.88
+        else:
+            priority_weight = 0.76
+
+        decision_score = (
+            demand_pressure * 0.22
+            + supply_shortage * 0.24
+            + pending_pressure * 0.18
+            + shortage_probability * 0.16
+            + market_health_pressure * 0.10
+            + forecast_pressure * 0.10
+        ) * priority_weight
+
+        if decision_score >= 75:
+            decision_class = "critical"
+        elif decision_score >= 55:
+            decision_class = "high"
+        elif decision_score >= 35:
+            decision_class = "medium"
+        else:
+            decision_class = "low"
+
+        return {
+            **action,
+            "decision_score": round(decision_score, 4),
+            "decision_class": decision_class,
+            "score_inputs": {
+                "priority_level": priority_level,
+                "demand_count": demand_count,
+                "supply_count": supply_count,
+                "pending_count": pending_count,
+                "gap_score": gap_score,
+                "demand_pressure": round(demand_pressure, 4),
+                "supply_shortage": round(supply_shortage, 4),
+                "pending_pressure": round(pending_pressure, 4),
+                "shortage_probability": round(shortage_probability, 4),
+                "market_health_pressure": round(market_health_pressure, 4),
+                "forecast_pressure": round(forecast_pressure, 4),
+            },
+            "execution_mode": "foundation_approval_required",
+        }
+
+    for action in action_plan.get("priority_1", []):
+        strategic_actions.append(_score_action(action, 1))
+
+    for action in action_plan.get("priority_2", []):
+        strategic_actions.append(_score_action(action, 2))
+
+    for action in action_plan.get("priority_3", []):
+        strategic_actions.append(_score_action(action, 3))
+
+    strategic_actions.sort(
+        key=lambda x: x.get("decision_score", 0),
+        reverse=True,
+    )
+
+    strategic_decisions = {
+        "engine": "iat_market_intelligence_v3",
+        "decision_count": len(strategic_actions),
+        "top_actions": strategic_actions[:20],
+        "policy": {
+            "scores_are_data_driven": True,
+            "does_not_execute_actions": True,
+            "foundation_approval_required": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
 
     return {
         "status": "ok",
@@ -338,6 +452,7 @@ def build_market_intelligence() -> Dict[str, Any]:
         },
         "forecast": forecast,
         "action_plan": action_plan,
+        "strategic_decisions": strategic_decisions,
         "recommendations": recommendations[:30],
         "policy": {
             "does_not_create_agents": True,

@@ -2896,6 +2896,52 @@ def admin_foundation_decision_queue(
     )
 
 
+@app.post("/admin/foundation-decision-queue/enqueue-market-intelligence")
+def admin_enqueue_market_intelligence_decisions(
+    x_api_key: str = Header(default=""),
+):
+    require_admin_key(x_api_key)
+
+    from iat.intelligence.market_intelligence import build_market_intelligence
+    from iat.api.db import enqueue_foundation_decision_db
+
+    intelligence = build_market_intelligence()
+    fused = intelligence.get("fused_strategic_decisions", {})
+    decisions = fused.get("decisions", [])
+
+    enqueued = []
+
+    for decision in decisions:
+        result = enqueue_foundation_decision_db({
+            **decision,
+            "decision_type": "market_intelligence_fused_decision",
+            "status": "pending_foundation_review",
+            "protocol_authority": "iat_foundation",
+        })
+        enqueued.append(result)
+
+    return {
+        "status": "ok",
+        "engine": "foundation_decision_queue_enqueue_v1",
+        "source_engine": fused.get("engine"),
+        "source_decision_count": len(decisions),
+        "enqueued_count": len([
+            r for r in enqueued
+            if r.get("status") == "queued"
+        ]),
+        "already_pending_count": len([
+            r for r in enqueued
+            if r.get("status") == "already_pending"
+        ]),
+        "results": enqueued,
+        "policy": {
+            "does_not_execute_actions": True,
+            "foundation_review_required": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
 @app.get("/network-status")
 def network_status():
     return {

@@ -276,6 +276,44 @@ def build_market_intelligence() -> Dict[str, Any]:
         },
     }
 
+    action_plan = {
+        "priority_1": [],
+        "priority_2": [],
+        "priority_3": [],
+        "foundation_approval_required": True,
+        "execution_mode": "recommendation_only",
+        "policy": {
+            "action_plan_does_not_execute": True,
+            "foundation_approval_required": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+    for rec in recommendations:
+        if rec.get("type") == "capacity":
+            action_plan["priority_1"].append({
+                "action": "increase_capacity",
+                "target": rec["target"],
+                "reason": rec["reason"],
+            })
+
+    for rec in forecast.get("recommended_factory_requests", []):
+        action_plan["priority_2"].append({
+            "action": "factory_request",
+            "target": rec["target_capability"],
+            "recommended_supplier_count": rec["recommended_supplier_count"],
+            "reason": rec["reason"],
+        })
+
+    for rec in forecast.get("recommended_new_foundation_agents", []):
+        action_plan["priority_3"].append({
+            "action": "new_foundation_capability",
+            "target": rec["capability"],
+            "recommended_count": rec["recommended_count"],
+            "reason": rec["reason"],
+        })
+
+
     return {
         "status": "ok",
         "engine": "iat_market_intelligence_v2",
@@ -299,6 +337,7 @@ def build_market_intelligence() -> Dict[str, Any]:
             "specialties": specialty_gaps[:20],
         },
         "forecast": forecast,
+        "action_plan": action_plan,
         "recommendations": recommendations[:30],
         "policy": {
             "does_not_create_agents": True,

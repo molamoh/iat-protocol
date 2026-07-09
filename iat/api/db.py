@@ -6821,6 +6821,166 @@ def init_threat_memory_table():
     conn.commit()
     release_conn(conn)
 
+def init_foundation_decision_queue_table():
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    CREATE TABLE IF NOT EXISTS foundation_decision_queue (
+        decision_id TEXT PRIMARY KEY,
+        decision_type TEXT NOT NULL,
+        target TEXT NOT NULL,
+        decision_score REAL DEFAULT 0,
+        decision_class TEXT DEFAULT 'low',
+        recommended_actions TEXT DEFAULT '[]',
+        execution_order TEXT DEFAULT '[]',
+        reasons TEXT DEFAULT '[]',
+        score_inputs TEXT DEFAULT '{{}}',
+        source_payload TEXT DEFAULT '{{}}',
+        status TEXT DEFAULT 'pending_foundation_review',
+        protocol_authority TEXT DEFAULT 'iat_foundation',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        expires_at INTEGER
+    )
+    """)
+
+    conn.commit()
+    release_conn(conn)
+
+
+def enqueue_foundation_decision_db(decision):
+    decision = decision or {}
+    target = str(decision.get("target") or "").strip()
+
+    if not target:
+        return {"status": "error", "message": "target_required"}
+
+    decision_id = decision.get("decision_id") or str(uuid.uuid4())
+    now = int(time.time())
+    expires_at = int(decision.get("expires_at") or (now + 86400))
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    existing = None
+    try:
+        cur.execute(f"""
+        SELECT decision_id, status
+        FROM foundation_decision_queue
+        WHERE target = {p}
+          AND status = {p}
+        ORDER BY created_at DESC
+        LIMIT 1
+        """, (target, "pending_foundation_review"))
+        existing = cur.fetchone()
+    except Exception:
+        existing = None
+
+    if existing:
+        release_conn(conn)
+        return {
+            "status": "already_pending",
+            "decision_id": row_get(existing, "decision_id"),
+            "target": target,
+        }
+
+    cur.execute(f"""
+    INSERT INTO foundation_decision_queue (
+        decision_id,
+        decision_type,
+        target,
+        decision_score,
+        decision_class,
+        recommended_actions,
+        execution_order,
+        reasons,
+        score_inputs,
+        source_payload,
+        status,
+        protocol_authority,
+        created_at,
+        updated_at,
+        expires_at
+    )
+    VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p})
+    """, (
+        decision_id,
+        str(decision.get("decision_type") or "market_intelligence_fused_decision"),
+        target,
+        float(decision.get("decision_score", 0) or 0),
+        str(decision.get("decision_class") or "low"),
+        json.dumps(decision.get("recommended_actions", []), sort_keys=True),
+        json.dumps(decision.get("execution_order", []), sort_keys=True),
+        json.dumps(decision.get("reasons", []), sort_keys=True),
+        json.dumps(decision.get("score_inputs", {}), sort_keys=True),
+        json.dumps(decision, sort_keys=True),
+        str(decision.get("status") or "pending_foundation_review"),
+        str(decision.get("protocol_authority") or "iat_foundation"),
+        now,
+        now,
+        expires_at,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    return {
+        "status": "queued",
+        "decision_id": decision_id,
+        "target": target,
+    }
+
+
+def list_foundation_decision_queue_db(status=None, limit=50):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    if status:
+        cur.execute(f"""
+        SELECT *
+        FROM foundation_decision_queue
+        WHERE status = {p}
+        ORDER BY decision_score DESC, created_at DESC
+        LIMIT {int(limit)}
+        """, (status,))
+    else:
+        cur.execute(f"""
+        SELECT *
+        FROM foundation_decision_queue
+        ORDER BY decision_score DESC, created_at DESC
+        LIMIT {int(limit)}
+        """)
+
+    rows = cur.fetchall()
+    release_conn(conn)
+
+    parsed = []
+    for row in rows:
+        item = dict(row)
+        for field, fallback in [
+            ("recommended_actions", []),
+            ("execution_order", []),
+            ("reasons", []),
+            ("score_inputs", {}),
+            ("source_payload", {}),
+        ]:
+            try:
+                item[field] = json.loads(item.get(field) or json.dumps(fallback))
+            except Exception:
+                item[field] = fallback
+        parsed.append(item)
+
+    return {
+        "status": "ok",
+        "count": len(parsed),
+        "decisions": parsed,
+    }
+
+
 
 def init_db():
     conn = get_conn()
@@ -6943,6 +7103,7 @@ def init_db():
 
     init_buyer_sessions_table()
     init_buyer_conversation_sessions_table()
+    init_foundation_decision_queue_table()
 
 
 def init_agents_table():

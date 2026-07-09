@@ -2880,6 +2880,22 @@ def admin_market_intelligence(x_api_key: str = Header(default="")):
     return build_market_intelligence()
 
 
+@app.get("/admin/foundation-decision-queue")
+def admin_foundation_decision_queue(
+    status: str | None = "pending_foundation_review",
+    limit: int = 50,
+    x_api_key: str = Header(default=""),
+):
+    require_admin_key(x_api_key)
+
+    from iat.api.db import list_foundation_decision_queue_db
+
+    return list_foundation_decision_queue_db(
+        status=status,
+        limit=limit,
+    )
+
+
 @app.get("/network-status")
 def network_status():
     return {

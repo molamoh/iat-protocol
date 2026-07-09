@@ -11071,7 +11071,14 @@ def get_order_db(order_id):
     order = dict(row)
     order["used"] = bool(order.get("used", 0))
 
-    for json_field in ["delivery_result", "buyer_intent", "requirements", "buyer_context"]:
+    for json_field in [
+        "delivery_result",
+        "buyer_intent",
+        "requirements",
+        "buyer_context",
+        "foundation_context",
+        "execution_context",
+    ]:
         if order.get(json_field):
             try:
                 order[json_field] = json.loads(order[json_field])

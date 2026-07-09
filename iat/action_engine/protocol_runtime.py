@@ -94,7 +94,26 @@ def deliver_service(order, tx_signature):
         from iat.seller_runtime.multi_runtime import run_multi_seller_runtime
 
         service = order.get("service")
-        required_count = compute_required_agent_count(order)
+
+        foundation_context = order.get("foundation_context") or {}
+        economic_snapshot = (
+            foundation_context.get("economic_snapshot", {})
+            if isinstance(foundation_context, dict)
+            else {}
+        )
+
+        base_required_count = compute_required_agent_count(order)
+
+        economic_recommended_consensus = int(
+            economic_snapshot.get("recommended_consensus")
+            or 0
+        )
+
+        required_count = max(
+            base_required_count,
+            economic_recommended_consensus,
+            1,
+        )
 
         eligible = get_available_seller_execution_agents_db(
             service=service,
@@ -194,6 +213,10 @@ def deliver_service(order, tx_signature):
                     for a in selected_agents
                 ],
                 "consensus_agents_count": len(selected_agents),
+                "required_consensus_agents_count": required_count,
+                "base_required_consensus_agents_count": base_required_count,
+                "economic_recommended_consensus": economic_recommended_consensus,
+                "economic_snapshot_used": bool(economic_snapshot),
                 "consensus_strength": consensus_strength,
                 "foundation_decision": foundation_decision,
                 "multi_runtime": multi_runtime,

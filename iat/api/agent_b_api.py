@@ -2871,6 +2871,15 @@ def network_economics():
     }
 
 
+@app.get("/admin/market-intelligence")
+def admin_market_intelligence(x_api_key: str = Header(default="")):
+    require_admin_key(x_api_key)
+
+    from iat.intelligence.market_intelligence import build_market_intelligence
+
+    return build_market_intelligence()
+
+
 @app.get("/network-status")
 def network_status():
     return {

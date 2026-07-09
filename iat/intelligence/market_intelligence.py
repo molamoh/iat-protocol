@@ -415,6 +415,103 @@ def build_market_intelligence() -> Dict[str, Any]:
         reverse=True,
     )
 
+    fused_by_target = {}
+
+    for action in strategic_actions:
+        target = action.get("target")
+        if not target:
+            continue
+
+        current = fused_by_target.setdefault(target, {
+            "target": target,
+            "decision_score": 0.0,
+            "decision_class": "low",
+            "recommended_actions": [],
+            "execution_order": [],
+            "reasons": [],
+            "score_inputs": {},
+            "source_actions": [],
+            "foundation_approval_required": True,
+            "execution_mode": "foundation_approval_required",
+        })
+
+        current["decision_score"] = max(
+            float(current.get("decision_score", 0.0) or 0.0),
+            float(action.get("decision_score", 0.0) or 0.0),
+        )
+
+        current["source_actions"].append(action)
+
+        action_name = action.get("action")
+        if action_name and action_name not in current["recommended_actions"]:
+            current["recommended_actions"].append(action_name)
+
+        reason = action.get("reason")
+        if reason and reason not in current["reasons"]:
+            current["reasons"].append(reason)
+
+        for k, v in (action.get("score_inputs") or {}).items():
+            current["score_inputs"][k] = max(
+                float(current["score_inputs"].get(k, 0.0) or 0.0),
+                float(v or 0.0),
+            )
+
+    action_priority = {
+        "increase_capacity": 1,
+        "factory_request": 2,
+        "new_foundation_capability": 3,
+    }
+
+    fused_decisions = []
+
+    for target, decision in fused_by_target.items():
+        actions = decision.get("recommended_actions", [])
+
+        execution_order = sorted(
+            actions,
+            key=lambda a: action_priority.get(a, 99),
+        )
+
+        score = float(decision.get("decision_score", 0.0) or 0.0)
+
+        if score >= 75:
+            decision_class = "critical"
+        elif score >= 55:
+            decision_class = "high"
+        elif score >= 35:
+            decision_class = "medium"
+        else:
+            decision_class = "low"
+
+        decision["decision_score"] = round(score, 4)
+        decision["decision_class"] = decision_class
+        decision["execution_order"] = execution_order
+        decision["source_action_count"] = len(decision.get("source_actions", []))
+        decision["policy"] = {
+            "does_not_execute": True,
+            "foundation_approval_required": True,
+            "protocol_core_sovereignty_reserved": True,
+        }
+
+        fused_decisions.append(decision)
+
+    fused_decisions.sort(
+        key=lambda x: x.get("decision_score", 0),
+        reverse=True,
+    )
+
+    fused_strategic_decisions = {
+        "engine": "iat_decision_fusion_v1",
+        "decision_count": len(fused_decisions),
+        "decisions": fused_decisions[:20],
+        "policy": {
+            "fusion_only": True,
+            "does_not_execute_actions": True,
+            "foundation_approval_required": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
     strategic_decisions = {
         "engine": "iat_market_intelligence_v3",
         "decision_count": len(strategic_actions),
@@ -453,6 +550,7 @@ def build_market_intelligence() -> Dict[str, Any]:
         "forecast": forecast,
         "action_plan": action_plan,
         "strategic_decisions": strategic_decisions,
+        "fused_strategic_decisions": fused_strategic_decisions,
         "recommendations": recommendations[:30],
         "policy": {
             "does_not_create_agents": True,

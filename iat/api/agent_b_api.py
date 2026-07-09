@@ -3843,6 +3843,25 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
 
     foundation_decision = seller.get("foundation_decision")
 
+    from iat.economy.governor import govern_economic_execution
+
+    economic_snapshot = govern_economic_execution(
+        {
+            "price": seller["price"],
+            "execution_mode": execution_mode,
+        },
+        seller,
+    )
+
+    foundation_context = {
+        "economic_snapshot": economic_snapshot,
+        "foundation_decision_hash": (
+            (foundation_decision or {}).get("decision", {}).get("decision_hash")
+        ),
+        "protocol_authority": "iat_foundation",
+        "snapshot_version": "economic_v1",
+    }
+
     order = {
         "order_id": order_id,
         "service": req.service,
@@ -3866,7 +3885,7 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
         "buyer_intent": buyer_intent,
         "requirements": requirements,
         "buyer_context": buyer_context,
-        "foundation_context": {},
+        "foundation_context": foundation_context,
         "execution_mode": execution_mode,
         "execution_context": {
             "service": req.service,

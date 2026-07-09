@@ -109,11 +109,15 @@ def deliver_service(order, tx_signature):
             or 0
         )
 
-        required_count = max(
-            base_required_count,
-            economic_recommended_consensus,
-            1,
-        )
+        # Economic governor becomes the runtime consensus authority when present.
+        # It may reduce consensus for low-risk orders or increase it for high-risk orders.
+        # Safety floor: never execute with fewer than 1 supplier.
+        if economic_recommended_consensus > 0:
+            required_count = max(economic_recommended_consensus, 1)
+            consensus_sizing_source = "economic_governor"
+        else:
+            required_count = max(base_required_count, 1)
+            consensus_sizing_source = "static_required_count"
 
         eligible = get_available_seller_execution_agents_db(
             service=service,
@@ -216,6 +220,7 @@ def deliver_service(order, tx_signature):
                 "required_consensus_agents_count": required_count,
                 "base_required_consensus_agents_count": base_required_count,
                 "economic_recommended_consensus": economic_recommended_consensus,
+                "consensus_sizing_source": consensus_sizing_source,
                 "economic_snapshot_used": bool(economic_snapshot),
                 "consensus_strength": consensus_strength,
                 "foundation_decision": foundation_decision,

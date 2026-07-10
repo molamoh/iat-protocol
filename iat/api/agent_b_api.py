@@ -2896,6 +2896,83 @@ def admin_foundation_decision_queue(
     )
 
 
+@app.get("/admin/foundation-decision/{decision_id}")
+def admin_get_foundation_decision(
+    decision_id: str,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    from iat.api.db import get_foundation_decision_db
+
+    decision = get_foundation_decision_db(decision_id)
+
+    if not decision:
+        return {
+            "status": "error",
+            "message": "foundation_decision_not_found",
+            "decision_id": decision_id,
+        }
+
+    return {
+        "status": "ok",
+        "decision": decision,
+    }
+
+
+@app.post("/admin/foundation-decision/{decision_id}/approve")
+def admin_approve_foundation_decision(
+    decision_id: str,
+    payload: dict | None = None,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    from iat.api.db import approve_foundation_decision_db
+
+    payload = payload or {}
+
+    return approve_foundation_decision_db(
+        decision_id=decision_id,
+        approved_by=str(
+            payload.get("approved_by")
+            or "iat_foundation_admin"
+        ),
+        approval_reason=str(
+            payload.get("approval_reason")
+            or "foundation_admin_approved"
+        ),
+    )
+
+
+@app.post("/admin/foundation-decision/{decision_id}/reject")
+def admin_reject_foundation_decision(
+    decision_id: str,
+    payload: dict | None = None,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {"status": "error", "message": "unauthorized"}
+
+    from iat.api.db import reject_foundation_decision_db
+
+    payload = payload or {}
+
+    return reject_foundation_decision_db(
+        decision_id=decision_id,
+        rejected_by=str(
+            payload.get("rejected_by")
+            or "iat_foundation_admin"
+        ),
+        rejection_reason=str(
+            payload.get("rejection_reason")
+            or "foundation_admin_rejected"
+        ),
+    )
+
+
 @app.post("/admin/foundation-decision-queue/enqueue-market-intelligence")
 def admin_enqueue_market_intelligence_decisions(
     x_api_key: str = Header(default=""),

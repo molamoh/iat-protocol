@@ -6934,6 +6934,198 @@ def enqueue_foundation_decision_db(decision):
     }
 
 
+
+def get_foundation_decision_db(decision_id):
+    if not decision_id:
+        return None
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    SELECT *
+    FROM foundation_decision_queue
+    WHERE decision_id = {p}
+    LIMIT 1
+    """, (decision_id,))
+
+    row = cur.fetchone()
+    release_conn(conn)
+
+    if not row:
+        return None
+
+    item = dict(row)
+
+    for field, fallback in [
+        ("recommended_actions", []),
+        ("execution_order", []),
+        ("reasons", []),
+        ("score_inputs", {}),
+        ("source_payload", {}),
+    ]:
+        try:
+            item[field] = json.loads(
+                item.get(field) or json.dumps(fallback)
+            )
+        except Exception:
+            item[field] = fallback
+
+    return item
+
+
+def review_foundation_decision_db(
+    decision_id,
+    review_status,
+    reviewed_by="iat_foundation",
+    review_reason="",
+):
+    allowed_statuses = {
+        "approved",
+        "rejected",
+        "expired",
+    }
+
+    if review_status not in allowed_statuses:
+        return {
+            "status": "error",
+            "message": "invalid_review_status",
+            "allowed_statuses": sorted(allowed_statuses),
+        }
+
+    decision = get_foundation_decision_db(decision_id)
+
+    if not decision:
+        return {
+            "status": "error",
+            "message": "foundation_decision_not_found",
+            "decision_id": decision_id,
+        }
+
+    current_status = str(
+        decision.get("status") or ""
+    ).lower()
+
+    if current_status != "pending_foundation_review":
+        return {
+            "status": "blocked",
+            "message": "foundation_decision_not_pending_review",
+            "decision_id": decision_id,
+            "current_status": current_status,
+        }
+
+    now = int(time.time())
+    expires_at = int(decision.get("expires_at") or 0)
+
+    if (
+        review_status != "expired"
+        and expires_at > 0
+        and now >= expires_at
+    ):
+        review_status = "expired"
+        review_reason = (
+            review_reason
+            or "decision_expired_before_foundation_review"
+        )
+
+    source_payload = decision.get("source_payload") or {}
+
+    source_payload["foundation_review"] = {
+        "review_status": review_status,
+        "reviewed_by": reviewed_by,
+        "review_reason": review_reason,
+        "reviewed_at": now,
+        "foundation_authority": True,
+        "seller_authority": False,
+        "buyer_authority": False,
+    }
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    UPDATE foundation_decision_queue
+    SET status = {p},
+        source_payload = {p},
+        updated_at = {p}
+    WHERE decision_id = {p}
+      AND status = {p}
+    """, (
+        review_status,
+        json.dumps(source_payload, sort_keys=True),
+        now,
+        decision_id,
+        "pending_foundation_review",
+    ))
+
+    affected = cur.rowcount
+    conn.commit()
+    release_conn(conn)
+
+    if affected != 1:
+        return {
+            "status": "blocked",
+            "message": "foundation_decision_state_changed",
+            "decision_id": decision_id,
+        }
+
+    return {
+        "status": review_status,
+        "decision_id": decision_id,
+        "reviewed_by": reviewed_by,
+        "review_reason": review_reason,
+        "decision": get_foundation_decision_db(decision_id),
+        "policy": {
+            "foundation_final_authority": True,
+            "seller_cannot_review": True,
+            "buyer_cannot_review": True,
+            "execution_not_triggered": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
+def approve_foundation_decision_db(
+    decision_id,
+    approved_by="iat_foundation",
+    approval_reason="",
+):
+    return review_foundation_decision_db(
+        decision_id=decision_id,
+        review_status="approved",
+        reviewed_by=approved_by,
+        review_reason=approval_reason,
+    )
+
+
+def reject_foundation_decision_db(
+    decision_id,
+    rejected_by="iat_foundation",
+    rejection_reason="",
+):
+    return review_foundation_decision_db(
+        decision_id=decision_id,
+        review_status="rejected",
+        reviewed_by=rejected_by,
+        review_reason=rejection_reason,
+    )
+
+
+def expire_foundation_decision_db(
+    decision_id,
+    expired_by="iat_protocol",
+    expiration_reason="decision_expired",
+):
+    return review_foundation_decision_db(
+        decision_id=decision_id,
+        review_status="expired",
+        reviewed_by=expired_by,
+        review_reason=expiration_reason,
+    )
+
+
 def list_foundation_decision_queue_db(status=None, limit=50):
     conn = get_conn()
     cur = conn.cursor()

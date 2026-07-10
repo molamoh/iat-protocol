@@ -18390,6 +18390,654 @@ def orchestrate_seller_runtime_governance_db(seller_id):
 
 
 
+
+def compute_seller_global_score_db(seller_id):
+    """
+    Compute the protocol-wide Seller Global Score.
+
+    The Seller is the principal economic and governance entity.
+    Individual agent scores are portfolio signals only.
+
+    This function is read-only and does not update any table.
+    """
+    if not seller_id:
+        return {
+            "status": "error",
+            "message": "seller_id_required",
+        }
+
+    seller = get_seller_db(seller_id)
+
+    if not seller:
+        return {
+            "status": "error",
+            "message": "seller_not_found",
+            "seller_id": seller_id,
+        }
+
+    def clamp(value, minimum=0.0, maximum=100.0):
+        try:
+            value = float(value)
+        except Exception:
+            value = minimum
+
+        return max(minimum, min(value, maximum))
+
+    def normalize_percent(value):
+        """
+        Accept both 0-1 and 0-100 values and return 0-100.
+        """
+        try:
+            value = float(value or 0)
+        except Exception:
+            return 0.0
+
+        if 0.0 <= value <= 1.0:
+            value *= 100.0
+
+        return clamp(value)
+
+    def normalize_risk(value):
+        """
+        Accept both 0-1 and 0-100 risk values and return 0-100.
+        """
+        return normalize_percent(value)
+
+    conn = get_conn()
+    cur = conn.cursor()
+    pmark = qmark()
+
+    # Portfolio metrics from seller_agents.
+    cur.execute(f"""
+    SELECT
+        COUNT(*) AS total_agents,
+        SUM(
+            CASE
+                WHEN LOWER(COALESCE(seller_agent_status, '')) IN (
+                    'active',
+                    'online'
+                ) THEN 1
+                ELSE 0
+            END
+        ) AS active_agents,
+        SUM(
+            CASE
+                WHEN LOWER(COALESCE(seller_agent_status, '')) = 'throttled'
+                THEN 1 ELSE 0
+            END
+        ) AS throttled_agents,
+        SUM(
+            CASE
+                WHEN LOWER(COALESCE(seller_agent_status, '')) IN (
+                    'pending',
+                    'pending_review',
+                    'generated_pending_review'
+                ) THEN 1 ELSE 0
+            END
+        ) AS pending_agents,
+        SUM(
+            CASE
+                WHEN LOWER(COALESCE(seller_agent_status, '')) IN (
+                    'disabled',
+                    'capacity_frozen',
+                    'quarantined'
+                ) THEN 1 ELSE 0
+            END
+        ) AS disabled_agents,
+        SUM(
+            CASE
+                WHEN LOWER(COALESCE(runtime_validation_status, '')) = 'dead'
+                THEN 1 ELSE 0
+            END
+        ) AS dead_agents,
+        SUM(
+            CASE
+                WHEN LOWER(COALESCE(runtime_validation_status, '')) = 'validated'
+                THEN 1 ELSE 0
+            END
+        ) AS validated_agents,
+        AVG(COALESCE(reputation, 0.5)) AS avg_reputation,
+        AVG(COALESCE(risk_score, 0)) AS avg_risk_score,
+        AVG(COALESCE(runtime_health_score, 0)) AS avg_runtime_health_score,
+        AVG(COALESCE(consensus_score, 0)) AS avg_consensus_score,
+        AVG(COALESCE(latency_avg, 0)) AS avg_latency,
+        SUM(COALESCE(successful_orders, 0)) AS successful_orders,
+        SUM(COALESCE(failed_orders, 0)) AS failed_orders,
+        SUM(COALESCE(runtime_failure_count, 0)) AS runtime_failure_count,
+        SUM(COALESCE(containment_count, 0)) AS containment_count,
+        SUM(COALESCE(economic_penalty_level, 0)) AS economic_penalty_level
+    FROM seller_agents
+    WHERE seller_id = {pmark}
+    """, (seller_id,))
+
+    portfolio_row = cur.fetchone()
+
+    # Financial agent-level stake and slashing signals where available.
+    financial_agents = {
+        "agent_stake_amount": 0.0,
+        "agent_stake_slashed_total": 0.0,
+    }
+
+    try:
+        cur.execute(f"""
+        SELECT
+            COALESCE(SUM(a.stake_amount), 0) AS agent_stake_amount,
+            COALESCE(SUM(a.stake_slashed_total), 0) AS agent_stake_slashed_total
+        FROM seller_agents sa
+        LEFT JOIN agents a
+          ON a.agent_id = sa.agent_id
+        WHERE sa.seller_id = {pmark}
+        """, (seller_id,))
+
+        financial_row = cur.fetchone()
+
+        if financial_row:
+            financial_agents = {
+                "agent_stake_amount": float(
+                    row_get(financial_row, "agent_stake_amount", 0) or 0
+                ),
+                "agent_stake_slashed_total": float(
+                    row_get(
+                        financial_row,
+                        "agent_stake_slashed_total",
+                        0,
+                    ) or 0
+                ),
+            }
+    except Exception:
+        pass
+
+    release_conn(conn)
+
+    total_agents = int(
+        row_get(portfolio_row, "total_agents", 0) or 0
+    )
+    active_agents = int(
+        row_get(portfolio_row, "active_agents", 0) or 0
+    )
+    throttled_agents = int(
+        row_get(portfolio_row, "throttled_agents", 0) or 0
+    )
+    pending_agents = int(
+        row_get(portfolio_row, "pending_agents", 0) or 0
+    )
+    disabled_agents = int(
+        row_get(portfolio_row, "disabled_agents", 0) or 0
+    )
+    dead_agents = int(
+        row_get(portfolio_row, "dead_agents", 0) or 0
+    )
+    validated_agents = int(
+        row_get(portfolio_row, "validated_agents", 0) or 0
+    )
+
+    avg_agent_reputation_raw = float(
+        row_get(portfolio_row, "avg_reputation", 0) or 0
+    )
+    avg_agent_risk_raw = float(
+        row_get(portfolio_row, "avg_risk_score", 0) or 0
+    )
+    avg_agent_runtime_raw = float(
+        row_get(portfolio_row, "avg_runtime_health_score", 0) or 0
+    )
+    avg_agent_consensus_raw = float(
+        row_get(portfolio_row, "avg_consensus_score", 0) or 0
+    )
+
+    avg_agent_reputation = normalize_percent(
+        avg_agent_reputation_raw
+    )
+    avg_agent_risk = normalize_risk(
+        avg_agent_risk_raw
+    )
+    avg_agent_runtime = normalize_percent(
+        avg_agent_runtime_raw
+    )
+    avg_agent_consensus = normalize_percent(
+        avg_agent_consensus_raw
+    )
+
+    agent_successes = int(
+        row_get(portfolio_row, "successful_orders", 0) or 0
+    )
+    agent_failures = int(
+        row_get(portfolio_row, "failed_orders", 0) or 0
+    )
+    agent_runtime_failures = int(
+        row_get(portfolio_row, "runtime_failure_count", 0) or 0
+    )
+    agent_containments = int(
+        row_get(portfolio_row, "containment_count", 0) or 0
+    )
+    agent_economic_penalties = int(
+        row_get(portfolio_row, "economic_penalty_level", 0) or 0
+    )
+
+    seller_successes = int(
+        seller.get("successful_orders", 0) or 0
+    )
+    seller_failures = int(
+        seller.get("failed_orders", 0) or 0
+    )
+
+    total_successes = seller_successes + agent_successes
+    total_failures = seller_failures + agent_failures
+    total_completed = total_successes + total_failures
+
+    success_rate = (
+        total_successes / total_completed
+        if total_completed > 0
+        else 0.5
+    )
+
+    seller_reputation = normalize_percent(
+        seller.get("reputation", 0.5)
+    )
+    seller_trust = normalize_percent(
+        seller.get("trust_score", 0)
+    )
+    seller_risk = normalize_risk(
+        seller.get("risk_score", 0)
+    )
+    seller_runtime = normalize_percent(
+        seller.get("runtime_health_score", 0)
+    )
+
+    seller_stake = float(
+        seller.get("stake_amount", 0) or 0
+    )
+    agent_stake = float(
+        financial_agents.get("agent_stake_amount", 0) or 0
+    )
+    total_stake = seller_stake + agent_stake
+
+    total_slashed = float(
+        financial_agents.get(
+            "agent_stake_slashed_total",
+            0,
+        ) or 0
+    )
+
+    seller_containments = int(
+        seller.get("containment_count", 0) or 0
+    )
+    seller_economic_penalties = int(
+        seller.get("economic_penalty_level", 0) or 0
+    )
+
+    total_containments = (
+        seller_containments + agent_containments
+    )
+    total_economic_penalties = (
+        seller_economic_penalties
+        + agent_economic_penalties
+    )
+
+    active_ratio = (
+        active_agents / total_agents
+        if total_agents > 0
+        else 0.0
+    )
+
+    validated_ratio = (
+        validated_agents / total_agents
+        if total_agents > 0
+        else 0.0
+    )
+
+    disabled_ratio = (
+        disabled_agents / total_agents
+        if total_agents > 0
+        else 0.0
+    )
+
+    dead_ratio = (
+        dead_agents / total_agents
+        if total_agents > 0
+        else 0.0
+    )
+
+    throttled_ratio = (
+        throttled_agents / total_agents
+        if total_agents > 0
+        else 0.0
+    )
+
+    pending_ratio = (
+        pending_agents / total_agents
+        if total_agents > 0
+        else 0.0
+    )
+
+    portfolio_availability_score = clamp(
+        active_ratio * 100.0
+        + validated_ratio * 15.0
+        - disabled_ratio * 35.0
+        - dead_ratio * 50.0
+        - throttled_ratio * 20.0
+        - pending_ratio * 10.0
+    )
+
+    portfolio_performance_score = clamp(
+        success_rate * 45.0
+        + avg_agent_reputation * 0.20
+        + avg_agent_runtime * 0.20
+        + avg_agent_consensus * 0.15
+    )
+
+    portfolio_risk_penalty = clamp(
+        avg_agent_risk * 0.55
+        + min(agent_runtime_failures * 3.0, 20.0)
+        + min(agent_containments * 8.0, 25.0)
+        + min(agent_economic_penalties * 5.0, 20.0)
+    )
+
+    portfolio_score = clamp(
+        portfolio_performance_score * 0.70
+        + portfolio_availability_score * 0.30
+        - portfolio_risk_penalty
+    )
+
+    # Seller-level signals carry more weight than any individual agent.
+    identity_score = clamp(
+        seller_trust * 0.45
+        + seller_reputation * 0.30
+        + seller_runtime * 0.25
+    )
+
+    verification_signals = [
+        str(seller.get("verification_status") or "").lower()
+        in {"verified", "foundation_verified"},
+        bool(seller.get("email_verified")),
+        str(seller.get("kyc_status") or "").lower()
+        in {"verified", "approved"},
+        str(
+            seller.get("business_verification_status") or ""
+        ).lower()
+        in {"verified", "approved"},
+        str(seller.get("tax_verification_status") or "").lower()
+        in {"verified", "approved"},
+    ]
+
+    verification_score = (
+        sum(1 for signal in verification_signals if signal)
+        / len(verification_signals)
+    ) * 100.0
+
+    stake_score = clamp(
+        0.0
+        if total_stake <= 0
+        else 20.0
+        + min(total_stake, 1000.0) / 1000.0 * 80.0
+    )
+
+    slash_ratio = (
+        total_slashed / max(total_stake + total_slashed, 1.0)
+    )
+
+    financial_score = clamp(
+        stake_score
+        - slash_ratio * 100.0
+        - min(total_economic_penalties * 7.5, 45.0)
+    )
+
+    governance_penalty = clamp(
+        seller_risk * 0.45
+        + min(total_containments * 12.0, 40.0)
+        + min(total_economic_penalties * 8.0, 40.0)
+        + min(total_slashed, 100.0) * 0.20
+    )
+
+    governance_score = clamp(
+        verification_score * 0.55
+        + (100.0 - seller_risk) * 0.45
+        - governance_penalty * 0.50
+    )
+
+    operational_score = clamp(
+        success_rate * 55.0
+        + seller_runtime * 0.20
+        + active_ratio * 25.0
+        - min(total_failures * 2.0, 25.0)
+    )
+
+    stability_score = clamp(
+        100.0
+        - min(total_failures * 3.0, 30.0)
+        - min(agent_runtime_failures * 2.0, 25.0)
+        - min(total_containments * 10.0, 30.0)
+        - min(total_economic_penalties * 7.0, 30.0)
+        - seller_risk * 0.25
+    )
+
+    # Seller-level identity and governance represent 65%.
+    # The complete agent portfolio represents 25%.
+    # Financial commitment represents 10%.
+    seller_global_score = clamp(
+        identity_score * 0.25
+        + governance_score * 0.20
+        + operational_score * 0.12
+        + stability_score * 0.08
+        + portfolio_score * 0.25
+        + financial_score * 0.10
+    )
+
+    lifecycle_constraints = []
+    score_before_constraints = seller_global_score
+
+    # A Seller remains the primary governance entity, but cannot receive
+    # normal economic privileges when its complete runtime portfolio is unusable.
+    if total_agents > 0 and active_agents == 0:
+        seller_global_score = min(seller_global_score, 49.99)
+        lifecycle_constraints.append(
+            "no_active_agents_score_ceiling"
+        )
+
+    if total_agents > 0 and dead_agents == total_agents:
+        seller_global_score = min(seller_global_score, 29.99)
+        lifecycle_constraints.append(
+            "all_agents_dead_critical_ceiling"
+        )
+
+    if total_agents > 0 and disabled_agents == total_agents:
+        seller_global_score = min(seller_global_score, 39.99)
+        lifecycle_constraints.append(
+            "all_agents_disabled_restricted_ceiling"
+        )
+
+    if total_agents > 0 and active_ratio < 0.25:
+        seller_global_score = min(seller_global_score, 49.99)
+        lifecycle_constraints.append(
+            "portfolio_active_ratio_below_25_percent"
+        )
+
+    if dead_ratio >= 0.50:
+        seller_global_score = min(seller_global_score, 29.99)
+        lifecycle_constraints.append(
+            "portfolio_dead_ratio_critical"
+        )
+
+    if throttled_ratio >= 0.50:
+        seller_global_score = min(seller_global_score, 44.99)
+        lifecycle_constraints.append(
+            "portfolio_throttled_ratio_restricted"
+        )
+
+    seller_global_score = clamp(seller_global_score)
+
+    data_signals = [
+        total_agents > 0,
+        total_completed > 0,
+        total_stake > 0,
+        seller_runtime > 0,
+        seller_trust > 0,
+        verification_score > 0,
+    ]
+
+    confidence = clamp(
+        40.0
+        + sum(1 for signal in data_signals if signal)
+        / len(data_signals)
+        * 50.0
+        + min(total_completed, 100) / 100.0 * 10.0
+    )
+
+    if seller_global_score >= 85:
+        priority = "elite"
+        capacity_multiplier = 1.50
+        exposure_multiplier = 1.50
+        stake_multiplier = 0.80
+    elif seller_global_score >= 70:
+        priority = "high"
+        capacity_multiplier = 1.25
+        exposure_multiplier = 1.25
+        stake_multiplier = 0.90
+    elif seller_global_score >= 50:
+        priority = "standard"
+        capacity_multiplier = 1.00
+        exposure_multiplier = 1.00
+        stake_multiplier = 1.00
+    elif seller_global_score >= 30:
+        priority = "restricted"
+        capacity_multiplier = 0.75
+        exposure_multiplier = 0.60
+        stake_multiplier = 1.25
+    else:
+        priority = "critical_review"
+        capacity_multiplier = 0.40
+        exposure_multiplier = 0.25
+        stake_multiplier = 1.50
+
+    return {
+        "status": "ok",
+        "engine": "iat_seller_global_score_v1",
+        "seller_id": seller_id,
+        "seller_global_score": round(
+            seller_global_score,
+            4,
+        ),
+        "confidence": round(confidence, 4),
+        "seller_authority_weight": 0.65,
+        "agent_portfolio_weight": 0.25,
+        "financial_weight": 0.10,
+        "scores": {
+            "score_before_lifecycle_constraints": round(
+                score_before_constraints,
+                4,
+            ),
+            "lifecycle_constraints": lifecycle_constraints,
+            "identity_score": round(identity_score, 4),
+            "portfolio_score": round(portfolio_score, 4),
+            "financial_score": round(financial_score, 4),
+            "operational_score": round(operational_score, 4),
+            "governance_score": round(governance_score, 4),
+            "stability_score": round(stability_score, 4),
+            "verification_score": round(
+                verification_score,
+                4,
+            ),
+        },
+        "seller_signals": {
+            "reputation": round(seller_reputation, 4),
+            "trust": round(seller_trust, 4),
+            "risk": round(seller_risk, 4),
+            "runtime_health": round(seller_runtime, 4),
+            "successful_orders": seller_successes,
+            "failed_orders": seller_failures,
+            "containment_count": seller_containments,
+            "economic_penalty_level": (
+                seller_economic_penalties
+            ),
+        },
+        "portfolio": {
+            "total_agents": total_agents,
+            "active_agents": active_agents,
+            "validated_agents": validated_agents,
+            "throttled_agents": throttled_agents,
+            "pending_agents": pending_agents,
+            "disabled_agents": disabled_agents,
+            "dead_agents": dead_agents,
+            "active_ratio": round(active_ratio, 6),
+            "validated_ratio": round(validated_ratio, 6),
+            "portfolio_availability_score": round(
+                portfolio_availability_score,
+                4,
+            ),
+            "raw_metrics": {
+                "average_reputation": avg_agent_reputation_raw,
+                "average_risk": avg_agent_risk_raw,
+                "average_runtime_health": avg_agent_runtime_raw,
+                "average_consensus": avg_agent_consensus_raw,
+            },
+            "average_reputation": round(
+                avg_agent_reputation,
+                4,
+            ),
+            "average_risk": round(avg_agent_risk, 4),
+            "average_runtime_health": round(
+                avg_agent_runtime,
+                4,
+            ),
+            "average_consensus": round(
+                avg_agent_consensus,
+                4,
+            ),
+            "successful_orders": agent_successes,
+            "failed_orders": agent_failures,
+            "runtime_failures": agent_runtime_failures,
+            "containment_count": agent_containments,
+            "economic_penalty_level": (
+                agent_economic_penalties
+            ),
+        },
+        "financial": {
+            "seller_stake_amount": round(
+                seller_stake,
+                6,
+            ),
+            "agent_stake_amount": round(
+                agent_stake,
+                6,
+            ),
+            "total_stake_amount": round(
+                total_stake,
+                6,
+            ),
+            "total_slashed_amount": round(
+                total_slashed,
+                6,
+            ),
+            "slash_ratio": round(slash_ratio, 6),
+        },
+        "global_activity": {
+            "successful_orders": total_successes,
+            "failed_orders": total_failures,
+            "success_rate": round(success_rate, 6),
+            "total_containments": total_containments,
+            "total_economic_penalties": (
+                total_economic_penalties
+            ),
+        },
+        "recommendation": {
+            "priority": priority,
+            "capacity_multiplier": capacity_multiplier,
+            "exposure_multiplier": exposure_multiplier,
+            "stake_requirement_multiplier": (
+                stake_multiplier
+            ),
+        },
+        "policy": {
+            "seller_is_primary_governance_entity": True,
+            "agent_scores_are_portfolio_signals": True,
+            "seller_score_outweighs_agent_portfolio": True,
+            "unusable_portfolio_can_limit_privileges": True,
+            "read_only": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
+
 def compute_seller_dynamic_agent_capacity_db(seller_id=None, seller=None):
     """
     Pure capacity computation.
@@ -18459,7 +19107,7 @@ def compute_seller_dynamic_agent_capacity_db(seller_id=None, seller=None):
     containment_penalty = min(containment_count * 10.0, 20.0)
     economic_penalty = min(economic_penalty_level * 10.0, 20.0)
 
-    capacity_score = (
+    raw_capacity_score = (
         trust_component
         + runtime_component
         + reputation_component
@@ -18470,11 +19118,73 @@ def compute_seller_dynamic_agent_capacity_db(seller_id=None, seller=None):
         - economic_penalty
     )
 
-    capacity_score = max(0.0, min(100.0, round(capacity_score, 2)))
+    raw_capacity_score = max(
+        0.0,
+        min(100.0, round(raw_capacity_score, 2)),
+    )
+
+    seller_global = compute_seller_global_score_db(
+        seller_id
+    )
+
+    if seller_global.get("status") == "ok":
+        seller_global_score = float(
+            seller_global.get("seller_global_score", 0)
+            or 0
+        )
+        seller_global_confidence = float(
+            seller_global.get("confidence", 0)
+            or 0
+        )
+        seller_priority = str(
+            (
+                seller_global.get("recommendation")
+                or {}
+            ).get("priority")
+            or "critical_review"
+        )
+        capacity_multiplier = float(
+            (
+                seller_global.get("recommendation")
+                or {}
+            ).get("capacity_multiplier", 1.0)
+            or 1.0
+        )
+        lifecycle_constraints = (
+            seller_global.get("scores", {})
+            .get("lifecycle_constraints", [])
+            or []
+        )
+    else:
+        seller_global_score = raw_capacity_score
+        seller_global_confidence = 0.0
+        seller_priority = "fallback_raw_capacity"
+        capacity_multiplier = 1.0
+        lifecycle_constraints = [
+            "seller_global_score_unavailable"
+        ]
+
+    # Seller Global Score is the principal capacity signal.
+    # Raw capacity metrics remain complementary safeguards.
+    capacity_score = (
+        seller_global_score * 0.70
+        + raw_capacity_score * 0.30
+    )
+
+    capacity_score = max(
+        0.0,
+        min(100.0, round(capacity_score, 2)),
+    )
 
     if seller_status in ["banned", "rejected"]:
         target_capacity = 0
         decision_reason = "terminal_seller_status"
+    elif seller_priority == "critical_review":
+        target_capacity = 1
+        decision_reason = "seller_global_score_critical_review"
+    elif seller_priority == "restricted":
+        target_capacity = min(5, current_capacity)
+        decision_reason = "seller_global_score_restricted"
     elif seller_status in ["contained", "restricted"]:
         target_capacity = 1
         decision_reason = "contained_or_restricted_seller"
@@ -18530,6 +19240,11 @@ def compute_seller_dynamic_agent_capacity_db(seller_id=None, seller=None):
         and risk_score < 0.35
         and containment_count == 0
         and economic_penalty_level == 0
+        and seller_priority not in [
+            "critical_review",
+            "restricted",
+        ]
+        and not lifecycle_constraints
     ):
         new_capacity = max(new_capacity, 5)
         if target_capacity < 5:
@@ -18542,6 +19257,15 @@ def compute_seller_dynamic_agent_capacity_db(seller_id=None, seller=None):
     else:
         capacity_direction = "unchanged"
 
+    if capacity_direction == "increase":
+        multiplied_capacity = int(
+            round(new_capacity * capacity_multiplier)
+        )
+        new_capacity = max(
+            new_capacity,
+            multiplied_capacity,
+        )
+
     new_capacity = int(max(0, min(new_capacity, 50)))
 
     capacity_report = {
@@ -18553,6 +19277,12 @@ def compute_seller_dynamic_agent_capacity_db(seller_id=None, seller=None):
         "target_capacity": target_capacity,
         "capacity_direction": capacity_direction,
         "capacity_score": capacity_score,
+        "raw_capacity_score": raw_capacity_score,
+        "seller_global_score": seller_global_score,
+        "seller_global_confidence": seller_global_confidence,
+        "seller_global_priority": seller_priority,
+        "capacity_multiplier": capacity_multiplier,
+        "lifecycle_constraints": lifecycle_constraints,
         "decision_reason": decision_reason,
         "active_agents": active_agents,
         "components": {
@@ -18565,6 +19295,7 @@ def compute_seller_dynamic_agent_capacity_db(seller_id=None, seller=None):
             "containment_penalty": round(containment_penalty, 4),
             "economic_penalty": round(economic_penalty, 4),
         },
+        "seller_global_score_report": seller_global,
         "raw_inputs": {
             "trust_score": trust_score,
             "runtime_health_score": runtime_health_score,

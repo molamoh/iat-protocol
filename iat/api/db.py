@@ -18643,6 +18643,27 @@ def compute_seller_global_score_db(seller_id):
         seller.get("runtime_health_score", 0)
     )
 
+    is_new_seller = (
+        total_completed == 0
+        and float(seller.get("stake_amount", 0) or 0) <= 0
+        and int(seller.get("containment_count", 0) or 0) == 0
+        and int(seller.get("economic_penalty_level", 0) or 0) == 0
+    )
+
+    # Unknown historical signals are neutral for a new Seller,
+    # not equivalent to proven failure.
+    effective_seller_trust = (
+        50.0
+        if is_new_seller and seller_trust == 0
+        else seller_trust
+    )
+
+    effective_seller_runtime = (
+        avg_agent_runtime
+        if is_new_seller and seller_runtime == 0
+        else seller_runtime
+    )
+
     seller_stake = float(
         seller.get("stake_amount", 0) or 0
     )
@@ -18740,9 +18761,9 @@ def compute_seller_global_score_db(seller_id):
 
     # Seller-level signals carry more weight than any individual agent.
     identity_score = clamp(
-        seller_trust * 0.45
+        effective_seller_trust * 0.45
         + seller_reputation * 0.30
-        + seller_runtime * 0.25
+        + effective_seller_runtime * 0.25
     )
 
     verification_signals = [
@@ -18775,11 +18796,20 @@ def compute_seller_global_score_db(seller_id):
         total_slashed / max(total_stake + total_slashed, 1.0)
     )
 
-    financial_score = clamp(
-        stake_score
-        - slash_ratio * 100.0
-        - min(total_economic_penalties * 7.5, 45.0)
-    )
+    if (
+        total_stake <= 0
+        and total_slashed <= 0
+        and total_economic_penalties <= 0
+    ):
+        financial_score = 50.0
+        financial_status = "neutral_no_stake_history"
+    else:
+        financial_score = clamp(
+            stake_score
+            - slash_ratio * 100.0
+            - min(total_economic_penalties * 7.5, 45.0)
+        )
+        financial_status = "measured"
 
     governance_penalty = clamp(
         seller_risk * 0.45
@@ -18794,10 +18824,16 @@ def compute_seller_global_score_db(seller_id):
         - governance_penalty * 0.50
     )
 
+    historical_performance_score = (
+        50.0
+        if total_completed == 0
+        else clamp(success_rate * 100.0)
+    )
+
     operational_score = clamp(
-        success_rate * 55.0
-        + seller_runtime * 0.20
-        + active_ratio * 25.0
+        historical_performance_score * 0.45
+        + effective_seller_runtime * 0.25
+        + active_ratio * 100.0 * 0.30
         - min(total_failures * 2.0, 25.0)
     )
 
@@ -18814,9 +18850,9 @@ def compute_seller_global_score_db(seller_id):
     # The complete agent portfolio represents 25%.
     # Financial commitment represents 10%.
     seller_global_score = clamp(
-        identity_score * 0.25
+        identity_score * 0.22
         + governance_score * 0.20
-        + operational_score * 0.12
+        + operational_score * 0.15
         + stability_score * 0.08
         + portfolio_score * 0.25
         + financial_score * 0.10
@@ -18882,31 +18918,86 @@ def compute_seller_global_score_db(seller_id):
         + min(total_completed, 100) / 100.0 * 10.0
     )
 
-    if seller_global_score >= 85:
+    if seller_global_score >= 90:
+        seller_rating = "AAA"
         priority = "elite"
-        capacity_multiplier = 1.50
-        exposure_multiplier = 1.50
+        capacity_multiplier = 1.60
+        exposure_multiplier = 1.60
+        stake_multiplier = 0.75
+        capacity_ceiling = 50
+        review_frequency = "quarterly"
+    elif seller_global_score >= 82:
+        seller_rating = "AA"
+        priority = "elite"
+        capacity_multiplier = 1.45
+        exposure_multiplier = 1.45
         stake_multiplier = 0.80
-    elif seller_global_score >= 70:
+        capacity_ceiling = 40
+        review_frequency = "quarterly"
+    elif seller_global_score >= 74:
+        seller_rating = "A"
         priority = "high"
-        capacity_multiplier = 1.25
-        exposure_multiplier = 1.25
+        capacity_multiplier = 1.30
+        exposure_multiplier = 1.30
         stake_multiplier = 0.90
-    elif seller_global_score >= 50:
+        capacity_ceiling = 30
+        review_frequency = "monthly"
+    elif seller_global_score >= 65:
+        seller_rating = "BBB"
+        priority = "high"
+        capacity_multiplier = 1.15
+        exposure_multiplier = 1.15
+        stake_multiplier = 0.95
+        capacity_ceiling = 20
+        review_frequency = "monthly"
+    elif seller_global_score >= 55:
+        seller_rating = "BB"
         priority = "standard"
         capacity_multiplier = 1.00
         exposure_multiplier = 1.00
         stake_multiplier = 1.00
-    elif seller_global_score >= 30:
+        capacity_ceiling = 15
+        review_frequency = "monthly"
+    elif seller_global_score >= 45:
+        seller_rating = "B"
+        priority = "standard"
+        capacity_multiplier = 0.90
+        exposure_multiplier = 0.85
+        stake_multiplier = 1.10
+        capacity_ceiling = 10
+        review_frequency = "biweekly"
+    elif seller_global_score >= 35:
+        seller_rating = "CCC"
         priority = "restricted"
         capacity_multiplier = 0.75
         exposure_multiplier = 0.60
         stake_multiplier = 1.25
-    else:
+        capacity_ceiling = 5
+        review_frequency = "weekly"
+    elif seller_global_score >= 25:
+        seller_rating = "CC"
         priority = "critical_review"
-        capacity_multiplier = 0.40
-        exposure_multiplier = 0.25
-        stake_multiplier = 1.50
+        capacity_multiplier = 0.50
+        exposure_multiplier = 0.35
+        stake_multiplier = 1.40
+        capacity_ceiling = 2
+        review_frequency = "daily"
+    elif seller_global_score >= 15:
+        seller_rating = "C"
+        priority = "critical_review"
+        capacity_multiplier = 0.35
+        exposure_multiplier = 0.20
+        stake_multiplier = 1.60
+        capacity_ceiling = 1
+        review_frequency = "continuous"
+    else:
+        seller_rating = "D"
+        priority = "blocked"
+        capacity_multiplier = 0.0
+        exposure_multiplier = 0.0
+        stake_multiplier = 2.00
+        capacity_ceiling = 0
+        review_frequency = "continuous"
 
     return {
         "status": "ok",
@@ -18916,6 +19007,7 @@ def compute_seller_global_score_db(seller_id):
             seller_global_score,
             4,
         ),
+        "seller_rating": seller_rating,
         "confidence": round(confidence, 4),
         "seller_authority_weight": 0.65,
         "agent_portfolio_weight": 0.25,
@@ -18926,6 +19018,11 @@ def compute_seller_global_score_db(seller_id):
                 4,
             ),
             "lifecycle_constraints": lifecycle_constraints,
+            "historical_performance_score": round(
+                historical_performance_score,
+                4,
+            ),
+            "is_new_seller": is_new_seller,
             "identity_score": round(identity_score, 4),
             "portfolio_score": round(portfolio_score, 4),
             "financial_score": round(financial_score, 4),
@@ -18991,6 +19088,7 @@ def compute_seller_global_score_db(seller_id):
             ),
         },
         "financial": {
+            "status": financial_status,
             "seller_stake_amount": round(
                 seller_stake,
                 6,
@@ -19020,11 +19118,31 @@ def compute_seller_global_score_db(seller_id):
         },
         "recommendation": {
             "priority": priority,
+            "seller_rating": seller_rating,
             "capacity_multiplier": capacity_multiplier,
+            "capacity_ceiling": capacity_ceiling,
             "exposure_multiplier": exposure_multiplier,
             "stake_requirement_multiplier": (
                 stake_multiplier
             ),
+            "review_frequency": review_frequency,
+        },
+        "governance_policy": {
+            "rating": seller_rating,
+            "capacity_ceiling": capacity_ceiling,
+            "exposure_multiplier": exposure_multiplier,
+            "stake_requirement_multiplier": stake_multiplier,
+            "review_frequency": review_frequency,
+            "eligible_for_growth": priority in {
+                "standard",
+                "high",
+                "elite",
+            },
+            "foundation_review_required": priority in {
+                "restricted",
+                "critical_review",
+                "blocked",
+            },
         },
         "policy": {
             "seller_is_primary_governance_entity": True,
@@ -19150,6 +19268,23 @@ def compute_seller_dynamic_agent_capacity_db(seller_id=None, seller=None):
             ).get("capacity_multiplier", 1.0)
             or 1.0
         )
+        capacity_ceiling = int(
+            (
+                seller_global.get("governance_policy")
+                or {}
+            ).get("capacity_ceiling", 5)
+            or 0
+        )
+        seller_rating = str(
+            seller_global.get("seller_rating")
+            or "D"
+        )
+        eligible_for_growth = bool(
+            (
+                seller_global.get("governance_policy")
+                or {}
+            ).get("eligible_for_growth", False)
+        )
         lifecycle_constraints = (
             seller_global.get("scores", {})
             .get("lifecycle_constraints", [])
@@ -19160,6 +19295,9 @@ def compute_seller_dynamic_agent_capacity_db(seller_id=None, seller=None):
         seller_global_confidence = 0.0
         seller_priority = "fallback_raw_capacity"
         capacity_multiplier = 1.0
+        capacity_ceiling = 5
+        seller_rating = "UNRATED"
+        eligible_for_growth = False
         lifecycle_constraints = [
             "seller_global_score_unavailable"
         ]
@@ -19258,13 +19396,36 @@ def compute_seller_dynamic_agent_capacity_db(seller_id=None, seller=None):
         capacity_direction = "unchanged"
 
     if capacity_direction == "increase":
-        multiplied_capacity = int(
-            round(new_capacity * capacity_multiplier)
-        )
-        new_capacity = max(
-            new_capacity,
-            multiplied_capacity,
-        )
+        if eligible_for_growth:
+            multiplied_capacity = int(
+                round(new_capacity * capacity_multiplier)
+            )
+            new_capacity = max(
+                new_capacity,
+                multiplied_capacity,
+            )
+        else:
+            new_capacity = min(
+                new_capacity,
+                current_capacity,
+            )
+            capacity_direction = "unchanged"
+            decision_reason = (
+                "seller_governance_growth_not_eligible"
+            )
+
+    # Seller Governance rating is the authoritative capacity ceiling.
+    new_capacity = min(
+        int(new_capacity),
+        int(capacity_ceiling),
+    )
+
+    if new_capacity > current_capacity:
+        capacity_direction = "increase"
+    elif new_capacity < current_capacity:
+        capacity_direction = "decrease"
+    else:
+        capacity_direction = "unchanged"
 
     new_capacity = int(max(0, min(new_capacity, 50)))
 
@@ -19281,7 +19442,10 @@ def compute_seller_dynamic_agent_capacity_db(seller_id=None, seller=None):
         "seller_global_score": seller_global_score,
         "seller_global_confidence": seller_global_confidence,
         "seller_global_priority": seller_priority,
+        "seller_rating": seller_rating,
+        "eligible_for_growth": eligible_for_growth,
         "capacity_multiplier": capacity_multiplier,
+        "capacity_ceiling": capacity_ceiling,
         "lifecycle_constraints": lifecycle_constraints,
         "decision_reason": decision_reason,
         "active_agents": active_agents,

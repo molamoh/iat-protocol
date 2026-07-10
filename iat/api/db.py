@@ -7208,9 +7208,17 @@ def resolve_sellers_for_service_db(service, limit=20):
             else float(agent_risk)
         )
 
+        # Seller-agent risk may be stored on a 0-100 scale.
+        # Normalize it to 0-1 for routing and comparison.
+        if agent_risk > 1.0:
+            agent_risk = agent_risk / 100.0
+
+        if current_risk > 1.0:
+            current_risk = current_risk / 100.0
+
         current["min_risk_score"] = min(
-            current_risk,
-            agent_risk,
+            max(0.0, min(current_risk, 1.0)),
+            max(0.0, min(agent_risk, 1.0)),
         )
 
     sellers = list(sellers_by_id.values())

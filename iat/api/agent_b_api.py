@@ -2996,6 +2996,26 @@ def admin_approve_foundation_decision(
     )
 
 
+@app.get("/admin/foundation-decision/{decision_id}/execution-plan")
+def admin_foundation_decision_execution_plan(
+    decision_id: str,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    from iat.governance.execution_planner import (
+        build_foundation_execution_plan,
+    )
+
+    return build_foundation_execution_plan(
+        decision_id=decision_id,
+    )
+
+
 @app.post("/admin/foundation-decision/{decision_id}/dispatch-dry-run")
 def admin_dry_run_foundation_decision_dispatch(
     decision_id: str,

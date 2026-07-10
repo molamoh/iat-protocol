@@ -18389,20 +18389,35 @@ def orchestrate_seller_runtime_governance_db(seller_id):
 
 
 
-def recompute_seller_dynamic_agent_capacity_db(seller_id):
-    if not seller_id:
-        return {
-            "status": "error",
-            "message": "seller_id_required",
-        }
 
-    seller = get_seller_db(seller_id)
+def compute_seller_dynamic_agent_capacity_db(seller_id=None, seller=None):
+    """
+    Pure capacity computation.
+
+    This function does not update the database, freeze agents,
+    reactivate agents, or create governance events.
+    """
+    if seller is None:
+        if not seller_id:
+            return {
+                "status": "error",
+                "message": "seller_id_required",
+            }
+
+        seller = get_seller_db(seller_id)
+
     if not seller:
         return {
             "status": "error",
             "message": "seller_not_found",
             "seller_id": seller_id,
         }
+
+    seller_id = str(
+        seller_id
+        or seller.get("seller_id")
+        or ""
+    )
 
     seller_status = str(seller.get("seller_status") or "pending").lower()
     verification_status = str(seller.get("verification_status") or "unverified").lower()
@@ -18529,8 +18544,6 @@ def recompute_seller_dynamic_agent_capacity_db(seller_id):
 
     new_capacity = int(max(0, min(new_capacity, 50)))
 
-    now = int(time.time())
-
     capacity_report = {
         "seller_id": seller_id,
         "seller_status": seller_status,
@@ -18563,6 +18576,57 @@ def recompute_seller_dynamic_agent_capacity_db(seller_id):
             "economic_penalty_level": economic_penalty_level,
         },
     }
+
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "seller": seller,
+        "old_max_agents_allowed": current_capacity,
+        "new_max_agents_allowed": new_capacity,
+        "target_capacity": target_capacity,
+        "capacity_direction": capacity_direction,
+        "capacity_score": capacity_score,
+        "decision_reason": decision_reason,
+        "active_agents": active_agents,
+        "report": capacity_report,
+        "dry_run_safe": True,
+    }
+
+
+
+def recompute_seller_dynamic_agent_capacity_db(seller_id):
+    if not seller_id:
+        return {
+            "status": "error",
+            "message": "seller_id_required",
+        }
+
+    seller = get_seller_db(seller_id)
+    if not seller:
+        return {
+            "status": "error",
+            "message": "seller_not_found",
+            "seller_id": seller_id,
+        }
+
+    computation = compute_seller_dynamic_agent_capacity_db(
+        seller_id=seller_id,
+        seller=seller,
+    )
+
+    if computation.get("status") != "ok":
+        return computation
+
+    current_capacity = computation["old_max_agents_allowed"]
+    new_capacity = computation["new_max_agents_allowed"]
+    target_capacity = computation["target_capacity"]
+    capacity_direction = computation["capacity_direction"]
+    capacity_score = computation["capacity_score"]
+    decision_reason = computation["decision_reason"]
+    active_agents = computation["active_agents"]
+    capacity_report = computation["report"]
+
+    now = int(time.time())
 
     conn = get_conn()
     cur = conn.cursor()

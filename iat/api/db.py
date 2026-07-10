@@ -7193,9 +7193,24 @@ def resolve_sellers_for_service_db(service, limit=20):
             float(agent.get("reputation", 0.0) or 0.0),
         )
 
+        current_risk = current.get("min_risk_score")
+        agent_risk = agent.get("risk_score")
+
+        current_risk = (
+            1.0
+            if current_risk is None
+            else float(current_risk)
+        )
+
+        agent_risk = (
+            1.0
+            if agent_risk is None
+            else float(agent_risk)
+        )
+
         current["min_risk_score"] = min(
-            float(current.get("min_risk_score", 1.0) or 1.0),
-            float(agent.get("risk_score", 1.0) or 1.0),
+            current_risk,
+            agent_risk,
         )
 
     sellers = list(sellers_by_id.values())

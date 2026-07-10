@@ -2880,6 +2880,55 @@ def admin_market_intelligence(x_api_key: str = Header(default="")):
     return build_market_intelligence()
 
 
+@app.get("/admin/service-seller-resolution/{service}")
+def admin_service_seller_resolution(
+    service: str,
+    limit: int = 20,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    from iat.api.db import (
+        get_available_seller_execution_agents_db,
+        resolve_sellers_for_service_db,
+    )
+
+    raw = get_available_seller_execution_agents_db(
+        service=service,
+        specialization=None,
+        limit=max(1, min(limit, 100)),
+    )
+
+    raw_agents = []
+
+    for agent in raw.get("agents", []):
+        raw_agents.append({
+            "seller_id": agent.get("seller_id"),
+            "seller_agent_id": agent.get("seller_agent_id"),
+            "agent_id": agent.get("agent_id"),
+            "risk_score": agent.get("risk_score"),
+            "trust_score": agent.get("trust_score"),
+            "runtime_health_score": agent.get("runtime_health_score"),
+            "reputation": agent.get("reputation"),
+            "seller_agent_status": agent.get("seller_agent_status"),
+            "runtime_validation_status": agent.get("runtime_validation_status"),
+        })
+
+    return {
+        "status": "ok",
+        "service": service,
+        "raw_agents": raw_agents,
+        "resolution": resolve_sellers_for_service_db(
+            service=service,
+            limit=limit,
+        ),
+    }
+
+
 @app.get("/admin/foundation-decision-queue")
 def admin_foundation_decision_queue(
     status: str | None = "pending_foundation_review",

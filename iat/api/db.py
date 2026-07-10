@@ -7126,6 +7126,109 @@ def expire_foundation_decision_db(
     )
 
 
+
+def dry_run_foundation_decision_dispatch_db(decision_id):
+    decision = get_foundation_decision_db(decision_id)
+
+    if not decision:
+        return {
+            "status": "error",
+            "message": "foundation_decision_not_found",
+            "decision_id": decision_id,
+        }
+
+    decision_status = str(
+        decision.get("status") or ""
+    ).lower()
+
+    if decision_status != "approved":
+        return {
+            "status": "blocked",
+            "message": "foundation_decision_not_approved",
+            "decision_id": decision_id,
+            "current_status": decision_status,
+            "required_status": "approved",
+        }
+
+    actions = decision.get("execution_order") or []
+    target = decision.get("target")
+
+    supported_routes = {
+        "increase_capacity": {
+            "dispatcher": "seller_dynamic_capacity_engine",
+            "existing_function": "recompute_seller_dynamic_agent_capacity_db",
+            "execution_scope": "seller_or_service_capacity",
+        },
+        "factory_request": {
+            "dispatcher": "seller_agent_factory",
+            "existing_function": "create_seller_agent_factory_request_db",
+            "execution_scope": "seller_factory_governance_pipeline",
+        },
+        "new_foundation_capability": {
+            "dispatcher": "foundation_governance",
+            "existing_function": None,
+            "execution_scope": "foundation_capability_governance_review",
+        },
+    }
+
+    dispatch_plan = []
+    unsupported_actions = []
+
+    for position, action in enumerate(actions, start=1):
+        route = supported_routes.get(action)
+
+        if not route:
+            unsupported_actions.append(action)
+            dispatch_plan.append({
+                "position": position,
+                "action": action,
+                "target": target,
+                "status": "unsupported_action",
+                "would_execute": False,
+            })
+            continue
+
+        dispatch_plan.append({
+            "position": position,
+            "action": action,
+            "target": target,
+            "status": "route_resolved",
+            "dispatcher": route["dispatcher"],
+            "existing_function": route["existing_function"],
+            "execution_scope": route["execution_scope"],
+            "would_execute": False,
+            "dry_run": True,
+        })
+
+    executable_routes = [
+        item
+        for item in dispatch_plan
+        if item.get("status") == "route_resolved"
+    ]
+
+    return {
+        "status": "dry_run_completed",
+        "engine": "foundation_decision_dispatcher_v1",
+        "decision_id": decision_id,
+        "decision_status": decision_status,
+        "target": target,
+        "requested_actions": actions,
+        "dispatch_plan": dispatch_plan,
+        "resolved_route_count": len(executable_routes),
+        "unsupported_actions": unsupported_actions,
+        "execution_triggered": False,
+        "policy": {
+            "approved_decision_required": True,
+            "dry_run_only": True,
+            "does_not_modify_capacity": True,
+            "does_not_create_factory_requests": True,
+            "does_not_create_foundation_agents": True,
+            "foundation_final_authority": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
 def list_foundation_decision_queue_db(status=None, limit=50):
     conn = get_conn()
     cur = conn.cursor()

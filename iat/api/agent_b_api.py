@@ -2947,6 +2947,24 @@ def admin_approve_foundation_decision(
     )
 
 
+@app.post("/admin/foundation-decision/{decision_id}/dispatch-dry-run")
+def admin_dry_run_foundation_decision_dispatch(
+    decision_id: str,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    from iat.api.db import dry_run_foundation_decision_dispatch_db
+
+    return dry_run_foundation_decision_dispatch_db(
+        decision_id=decision_id,
+    )
+
+
 @app.post("/admin/foundation-decision/{decision_id}/reject")
 def admin_reject_foundation_decision(
     decision_id: str,

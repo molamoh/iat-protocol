@@ -7127,6 +7127,103 @@ def expire_foundation_decision_db(
 
 
 
+
+def resolve_sellers_for_service_db(service, limit=20):
+    service = str(service or "").strip()
+
+    if not service:
+        return {
+            "status": "error",
+            "message": "service_required",
+            "service": service,
+            "seller_count": 0,
+            "sellers": [],
+        }
+
+    eligible = get_available_seller_execution_agents_db(
+        service=service,
+        specialization=None,
+        limit=max(1, min(int(limit or 20), 100)),
+    )
+
+    agents = (
+        eligible.get("agents", [])
+        if isinstance(eligible, dict)
+        and eligible.get("status") == "ok"
+        else []
+    )
+
+    sellers_by_id = {}
+
+    for agent in agents:
+        seller_id = str(agent.get("seller_id") or "").strip()
+
+        if not seller_id:
+            continue
+
+        current = sellers_by_id.setdefault(seller_id, {
+            "seller_id": seller_id,
+            "service": service,
+            "seller_agent_ids": [],
+            "agent_ids": [],
+            "available_agent_count": 0,
+            "max_runtime_health_score": 0.0,
+            "max_reputation": 0.0,
+            "min_risk_score": 1.0,
+        })
+
+        seller_agent_id = agent.get("seller_agent_id")
+        agent_id = agent.get("agent_id")
+
+        if seller_agent_id and seller_agent_id not in current["seller_agent_ids"]:
+            current["seller_agent_ids"].append(seller_agent_id)
+
+        if agent_id and agent_id not in current["agent_ids"]:
+            current["agent_ids"].append(agent_id)
+
+        current["available_agent_count"] += 1
+
+        current["max_runtime_health_score"] = max(
+            float(current.get("max_runtime_health_score", 0.0) or 0.0),
+            float(agent.get("runtime_health_score", 0.0) or 0.0),
+        )
+
+        current["max_reputation"] = max(
+            float(current.get("max_reputation", 0.0) or 0.0),
+            float(agent.get("reputation", 0.0) or 0.0),
+        )
+
+        current["min_risk_score"] = min(
+            float(current.get("min_risk_score", 1.0) or 1.0),
+            float(agent.get("risk_score", 1.0) or 1.0),
+        )
+
+    sellers = list(sellers_by_id.values())
+
+    sellers.sort(
+        key=lambda item: (
+            -int(item.get("available_agent_count", 0) or 0),
+            -float(item.get("max_runtime_health_score", 0.0) or 0.0),
+            -float(item.get("max_reputation", 0.0) or 0.0),
+            float(item.get("min_risk_score", 1.0) or 1.0),
+        )
+    )
+
+    return {
+        "status": "ok",
+        "service": service,
+        "seller_count": len(sellers),
+        "agent_count": len(agents),
+        "sellers": sellers,
+        "policy": {
+            "resolution_only": True,
+            "does_not_modify_capacity": True,
+            "foundation_selection_required": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
 def dry_run_foundation_decision_dispatch_db(decision_id):
     decision = get_foundation_decision_db(decision_id)
 
@@ -7188,6 +7285,14 @@ def dry_run_foundation_decision_dispatch_db(decision_id):
             })
             continue
 
+        route_resolution = None
+
+        if action == "increase_capacity":
+            route_resolution = resolve_sellers_for_service_db(
+                service=target,
+                limit=20,
+            )
+
         dispatch_plan.append({
             "position": position,
             "action": action,
@@ -7196,6 +7301,10 @@ def dry_run_foundation_decision_dispatch_db(decision_id):
             "dispatcher": route["dispatcher"],
             "existing_function": route["existing_function"],
             "execution_scope": route["execution_scope"],
+            "route_resolution": route_resolution,
+            "foundation_selection_required": (
+                action == "increase_capacity"
+            ),
             "would_execute": False,
             "dry_run": True,
         })

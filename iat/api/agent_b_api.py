@@ -2996,6 +2996,33 @@ def admin_approve_foundation_decision(
     )
 
 
+@app.post("/admin/foundation-decision/{decision_id}/execution-simulation")
+def admin_foundation_decision_execution_simulation(
+    decision_id: str,
+    payload: dict | None = None,
+    x_api_key: str = Header(default=""),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    from iat.governance.execution_controller import (
+        simulate_foundation_execution_controller,
+    )
+
+    payload = payload or {}
+
+    return simulate_foundation_execution_controller(
+        decision_id=decision_id,
+        selected_seller_ids=(
+            payload.get("selected_seller_ids")
+            or []
+        ),
+    )
+
+
 @app.get("/admin/foundation-decision/{decision_id}/execution-plan")
 def admin_foundation_decision_execution_plan(
     decision_id: str,

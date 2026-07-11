@@ -4,7 +4,13 @@ from solders.pubkey import Pubkey
 from solders.signature import Signature
 from solana.rpc.types import TokenAccountOpts
 
-RPC = "https://blue-white-thunder.solana-mainnet.quiknode.pro/2777cfcf546a9704abe0d5c7b4b3bce2b7c31586/"
+import os
+
+RPC = (
+    os.getenv("IAT_SOLANA_RPC_URL")
+    or os.getenv("SOLANA_RPC_URL")
+    or "https://api.mainnet-beta.solana.com"
+)
 IAT_MINT = "3vRGo1VpGbZH67Ur2UG7VNUqSqQyApLQEcCxgnqK4f4Z"
 
 client = Client(RPC)

@@ -25,3 +25,10 @@ iat_protocol.db
 .env.local
 docs/
 iat_protocol.db-journal
+
+# Local source backups
+*.bak
+*.backup
+*.orig
+*.rej
+*~

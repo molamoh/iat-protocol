@@ -19442,128 +19442,88 @@ def compute_seller_governance_profile_db(seller_id):
         + (100.0 - average_agent_risk) * 0.10
     )
 
-    # Final governance score preserves the global score,
-    # but exposes independent dimensions to consumers.
-    governance_profile_score = clamp(
-        global_score * 0.40
-        + trust_score * 0.20
-        + maturity_score * 0.10
-        + economic_strength_score * 0.10
-        + runtime_score * 0.10
-        + portfolio_quality_score * 0.10
-        - risk_score * 0.15
+    # The Seller Global Score Engine is the only rating authority.
+    # The Governance Profile exposes dimensions and derives policies,
+    # but never recalculates or overrides the Seller rating.
+    governance_profile_score = global_score
+
+    rating = str(
+        global_report.get("seller_rating")
+        or recommendation.get("seller_rating")
+        or "D"
     )
 
-    # Preserve hard lifecycle constraints and terminal ratings.
-    if "all_agents_dead_critical_ceiling" in lifecycle_constraints:
-        governance_profile_score = min(
-            governance_profile_score,
-            29.99,
+    tier = str(
+        recommendation.get("priority")
+        or global_policy.get("priority")
+        or "blocked"
+    )
+
+    capacity_ceiling = safe_int(
+        global_policy.get(
+            "capacity_ceiling",
+            recommendation.get("capacity_ceiling", 0),
+        ),
+        0,
+    )
+
+    exposure_multiplier = safe_float(
+        global_policy.get(
+            "exposure_multiplier",
+            recommendation.get("exposure_multiplier", 0),
+        ),
+        0.0,
+    )
+
+    stake_multiplier = safe_float(
+        global_policy.get(
+            "stake_requirement_multiplier",
+            recommendation.get(
+                "stake_requirement_multiplier",
+                1.0,
+            ),
+        ),
+        1.0,
+    )
+
+    review_frequency = str(
+        global_policy.get(
+            "review_frequency",
+            recommendation.get(
+                "review_frequency",
+                "continuous",
+            ),
         )
+        or "continuous"
+    )
 
-    if "all_agents_disabled_restricted_ceiling" in lifecycle_constraints:
-        governance_profile_score = min(
-            governance_profile_score,
-            39.99,
-        )
+    marketplace_priority_by_tier = {
+        "elite": 1.50,
+        "high": 1.25,
+        "standard": 1.00,
+        "restricted": 0.65,
+        "critical_review": 0.35,
+        "blocked": 0.0,
+    }
 
-    if str(seller.get("seller_status") or "").lower() in {
-        "banned",
-        "rejected",
-    }:
-        governance_profile_score = 0.0
+    dispatch_priority_by_tier = {
+        "elite": 1.50,
+        "high": 1.25,
+        "standard": 1.00,
+        "restricted": 0.65,
+        "critical_review": 0.35,
+        "blocked": 0.0,
+    }
 
-    # Rating policy.
-    if governance_profile_score >= 90:
-        rating = "AAA"
-        tier = "elite"
-        capacity_ceiling = 50
-        exposure_multiplier = 1.60
-        stake_multiplier = 0.75
-        marketplace_priority = 1.50
-        dispatch_priority = 1.50
-        review_frequency = "quarterly"
-    elif governance_profile_score >= 82:
-        rating = "AA"
-        tier = "elite"
-        capacity_ceiling = 40
-        exposure_multiplier = 1.45
-        stake_multiplier = 0.80
-        marketplace_priority = 1.40
-        dispatch_priority = 1.40
-        review_frequency = "quarterly"
-    elif governance_profile_score >= 74:
-        rating = "A"
-        tier = "high"
-        capacity_ceiling = 30
-        exposure_multiplier = 1.30
-        stake_multiplier = 0.90
-        marketplace_priority = 1.30
-        dispatch_priority = 1.30
-        review_frequency = "monthly"
-    elif governance_profile_score >= 65:
-        rating = "BBB"
-        tier = "high"
-        capacity_ceiling = 20
-        exposure_multiplier = 1.15
-        stake_multiplier = 0.95
-        marketplace_priority = 1.15
-        dispatch_priority = 1.15
-        review_frequency = "monthly"
-    elif governance_profile_score >= 55:
-        rating = "BB"
-        tier = "standard"
-        capacity_ceiling = 15
-        exposure_multiplier = 1.00
-        stake_multiplier = 1.00
-        marketplace_priority = 1.00
-        dispatch_priority = 1.00
-        review_frequency = "monthly"
-    elif governance_profile_score >= 45:
-        rating = "B"
-        tier = "standard"
-        capacity_ceiling = 10
-        exposure_multiplier = 0.85
-        stake_multiplier = 1.10
-        marketplace_priority = 0.90
-        dispatch_priority = 0.90
-        review_frequency = "biweekly"
-    elif governance_profile_score >= 35:
-        rating = "CCC"
-        tier = "restricted"
-        capacity_ceiling = 5
-        exposure_multiplier = 0.60
-        stake_multiplier = 1.25
-        marketplace_priority = 0.65
-        dispatch_priority = 0.65
-        review_frequency = "weekly"
-    elif governance_profile_score >= 25:
-        rating = "CC"
-        tier = "critical_review"
-        capacity_ceiling = 2
-        exposure_multiplier = 0.35
-        stake_multiplier = 1.40
-        marketplace_priority = 0.35
-        dispatch_priority = 0.35
-        review_frequency = "daily"
-    elif governance_profile_score >= 15:
-        rating = "C"
-        tier = "critical_review"
-        capacity_ceiling = 1
-        exposure_multiplier = 0.20
-        stake_multiplier = 1.60
-        marketplace_priority = 0.15
-        dispatch_priority = 0.15
-        review_frequency = "continuous"
-    else:
-        rating = "D"
-        tier = "blocked"
-        capacity_ceiling = 0
-        exposure_multiplier = 0.0
-        stake_multiplier = 2.00
-        marketplace_priority = 0.0
-        dispatch_priority = 0.0
-        review_frequency = "continuous"
+    marketplace_priority = marketplace_priority_by_tier.get(
+        tier,
+        0.0,
+    )
+
+    dispatch_priority = dispatch_priority_by_tier.get(
+        tier,
+        0.0,
+    )
 
     eligible_for_growth = (
         tier in {"standard", "high", "elite"}
@@ -19591,7 +19551,7 @@ def compute_seller_governance_profile_db(seller_id):
         "engine": "iat_seller_governance_profile_v1",
         "seller_id": seller_id,
         "profile_score": round(
-            governance_profile_score,
+            global_score,
             4,
         ),
         "global_score": round(
@@ -19600,6 +19560,7 @@ def compute_seller_governance_profile_db(seller_id):
         ),
         "rating": rating,
         "tier": tier,
+        "rating_source": "iat_seller_global_score_v1",
         "confidence": round(
             confidence,
             4,
@@ -19714,6 +19675,9 @@ def compute_seller_governance_profile_db(seller_id):
         },
         "policy": {
             "single_seller_governance_source": True,
+            "single_rating_authority": True,
+            "rating_is_inherited_from_global_score": True,
+            "governance_profile_does_not_recalculate_rating": True,
             "seller_is_primary_entity": True,
             "agent_scores_are_portfolio_inputs": True,
             "low_maturity_is_not_high_risk": True,

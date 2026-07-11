@@ -19156,6 +19156,574 @@ def compute_seller_global_score_db(seller_id):
 
 
 
+
+def compute_seller_governance_profile_db(seller_id):
+    """
+    Unified Seller Governance Profile.
+
+    Read-only source of truth for:
+    - capacity
+    - exposure
+    - staking
+    - marketplace priority
+    - execution eligibility
+    - review frequency
+    """
+    global_report = compute_seller_global_score_db(
+        seller_id
+    )
+
+    if global_report.get("status") != "ok":
+        return global_report
+
+    seller = get_seller_db(seller_id) or {}
+    scores = global_report.get("scores") or {}
+    portfolio = global_report.get("portfolio") or {}
+    financial = global_report.get("financial") or {}
+    activity = global_report.get("global_activity") or {}
+    global_policy = global_report.get("governance_policy") or {}
+    recommendation = global_report.get("recommendation") or {}
+    seller_signals = global_report.get("seller_signals") or {}
+
+    def clamp(value, minimum=0.0, maximum=100.0):
+        try:
+            value = float(value)
+        except Exception:
+            value = minimum
+
+        return max(minimum, min(value, maximum))
+
+    def safe_float(value, default=0.0):
+        try:
+            return float(
+                value if value is not None else default
+            )
+        except Exception:
+            return default
+
+    def safe_int(value, default=0):
+        try:
+            return int(
+                value if value is not None else default
+            )
+        except Exception:
+            return default
+
+    global_score = clamp(
+        global_report.get("seller_global_score", 0)
+    )
+    confidence = clamp(
+        global_report.get("confidence", 0)
+    )
+
+    identity_score = clamp(
+        scores.get("identity_score", 0)
+    )
+    portfolio_score = clamp(
+        scores.get("portfolio_score", 0)
+    )
+    financial_score = clamp(
+        scores.get("financial_score", 0)
+    )
+    governance_score = clamp(
+        scores.get("governance_score", 0)
+    )
+    operational_score = clamp(
+        scores.get("operational_score", 0)
+    )
+    stability_score = clamp(
+        scores.get("stability_score", 0)
+    )
+    verification_score = clamp(
+        scores.get("verification_score", 0)
+    )
+    historical_score = clamp(
+        scores.get("historical_performance_score", 50)
+    )
+
+    total_agents = safe_int(
+        portfolio.get("total_agents", 0)
+    )
+    active_agents = safe_int(
+        portfolio.get("active_agents", 0)
+    )
+    active_ratio = safe_float(
+        portfolio.get("active_ratio", 0)
+    )
+
+    average_agent_risk = clamp(
+        portfolio.get("average_risk", 0)
+    )
+    average_agent_runtime = clamp(
+        portfolio.get("average_runtime_health", 0)
+    )
+    average_agent_reputation = clamp(
+        portfolio.get("average_reputation", 0)
+    )
+
+    seller_risk = clamp(
+        seller_signals.get("risk", 0)
+    )
+    seller_trust = clamp(
+        seller_signals.get("trust", 0)
+    )
+    seller_runtime = clamp(
+        seller_signals.get("runtime_health", 0)
+    )
+    seller_reputation = clamp(
+        seller_signals.get("reputation", 0)
+    )
+
+    total_successes = safe_int(
+        activity.get("successful_orders", 0)
+    )
+    total_failures = safe_int(
+        activity.get("failed_orders", 0)
+    )
+    total_orders = total_successes + total_failures
+
+    total_containments = safe_int(
+        activity.get("total_containments", 0)
+    )
+    total_penalties = safe_int(
+        activity.get("total_economic_penalties", 0)
+    )
+
+    total_stake = safe_float(
+        financial.get("total_stake_amount", 0)
+    )
+    total_slashed = safe_float(
+        financial.get("total_slashed_amount", 0)
+    )
+    slash_ratio = safe_float(
+        financial.get("slash_ratio", 0)
+    )
+
+    created_at = safe_int(
+        seller.get("created_at", 0)
+    )
+    now = int(time.time())
+
+    seller_age_days = (
+        max(0, now - created_at) / 86400.0
+        if created_at > 0
+        else 0.0
+    )
+
+    lifecycle_constraints = (
+        scores.get("lifecycle_constraints")
+        or []
+    )
+
+    # Trust reflects reliability and protocol confidence.
+    trust_score = clamp(
+        identity_score * 0.30
+        + governance_score * 0.25
+        + portfolio_score * 0.20
+        + stability_score * 0.15
+        + verification_score * 0.10
+    )
+
+    if seller_trust > 0:
+        trust_score = clamp(
+            trust_score * 0.75
+            + seller_trust * 0.25
+        )
+
+    # Maturity is independent from trust.
+    # New Sellers start low-maturity without being considered malicious.
+    order_maturity = min(
+        total_orders / 100.0,
+        1.0,
+    ) * 35.0
+
+    age_maturity = min(
+        seller_age_days / 365.0,
+        1.0,
+    ) * 20.0
+
+    portfolio_maturity = min(
+        total_agents / 20.0,
+        1.0,
+    ) * 15.0
+
+    active_maturity = clamp(
+        active_ratio * 100.0
+    ) * 0.10
+
+    financial_maturity = min(
+        total_stake / 1000.0,
+        1.0,
+    ) * 10.0
+
+    verification_maturity = (
+        verification_score * 0.10
+    )
+
+    maturity_score = clamp(
+        order_maturity
+        + age_maturity
+        + portfolio_maturity
+        + active_maturity
+        + financial_maturity
+        + verification_maturity
+    )
+
+    # Risk combines Seller risk, agent portfolio risk and protocol events.
+    lifecycle_penalty = min(
+        len(lifecycle_constraints) * 7.5,
+        30.0,
+    )
+
+    incident_penalty = min(
+        total_containments * 12.0
+        + total_penalties * 8.0
+        + total_failures * 2.0,
+        45.0,
+    )
+
+    slashing_penalty = min(
+        slash_ratio * 100.0
+        + total_slashed * 0.10,
+        35.0,
+    )
+
+    runtime_risk = clamp(
+        100.0
+        - (
+            seller_runtime * 0.45
+            + average_agent_runtime * 0.55
+        )
+    )
+
+    risk_score = clamp(
+        seller_risk * 0.35
+        + average_agent_risk * 0.25
+        + runtime_risk * 0.15
+        + lifecycle_penalty
+        + incident_penalty
+        + slashing_penalty
+    )
+
+    # New Sellers with no negative evidence remain neutral-risk,
+    # not automatically high-risk because maturity is low.
+    is_new_seller = bool(
+        scores.get("is_new_seller", False)
+    )
+
+    if (
+        is_new_seller
+        and total_containments == 0
+        and total_penalties == 0
+        and total_slashed == 0
+        and total_failures == 0
+    ):
+        risk_score = min(risk_score, 35.0)
+
+    # Financial commitment and economic resilience.
+    economic_strength_score = clamp(
+        financial_score * 0.55
+        + min(total_stake / 1000.0, 1.0) * 30.0
+        + historical_score * 0.15
+        - slashing_penalty
+    )
+
+    # Runtime quality represents the entire Seller portfolio.
+    runtime_score = clamp(
+        seller_runtime * 0.40
+        + average_agent_runtime * 0.45
+        + active_ratio * 100.0 * 0.15
+    )
+
+    portfolio_quality_score = clamp(
+        portfolio_score * 0.50
+        + average_agent_reputation * 0.20
+        + average_agent_runtime * 0.20
+        + (100.0 - average_agent_risk) * 0.10
+    )
+
+    # Final governance score preserves the global score,
+    # but exposes independent dimensions to consumers.
+    governance_profile_score = clamp(
+        global_score * 0.40
+        + trust_score * 0.20
+        + maturity_score * 0.10
+        + economic_strength_score * 0.10
+        + runtime_score * 0.10
+        + portfolio_quality_score * 0.10
+        - risk_score * 0.15
+    )
+
+    # Preserve hard lifecycle constraints and terminal ratings.
+    if "all_agents_dead_critical_ceiling" in lifecycle_constraints:
+        governance_profile_score = min(
+            governance_profile_score,
+            29.99,
+        )
+
+    if "all_agents_disabled_restricted_ceiling" in lifecycle_constraints:
+        governance_profile_score = min(
+            governance_profile_score,
+            39.99,
+        )
+
+    if str(seller.get("seller_status") or "").lower() in {
+        "banned",
+        "rejected",
+    }:
+        governance_profile_score = 0.0
+
+    # Rating policy.
+    if governance_profile_score >= 90:
+        rating = "AAA"
+        tier = "elite"
+        capacity_ceiling = 50
+        exposure_multiplier = 1.60
+        stake_multiplier = 0.75
+        marketplace_priority = 1.50
+        dispatch_priority = 1.50
+        review_frequency = "quarterly"
+    elif governance_profile_score >= 82:
+        rating = "AA"
+        tier = "elite"
+        capacity_ceiling = 40
+        exposure_multiplier = 1.45
+        stake_multiplier = 0.80
+        marketplace_priority = 1.40
+        dispatch_priority = 1.40
+        review_frequency = "quarterly"
+    elif governance_profile_score >= 74:
+        rating = "A"
+        tier = "high"
+        capacity_ceiling = 30
+        exposure_multiplier = 1.30
+        stake_multiplier = 0.90
+        marketplace_priority = 1.30
+        dispatch_priority = 1.30
+        review_frequency = "monthly"
+    elif governance_profile_score >= 65:
+        rating = "BBB"
+        tier = "high"
+        capacity_ceiling = 20
+        exposure_multiplier = 1.15
+        stake_multiplier = 0.95
+        marketplace_priority = 1.15
+        dispatch_priority = 1.15
+        review_frequency = "monthly"
+    elif governance_profile_score >= 55:
+        rating = "BB"
+        tier = "standard"
+        capacity_ceiling = 15
+        exposure_multiplier = 1.00
+        stake_multiplier = 1.00
+        marketplace_priority = 1.00
+        dispatch_priority = 1.00
+        review_frequency = "monthly"
+    elif governance_profile_score >= 45:
+        rating = "B"
+        tier = "standard"
+        capacity_ceiling = 10
+        exposure_multiplier = 0.85
+        stake_multiplier = 1.10
+        marketplace_priority = 0.90
+        dispatch_priority = 0.90
+        review_frequency = "biweekly"
+    elif governance_profile_score >= 35:
+        rating = "CCC"
+        tier = "restricted"
+        capacity_ceiling = 5
+        exposure_multiplier = 0.60
+        stake_multiplier = 1.25
+        marketplace_priority = 0.65
+        dispatch_priority = 0.65
+        review_frequency = "weekly"
+    elif governance_profile_score >= 25:
+        rating = "CC"
+        tier = "critical_review"
+        capacity_ceiling = 2
+        exposure_multiplier = 0.35
+        stake_multiplier = 1.40
+        marketplace_priority = 0.35
+        dispatch_priority = 0.35
+        review_frequency = "daily"
+    elif governance_profile_score >= 15:
+        rating = "C"
+        tier = "critical_review"
+        capacity_ceiling = 1
+        exposure_multiplier = 0.20
+        stake_multiplier = 1.60
+        marketplace_priority = 0.15
+        dispatch_priority = 0.15
+        review_frequency = "continuous"
+    else:
+        rating = "D"
+        tier = "blocked"
+        capacity_ceiling = 0
+        exposure_multiplier = 0.0
+        stake_multiplier = 2.00
+        marketplace_priority = 0.0
+        dispatch_priority = 0.0
+        review_frequency = "continuous"
+
+    eligible_for_growth = (
+        tier in {"standard", "high", "elite"}
+        and risk_score < 65.0
+        and active_agents > 0
+        and str(
+            seller.get("seller_status") or ""
+        ).lower() == "active"
+    )
+
+    execution_eligible = (
+        tier not in {"blocked", "critical_review"}
+        and risk_score < 75.0
+        and active_agents > 0
+    )
+
+    marketplace_eligible = (
+        tier != "blocked"
+        and risk_score < 85.0
+        and active_agents > 0
+    )
+
+    return {
+        "status": "ok",
+        "engine": "iat_seller_governance_profile_v1",
+        "seller_id": seller_id,
+        "profile_score": round(
+            governance_profile_score,
+            4,
+        ),
+        "global_score": round(
+            global_score,
+            4,
+        ),
+        "rating": rating,
+        "tier": tier,
+        "confidence": round(
+            confidence,
+            4,
+        ),
+        "dimensions": {
+            "trust_score": round(
+                trust_score,
+                4,
+            ),
+            "maturity_score": round(
+                maturity_score,
+                4,
+            ),
+            "risk_score": round(
+                risk_score,
+                4,
+            ),
+            "financial_score": round(
+                economic_strength_score,
+                4,
+            ),
+            "runtime_score": round(
+                runtime_score,
+                4,
+            ),
+            "portfolio_score": round(
+                portfolio_quality_score,
+                4,
+            ),
+            "governance_score": round(
+                governance_score,
+                4,
+            ),
+            "stability_score": round(
+                stability_score,
+                4,
+            ),
+            "historical_performance_score": round(
+                historical_score,
+                4,
+            ),
+        },
+        "maturity_signals": {
+            "seller_age_days": round(
+                seller_age_days,
+                4,
+            ),
+            "total_orders": total_orders,
+            "total_agents": total_agents,
+            "active_agents": active_agents,
+            "total_stake": round(
+                total_stake,
+                6,
+            ),
+            "verification_score": round(
+                verification_score,
+                4,
+            ),
+        },
+        "risk_signals": {
+            "seller_risk": round(
+                seller_risk,
+                4,
+            ),
+            "portfolio_risk": round(
+                average_agent_risk,
+                4,
+            ),
+            "runtime_risk": round(
+                runtime_risk,
+                4,
+            ),
+            "containments": total_containments,
+            "economic_penalties": total_penalties,
+            "failed_orders": total_failures,
+            "slashed_amount": round(
+                total_slashed,
+                6,
+            ),
+            "lifecycle_constraints": lifecycle_constraints,
+        },
+        "policies": {
+            "capacity": {
+                "ceiling": capacity_ceiling,
+                "eligible_for_growth": eligible_for_growth,
+            },
+            "exposure": {
+                "multiplier": exposure_multiplier,
+            },
+            "staking": {
+                "requirement_multiplier": stake_multiplier,
+            },
+            "marketplace": {
+                "eligible": marketplace_eligible,
+                "priority_multiplier": marketplace_priority,
+            },
+            "dispatch": {
+                "eligible": execution_eligible,
+                "priority_multiplier": dispatch_priority,
+            },
+            "review": {
+                "frequency": review_frequency,
+                "foundation_review_required": tier in {
+                    "restricted",
+                    "critical_review",
+                    "blocked",
+                },
+            },
+        },
+        "source_reports": {
+            "seller_global_score": global_report,
+        },
+        "policy": {
+            "single_seller_governance_source": True,
+            "seller_is_primary_entity": True,
+            "agent_scores_are_portfolio_inputs": True,
+            "low_maturity_is_not_high_risk": True,
+            "read_only": True,
+            "protocol_core_sovereignty_reserved": True,
+        },
+    }
+
+
+
 def compute_seller_dynamic_agent_capacity_db(seller_id=None, seller=None):
     """
     Pure capacity computation.
@@ -19241,52 +19809,61 @@ def compute_seller_dynamic_agent_capacity_db(seller_id=None, seller=None):
         min(100.0, round(raw_capacity_score, 2)),
     )
 
-    seller_global = compute_seller_global_score_db(
+    seller_profile = compute_seller_governance_profile_db(
         seller_id
     )
 
-    if seller_global.get("status") == "ok":
+    if seller_profile.get("status") == "ok":
         seller_global_score = float(
-            seller_global.get("seller_global_score", 0)
+            seller_profile.get("profile_score", 0)
             or 0
         )
         seller_global_confidence = float(
-            seller_global.get("confidence", 0)
+            seller_profile.get("confidence", 0)
             or 0
         )
         seller_priority = str(
-            (
-                seller_global.get("recommendation")
-                or {}
-            ).get("priority")
+            seller_profile.get("tier")
             or "critical_review"
         )
+        seller_rating = str(
+            seller_profile.get("rating")
+            or "D"
+        )
+
+        capacity_policy = (
+            seller_profile.get("policies", {})
+            .get("capacity", {})
+            or {}
+        )
+
+        capacity_ceiling = int(
+            capacity_policy.get("ceiling", 0)
+            or 0
+        )
+        eligible_for_growth = bool(
+            capacity_policy.get(
+                "eligible_for_growth",
+                False,
+            )
+        )
+
+        source_global = (
+            seller_profile.get("source_reports", {})
+            .get("seller_global_score", {})
+            or {}
+        )
+
         capacity_multiplier = float(
             (
-                seller_global.get("recommendation")
+                source_global.get("recommendation")
                 or {}
             ).get("capacity_multiplier", 1.0)
             or 1.0
         )
-        capacity_ceiling = int(
-            (
-                seller_global.get("governance_policy")
-                or {}
-            ).get("capacity_ceiling", 5)
-            or 0
-        )
-        seller_rating = str(
-            seller_global.get("seller_rating")
-            or "D"
-        )
-        eligible_for_growth = bool(
-            (
-                seller_global.get("governance_policy")
-                or {}
-            ).get("eligible_for_growth", False)
-        )
+
         lifecycle_constraints = (
-            seller_global.get("scores", {})
+            source_global.get("scores", {})
             .get("lifecycle_constraints", [])
             or []
         )
@@ -19299,7 +19876,7 @@ def compute_seller_dynamic_agent_capacity_db(seller_id=None, seller=None):
         seller_rating = "UNRATED"
         eligible_for_growth = False
         lifecycle_constraints = [
-            "seller_global_score_unavailable"
+            "seller_governance_profile_unavailable"
         ]
 
     # Seller Global Score is the principal capacity signal.
@@ -19317,39 +19894,49 @@ def compute_seller_dynamic_agent_capacity_db(seller_id=None, seller=None):
     if seller_status in ["banned", "rejected"]:
         target_capacity = 0
         decision_reason = "terminal_seller_status"
-    elif seller_priority == "critical_review":
-        target_capacity = 1
-        decision_reason = "seller_global_score_critical_review"
-    elif seller_priority == "restricted":
-        target_capacity = min(5, current_capacity)
-        decision_reason = "seller_global_score_restricted"
+
     elif seller_status in ["contained", "restricted"]:
         target_capacity = 1
         decision_reason = "contained_or_restricted_seller"
+
     elif risk_score >= 0.85:
         target_capacity = 1
         decision_reason = "critical_risk_score"
+
     elif risk_score >= 0.65 or seller_status in ["limited", "watchlist"]:
-        target_capacity = 5
+        target_capacity = min(5, capacity_ceiling)
         decision_reason = "high_risk_or_limited_status"
+
     elif verification_status not in ["verified", "foundation_verified"]:
-        target_capacity = min(5, current_capacity)
+        target_capacity = min(
+            current_capacity,
+            5,
+            capacity_ceiling,
+        )
         decision_reason = "seller_not_fully_verified"
-    elif capacity_score < 20:
-        target_capacity = 1
-        decision_reason = "capacity_score_below_20"
-    elif capacity_score < 40:
-        target_capacity = 5
-        decision_reason = "capacity_score_20_39"
-    elif capacity_score < 60:
-        target_capacity = 10
-        decision_reason = "capacity_score_40_59"
-    elif capacity_score < 80:
-        target_capacity = 20
-        decision_reason = "capacity_score_60_79"
+
+    elif seller_priority == "blocked":
+        target_capacity = 0
+        decision_reason = "seller_governance_profile_blocked"
+
+    elif seller_priority == "critical_review":
+        target_capacity = min(1, capacity_ceiling)
+        decision_reason = "seller_governance_profile_critical_review"
+
+    elif seller_priority == "restricted":
+        target_capacity = min(5, capacity_ceiling)
+        decision_reason = "seller_governance_profile_restricted"
+
+    elif eligible_for_growth:
+        target_capacity = capacity_ceiling
+        decision_reason = "seller_rating_capacity_policy"
+
     else:
-        target_capacity = 50
-        decision_reason = "capacity_score_80_plus"
+        target_capacity = min(
+            current_capacity,
+            capacity_ceiling,
+        )
+        decision_reason = "seller_governance_growth_not_eligible"
 
     # Progressive growth, immediate degradation.
     if target_capacity > current_capacity:
@@ -19396,15 +19983,7 @@ def compute_seller_dynamic_agent_capacity_db(seller_id=None, seller=None):
         capacity_direction = "unchanged"
 
     if capacity_direction == "increase":
-        if eligible_for_growth:
-            multiplied_capacity = int(
-                round(new_capacity * capacity_multiplier)
-            )
-            new_capacity = max(
-                new_capacity,
-                multiplied_capacity,
-            )
-        else:
+        if not eligible_for_growth:
             new_capacity = min(
                 new_capacity,
                 current_capacity,
@@ -19459,7 +20038,13 @@ def compute_seller_dynamic_agent_capacity_db(seller_id=None, seller=None):
             "containment_penalty": round(containment_penalty, 4),
             "economic_penalty": round(economic_penalty, 4),
         },
-        "seller_global_score_report": seller_global,
+        "seller_governance_profile": seller_profile,
+        "seller_global_score_report": (
+            seller_profile.get("source_reports", {})
+            .get("seller_global_score", {})
+            if isinstance(seller_profile, dict)
+            else {}
+        ),
         "raw_inputs": {
             "trust_score": trust_score,
             "runtime_health_score": runtime_health_score,

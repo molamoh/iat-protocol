@@ -4413,31 +4413,32 @@ def verify_payment(req: VerifyPaymentRequest, x_api_key: str | None = Header(def
 
         settlement_result = None
         try:
-            from iat.api.multi_exec import select_best_result
-
-            runtime_results = []
-            if isinstance(result, dict):
-                runtime_results = (
-                    result.get("multi_runtime", {}).get("results", [])
-                    or result.get("results", [])
-                    or []
-                )
-
-            best_runtime = (
-                result.get("best_result")
-                if isinstance(result, dict)
-                else None
+            settlement_candidate = resolve_settlement_candidate(
+                order,
+                result if isinstance(result, dict) else {},
             )
 
-            if not best_runtime and runtime_results:
-                best_runtime = select_best_result(runtime_results)
-
-            if best_runtime:
+            if settlement_candidate.get("status") == "resolved":
                 settlement_result = payout_winner_if_escrow(
                     order,
-                    best_runtime,
-                    runtime_results,
+                    settlement_candidate.get("best"),
+                    settlement_candidate.get("agents"),
                 )
+
+                if isinstance(settlement_result, dict):
+                    settlement_result["candidate_resolution"] = {
+                        "status": settlement_candidate.get("status"),
+                        "source": settlement_candidate.get("source"),
+                    }
+            else:
+                settlement_result = {
+                    "status": "blocked",
+                    "reason": settlement_candidate.get(
+                        "reason",
+                        "settlement_candidate_unresolved",
+                    ),
+                    "candidate_resolution": settlement_candidate,
+                }
         except Exception as settlement_error:
             settlement_result = {
                 "status": "error",
@@ -4724,25 +4725,32 @@ def internal_foundation_finalize_order(
     settlement_result = None
 
     try:
-        from iat.api.multi_exec import select_best_result
-
-        runtime_results = (
-            result.get("multi_runtime", {}).get("results", [])
-            or result.get("results", [])
-            or []
+        settlement_candidate = resolve_settlement_candidate(
+            order,
+            result,
         )
 
-        best_runtime = result.get("best_result")
-
-        if not best_runtime and runtime_results:
-            best_runtime = select_best_result(runtime_results)
-
-        if best_runtime:
+        if settlement_candidate.get("status") == "resolved":
             settlement_result = payout_winner_if_escrow(
                 order,
-                best_runtime,
-                runtime_results,
+                settlement_candidate.get("best"),
+                settlement_candidate.get("agents"),
             )
+
+            if isinstance(settlement_result, dict):
+                settlement_result["candidate_resolution"] = {
+                    "status": settlement_candidate.get("status"),
+                    "source": settlement_candidate.get("source"),
+                }
+        else:
+            settlement_result = {
+                "status": "blocked",
+                "reason": settlement_candidate.get(
+                    "reason",
+                    "settlement_candidate_unresolved",
+                ),
+                "candidate_resolution": settlement_candidate,
+            }
 
     except Exception as settlement_error:
         settlement_result = {
@@ -5160,17 +5168,34 @@ def resolve_payment_wallet(raw_wallet, agent=None):
         result["reason"] = "wallet_valid"
         return result
 
-    protocol_core_wallet = os.getenv("IAT_PROTOCOL_CORE_PAYMENT_WALLET")
+    logical_wallet_env_map = {
+        "IAT_PROTOCOL_CORE": "IAT_PROTOCOL_CORE_PAYMENT_WALLET",
+        "FOUNDATION_RISK_PREMIUM_WALLET": "IAT_FOUNDATION_RISK_PREMIUM_PAYMENT_WALLET",
+        "FOUNDATION_WEB_STANDARD_WALLET": "IAT_FOUNDATION_WEB_STANDARD_PAYMENT_WALLET",
+        "FOUNDATION_WEB_CHEAP_WALLET": "IAT_FOUNDATION_WEB_CHEAP_PAYMENT_WALLET",
+        "FOUNDATION_WEB_PREMIUM_WALLET": "IAT_FOUNDATION_WEB_PREMIUM_PAYMENT_WALLET",
+        "FOUNDATION_WEB_RESEARCH_WALLET": "IAT_FOUNDATION_WEB_RESEARCH_PAYMENT_WALLET",
+    }
 
-    if (
-        raw_wallet == "IAT_PROTOCOL_CORE"
-        and protocol_core_wallet
-        and is_valid_solana_wallet(protocol_core_wallet)
-    ):
-        result["resolved_wallet"] = protocol_core_wallet
+    mapped_env_name = logical_wallet_env_map.get(raw_wallet)
+    mapped_wallet = os.getenv(mapped_env_name) if mapped_env_name else None
+
+    if mapped_wallet and is_valid_solana_wallet(mapped_wallet):
+        result["resolved_wallet"] = mapped_wallet
         result["valid"] = True
-        result["resolution_type"] = "protocol_core_wallet_mapping"
+        result["resolution_type"] = "logical_wallet_env_mapping"
+        result["mapping_env"] = mapped_env_name
         result["reason"] = "logical_wallet_resolved"
+        return result
+
+    if mapped_env_name and not mapped_wallet:
+        result["mapping_env"] = mapped_env_name
+        result["reason"] = "logical_wallet_mapping_not_configured"
+        return result
+
+    if mapped_env_name and mapped_wallet:
+        result["mapping_env"] = mapped_env_name
+        result["reason"] = "logical_wallet_mapping_invalid"
         return result
 
     result["reason"] = "wallet_unresolved_or_invalid"
@@ -5810,6 +5835,93 @@ def authorize_settlement_release(order_id):
         "foundation_decision": foundation_decision_result,
     }
 
+
+
+def resolve_settlement_candidate(order, execution_result):
+    """
+    Resolve the economic beneficiary after Foundation-authorized delivery.
+
+    Compatibility order:
+    1. legacy best_result;
+    2. legacy runtime results;
+    3. commercial provider persisted on the order.
+
+    Internal Foundation runtime agents may execute the service, but they are
+    never treated as the economic beneficiary unless explicitly registered as
+    the commercial provider of the order.
+    """
+    order = order or {}
+    execution_result = execution_result or {}
+
+    from iat.api.multi_exec import select_best_result
+
+    runtime_results = (
+        execution_result.get("multi_runtime", {}).get("results", [])
+        or execution_result.get("results", [])
+        or []
+    )
+
+    best_runtime = execution_result.get("best_result")
+
+    if not best_runtime and runtime_results:
+        best_runtime = select_best_result(runtime_results)
+
+    if best_runtime:
+        return {
+            "status": "resolved",
+            "source": "legacy_runtime_result",
+            "best": best_runtime,
+            "agents": runtime_results,
+        }
+
+    commercial_provider_id = (
+        order.get("seller_id")
+        or order.get("selected_agent_id")
+        or order.get("locked_agent_id")
+    )
+
+    if not commercial_provider_id:
+        return {
+            "status": "unresolved",
+            "reason": "commercial_provider_id_missing",
+            "best": None,
+            "agents": [],
+        }
+
+    registered_provider = get_agent_db(commercial_provider_id) or {}
+
+    provider_wallet = (
+        order.get("actual_agent_wallet")
+        or registered_provider.get("wallet")
+    )
+
+    candidate = {
+        "agent_id": commercial_provider_id,
+        "seller_id": registered_provider.get("seller_id"),
+        "seller_agent_id": registered_provider.get("seller_agent_id"),
+        "wallet": provider_wallet,
+        "service": order.get("service"),
+        "price": float(order.get("price", 0) or 0),
+        "agent_type": registered_provider.get("agent_type"),
+        "source": "order_commercial_provider",
+        "foundation_selected": True,
+    }
+
+    supplier_execution = execution_result.get("supplier_execution") or {}
+    internal_runtime = supplier_execution.get("selected_seller_agent") or {}
+
+    candidate["internal_execution_agent_id"] = (
+        internal_runtime.get("agent_id")
+        or internal_runtime.get("seller_agent_id")
+    )
+    candidate["internal_execution_seller_id"] = internal_runtime.get("seller_id")
+
+    return {
+        "status": "resolved",
+        "source": "order_commercial_provider",
+        "best": candidate,
+        "agents": [candidate],
+    }
 
 
 def payout_winner_if_escrow(order, best, agents):

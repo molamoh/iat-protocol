@@ -1111,6 +1111,63 @@ def foundation_serper_search(query, limit=5):
 
 
 
+def foundation_tavily_search(query, limit=5):
+    api_key = os.getenv("TAVILY_API_KEY")
+
+    if not query or not api_key:
+        return []
+
+    try:
+        response = requests.post(
+            "https://api.tavily.com/search",
+            json={
+                "api_key": api_key,
+                "query": query,
+                "search_depth": "basic",
+                "max_results": max(1, min(int(limit or 5), 10)),
+                "include_answer": False,
+                "include_raw_content": False,
+                "include_images": False,
+            },
+            timeout=20,
+        )
+
+        if response.status_code != 200:
+            return []
+
+        results = []
+
+        for position, item in enumerate(
+            response.json().get("results", [])[:limit],
+            start=1,
+        ):
+            if not isinstance(item, dict):
+                continue
+
+            link = item.get("url")
+            title = item.get("title")
+            snippet = item.get("content")
+
+            if not link or not title:
+                continue
+
+            results.append({
+                "source": "tavily",
+                "title": title,
+                "snippet": snippet,
+                "link": link,
+                "display_link": link,
+                "date": item.get("published_date"),
+                "position": position,
+                "score": item.get("score"),
+            })
+
+        return results
+
+    except Exception:
+        return []
+
+
 def foundation_google_search(query, limit=5):
     api_key = os.getenv("GOOGLE_API_KEY")
     cse_id = os.getenv("GOOGLE_CSE_ID")
@@ -1190,6 +1247,10 @@ def foundation_duckduckgo_search(query, limit=5):
 def foundation_web_evidence_search(query, limit=5):
     results = foundation_serper_search(query, limit=limit)
     provider = "serper_google" if results else None
+
+    if not results:
+        results = foundation_tavily_search(query, limit=limit)
+        provider = "tavily" if results else None
 
     if not results:
         results = foundation_google_search(query, limit=limit)
@@ -1860,34 +1921,56 @@ def foundation_web_research_engine(agent, order, profile):
     query = order.get("query") or ""
 
     if phase == "verification":
+        verification_result = foundation_verification_engine(
+            agent,
+            order,
+            profile,
+        )
+
+        if isinstance(verification_result, dict):
+            verification_result.setdefault("structured_signals", {})
+            verification_result["structured_signals"].update({
+                "engine": profile.get("engine"),
+                "role": profile.get("role"),
+                "specialty": profile.get("specialty"),
+                "phase": phase,
+                "provider": "local_foundation_verification",
+            })
+
+            verification_result.setdefault("raw", {})
+            verification_result["raw"].update({
+                "query": query,
+                "execution_layer": "foundation_internal",
+                "engine": profile.get("engine"),
+                "phase": phase,
+                "provider": "local_foundation_verification",
+            })
+
+            return verification_result
+
         return {
-            "delivery_type": "foundation_verification_fallback",
-            "summary": "Foundation verification Groq execution unavailable; fallback verification result returned.",
+            "delivery_type": "foundation_verification_unavailable",
+            "summary": "Foundation verification produced no usable result.",
             "verified_claims": [],
             "rejected_claims": [],
             "uncertain_claims": [],
             "source_quality": "unknown",
             "confidence_adjustment": -0.25,
-            "final_confidence": 0.35,
+            "final_confidence": 0.0,
             "recommendations": [],
-            "final_recommendation": "Manual or stronger foundation verification required before high-confidence buyer delivery.",
-            "confidence": 0.35,
+            "final_recommendation": "Foundation review required.",
+            "confidence": 0.0,
             "sources": [],
-            "claims": [
-                {
-                    "claim": "Verification Groq execution did not return a usable result.",
-                    "confidence": 1.0
-                }
-            ],
+            "claims": [],
             "metrics": {
-                "foundation_verification_fallback": True
+                "foundation_verification_unavailable": True
             },
             "structured_signals": {
                 "engine": profile.get("engine"),
                 "role": profile.get("role"),
                 "specialty": profile.get("specialty"),
                 "phase": phase,
-                "provider": "fallback"
+                "provider": "none"
             },
             "entities": [],
             "raw": {
@@ -1895,7 +1978,7 @@ def foundation_web_research_engine(agent, order, profile):
                 "execution_layer": "foundation_internal",
                 "engine": profile.get("engine"),
                 "phase": phase,
-                "provider": "fallback"
+                "provider": "none"
             },
         }
 

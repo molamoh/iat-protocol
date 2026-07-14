@@ -512,6 +512,74 @@ def run_foundation_supplier_pipeline(order):
         or run_foundation_decision_db(order.get("order_id"))
     )
 
+    decision_payload = (
+        foundation_decision.get("foundation_decision", {})
+        if isinstance(foundation_decision, dict)
+        else {}
+    )
+
+    evidence_evaluation = (
+        decision_payload.get("foundation_evidence_evaluation", {})
+        if isinstance(decision_payload, dict)
+        else {}
+    )
+
+    foundation_verdict = str(
+        decision_payload.get("foundation_verdict") or ""
+    ).strip().lower()
+
+    foundation_decision_ready = (
+        isinstance(evidence_evaluation, dict)
+        and evidence_evaluation.get("foundation_decision_ready") is True
+    )
+
+    approved_verdicts = {
+        "approve",
+        "approved",
+        "foundation_verified",
+        "foundation_verified_with_evidence",
+        "foundation_verified_partial_evidence",
+    }
+
+    blocked_verdicts = {
+        "blocked",
+        "rejected",
+        "foundation_rejected",
+    }
+
+    delivery_authorized = (
+        foundation_decision_ready
+        and foundation_verdict in approved_verdicts
+    )
+
+    if foundation_verdict in blocked_verdicts:
+        return {
+            "status": "foundation_delivery_blocked",
+            "execution_mode": "foundation_supplier_pipeline",
+            "reason": "foundation_verdict_blocks_delivery",
+            "foundation_verdict": foundation_verdict,
+            "foundation_decision_ready": foundation_decision_ready,
+            "buyer_delivery_authority": "foundation_only",
+            "supplier_execution": supplier_execution,
+            "supplier_verification": verification,
+            "foundation_decision": foundation_decision,
+            "delivery_authorized": False,
+        }
+
+    if not delivery_authorized:
+        return {
+            "status": "foundation_review_required",
+            "execution_mode": "foundation_supplier_pipeline",
+            "reason": "foundation_decision_not_ready_for_delivery",
+            "foundation_verdict": foundation_verdict,
+            "foundation_decision_ready": foundation_decision_ready,
+            "buyer_delivery_authority": "foundation_only",
+            "supplier_execution": supplier_execution,
+            "supplier_verification": verification,
+            "foundation_decision": foundation_decision,
+            "delivery_authorized": False,
+        }
+
     try:
         foundation_report = build_foundation_buyer_report(
             foundation_decision,
@@ -542,6 +610,10 @@ def run_foundation_supplier_pipeline(order):
         "buyer_delivery_authority": "foundation_only",
         "seller_role": "internal_supplier_only",
         "seller_direct_buyer_contact": False,
+        "delivery_authorized": True,
+        "delivery_authorization_reason": "foundation_decision_ready_and_verdict_approved",
+        "foundation_verdict": foundation_verdict,
+        "foundation_decision_ready": foundation_decision_ready,
         "supplier_execution": supplier_execution,
         "supplier_verification": verification,
         "foundation_decision": foundation_decision,

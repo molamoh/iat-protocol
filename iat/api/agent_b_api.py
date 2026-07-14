@@ -4308,6 +4308,35 @@ def verify_payment(req: VerifyPaymentRequest, x_api_key: str | None = Header(def
             req.tx_signature,
         )
 
+        result_status = (
+            str(result.get("status") or "").lower()
+            if isinstance(result, dict)
+            else ""
+        )
+
+        if result_status in {
+            "foundation_review_required",
+            "foundation_delivery_blocked",
+        }:
+            update_order_db(
+                req.order_id,
+                {
+                    "status": result_status,
+                    "tx_signature": req.tx_signature,
+                    "delivery_result": json.dumps(result),
+                },
+            )
+
+            return {
+                "status": result_status,
+                "service": order["service"],
+                "seller_id": order.get("seller_id"),
+                "seller_source": order.get("seller_source"),
+                "data": result,
+                "payment_verified": True,
+                "delivery_recorded": False,
+            }
+
         delivery_failed = isinstance(result, dict) and result.get("error") is not None
 
         if delivery_failed:
@@ -4469,9 +4498,213 @@ def make_buyer_payment_response(result):
             "message": "Payment was verified, but delivery failed. The order should be retried or escalated.",
         }
 
+    if status == "foundation_review_required":
+        return {
+            "status": "foundation_review_required",
+            "payment_verified": True,
+            "delivered": False,
+            "message": "Payment was verified. Delivery is waiting for an authoritative Foundation decision.",
+            "foundation": result.get("data") or {},
+        }
+
+    if status == "foundation_delivery_blocked":
+        return {
+            "status": "foundation_delivery_blocked",
+            "payment_verified": True,
+            "delivered": False,
+            "message": "Payment was verified, but the Foundation blocked delivery.",
+            "foundation": result.get("data") or {},
+        }
+
     return {
         "status": status or "unknown",
         "message": "Payment verification completed with a non-standard status.",
+    }
+
+
+
+@app.post("/internal/foundation/finalize-order/{order_id}")
+def internal_foundation_finalize_order(
+    order_id: str,
+    x_api_key: str | None = Header(default=None),
+):
+    """
+    Resume a paid order waiting for an authoritative Foundation decision.
+
+    This route never revalidates or reuses the buyer payment.
+    It resumes protocol execution from the persisted paid/review state and
+    records buyer delivery only after the Foundation Decision Gate authorizes it.
+    """
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    order = get_order_db(order_id)
+
+    if not order:
+        return {
+            "status": "invalid_order",
+            "order_id": order_id,
+        }
+
+    current_status = str(order.get("status") or "").lower()
+
+    if order.get("used") or current_status == "delivered":
+        return {
+            "status": "already_delivered",
+            "order_id": order_id,
+            "tx_signature": order.get("tx_signature"),
+        }
+
+    if current_status not in {
+        "foundation_review_required",
+        "foundation_delivery_blocked",
+    }:
+        return {
+            "status": "finalization_not_allowed",
+            "reason": "order_not_waiting_for_foundation_finalization",
+            "order_id": order_id,
+            "order_status": current_status,
+        }
+
+    tx_signature = order.get("tx_signature")
+
+    if not tx_signature:
+        return {
+            "status": "finalization_blocked",
+            "reason": "verified_payment_signature_missing",
+            "order_id": order_id,
+        }
+
+    from iat.action_engine.protocol_runtime import execute_protocol_order
+
+    result = execute_protocol_order(
+        order,
+        tx_signature,
+    )
+
+    result_status = (
+        str(result.get("status") or "").lower()
+        if isinstance(result, dict)
+        else ""
+    )
+
+    if result_status in {
+        "foundation_review_required",
+        "foundation_delivery_blocked",
+    }:
+        update_order_db(
+            order_id,
+            {
+                "status": result_status,
+                "delivery_result": json.dumps(result),
+            },
+        )
+
+        return {
+            "status": result_status,
+            "order_id": order_id,
+            "payment_verified": True,
+            "delivered": False,
+            "tx_signature": tx_signature,
+            "result": result,
+        }
+
+    authorized_statuses = {
+        "foundation_supplier_pipeline_completed",
+        "consensus_delivered",
+        "pipeline_completed",
+    }
+
+    if result_status not in authorized_statuses:
+        update_order_db(
+            order_id,
+            {
+                "status": "foundation_review_required",
+                "delivery_result": json.dumps(result or {}),
+            },
+        )
+
+        return {
+            "status": "foundation_review_required",
+            "reason": "foundation_execution_returned_non_authorized_status",
+            "order_id": order_id,
+            "payment_verified": True,
+            "delivered": False,
+            "execution_status": result_status or "unknown",
+            "result": result,
+        }
+
+    if not isinstance(result, dict) or result.get("delivery_authorized") is not True:
+        update_order_db(
+            order_id,
+            {
+                "status": "foundation_review_required",
+                "delivery_result": json.dumps(result or {}),
+            },
+        )
+
+        return {
+            "status": "foundation_review_required",
+            "reason": "foundation_delivery_authorization_missing",
+            "order_id": order_id,
+            "payment_verified": True,
+            "delivered": False,
+            "result": result,
+        }
+
+    if not is_tx_processed_db(tx_signature):
+        save_processed_tx_db(tx_signature)
+
+    update_order_delivered_db(
+        order_id,
+        tx_signature,
+        result,
+    )
+
+    settlement_result = None
+
+    try:
+        from iat.api.multi_exec import select_best_result
+
+        runtime_results = (
+            result.get("multi_runtime", {}).get("results", [])
+            or result.get("results", [])
+            or []
+        )
+
+        best_runtime = result.get("best_result")
+
+        if not best_runtime and runtime_results:
+            best_runtime = select_best_result(runtime_results)
+
+        if best_runtime:
+            settlement_result = payout_winner_if_escrow(
+                order,
+                best_runtime,
+                runtime_results,
+            )
+
+    except Exception as settlement_error:
+        settlement_result = {
+            "status": "error",
+            "reason": "automatic_settlement_after_foundation_finalization_failed",
+            "error": str(settlement_error),
+        }
+
+    refreshed_order = get_order_db(order_id)
+
+    return {
+        "status": "delivered",
+        "order_id": order_id,
+        "payment_verified": True,
+        "delivered": True,
+        "tx_signature": tx_signature,
+        "foundation_result": result,
+        "settlement": settlement_result,
+        "order": refreshed_order,
     }
 
 

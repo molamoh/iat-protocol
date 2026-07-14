@@ -448,8 +448,44 @@ def COALESCE_BUYER_ACCESS_SAFE(agent):
     )
 
 
+def is_buyer_marketplace_provider(agent):
+    """
+    Buyer marketplace eligibility gate.
+
+    Internal Foundation research and verification agents are protocol assets.
+    They may execute, verify and govern internally, but they must never be
+    exposed as commercial Buyer offers or selected as payable suppliers.
+    """
+    if not isinstance(agent, dict):
+        return False
+
+    if not bool(agent.get("available", True)):
+        return False
+
+    wallet = str(agent.get("wallet") or "").strip()
+
+    try:
+        price = float(agent.get("price", 0) or 0)
+    except Exception:
+        return False
+
+    # Protocol-reserved internal Foundation agents use the logical core wallet
+    # and/or a zero internal execution price. They are never Buyer offers.
+    if wallet.upper() == "IAT_PROTOCOL_CORE":
+        return False
+
+    if price <= 0:
+        return False
+
+    return True
+
+
 def select_best_seller(service_name, order=None):
-    dynamic_agents = get_agents_for_service_db(service_name)
+    dynamic_agents = [
+        agent
+        for agent in get_agents_for_service_db(service_name)
+        if is_buyer_marketplace_provider(agent)
+    ]
 
     locked_agent_id = None
     if order:
@@ -3543,6 +3579,15 @@ def buyer_preview(req: BuyerPreviewRequest):
         if bool(a.get("available", True))
     ]
 
+    # Internal Foundation research / verification agents are protocol assets.
+    # They participate in execution and governance only.
+    # They must never become Buyer marketplace offers.
+    available_agents = [
+        agent
+        for agent in available_agents
+        if is_buyer_marketplace_provider(agent)
+    ]
+
     from iat.api.multi_exec import (
         infer_required_capabilities,
         compute_capability_match_score,
@@ -4088,6 +4133,18 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
     if seller is None:
         return {
             "status": "unknown_service",
+        }
+
+    try:
+        selected_price = float(seller.get("price", 0) or 0)
+    except Exception:
+        selected_price = 0.0
+
+    if selected_price <= 0:
+        return {
+            "status": "rejected",
+            "reason": "buyer_marketplace_price_must_be_positive",
+            "seller_id": seller.get("seller_id"),
         }
 
     order_id = str(uuid.uuid4())

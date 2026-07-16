@@ -5140,12 +5140,17 @@ def is_valid_solana_wallet(wallet):
 
 def resolve_payment_wallet(raw_wallet, agent=None):
     """
-    Resolve a logical protocol wallet/id into a real payment wallet.
+    Resolve protocol logical wallets into real Solana payment wallets.
 
-    v1 rule:
-    - real Solana pubkeys are accepted directly
-    - logical identifiers like IAT_PROTOCOL_CORE are rejected unless explicitly
-      mapped through environment configuration
+    Resolution order:
+    1. direct Solana wallet;
+    2. explicit payment fields from the supplied agent;
+    3. payment fields from the registered agent profile;
+    4. seller_metadata payment fields;
+    5. generic environment mapping derived from the logical wallet name.
+
+    No logical identifier is accepted without resolving to a valid Solana
+    public key.
     """
     raw_wallet = str(raw_wallet or "").strip()
 
@@ -5168,37 +5173,121 @@ def resolve_payment_wallet(raw_wallet, agent=None):
         result["reason"] = "wallet_valid"
         return result
 
-    logical_wallet_env_map = {
-        "IAT_PROTOCOL_CORE": "IAT_PROTOCOL_CORE_PAYMENT_WALLET",
-        "FOUNDATION_RISK_PREMIUM_WALLET": "IAT_FOUNDATION_RISK_PREMIUM_PAYMENT_WALLET",
-        "FOUNDATION_WEB_STANDARD_WALLET": "IAT_FOUNDATION_WEB_STANDARD_PAYMENT_WALLET",
-        "FOUNDATION_WEB_CHEAP_WALLET": "IAT_FOUNDATION_WEB_CHEAP_PAYMENT_WALLET",
-        "FOUNDATION_WEB_PREMIUM_WALLET": "IAT_FOUNDATION_WEB_PREMIUM_PAYMENT_WALLET",
-        "FOUNDATION_WEB_RESEARCH_WALLET": "IAT_FOUNDATION_WEB_RESEARCH_PAYMENT_WALLET",
-    }
+    def accept_candidate(candidate, resolution_type, source=None):
+        candidate = str(candidate or "").strip()
 
-    mapped_env_name = logical_wallet_env_map.get(raw_wallet)
-    mapped_wallet = os.getenv(mapped_env_name) if mapped_env_name else None
+        if not candidate or not is_valid_solana_wallet(candidate):
+            return None
 
-    if mapped_wallet and is_valid_solana_wallet(mapped_wallet):
-        result["resolved_wallet"] = mapped_wallet
-        result["valid"] = True
-        result["resolution_type"] = "logical_wallet_env_mapping"
-        result["mapping_env"] = mapped_env_name
-        result["reason"] = "logical_wallet_resolved"
-        return result
+        resolved = dict(result)
+        resolved["resolved_wallet"] = candidate
+        resolved["valid"] = True
+        resolved["resolution_type"] = resolution_type
+        resolved["reason"] = "logical_wallet_resolved"
 
-    if mapped_env_name and not mapped_wallet:
-        result["mapping_env"] = mapped_env_name
-        result["reason"] = "logical_wallet_mapping_not_configured"
-        return result
+        if source:
+            resolved["resolution_source"] = source
 
-    if mapped_env_name and mapped_wallet:
-        result["mapping_env"] = mapped_env_name
+        return resolved
+
+    agent_profile = agent if isinstance(agent, dict) else {}
+
+    agent_id = (
+        agent_profile.get("agent_id")
+        or agent_profile.get("seller_agent_id")
+    )
+
+    registered_agent = {}
+
+    if agent_id:
+        try:
+            registered_agent = get_agent_db(agent_id) or {}
+        except Exception:
+            registered_agent = {}
+
+    profiles = [
+        ("supplied_agent", agent_profile),
+        ("registered_agent", registered_agent),
+    ]
+
+    payment_fields = [
+        "payment_wallet",
+        "payout_wallet",
+        "resolved_wallet",
+        "actual_agent_wallet",
+        "seller_payment_wallet",
+        "protocol_payment_wallet",
+    ]
+
+    for profile_source, profile in profiles:
+        if not isinstance(profile, dict):
+            continue
+
+        for field in payment_fields:
+            resolved = accept_candidate(
+                profile.get(field),
+                "agent_profile_payment_wallet",
+                f"{profile_source}.{field}",
+            )
+
+            if resolved:
+                return resolved
+
+        metadata = profile.get("seller_metadata")
+
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except Exception:
+                metadata = {}
+
+        if isinstance(metadata, dict):
+            for field in payment_fields:
+                resolved = accept_candidate(
+                    metadata.get(field),
+                    "seller_metadata_payment_wallet",
+                    f"{profile_source}.seller_metadata.{field}",
+                )
+
+                if resolved:
+                    return resolved
+
+    normalized_logical_wallet = "".join(
+        character if character.isalnum() else "_"
+        for character in raw_wallet.upper()
+    ).strip("_")
+
+    while "__" in normalized_logical_wallet:
+        normalized_logical_wallet = normalized_logical_wallet.replace("__", "_")
+
+    if normalized_logical_wallet.endswith("_WALLET"):
+        normalized_logical_wallet = normalized_logical_wallet[:-7]
+
+    env_wallet_name = normalized_logical_wallet
+
+    if env_wallet_name.startswith("IAT_"):
+        mapped_env_name = f"{env_wallet_name}_PAYMENT_WALLET"
+    else:
+        mapped_env_name = f"IAT_{env_wallet_name}_PAYMENT_WALLET"
+    mapped_wallet = os.getenv(mapped_env_name)
+
+    result["mapping_env"] = mapped_env_name
+
+    resolved = accept_candidate(
+        mapped_wallet,
+        "logical_wallet_env_mapping",
+        mapped_env_name,
+    )
+
+    if resolved:
+        resolved["mapping_env"] = mapped_env_name
+        return resolved
+
+    if mapped_wallet:
         result["reason"] = "logical_wallet_mapping_invalid"
-        return result
+    else:
+        result["reason"] = "logical_wallet_mapping_not_configured"
 
-    result["reason"] = "wallet_unresolved_or_invalid"
     return result
 
 
@@ -6866,6 +6955,138 @@ def admin_inspect_settlement_execution_supervisor(settlement_id: str, x_api_key:
 
     return inspect_settlement_execution_supervisor_db(settlement_id)
 
+
+
+@app.post("/admin/settlements/{settlement_id}/recover-wallets")
+def admin_recover_settlement_wallets(
+    settlement_id: str,
+    request: Request = None,
+):
+    """
+    Recover an existing settlement after corrected wallet configuration.
+
+    No settlement is deleted or duplicated. Foundation authorization is
+    recomputed before the existing financial record may return to the
+    controlled settlement workflow.
+    """
+    expected_key = os.getenv("IAT_ADMIN_API_KEY")
+    provided_key = request.headers.get("x-api-key") if request else None
+
+    if not expected_key or provided_key != expected_key:
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    from iat.api.db import (
+        get_settlement_by_id_db,
+        recover_settlement_wallet_configuration_db,
+    )
+
+    settlement = get_settlement_by_id_db(settlement_id)
+
+    if not settlement:
+        return {
+            "status": "not_found",
+            "settlement_id": settlement_id,
+        }
+
+    order_id = settlement.get("order_id")
+    order = get_order_db(order_id)
+
+    if not order:
+        return {
+            "status": "recovery_blocked",
+            "reason": "settlement_order_not_found",
+            "settlement_id": settlement_id,
+            "order_id": order_id,
+        }
+
+    delivery_result = order.get("delivery_result") or {}
+
+    if isinstance(delivery_result, str):
+        try:
+            delivery_result = json.loads(delivery_result)
+        except Exception:
+            delivery_result = {}
+
+    settlement_candidate = resolve_settlement_candidate(
+        order,
+        delivery_result if isinstance(delivery_result, dict) else {},
+    )
+
+    if settlement_candidate.get("status") != "resolved":
+        return {
+            "status": "recovery_blocked",
+            "reason": settlement_candidate.get(
+                "reason",
+                "settlement_candidate_unresolved",
+            ),
+            "candidate_resolution": settlement_candidate,
+        }
+
+    best = settlement_candidate.get("best") or {}
+
+    wallet_resolution = resolve_payment_wallet(
+        best.get("wallet"),
+        agent=best,
+    )
+
+    if wallet_resolution.get("valid") is not True:
+        return {
+            "status": "recovery_blocked",
+            "reason": wallet_resolution.get(
+                "reason",
+                "winner_wallet_resolution_failed",
+            ),
+            "wallet_resolution": wallet_resolution,
+        }
+
+    treasury_wallet = os.getenv("IAT_PROTOCOL_TREASURY_WALLET")
+
+    if not is_valid_solana_wallet(treasury_wallet):
+        return {
+            "status": "recovery_blocked",
+            "reason": "protocol_treasury_wallet_invalid_or_missing",
+        }
+
+    authorization = authorize_settlement_release(order_id)
+
+    if authorization.get("release_authorized") is not True:
+        return {
+            "status": "recovery_blocked",
+            "reason": authorization.get(
+                "authorization_reason",
+                "foundation_release_authorization_failed",
+            ),
+            "settlement_authorization": authorization,
+        }
+
+    recovery = recover_settlement_wallet_configuration_db(
+        settlement_id=settlement_id,
+        winner_id=best.get("agent_id"),
+        winner_wallet=wallet_resolution.get("resolved_wallet"),
+        treasury_wallet=treasury_wallet,
+        recovery_metadata={
+            "recovery_source": "admin_recover_settlement_wallets",
+            "candidate_source": settlement_candidate.get("source"),
+            "wallet_resolution": wallet_resolution,
+            "settlement_authorization": authorization,
+        },
+    )
+
+    return {
+        "status": recovery.get("status"),
+        "settlement_id": settlement_id,
+        "order_id": order_id,
+        "candidate_resolution": {
+            "status": settlement_candidate.get("status"),
+            "source": settlement_candidate.get("source"),
+        },
+        "wallet_resolution": wallet_resolution,
+        "settlement_authorization": authorization,
+        "recovery": recovery,
+    }
 
 
 @app.post("/admin/settlements/{settlement_id}/advance-workflow")

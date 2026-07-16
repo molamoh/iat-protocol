@@ -10042,11 +10042,173 @@ SETTLEMENT_ALLOWED_TRANSITIONS = {
         "foundation_review",
         "authorized",
     ],
+
+    # Recoverable configuration failures.
+    # Recovery remains Foundation-authorized and fully audited.
+    "blocked_invalid_winner_wallet": [
+        "foundation_review",
+        "authorized",
+        "blocked",
+    ],
+    "blocked_no_winner_wallet": [
+        "foundation_review",
+        "authorized",
+        "blocked",
+    ],
+    "blocked_invalid_treasury_wallet": [
+        "foundation_review",
+        "authorized",
+        "blocked",
+    ],
+
     "direct_payment_mode_no_escrow_release": [
         "blocked",
     ],
     "settled": [],
 }
+
+
+def recover_settlement_wallet_configuration_db(
+    settlement_id,
+    winner_id,
+    winner_wallet,
+    treasury_wallet,
+    recovery_metadata=None,
+):
+    """
+    Recover an existing settlement after a wallet configuration failure.
+
+    The settlement ID and financial history are preserved. This function
+    updates only the corrected beneficiary configuration, appends an audit
+    event, then performs a controlled transition to `authorized`.
+    """
+    if not settlement_id:
+        return {
+            "status": "error",
+            "reason": "settlement_id_required",
+        }
+
+    if not winner_wallet or not treasury_wallet:
+        return {
+            "status": "error",
+            "reason": "resolved_wallets_required",
+        }
+
+    settlement = get_settlement_by_id_db(settlement_id)
+
+    if not settlement:
+        return {
+            "status": "not_found",
+            "settlement_id": settlement_id,
+        }
+
+    current_status = str(
+        settlement.get("settlement_status") or "created"
+    )
+
+    recoverable_statuses = {
+        "blocked_invalid_winner_wallet",
+        "blocked_no_winner_wallet",
+        "blocked_invalid_treasury_wallet",
+    }
+
+    if current_status not in recoverable_statuses:
+        return {
+            "status": "recovery_rejected",
+            "reason": "settlement_status_not_recoverable",
+            "settlement_id": settlement_id,
+            "current_status": current_status,
+            "recoverable_statuses": sorted(recoverable_statuses),
+        }
+
+    payload = settlement.get("settlement_payload") or {}
+
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            payload = {}
+
+    if not isinstance(payload, dict):
+        payload = {}
+
+    now = int(time.time())
+
+    recovery_events = payload.get("recovery_events") or []
+
+    if not isinstance(recovery_events, list):
+        recovery_events = []
+
+    recovery_event = {
+        "recovery_type": "wallet_configuration_recovery",
+        "previous_status": current_status,
+        "previous_winner_id": settlement.get("winner_id"),
+        "previous_winner_wallet": settlement.get("winner_wallet"),
+        "previous_treasury_wallet": settlement.get("treasury_wallet"),
+        "resolved_winner_id": winner_id,
+        "resolved_winner_wallet": winner_wallet,
+        "resolved_treasury_wallet": treasury_wallet,
+        "recovery_metadata": recovery_metadata or {},
+        "recovered_at": now,
+    }
+
+    recovery_events.append(recovery_event)
+    payload["recovery_events"] = recovery_events
+    payload["latest_recovery"] = recovery_event
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+
+    cur.execute(f"""
+    UPDATE settlements
+    SET winner_id = {p},
+        winner_wallet = {p},
+        treasury_wallet = {p},
+        winner_payment_status = {p},
+        settlement_payload = {p},
+        updated_at = {p}
+    WHERE settlement_id = {p}
+    """, (
+        winner_id,
+        winner_wallet,
+        treasury_wallet,
+        "wallet_configuration_recovered",
+        json.dumps(payload),
+        now,
+        settlement_id,
+    ))
+
+    conn.commit()
+    release_conn(conn)
+
+    transition = update_settlement_status_db(
+        settlement_id=settlement_id,
+        next_status="authorized",
+        reason="foundation_authorized_wallet_configuration_recovery",
+        transition_metadata={
+            "recovery_engine": "settlement_wallet_recovery_v1",
+            "previous_status": current_status,
+            "winner_wallet": winner_wallet,
+            "treasury_wallet": treasury_wallet,
+        },
+    )
+
+    return {
+        "status": (
+            "settlement_recovered"
+            if transition.get("status") == "settlement_status_updated"
+            else "recovery_transition_failed"
+        ),
+        "settlement_id": settlement_id,
+        "previous_status": current_status,
+        "next_status": "authorized",
+        "winner_id": winner_id,
+        "winner_wallet": winner_wallet,
+        "treasury_wallet": treasury_wallet,
+        "recovery_event": recovery_event,
+        "transition": transition,
+    }
 
 
 def validate_settlement_transition(current_status, next_status):

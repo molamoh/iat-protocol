@@ -5754,19 +5754,50 @@ def authorize_release_from_risk(
     if risk_score > 45:
         block_reasons.append("release_risk_score_high")
 
-    release_authorized = (
+    automatic_release_authorized = (
         len(block_reasons) == 0
         and policy_mode == "automatic"
     )
 
-    if release_authorized:
+    cautious_release_authorized = (
+        policy_mode == "requires_caution"
+        and verdict == "foundation_verified_with_evidence"
+        and rejected_count == 0
+        and verified_count >= 5
+        and risk_score <= 20
+        and financial_release_confidence >= minimum_release_confidence
+        and not any(
+            reason in block_reasons
+            for reason in [
+                "foundation_verdict_not_releasable",
+                "financial_release_confidence_below_policy_threshold",
+                "no_verified_claims",
+                "rejected_claims_present",
+                "release_risk_score_high",
+            ]
+        )
+    )
+
+    release_authorized = (
+        automatic_release_authorized
+        or cautious_release_authorized
+    )
+
+    if automatic_release_authorized:
         authorization_reason = "release_policy_automatic_authorized"
         authorization_mode = "authorized"
-    elif policy_mode == "requires_caution" and rejected_count == 0 and verified_count > 0:
+
+    elif cautious_release_authorized:
+        authorization_reason = "foundation_low_risk_release_authorized_with_caution"
+        authorization_mode = "authorized_with_caution"
+
+    elif policy_mode == "requires_caution":
         authorization_reason = "release_policy_requires_caution"
         authorization_mode = "requires_caution"
+
         if "release_policy_requires_caution" not in block_reasons:
             block_reasons.append("release_policy_requires_caution")
+
     elif policy_mode == "manual_review":
         authorization_reason = "release_policy_manual_review_required"
         authorization_mode = "manual_review"

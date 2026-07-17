@@ -22,8 +22,8 @@ ACTION_REGISTRY: Dict[str, Dict[str, Any]] = {
     "settlement_release": {
         "action_type": "settlement_release",
         "description": "Release a financial settlement through the protocol action layer.",
-        "default_adapter": "dry_run",
-        "allowed_adapters": ["dry_run"],
+        "default_adapter": "settlement_atomic",
+        "allowed_adapters": ["settlement_atomic", "dry_run"],
         "required_payload_fields": [
             "settlement_id",
             "order_id",
@@ -39,7 +39,7 @@ ACTION_REGISTRY: Dict[str, Dict[str, Any]] = {
         ],
         "fallback_adapter": "dry_run",
         "status": "active",
-        "version": "1.0.0",
+        "version": "1.1.0",
     }
 }
 

@@ -5400,18 +5400,30 @@ def execute_escrow_split_release(
     seller_payout_amount,
     order_id,
 ):
-    onchain_enabled = str(
-        os.getenv("IAT_ENABLE_ONCHAIN_SETTLEMENT", "false")
-    ).lower() == "true"
+    """
+    Compatibility wrapper for the unified IAT Action Engine.
+
+    This function preserves the historical API contract while delegating
+    every real financial release to the atomic settlement adapter.
+    """
+    from iat.action_engine.executor import execute_action
+
+    onchain_enabled = (
+        str(os.getenv("IAT_ENABLE_ONCHAIN_SETTLEMENT", "false")).lower()
+        == "true"
+    )
 
     result = {
-        "settlement_execution_type": "escrow_split_release",
+        "settlement_execution_type": "action_engine_atomic_release",
+        "execution_engine": "iat_action_engine_v1",
+        "execution_mode": "onchain_atomic",
         "onchain_settlement_enabled": onchain_enabled,
         "order_id": order_id,
         "treasury_wallet": treasury_wallet,
         "winner_wallet": winner_wallet,
         "commission_amount_iat": float(commission_amount or 0),
         "seller_payout_amount_iat": float(seller_payout_amount or 0),
+        "atomic_tx_signature": None,
         "commission_tx_signature": None,
         "seller_payout_tx_signature": None,
     }
@@ -5436,60 +5448,85 @@ def execute_escrow_split_release(
         result["reason"] = "winner_wallet_missing"
         return result
 
-    try:
-        if float(commission_amount or 0) > 0:
-            commission_result = safe_send_iat(
-                escrow_key,
-                treasury_wallet,
-                float(commission_amount),
-                memo_text=f"COMMISSION:{order_id}",
-                sender_wallet=os.getenv("IAT_ESCROW_WALLET"),
-            )
+    action_result = execute_action(
+        action_type="settlement_release",
+        action_scope="financial_settlement",
+        payload={
+            "settlement_id": f"legacy_verify_payment:{order_id}",
+            "order_id": order_id,
+            "gross_amount_iat": round(
+                float(commission_amount or 0)
+                + float(seller_payout_amount or 0),
+                8,
+            ),
+            "protocol_commission_amount_iat": float(
+                commission_amount or 0
+            ),
+            "seller_payout_amount_iat": float(
+                seller_payout_amount or 0
+            ),
+            "winner_wallet": winner_wallet,
+            "treasury_wallet": treasury_wallet,
+            "onchain_settlement_enabled": True,
+        },
+        metadata={
+            "adapter": "settlement_atomic",
+            "execution_mode": "onchain_atomic",
+            "called_by": "legacy_verify_payment_wrapper_v1",
+            "resource_type": "order",
+            "resource_id": order_id,
+        },
+    )
 
-            result["commission_transfer"] = commission_result
-            result["commission_tx_signature"] = commission_result.get("tx_signature")
+    execution_result = action_result.get("result") or {}
 
-        if float(seller_payout_amount or 0) > 0:
-            seller_result = safe_send_iat(
-                escrow_key,
-                winner_wallet,
-                float(seller_payout_amount),
-                memo_text=f"PAYOUT:{order_id}",
-                sender_wallet=os.getenv("IAT_ESCROW_WALLET"),
-            )
+    atomic_signature = execution_result.get("atomic_tx_signature")
+    commission_signature = execution_result.get(
+        "commission_tx_signature"
+    )
+    payout_signature = execution_result.get(
+        "seller_payout_tx_signature"
+    )
 
-            result["seller_transfer"] = seller_result
-            result["seller_payout_tx_signature"] = seller_result.get("tx_signature")
+    result.update(
+        {
+            "action_engine_status": action_result.get("status"),
+            "action_engine_reason": action_result.get("reason"),
+            "action_engine_error": action_result.get("error"),
+            "action_result": action_result,
+            "atomic_tx_signature": atomic_signature,
+            "commission_tx_signature": commission_signature,
+            "seller_payout_tx_signature": payout_signature,
+        }
+    )
 
-        commission_ok = (
-            float(commission_amount or 0) <= 0
-            or (
-                result.get("commission_transfer", {}).get("status")
-                in ["sent_verified", "sent_unverified"]
-            )
-        )
+    valid_atomic_submission = (
+        action_result.get("status") == "settlement_release_submitted"
+        and atomic_signature
+        and commission_signature == atomic_signature
+        and payout_signature == atomic_signature
+    )
 
-        seller_ok = (
-            float(seller_payout_amount or 0) <= 0
-            or (
-                result.get("seller_transfer", {}).get("status")
-                in ["sent_verified", "sent_unverified"]
-            )
-        )
-
-        if not commission_ok or not seller_ok:
-            result["status"] = "partial_failure"
-            result["reason"] = "one_or_more_transfers_failed"
-            return result
-
+    if valid_atomic_submission:
         result["status"] = "sent"
-        result["reason"] = "escrow_split_release_executed"
+        result["reason"] = "atomic_release_submitted_by_action_engine"
         return result
 
-    except Exception as exc:
-        result["status"] = "error"
-        result["error"] = str(exc)
+    if action_result.get("status") == "action_blocked":
+        result["status"] = "blocked"
+        result["reason"] = (
+            action_result.get("reason")
+            or "atomic_release_blocked_by_action_engine"
+        )
         return result
+
+    result["status"] = "error"
+    result["reason"] = (
+        action_result.get("reason")
+        or "atomic_release_failed_in_action_engine"
+    )
+    result["error"] = action_result.get("error")
+    return result
 
 
 

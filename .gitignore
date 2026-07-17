@@ -32,3 +32,6 @@ iat_protocol.db-journal
 *.orig
 *.rej
 *~
+
+*.before_atomic_wrapper
+*.before_solana_pin

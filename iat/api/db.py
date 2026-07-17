@@ -10613,11 +10613,19 @@ def _settlement_workflow_release_confirmed_handler(settlement):
     settlement_id = settlement.get("settlement_id")
     now = int(time.time())
 
+    commission_tx = settlement.get("commission_tx_signature")
+    payout_tx = settlement.get("seller_payout_tx_signature")
+
     settlement_closure = {
-        "execution_engine": "settlement_execution_engine_v1",
+        "execution_engine": "iat_action_engine_v1",
         "closure_status": "settled",
-        "closure_mode": "dry_run",
-        "reason": "dry_run_settlement_closed_after_release_confirmation",
+        "closure_mode": "onchain_atomic",
+        "commission_tx_signature": commission_tx,
+        "seller_payout_tx_signature": payout_tx,
+        "atomic_signature_shared": bool(
+            commission_tx and payout_tx and commission_tx == payout_tx
+        ),
+        "reason": "onchain_atomic_settlement_closed_after_verified_release",
         "settled_at": now,
     }
 
@@ -10626,31 +10634,63 @@ def _settlement_workflow_release_confirmed_handler(settlement):
         payload_patch={
             "settlement_closure": settlement_closure,
         },
-        patch_reason="release_confirmed_settled",
+        patch_reason="release_confirmed_onchain_atomic_settled",
     )
 
     return {
         "next_status": "settled",
         "decision": "settled",
-        "reason": "dry_run_settlement_closed_after_release_confirmation",
-        "handler": "release_confirmed_handler_v1",
+        "reason": "onchain_atomic_settlement_closed",
+        "handler": "release_confirmed_handler_v2",
         "settlement_closure": settlement_closure,
         "payload_update": payload_update,
     }
 
 
-
 def _settlement_workflow_release_submitted_handler(settlement):
+    from iat.onchain import verify_tx_signature
+
     settlement_id = settlement.get("settlement_id")
     now = int(time.time())
 
+    commission_tx = settlement.get("commission_tx_signature")
+    payout_tx = settlement.get("seller_payout_tx_signature")
+
+    if not commission_tx or not payout_tx:
+        return {
+            "next_status": "release_failed",
+            "decision": "release_confirmation_failed",
+            "reason": "release_transaction_signature_missing",
+            "handler": "release_submitted_handler_v2",
+        }
+
+    if commission_tx != payout_tx:
+        return {
+            "next_status": "release_failed",
+            "decision": "release_confirmation_failed",
+            "reason": "atomic_release_signatures_do_not_match",
+            "handler": "release_submitted_handler_v2",
+        }
+
+    signature_verified = verify_tx_signature(commission_tx)
+
+    if not signature_verified:
+        return {
+            "decision": "release_confirmation_pending",
+            "reason": "atomic_transaction_not_confirmed_yet",
+            "handler": "release_submitted_handler_v2",
+            "atomic_tx_signature": commission_tx,
+        }
+
     release_confirmation = {
-        "execution_engine": "settlement_execution_engine_v1",
+        "execution_engine": "iat_action_engine_v1",
         "confirmation_status": "release_confirmed",
-        "confirmation_mode": "dry_run",
-        "commission_tx_signature_present": bool(settlement.get("commission_tx_signature")),
-        "seller_payout_tx_signature_present": bool(settlement.get("seller_payout_tx_signature")),
-        "reason": "dry_run_release_confirmed_no_onchain_transaction",
+        "confirmation_mode": "onchain_atomic",
+        "atomic_tx_signature": commission_tx,
+        "commission_tx_signature": commission_tx,
+        "seller_payout_tx_signature": payout_tx,
+        "signature_verified": True,
+        "reason": "atomic_transaction_verified_onchain",
         "confirmed_at": now,
     }
 
@@ -10659,18 +10699,20 @@ def _settlement_workflow_release_submitted_handler(settlement):
         payload_patch={
             "release_confirmation": release_confirmation,
         },
-        patch_reason="release_submitted_confirmed",
+        patch_reason="atomic_release_verified_onchain",
     )
 
     return {
         "next_status": "release_confirmed",
         "decision": "release_confirmed",
-        "reason": "dry_run_release_confirmed_no_onchain_transaction",
-        "handler": "release_submitted_handler_v1",
+        "reason": "atomic_transaction_verified_onchain",
+        "handler": "release_submitted_handler_v2",
+        "atomic_tx_signature": commission_tx,
+        "commission_tx_signature": commission_tx,
+        "seller_payout_tx_signature": payout_tx,
         "release_confirmation": release_confirmation,
         "payload_update": payload_update,
     }
-
 
 
 def _settlement_workflow_ready_for_release_handler(settlement):
@@ -10686,31 +10728,82 @@ def _settlement_workflow_ready_for_release_handler(settlement):
             "settlement_id": settlement_id,
             "order_id": settlement.get("order_id"),
             "gross_amount_iat": settlement.get("gross_amount_iat"),
-            "seller_payout_amount_iat": settlement.get("seller_payout_amount_iat"),
-            "protocol_commission_amount_iat": settlement.get("protocol_commission_amount_iat"),
+            "seller_payout_amount_iat": settlement.get(
+                "seller_payout_amount_iat"
+            ),
+            "protocol_commission_amount_iat": settlement.get(
+                "protocol_commission_amount_iat"
+            ),
             "winner_wallet": settlement.get("winner_wallet"),
             "treasury_wallet": settlement.get("treasury_wallet"),
-            "onchain_settlement_enabled": bool(settlement.get("onchain_settlement_enabled")),
+            "onchain_settlement_enabled": bool(
+                settlement.get("onchain_settlement_enabled")
+            ),
         },
         metadata={
-            "execution_mode": "dry_run",
-            "called_by": "ready_for_release_handler_v1",
+            "adapter": "settlement_atomic",
+            "execution_mode": "onchain_atomic",
+            "called_by": "ready_for_release_handler_v2",
             "resource_type": "settlement",
             "resource_id": settlement_id,
         },
     )
 
+    execution_result = action_result.get("result") or {}
+    action_status = action_result.get("status")
+
+    commission_tx = execution_result.get("commission_tx_signature")
+    payout_tx = execution_result.get("seller_payout_tx_signature")
+    atomic_tx = execution_result.get("atomic_tx_signature")
+
+    if (
+        action_status != "settlement_release_submitted"
+        or not atomic_tx
+        or not commission_tx
+        or not payout_tx
+        or commission_tx != payout_tx
+    ):
+        release_execution = {
+            "execution_engine": "iat_action_engine_v1",
+            "execution_status": "release_failed",
+            "execution_mode": "onchain_atomic",
+            "action_engine_status": action_status,
+            "action_engine_reason": action_result.get("reason"),
+            "action_engine_error": action_result.get("error"),
+            "action_result": action_result,
+            "reason": "atomic_release_submission_failed",
+            "submitted_at": now,
+        }
+
+        payload_update = update_settlement_payload_db(
+            settlement_id=settlement_id,
+            payload_patch={
+                "release_execution": release_execution,
+            },
+            patch_reason="ready_for_release_atomic_submission_failed",
+        )
+
+        return {
+            "next_status": "release_failed",
+            "decision": "release_failed",
+            "reason": "atomic_release_submission_failed",
+            "handler": "ready_for_release_handler_v2",
+            "release_execution": release_execution,
+            "payload_update": payload_update,
+        }
+
     release_execution = {
         "execution_engine": "iat_action_engine_v1",
         "execution_status": "release_submitted",
-        "execution_mode": "dry_run",
-        "action_engine_status": action_result.get("status"),
+        "execution_mode": "onchain_atomic",
+        "action_engine_status": action_status,
         "action_engine_reason": action_result.get("reason"),
         "action_result": action_result,
-        "onchain_settlement_enabled": bool(settlement.get("onchain_settlement_enabled")),
-        "commission_tx_signature": None,
-        "seller_payout_tx_signature": None,
-        "reason": "action_engine_dry_run_release_submitted",
+        "onchain_settlement_enabled": True,
+        "atomic_tx_signature": atomic_tx,
+        "commission_tx_signature": commission_tx,
+        "seller_payout_tx_signature": payout_tx,
+        "reason": "atomic_release_transaction_submitted",
         "submitted_at": now,
     }
 
@@ -10719,18 +10812,20 @@ def _settlement_workflow_ready_for_release_handler(settlement):
         payload_patch={
             "release_execution": release_execution,
         },
-        patch_reason="ready_for_release_submitted_action_engine",
+        patch_reason="ready_for_release_atomic_transaction_submitted",
     )
 
     return {
         "next_status": "release_submitted",
         "decision": "release_submitted",
-        "reason": "action_engine_dry_run_release_submitted",
-        "handler": "ready_for_release_handler_v1",
+        "reason": "atomic_release_transaction_submitted",
+        "handler": "ready_for_release_handler_v2",
+        "atomic_tx_signature": atomic_tx,
+        "commission_tx_signature": commission_tx,
+        "seller_payout_tx_signature": payout_tx,
         "release_execution": release_execution,
         "payload_update": payload_update,
     }
-
 
 
 def _settlement_workflow_authorized_handler(settlement):
@@ -10761,7 +10856,6 @@ def _settlement_workflow_authorized_handler(settlement):
         "release_preparation": release_preparation,
         "payload_update": payload_update,
     }
-
 
 
 def _settlement_workflow_policy_review_handler(settlement):
@@ -10948,7 +11042,7 @@ def inspect_settlement_execution_supervisor_db(settlement_id):
             "current_status": current_status,
             "supervisor_action": "advance_workflow",
             "expected_next_status": "release_confirmed",
-            "reason": "dry_run_confirmation_can_be_advanced",
+            "reason": "submitted_release_requires_onchain_confirmation",
             "age_seconds": age_seconds,
             "timeout_seconds": timeout_seconds,
             "retry_count": retry_count,
@@ -11110,8 +11204,9 @@ def advance_settlement_workflow_db(
 
     Purpose:
     - Route each workflow state to a dedicated handler.
-    - Keep financial authorization separate.
-    - Never execute payout.
+    - Keep financial authorization separate from execution.
+    - Delegate release execution exclusively to the Action Engine.
+    - Never confirm an on-chain release without verification.
     - Never skip state-machine validation.
     """
     if not settlement_id:
@@ -11172,6 +11267,12 @@ def advance_settlement_workflow_db(
         settlement_id=settlement_id,
         next_status=next_status,
         reason=f"{reason}_{current_status}_to_{next_status}",
+        commission_tx_signature=decision.get(
+            "commission_tx_signature"
+        ),
+        seller_payout_tx_signature=decision.get(
+            "seller_payout_tx_signature"
+        ),
         transition_metadata={
             "workflow_engine": "settlement_workflow_engine_v2",
             "workflow_decision": compact_settlement_workflow_decision_db(decision),
@@ -11310,23 +11411,46 @@ def run_settlement_orchestrator_once_db(limit=50):
             continue
 
         # State: release_submitted.
-        # V1 only confirms if both tx signatures are present.
+        # Confirm only after the atomic transaction is verified on Solana.
         if current_status == "release_submitted":
-            if commission_tx and payout_tx:
+            if not commission_tx or not payout_tx:
+                action["action_taken"] = "waiting"
+                action["reason"] = "release_submitted_waiting_for_tx_signatures"
+                actions.append(action)
+                continue
+
+            if commission_tx != payout_tx:
                 result = update_settlement_status_db(
                     settlement_id=settlement_id,
-                    next_status="release_confirmed",
-                    reason="autonomous_orchestrator_release_signatures_present",
+                    next_status="release_failed",
+                    reason="autonomous_orchestrator_atomic_signatures_mismatch",
                 )
 
                 action["action_taken"] = "transition_attempted"
-                action["target_status"] = "release_confirmed"
+                action["target_status"] = "release_failed"
                 action["result"] = result
                 actions.append(action)
                 continue
 
-            action["action_taken"] = "waiting"
-            action["reason"] = "release_submitted_waiting_for_tx_signatures"
+            from iat.onchain import verify_tx_signature
+
+            if not verify_tx_signature(commission_tx):
+                action["action_taken"] = "waiting"
+                action["reason"] = "atomic_transaction_not_confirmed_yet"
+                action["atomic_tx_signature"] = commission_tx
+                actions.append(action)
+                continue
+
+            result = update_settlement_status_db(
+                settlement_id=settlement_id,
+                next_status="release_confirmed",
+                reason="autonomous_orchestrator_atomic_transaction_verified",
+            )
+
+            action["action_taken"] = "transition_attempted"
+            action["target_status"] = "release_confirmed"
+            action["atomic_tx_signature"] = commission_tx
+            action["result"] = result
             actions.append(action)
             continue
 

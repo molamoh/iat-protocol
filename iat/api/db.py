@@ -9860,6 +9860,28 @@ def init_settlements_table():
     )
     """)
 
+    guard_columns = {
+        "execution_claim_status": "TEXT DEFAULT 'unclaimed'",
+        "execution_claim_token": "TEXT",
+        "execution_claimed_at": "INTEGER",
+        "execution_broadcast_at": "INTEGER",
+        "execution_last_error": "TEXT",
+    }
+
+    for column, definition in guard_columns.items():
+        try:
+            cur.execute(
+                sql_add_column(
+                    "settlements",
+                    column,
+                    definition,
+                )
+            )
+        except Exception:
+            # SQLite raises when the column already exists.
+            # PostgreSQL uses ADD COLUMN IF NOT EXISTS.
+            pass
+
     conn.commit()
     release_conn(conn)
 
@@ -10341,6 +10363,375 @@ def update_settlement_status_db(
     }
 
 
+
+
+
+def claim_settlement_execution_db(
+    settlement_id,
+    claim_token=None,
+):
+    """
+    Settlement Execution Guard V1.
+
+    Atomically reserves one settlement before any blockchain broadcast.
+
+    Safety doctrine:
+    - A stored transaction signature is always returned idempotently.
+    - Only an unclaimed settlement can be claimed automatically.
+    - An existing claim is never stolen automatically.
+    - Ambiguous or interrupted broadcasts require controlled recovery.
+    """
+    if not settlement_id:
+        return {
+            "status": "claim_rejected",
+            "reason": "settlement_id_required",
+            "claimed": False,
+            "broadcast_allowed": False,
+        }
+
+    init_settlements_table()
+
+    claim_token = str(claim_token or uuid.uuid4())
+    now = int(time.time())
+    p = qmark()
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    try:
+        cur.execute(f"""
+        SELECT *
+        FROM settlements
+        WHERE settlement_id = {p}
+        """, (
+            settlement_id,
+        ))
+
+        row = cur.fetchone()
+
+        if not row:
+            conn.rollback()
+            return {
+                "status": "settlement_not_found",
+                "reason": "settlement_record_required_before_onchain_release",
+                "settlement_id": settlement_id,
+                "claimed": False,
+                "broadcast_allowed": False,
+            }
+
+        settlement = dict(row)
+
+        commission_tx = settlement.get("commission_tx_signature")
+        payout_tx = settlement.get("seller_payout_tx_signature")
+
+        if commission_tx or payout_tx:
+            conn.rollback()
+            return {
+                "status": "settlement_already_submitted",
+                "reason": "existing_settlement_transaction_signature",
+                "settlement_id": settlement_id,
+                "claimed": False,
+                "broadcast_allowed": False,
+                "idempotent": True,
+                "atomic_tx_signature": commission_tx or payout_tx,
+                "commission_tx_signature": commission_tx,
+                "seller_payout_tx_signature": payout_tx,
+                "execution_claim_status": settlement.get(
+                    "execution_claim_status"
+                ),
+            }
+
+        current_status = (
+            settlement.get("execution_claim_status")
+            or "unclaimed"
+        )
+
+        if current_status != "unclaimed":
+            conn.rollback()
+            return {
+                "status": "settlement_execution_already_claimed",
+                "reason": "existing_execution_claim_requires_resolution",
+                "settlement_id": settlement_id,
+                "claimed": False,
+                "broadcast_allowed": False,
+                "idempotent": True,
+                "execution_claim_status": current_status,
+                "execution_claim_token": settlement.get(
+                    "execution_claim_token"
+                ),
+                "execution_claimed_at": settlement.get(
+                    "execution_claimed_at"
+                ),
+                "execution_broadcast_at": settlement.get(
+                    "execution_broadcast_at"
+                ),
+                "execution_last_error": settlement.get(
+                    "execution_last_error"
+                ),
+            }
+
+        cur.execute(f"""
+        UPDATE settlements
+        SET execution_claim_status = {p},
+            execution_claim_token = {p},
+            execution_claimed_at = {p},
+            execution_last_error = NULL,
+            updated_at = {p}
+        WHERE settlement_id = {p}
+          AND COALESCE(execution_claim_status, 'unclaimed') = 'unclaimed'
+          AND commission_tx_signature IS NULL
+          AND seller_payout_tx_signature IS NULL
+        """, (
+            "claimed",
+            claim_token,
+            now,
+            now,
+            settlement_id,
+        ))
+
+        updated = int(cur.rowcount or 0)
+
+        if updated != 1:
+            conn.rollback()
+            return {
+                "status": "settlement_execution_claim_conflict",
+                "reason": "atomic_execution_claim_not_acquired",
+                "settlement_id": settlement_id,
+                "claimed": False,
+                "broadcast_allowed": False,
+                "idempotent": True,
+            }
+
+        conn.commit()
+
+        return {
+            "status": "settlement_execution_claimed",
+            "reason": "atomic_execution_claim_acquired",
+            "settlement_id": settlement_id,
+            "claim_token": claim_token,
+            "claimed": True,
+            "broadcast_allowed": True,
+            "claimed_at": now,
+        }
+
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+        return {
+            "status": "claim_failed",
+            "reason": "settlement_execution_claim_db_error",
+            "settlement_id": settlement_id,
+            "claimed": False,
+            "broadcast_allowed": False,
+            "error": str(exc),
+        }
+
+    finally:
+        release_conn(conn)
+
+
+def record_settlement_broadcast_db(
+    settlement_id,
+    claim_token,
+    atomic_tx_signature,
+):
+    """
+    Persist the atomic signature immediately after Solana broadcast.
+
+    The claim token must match the process that acquired the execution claim.
+    """
+    if not settlement_id or not claim_token or not atomic_tx_signature:
+        return {
+            "status": "broadcast_record_rejected",
+            "reason": "settlement_id_claim_token_and_signature_required",
+            "recorded": False,
+        }
+
+    init_settlements_table()
+
+    now = int(time.time())
+    p = qmark()
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    try:
+        cur.execute(f"""
+        UPDATE settlements
+        SET execution_claim_status = {p},
+            execution_broadcast_at = {p},
+            commission_tx_signature = COALESCE(
+                commission_tx_signature,
+                {p}
+            ),
+            seller_payout_tx_signature = COALESCE(
+                seller_payout_tx_signature,
+                {p}
+            ),
+            execution_last_error = NULL,
+            updated_at = {p}
+        WHERE settlement_id = {p}
+          AND execution_claim_token = {p}
+          AND execution_claim_status = 'claimed'
+          AND commission_tx_signature IS NULL
+          AND seller_payout_tx_signature IS NULL
+        """, (
+            "broadcast_submitted",
+            now,
+            atomic_tx_signature,
+            atomic_tx_signature,
+            now,
+            settlement_id,
+            claim_token,
+        ))
+
+        updated = int(cur.rowcount or 0)
+
+        if updated != 1:
+            conn.rollback()
+
+            cur.execute(f"""
+            SELECT *
+            FROM settlements
+            WHERE settlement_id = {p}
+            """, (
+                settlement_id,
+            ))
+
+            row = cur.fetchone()
+            existing = dict(row) if row else {}
+
+            return {
+                "status": "broadcast_record_conflict",
+                "reason": "claim_token_or_settlement_state_mismatch",
+                "settlement_id": settlement_id,
+                "recorded": False,
+                "atomic_tx_signature": (
+                    existing.get("commission_tx_signature")
+                    or existing.get("seller_payout_tx_signature")
+                ),
+                "execution_claim_status": existing.get(
+                    "execution_claim_status"
+                ),
+            }
+
+        conn.commit()
+
+        return {
+            "status": "settlement_broadcast_recorded",
+            "reason": "atomic_transaction_signature_persisted",
+            "settlement_id": settlement_id,
+            "claim_token": claim_token,
+            "atomic_tx_signature": atomic_tx_signature,
+            "commission_tx_signature": atomic_tx_signature,
+            "seller_payout_tx_signature": atomic_tx_signature,
+            "broadcast_at": now,
+            "recorded": True,
+        }
+
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+        return {
+            "status": "broadcast_record_failed",
+            "reason": "atomic_signature_persistence_failed",
+            "settlement_id": settlement_id,
+            "atomic_tx_signature": atomic_tx_signature,
+            "recorded": False,
+            "error": str(exc),
+        }
+
+    finally:
+        release_conn(conn)
+
+
+def mark_settlement_execution_error_db(
+    settlement_id,
+    claim_token,
+    error,
+    broadcast_state="not_broadcast",
+):
+    """
+    Record an execution failure without reopening the claim automatically.
+
+    A claimed settlement remains closed to automatic retry because a timeout
+    or RPC exception may be ambiguous after transaction submission.
+    """
+    if not settlement_id or not claim_token:
+        return {
+            "status": "execution_error_record_rejected",
+            "reason": "settlement_id_and_claim_token_required",
+            "recorded": False,
+        }
+
+    init_settlements_table()
+
+    now = int(time.time())
+    p = qmark()
+
+    claim_status = (
+        "broadcast_unknown"
+        if broadcast_state == "unknown"
+        else "execution_failed_locked"
+    )
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    try:
+        cur.execute(f"""
+        UPDATE settlements
+        SET execution_claim_status = {p},
+            execution_last_error = {p},
+            updated_at = {p}
+        WHERE settlement_id = {p}
+          AND execution_claim_token = {p}
+          AND execution_claim_status = 'claimed'
+        """, (
+            claim_status,
+            str(error or "unknown_settlement_execution_error"),
+            now,
+            settlement_id,
+            claim_token,
+        ))
+
+        updated = int(cur.rowcount or 0)
+        conn.commit()
+
+        return {
+            "status": (
+                "execution_error_recorded"
+                if updated == 1
+                else "execution_error_record_not_applied"
+            ),
+            "reason": claim_status,
+            "settlement_id": settlement_id,
+            "execution_claim_status": claim_status,
+            "recorded": updated == 1,
+        }
+
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+        return {
+            "status": "execution_error_record_failed",
+            "reason": "settlement_execution_error_persistence_failed",
+            "settlement_id": settlement_id,
+            "recorded": False,
+            "error": str(exc),
+        }
+
+    finally:
+        release_conn(conn)
 
 
 def get_settlement_by_id_db(settlement_id):

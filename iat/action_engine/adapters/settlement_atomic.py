@@ -2,6 +2,11 @@ import os
 
 from iat.action_engine.models import build_action_result
 from iat.transfer import send_iat_split_atomic
+from iat.api.db import (
+    claim_settlement_execution_db,
+    mark_settlement_execution_error_db,
+    record_settlement_broadcast_db,
+)
 
 
 def execute_settlement_atomic_action(action_request):
@@ -133,6 +138,62 @@ def execute_settlement_atomic_action(action_request):
             },
         )
 
+    claim_result = claim_settlement_execution_db(
+        settlement_id=settlement_id,
+    )
+
+    if claim_result.get("status") == "settlement_already_submitted":
+        existing_signature = claim_result.get(
+            "atomic_tx_signature"
+        )
+
+        return build_action_result(
+            status="settlement_release_submitted",
+            action_type=action_type,
+            action_scope=action_scope,
+            reason="atomic_settlement_idempotent_existing_submission",
+            result={
+                "settlement_id": settlement_id,
+                "order_id": order_id,
+                "execution_mode": "onchain_atomic",
+                "broadcast_performed": False,
+                "idempotent": True,
+                "atomic_tx_signature": existing_signature,
+                "commission_tx_signature": (
+                    claim_result.get("commission_tx_signature")
+                    or existing_signature
+                ),
+                "seller_payout_tx_signature": (
+                    claim_result.get("seller_payout_tx_signature")
+                    or existing_signature
+                ),
+                "execution_guard": claim_result,
+            },
+        )
+
+    if not claim_result.get("broadcast_allowed"):
+        return build_action_result(
+            status="action_blocked",
+            action_type=action_type,
+            action_scope=action_scope,
+            reason=(
+                claim_result.get("reason")
+                or "settlement_execution_claim_not_acquired"
+            ),
+            error=claim_result.get("error"),
+            result={
+                "settlement_id": settlement_id,
+                "order_id": order_id,
+                "broadcast_performed": False,
+                "idempotent": bool(
+                    claim_result.get("idempotent")
+                ),
+                "execution_guard": claim_result,
+            },
+        )
+
+    claim_token = claim_result.get("claim_token")
+
     try:
         atomic_signature = send_iat_split_atomic(
             from_keypair_path=escrow_keypair_path,
@@ -144,6 +205,13 @@ def execute_settlement_atomic_action(action_request):
         )
 
         if not atomic_signature:
+            error_record = mark_settlement_execution_error_db(
+                settlement_id=settlement_id,
+                claim_token=claim_token,
+                error="atomic_transaction_signature_missing",
+                broadcast_state="unknown",
+            )
+
             return build_action_result(
                 status="action_failed",
                 action_type=action_type,
@@ -152,6 +220,57 @@ def execute_settlement_atomic_action(action_request):
                 result={
                     "settlement_id": settlement_id,
                     "order_id": order_id,
+                    "broadcast_performed": None,
+                    "broadcast_state": "unknown",
+                    "execution_claim_token": claim_token,
+                    "execution_guard": claim_result,
+                    "execution_error_record": error_record,
+                    "automatic_retry_allowed": False,
+                },
+            )
+
+        broadcast_record = record_settlement_broadcast_db(
+            settlement_id=settlement_id,
+            claim_token=claim_token,
+            atomic_tx_signature=atomic_signature,
+        )
+
+        if not broadcast_record.get("recorded"):
+            persistence_error_record = (
+                mark_settlement_execution_error_db(
+                    settlement_id=settlement_id,
+                    claim_token=claim_token,
+                    error=(
+                        broadcast_record.get("error")
+                        or broadcast_record.get("reason")
+                        or "atomic_signature_persistence_failed"
+                    ),
+                    broadcast_state="unknown",
+                )
+            )
+
+            return build_action_result(
+                status="action_failed",
+                action_type=action_type,
+                action_scope=action_scope,
+                reason="atomic_signature_persistence_failed",
+                error=broadcast_record.get("error"),
+                result={
+                    "settlement_id": settlement_id,
+                    "order_id": order_id,
+                    "atomic_tx_signature": atomic_signature,
+                    "commission_tx_signature": atomic_signature,
+                    "seller_payout_tx_signature": atomic_signature,
+                    "broadcast_performed": True,
+                    "broadcast_state": "submitted_unpersisted",
+                    "signature_persisted": False,
+                    "automatic_retry_allowed": False,
+                    "execution_claim_token": claim_token,
+                    "execution_guard": claim_result,
+                    "broadcast_record": broadcast_record,
+                    "execution_error_record": (
+                        persistence_error_record
+                    ),
                 },
             )
 
@@ -171,10 +290,24 @@ def execute_settlement_atomic_action(action_request):
                 "seller_payout_amount_iat": seller_payout_amount,
                 "treasury_wallet": treasury_wallet,
                 "winner_wallet": winner_wallet,
+                "broadcast_performed": True,
+                "idempotent": False,
+                "execution_claim_token": claim_token,
+                "execution_guard": claim_result,
+                "broadcast_record": broadcast_record,
+                "signature_persisted": bool(
+                    broadcast_record.get("recorded")
+                ),
             },
         )
 
     except Exception as exc:
+        error_record = mark_settlement_execution_error_db(
+            settlement_id=settlement_id,
+            claim_token=claim_token,
+            error=str(exc),
+            broadcast_state="unknown",
+        )
         return build_action_result(
             status="action_failed",
             action_type=action_type,
@@ -184,5 +317,11 @@ def execute_settlement_atomic_action(action_request):
             result={
                 "settlement_id": settlement_id,
                 "order_id": order_id,
+                "broadcast_performed": None,
+                "broadcast_state": "unknown",
+                "execution_claim_token": claim_token,
+                "execution_guard": claim_result,
+                "execution_error_record": error_record,
+                "automatic_retry_allowed": False,
             },
         )

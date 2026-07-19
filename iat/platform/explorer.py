@@ -5,6 +5,7 @@ from typing import Any, Callable
 from iat.platform.config import EXPLORER_VERSION, normalize_event_limit
 from iat.platform.events import list_public_protocol_events
 from iat.platform.gateway import sanitize_public_value
+from iat.platform.graph import build_protocol_graph
 from iat.platform.models import build_platform_component, build_platform_response
 
 
@@ -51,6 +52,10 @@ def build_protocol_explorer_snapshot(
     stats_provider: Provider | None = None,
     marketplace_provider: Provider | None = None,
     orders_provider: Provider | None = None,
+    agents_provider: Provider | None = None,
+    foundation_agents_provider: Provider | None = None,
+    workers_provider: Provider | None = None,
+    settlements_provider: Provider | None = None,
     event_limit: int | None = None,
 ) -> dict[str, Any]:
     """
@@ -86,6 +91,21 @@ def build_protocol_explorer_snapshot(
             "events",
             lambda: list_public_protocol_events(normalized_event_limit),
             source="iat_action_runtime_event_bus_v1",
+        ),
+        "graph": _read_component(
+            "graph",
+            lambda: build_protocol_graph(
+                marketplace_provider=marketplace_provider,
+                orders_provider=orders_provider,
+                agents_provider=agents_provider,
+                foundation_agents_provider=foundation_agents_provider,
+                workers_provider=workers_provider,
+                settlements_provider=settlements_provider,
+                events_provider=lambda: list_public_protocol_events(
+                    normalized_event_limit
+                ),
+            ),
+            source="iat_protocol_graph_v1",
         ),
     }
 

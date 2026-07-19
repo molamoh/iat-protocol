@@ -12344,15 +12344,49 @@ def platform_status():
     )
 
 
+def _platform_graph_providers():
+    from iat.action_engine.runtime_event_bus import inspect_runtime_event_bus
+    from iat.api.db import (
+        list_action_workers_db,
+        list_foundation_agents_db,
+        list_settlements_db,
+    )
+
+    return {
+        "marketplace_provider": lambda: marketplace(x_api_key=None),
+        "orders_provider": list_orders,
+        "agents_provider": lambda: list_agents(x_api_key=None),
+        "foundation_agents_provider": list_foundation_agents_db,
+        "workers_provider": list_action_workers_db,
+        "settlements_provider": list_settlements_db,
+        "events_provider": lambda: inspect_runtime_event_bus(limit=100),
+    }
+
+
 @app.get("/platform/explorer")
 def platform_explorer(event_limit: int = 50):
     from iat.platform.explorer import build_protocol_explorer_snapshot
 
+    providers = _platform_graph_providers()
+
     return build_protocol_explorer_snapshot(
         network_provider=network_status,
         stats_provider=stats,
-        marketplace_provider=lambda: marketplace(x_api_key=None),
-        orders_provider=list_orders,
+        marketplace_provider=providers["marketplace_provider"],
+        orders_provider=providers["orders_provider"],
+        agents_provider=providers["agents_provider"],
+        foundation_agents_provider=providers[
+            "foundation_agents_provider"
+        ],
+        workers_provider=providers["workers_provider"],
+        settlements_provider=providers["settlements_provider"],
         event_limit=event_limit,
     )
+
+
+@app.get("/platform/graph")
+def platform_graph():
+    from iat.platform.graph import build_protocol_graph
+
+    return build_protocol_graph(**_platform_graph_providers())
 

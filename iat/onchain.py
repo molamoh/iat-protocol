@@ -39,8 +39,22 @@ def get_iat_balance(wallet_address: str):
 def verify_tx_signature(tx_signature: str) -> bool:
     try:
         sig = Signature.from_string(tx_signature)
-        resp = client.get_transaction(sig, encoding="jsonParsed", max_supported_transaction_version=0)
-        return resp.value is not None
+        resp = client.get_transaction(
+            sig,
+            encoding="jsonParsed",
+            max_supported_transaction_version=0,
+        )
+
+        tx = resp.value
+        if tx is None:
+            return False
+
+        meta = getattr(tx.transaction, "meta", None)
+        if meta is None:
+            return False
+
+        return getattr(meta, "err", None) is None
+
     except Exception:
         return False
 

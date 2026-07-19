@@ -12328,3 +12328,31 @@ def admin_seller_agent_manual_activate(
         approved_by=req.approved_by,
         approval_reason=req.approval_reason,
     )
+
+# =============================================================================
+# IAT PUBLIC PLATFORM V1 ROUTES
+# Read-only exposure layer. No protocol business logic belongs here.
+# =============================================================================
+
+@app.get("/platform/status")
+def platform_status():
+    from iat.platform.gateway import build_public_platform_status
+
+    return build_public_platform_status(
+        explorer_available=True,
+        stream_available=True,
+    )
+
+
+@app.get("/platform/explorer")
+def platform_explorer(event_limit: int = 50):
+    from iat.platform.explorer import build_protocol_explorer_snapshot
+
+    return build_protocol_explorer_snapshot(
+        network_provider=network_status,
+        stats_provider=stats,
+        marketplace_provider=lambda: marketplace(x_api_key=None),
+        orders_provider=list_orders,
+        event_limit=event_limit,
+    )
+

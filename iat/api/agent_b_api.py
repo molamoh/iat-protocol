@@ -387,6 +387,13 @@ class OrderRequest(BaseModel):
     locked_agent_id: str | None = None
 
 
+
+
+class AdminBuyerActionRequest(BaseModel):
+    buyer_wallet: str
+    reason: str | None = None
+
+
 class BuyerPreviewRequest(BaseModel):
     buyer_wallet: str
     prompt: str
@@ -3375,6 +3382,170 @@ def buyer_topic_changed(previous_session, new_intent):
         return True
 
     return False
+
+
+
+@app.get("/admin/buyers")
+def admin_list_buyers(
+    limit: int = 100,
+    x_api_key: str | None = Header(default=None),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    safe_limit = max(1, min(int(limit or 100), 500))
+    buyers = list_buyers_db(limit=safe_limit)
+
+    return {
+        "status": "ok",
+        "count": len(buyers),
+        "buyers": buyers,
+    }
+
+
+@app.get("/admin/buyer/{buyer_wallet}")
+def admin_get_buyer(
+    buyer_wallet: str,
+    x_api_key: str | None = Header(default=None),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    buyer_wallet = str(buyer_wallet or "").strip()
+
+    if not buyer_wallet:
+        return {
+            "status": "error",
+            "message": "buyer_wallet_required",
+        }
+
+    buyer = get_buyer_db(buyer_wallet)
+
+    if not buyer:
+        return {
+            "status": "not_found",
+            "message": "buyer_not_found",
+            "buyer_wallet": buyer_wallet,
+        }
+
+    return {
+        "status": "ok",
+        "buyer": buyer,
+    }
+
+
+@app.post("/admin/buyer/ban")
+def admin_ban_buyer(
+    req: AdminBuyerActionRequest,
+    x_api_key: str | None = Header(default=None),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    buyer_wallet = str(req.buyer_wallet or "").strip()
+    reason = str(req.reason or "admin_governance_action").strip()
+
+    if not buyer_wallet:
+        return {
+            "status": "error",
+            "message": "buyer_wallet_required",
+        }
+
+    buyer_before = get_buyer_db(buyer_wallet)
+    buyer_after = ban_buyer_db(
+        buyer_wallet,
+        reason=reason,
+    )
+
+    if not buyer_after:
+        return {
+            "status": "error",
+            "message": "buyer_ban_failed",
+            "buyer_wallet": buyer_wallet,
+        }
+
+    return {
+        "status": "ok",
+        "message": "buyer_banned",
+        "buyer_wallet": buyer_wallet,
+        "previous_state": {
+            "exists": bool(buyer_before),
+            "banned": bool((buyer_before or {}).get("banned", 0)),
+            "ban_reason": (buyer_before or {}).get("ban_reason"),
+            "buyer_risk_score": (buyer_before or {}).get("buyer_risk_score"),
+        },
+        "current_state": {
+            "banned": bool(buyer_after.get("banned", 0)),
+            "ban_reason": buyer_after.get("ban_reason"),
+            "buyer_risk_score": buyer_after.get("buyer_risk_score"),
+            "banned_at": buyer_after.get("banned_at"),
+        },
+    }
+
+
+@app.post("/admin/buyer/unban")
+def admin_unban_buyer(
+    req: AdminBuyerActionRequest,
+    x_api_key: str | None = Header(default=None),
+):
+    if not require_admin_key(x_api_key):
+        return {
+            "status": "error",
+            "message": "unauthorized",
+        }
+
+    buyer_wallet = str(req.buyer_wallet or "").strip()
+
+    if not buyer_wallet:
+        return {
+            "status": "error",
+            "message": "buyer_wallet_required",
+        }
+
+    buyer_before = get_buyer_db(buyer_wallet)
+
+    if not buyer_before:
+        return {
+            "status": "not_found",
+            "message": "buyer_not_found",
+            "buyer_wallet": buyer_wallet,
+        }
+
+    buyer_after = unban_buyer_db(buyer_wallet)
+
+    if not buyer_after:
+        return {
+            "status": "error",
+            "message": "buyer_unban_failed",
+            "buyer_wallet": buyer_wallet,
+        }
+
+    return {
+        "status": "ok",
+        "message": "buyer_unbanned",
+        "buyer_wallet": buyer_wallet,
+        "previous_state": {
+            "banned": bool(buyer_before.get("banned", 0)),
+            "ban_reason": buyer_before.get("ban_reason"),
+            "buyer_risk_score": buyer_before.get("buyer_risk_score"),
+            "banned_at": buyer_before.get("banned_at"),
+        },
+        "current_state": {
+            "banned": bool(buyer_after.get("banned", 0)),
+            "ban_reason": buyer_after.get("ban_reason"),
+            "buyer_risk_score": buyer_after.get("buyer_risk_score"),
+            "banned_at": buyer_after.get("banned_at"),
+        },
+    }
 
 
 @app.post("/buyer/preview")

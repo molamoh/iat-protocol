@@ -4412,6 +4412,12 @@ def verify_payment(req: VerifyPaymentRequest, x_api_key: str | None = Header(def
             "status": "invalid_order",
         }
 
+    # Capture the Buyer identity before reading or mutating transaction data.
+    # The transaction authority must match the wallet that created the order.
+    expected_buyer_wallet = str(
+        order.get("buyer_wallet") or ""
+    ).strip()
+
     if order.get("used"):
         return {
             "status": "already_used",
@@ -4460,23 +4466,36 @@ def verify_payment(req: VerifyPaymentRequest, x_api_key: str | None = Header(def
     transfer_info = extract_transfer_checked_info(tx_details)
     memo = extract_memo(tx_details)
 
-    buyer_wallet = None
-    if transfer_info:
-        buyer_wallet = transfer_info.get("authority")
-
-    if buyer_wallet:
-        try:
-            register_buyer_seen_db(buyer_wallet)
-            update_order_buyer_wallet_db(req.order_id, buyer_wallet)
-            order["buyer_wallet"] = buyer_wallet
-        except Exception as e:
-            print("Buyer tracking error:", e)
-
     if not transfer_info:
         return {
             "status": "invalid_payment",
             "reason": "no_transfer_checked_found",
         }
+
+    actual_buyer_wallet = str(
+        transfer_info.get("authority") or ""
+    ).strip()
+
+    sender_ok = bool(
+        expected_buyer_wallet
+        and actual_buyer_wallet
+        and actual_buyer_wallet == expected_buyer_wallet
+    )
+
+    if not sender_ok:
+        return {
+            "status": "invalid_payment",
+            "reason": "buyer_wallet_mismatch",
+            "expected_buyer_wallet": expected_buyer_wallet or None,
+            "transaction_authority": actual_buyer_wallet or None,
+        }
+
+    try:
+        register_buyer_seen_db(actual_buyer_wallet)
+    except Exception as e:
+        print("Buyer tracking error:", e)
+
+    buyer_wallet = actual_buyer_wallet
 
     expected_ata = str(
         get_associated_token_address(
@@ -4488,7 +4507,6 @@ def verify_payment(req: VerifyPaymentRequest, x_api_key: str | None = Header(def
     destination_value = transfer_info.get("destination")
     mint_value = transfer_info.get("mint")
 
-    sender_ok = True
     receiver_ok = destination_value == expected_ata
     mint_ok = mint_value == IAT_MINT
 

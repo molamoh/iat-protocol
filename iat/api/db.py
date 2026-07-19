@@ -10734,6 +10734,110 @@ def mark_settlement_execution_error_db(
         release_conn(conn)
 
 
+def record_recovered_settlement_broadcast_db(
+    settlement_id,
+    claim_token,
+    atomic_tx_signature,
+):
+    """
+    Persist a transaction signature recovered from Solana after an ambiguous
+    RPC broadcast result.
+
+    This operation is allowed only while the original execution claim remains
+    locked in broadcast_unknown state.
+    """
+    if not settlement_id or not claim_token or not atomic_tx_signature:
+        return {
+            "status": "recovered_broadcast_record_rejected",
+            "reason": "settlement_id_claim_token_and_signature_required",
+            "recorded": False,
+        }
+
+    init_settlements_table()
+
+    now = int(time.time())
+    p = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+
+    try:
+        cur.execute(f"""
+        UPDATE settlements
+        SET execution_claim_status = {p},
+            execution_broadcast_at = COALESCE(
+                execution_broadcast_at,
+                {p}
+            ),
+            commission_tx_signature = COALESCE(
+                commission_tx_signature,
+                {p}
+            ),
+            seller_payout_tx_signature = COALESCE(
+                seller_payout_tx_signature,
+                {p}
+            ),
+            execution_last_error = NULL,
+            updated_at = {p}
+        WHERE settlement_id = {p}
+          AND execution_claim_token = {p}
+          AND execution_claim_status = 'broadcast_unknown'
+          AND commission_tx_signature IS NULL
+          AND seller_payout_tx_signature IS NULL
+        """, (
+            "broadcast_submitted",
+            now,
+            atomic_tx_signature,
+            atomic_tx_signature,
+            now,
+            settlement_id,
+            claim_token,
+        ))
+
+        updated = int(cur.rowcount or 0)
+
+        if updated != 1:
+            conn.rollback()
+
+            return {
+                "status": "recovered_broadcast_record_conflict",
+                "reason": "unknown_broadcast_claim_state_mismatch",
+                "settlement_id": settlement_id,
+                "recorded": False,
+            }
+
+        conn.commit()
+
+        return {
+            "status": "recovered_broadcast_recorded",
+            "reason": "onchain_signature_recovered_and_persisted",
+            "settlement_id": settlement_id,
+            "claim_token": claim_token,
+            "atomic_tx_signature": atomic_tx_signature,
+            "commission_tx_signature": atomic_tx_signature,
+            "seller_payout_tx_signature": atomic_tx_signature,
+            "recorded": True,
+            "recovered_at": now,
+        }
+
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
+        return {
+            "status": "recovered_broadcast_record_failed",
+            "reason": "recovered_signature_persistence_failed",
+            "settlement_id": settlement_id,
+            "recorded": False,
+            "error": str(exc),
+        }
+
+    finally:
+        release_conn(conn)
+
+
+
 def get_settlement_by_id_db(settlement_id):
     if not settlement_id:
         return None
@@ -11342,6 +11446,11 @@ def inspect_settlement_execution_supervisor_db(settlement_id):
         }
 
     current_status = settlement.get("settlement_status") or "created"
+    execution_claim_status = (
+        settlement.get("execution_claim_status")
+        or "unclaimed"
+    )
+    execution_claim_token = settlement.get("execution_claim_token")
     payload = settlement.get("settlement_payload") or {}
 
     if not isinstance(payload, dict):
@@ -11358,6 +11467,22 @@ def inspect_settlement_execution_supervisor_db(settlement_id):
     retry_count = int(retry_policy.get("retry_count", 0) or 0)
     max_retries = int(retry_policy.get("max_retries", 3) or 3)
     now = int(time.time())
+
+    if execution_claim_status == "broadcast_unknown":
+        return {
+            "status": "reconciliation_required",
+            "settlement_id": settlement_id,
+            "order_id": settlement.get("order_id"),
+            "current_status": current_status,
+            "execution_claim_status": execution_claim_status,
+            "execution_claim_token": execution_claim_token,
+            "execution_claimed_at": settlement.get(
+                "execution_claimed_at"
+            ),
+            "supervisor_action": "reconcile_unknown_broadcast",
+            "reason": "ambiguous_broadcast_requires_onchain_reconciliation",
+            "automatic_retry_allowed": False,
+        }
 
     if current_status == "settled":
         return {
@@ -11501,6 +11626,127 @@ def execute_settlement_supervisor_action_db(settlement_id, reason="execution_sup
 
     action = inspection.get("supervisor_action")
     current_status = inspection.get("current_status")
+
+    if action == "reconcile_unknown_broadcast":
+        from iat.onchain import (
+            find_settlement_transaction_signature,
+            verify_tx_signature,
+        )
+
+        settlement = get_settlement_by_id_db(settlement_id)
+
+        if not settlement:
+            return {
+                "status": "not_found",
+                "settlement_id": settlement_id,
+                "action": action,
+                "executed": False,
+            }
+
+        reconciliation = find_settlement_transaction_signature(
+            settlement_id=settlement_id,
+            order_id=settlement.get("order_id"),
+            claimed_at=settlement.get("execution_claimed_at"),
+            limit=200,
+        )
+
+        if not reconciliation.get("found"):
+            return {
+                "status": "waiting",
+                "settlement_id": settlement_id,
+                "action": action,
+                "reason": reconciliation.get("reason"),
+                "inspection": inspection,
+                "reconciliation": reconciliation,
+                "automatic_retry_allowed": False,
+                "executed": False,
+            }
+
+        atomic_signature = reconciliation.get(
+            "atomic_tx_signature"
+        )
+
+        if not atomic_signature or not verify_tx_signature(
+            atomic_signature
+        ):
+            return {
+                "status": "waiting",
+                "settlement_id": settlement_id,
+                "action": action,
+                "reason": "recovered_transaction_not_confirmed",
+                "inspection": inspection,
+                "reconciliation": reconciliation,
+                "automatic_retry_allowed": False,
+                "executed": False,
+            }
+
+        broadcast_record = record_recovered_settlement_broadcast_db(
+            settlement_id=settlement_id,
+            claim_token=settlement.get("execution_claim_token"),
+            atomic_tx_signature=atomic_signature,
+        )
+
+        if not broadcast_record.get("recorded"):
+            return {
+                "status": "not_executed",
+                "settlement_id": settlement_id,
+                "action": action,
+                "reason": broadcast_record.get("reason"),
+                "inspection": inspection,
+                "reconciliation": reconciliation,
+                "broadcast_record": broadcast_record,
+                "executed": False,
+            }
+
+        workflow_status = (
+            settlement.get("settlement_status")
+            or "created"
+        )
+        transitions = []
+
+        if workflow_status == "release_failed":
+            to_ready = update_settlement_status_db(
+                settlement_id=settlement_id,
+                next_status="ready_for_release",
+                reason=f"{reason}_recovered_broadcast_to_ready",
+                commission_tx_signature=atomic_signature,
+                seller_payout_tx_signature=atomic_signature,
+            )
+            transitions.append(to_ready)
+            workflow_status = "ready_for_release"
+
+        if workflow_status == "ready_for_release":
+            to_submitted = update_settlement_status_db(
+                settlement_id=settlement_id,
+                next_status="release_submitted",
+                reason=f"{reason}_recovered_broadcast_to_submitted",
+                commission_tx_signature=atomic_signature,
+                seller_payout_tx_signature=atomic_signature,
+            )
+            transitions.append(to_submitted)
+            workflow_status = "release_submitted"
+
+        confirmation_result = None
+
+        if workflow_status == "release_submitted":
+            confirmation_result = advance_settlement_workflow_db(
+                settlement_id,
+                reason=f"{reason}_recovered_broadcast_confirmation",
+            )
+
+        return {
+            "status": "executed",
+            "settlement_id": settlement_id,
+            "action": action,
+            "previous_status": current_status,
+            "atomic_tx_signature": atomic_signature,
+            "inspection": inspection,
+            "reconciliation": reconciliation,
+            "broadcast_record": broadcast_record,
+            "workflow_transitions": transitions,
+            "confirmation_result": confirmation_result,
+            "executed": True,
+        }
 
     if action == "advance_workflow":
         result = advance_settlement_workflow_db(

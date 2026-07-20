@@ -206,48 +206,69 @@ def find_settlement_transaction_signature(
 
 def extract_transfer_checked_info(tx_details):
     """
-    Extract SPL token transfer info from parsed Solana transaction.
+    Extract SPL token transfer information from a parsed Solana transaction.
 
     Supports:
     - transferChecked
     - transfer
-
-    Phantom and wallets may use either instruction type.
+    - authority
+    - multisigAuthority
+    - single signer fallback
     """
     try:
         instructions = tx_details.transaction.transaction.message.instructions
 
         for inst in instructions:
-            inst_str = str(inst)
+            parsed = getattr(inst, "parsed", None)
 
-            is_transfer_checked = "transferChecked" in inst_str
-            is_transfer = '"type": String("transfer")' in inst_str or "'type': 'transfer'" in inst_str
+            if isinstance(inst, dict):
+                parsed = inst.get("parsed")
 
-            if is_transfer_checked or is_transfer:
-                raw = inst_str
+            if not isinstance(parsed, dict):
+                continue
 
-                def extract_between(text, start, end):
-                    if start in text and end in text.split(start, 1)[1]:
-                        return text.split(start, 1)[1].split(end, 1)[0]
-                    return None
+            instruction_type = str(parsed.get("type") or "")
 
-                info = {
-                    "authority": extract_between(raw, '"authority": String("', '")'),
-                    "destination": extract_between(raw, '"destination": String("', '")'),
-                    "mint": extract_between(raw, '"mint": String("', '")'),
-                    "source": extract_between(raw, '"source": String("', '")'),
-                    "ui_amount": extract_between(raw, '"uiAmount": Number(', ')'),
-                    "ui_amount_string": extract_between(raw, '"uiAmountString": String("', '")'),
-                    "amount": extract_between(raw, '"amount": String("', '")'),
-                    "instruction_type": "transferChecked" if is_transfer_checked else "transfer",
-                }
+            if instruction_type not in {"transferChecked", "transfer"}:
+                continue
 
-                return info
+            info = parsed.get("info") or {}
+
+            if not isinstance(info, dict):
+                continue
+
+            authority = (
+                info.get("authority")
+                or info.get("multisigAuthority")
+            )
+
+            signers = info.get("signers") or []
+
+            if not authority and isinstance(signers, list) and len(signers) == 1:
+                authority = signers[0]
+
+            token_amount = info.get("tokenAmount") or {}
+
+            if not isinstance(token_amount, dict):
+                token_amount = {}
+
+            return {
+                "authority": authority,
+                "destination": info.get("destination"),
+                "mint": info.get("mint"),
+                "source": info.get("source"),
+                "ui_amount": token_amount.get("uiAmount"),
+                "ui_amount_string": token_amount.get("uiAmountString"),
+                "amount": token_amount.get("amount") or info.get("amount"),
+                "decimals": token_amount.get("decimals"),
+                "instruction_type": instruction_type,
+            }
 
         return None
-    except Exception:
-        return None
 
+    except Exception as exc:
+        print("Transfer extraction error:", exc)
+        return None
 
 def extract_memo(tx_details):
     try:

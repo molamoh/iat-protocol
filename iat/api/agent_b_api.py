@@ -4423,11 +4423,6 @@ def verify_payment(req: VerifyPaymentRequest, x_api_key: str | None = Header(def
             "status": "already_used",
         }
 
-    if int(time.time()) - int(order["created_at"]) > ORDER_TTL:
-        return {
-            "status": "expired_order",
-        }
-
     if is_tx_processed_db(req.tx_signature):
         buyer_wallet = order.get("buyer_wallet")
         banned_buyer = None
@@ -4463,6 +4458,43 @@ def verify_payment(req: VerifyPaymentRequest, x_api_key: str | None = Header(def
         }
 
     tx_details = get_tx_details(req.tx_signature)
+
+    if tx_details is None:
+        return {
+            "status": "invalid_signature",
+            "reason": "transaction_details_unavailable",
+        }
+
+    transaction_block_time = getattr(tx_details, "block_time", None)
+
+    if transaction_block_time is None:
+        return {
+            "status": "invalid_payment",
+            "reason": "transaction_block_time_unavailable",
+        }
+
+    order_created_at = int(order["created_at"])
+    transaction_block_time = int(transaction_block_time)
+    payment_clock_skew_seconds = 120
+    order_expires_at = order_created_at + ORDER_TTL
+
+    if transaction_block_time < order_created_at - payment_clock_skew_seconds:
+        return {
+            "status": "invalid_payment",
+            "reason": "transaction_predates_order",
+            "order_created_at": order_created_at,
+            "transaction_block_time": transaction_block_time,
+        }
+
+    if transaction_block_time > order_expires_at:
+        return {
+            "status": "expired_order",
+            "reason": "payment_made_after_order_expiration",
+            "order_created_at": order_created_at,
+            "order_expires_at": order_expires_at,
+            "transaction_block_time": transaction_block_time,
+        }
+
     transfer_info = extract_transfer_checked_info(tx_details)
     memo = extract_memo(tx_details)
 

@@ -7,7 +7,7 @@ import requests
 import threading
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
-from fastapi import FastAPI, Header, Body, Request
+from fastapi import FastAPI, Header, Body, Request, Depends, HTTPException
 from pydantic import BaseModel, EmailStr, Field
 from solders.pubkey import Pubkey
 from spl.token.instructions import get_associated_token_address
@@ -266,6 +266,19 @@ def enforce_admin_key(x_api_key):
             detail="unauthorized",
         )
 
+    return True
+
+
+def require_admin(
+    x_api_key: str | None = Header(default=None),
+):
+    """
+    Central FastAPI dependency for ADMIN_ONLY endpoints.
+
+    Denies access by default when the server admin key is absent,
+    the request key is absent, or the keys do not match.
+    """
+    enforce_admin_key(x_api_key)
     return True
 
 
@@ -2938,8 +2951,9 @@ def network_economics():
 
 
 @app.get("/admin/market-intelligence")
-def admin_market_intelligence(x_api_key: str = Header(default="")):
-    enforce_admin_key(x_api_key)
+def admin_market_intelligence(
+    _admin: bool = Depends(require_admin),
+):
 
     from iat.intelligence.market_intelligence import build_market_intelligence
 
@@ -2999,9 +3013,8 @@ def admin_service_seller_resolution(
 def admin_foundation_decision_queue(
     status: str | None = "pending_foundation_review",
     limit: int = 50,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    enforce_admin_key(x_api_key)
 
     from iat.api.db import list_foundation_decision_queue_db
 
@@ -3155,9 +3168,8 @@ def admin_reject_foundation_decision(
 
 @app.post("/admin/foundation-decision-queue/enqueue-market-intelligence")
 def admin_enqueue_market_intelligence_decisions(
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    enforce_admin_key(x_api_key)
 
     from iat.intelligence.market_intelligence import build_market_intelligence
     from iat.api.db import enqueue_foundation_decision_db
@@ -5118,8 +5130,7 @@ def admin_test_buyer_consensus(order_id: str, x_api_key: str | None = Header(def
 
 
 @app.post("/admin/e2e/buyer-dry-run")
-def admin_buyer_e2e_dry_run(payload: dict = Body(default=None), x_api_key: str = Header(default="")):
-    enforce_admin_key(x_api_key)
+def admin_buyer_e2e_dry_run(payload: dict = Body(default=None), _admin: bool = Depends(require_admin)):
 
     payload = payload or {}
 
@@ -6755,16 +6766,9 @@ class AdminSettlementStatusUpdateRequest(BaseModel):
 @app.post("/admin/settlement/update-status")
 def admin_update_settlement_status(
     req: AdminSettlementStatusUpdateRequest,
-    request: Request,
+    _admin: bool = Depends(require_admin),
 ):
-    expected_key = os.getenv("IAT_ADMIN_API_KEY")
-    provided_key = request.headers.get("x-api-key")
 
-    if expected_key and provided_key != expected_key:
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     return update_settlement_status_db(
         settlement_id=req.settlement_id,
@@ -6779,16 +6783,9 @@ def admin_update_settlement_status(
 def admin_validate_settlement_transition(
     current_status: str,
     next_status: str,
-    request: Request,
+    _admin: bool = Depends(require_admin),
 ):
-    expected_key = os.getenv("IAT_ADMIN_API_KEY")
-    provided_key = request.headers.get("x-api-key")
 
-    if expected_key and provided_key != expected_key:
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     return validate_settlement_transition(
         current_status,
@@ -6801,16 +6798,9 @@ def admin_validate_settlement_transition(
 @app.post("/admin/settlement/orchestrator/run-once")
 def admin_run_settlement_orchestrator_once(
     limit: int = 50,
-    request: Request = None,
+    _admin: bool = Depends(require_admin),
 ):
-    expected_key = os.getenv("IAT_ADMIN_API_KEY")
-    provided_key = request.headers.get("x-api-key") if request else None
 
-    if expected_key and provided_key != expected_key:
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     return run_settlement_orchestrator_once_db(
         limit=limit,
@@ -6819,8 +6809,7 @@ def admin_run_settlement_orchestrator_once(
 
 
 @app.post("/admin/settlements/create-decision-test")
-def admin_create_decision_test_settlement(payload: dict = Body(default=None), x_api_key: str = Header(default="")):
-    enforce_admin_key(x_api_key)
+def admin_create_decision_test_settlement(payload: dict = Body(default=None), _admin: bool = Depends(require_admin)):
 
     from iat.api.db import record_settlement_db
 
@@ -6897,8 +6886,7 @@ def admin_create_decision_test_settlement(payload: dict = Body(default=None), x_
 
 
 @app.get("/admin/action-engine/runtime/supervisor")
-def admin_inspect_action_runtime_supervisor(x_api_key: str = Header(default="")):
-    enforce_admin_key(x_api_key)
+def admin_inspect_action_runtime_supervisor(_admin: bool = Depends(require_admin)):
 
     from iat.action_engine.runtime_supervisor import inspect_runtime_supervisor
 
@@ -6906,8 +6894,7 @@ def admin_inspect_action_runtime_supervisor(x_api_key: str = Header(default=""))
 
 
 @app.post("/admin/action-engine/runtime/supervisor/run")
-def admin_run_action_runtime_supervisor(x_api_key: str = Header(default="")):
-    enforce_admin_key(x_api_key)
+def admin_run_action_runtime_supervisor(_admin: bool = Depends(require_admin)):
 
     from iat.action_engine.runtime_supervisor import run_runtime_supervisor_cycle
 
@@ -6915,8 +6902,7 @@ def admin_run_action_runtime_supervisor(x_api_key: str = Header(default="")):
 
 
 @app.get("/admin/action-engine/runtime/metrics")
-def admin_get_action_runtime_metrics(x_api_key: str = Header(default="")):
-    enforce_admin_key(x_api_key)
+def admin_get_action_runtime_metrics(_admin: bool = Depends(require_admin)):
 
     from iat.action_engine.runtime_metrics import inspect_runtime_metrics
 
@@ -6927,9 +6913,8 @@ def admin_get_action_runtime_metrics(x_api_key: str = Header(default="")):
 def admin_list_action_execution_history(
     action_id: str | None = None,
     limit: int = 50,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    enforce_admin_key(x_api_key)
 
     from iat.api.db import list_action_execution_history_db
 
@@ -6943,9 +6928,8 @@ def admin_list_action_execution_history(
 def admin_get_action_execution_history(
     action_id: str,
     limit: int = 10,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    enforce_admin_key(x_api_key)
 
     from iat.api.db import list_action_execution_history_db
 
@@ -6960,9 +6944,8 @@ def admin_debug_eligible_seller_runtime_agents(
     service: str,
     specialization: str | None = None,
     limit: int = 20,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    enforce_admin_key(x_api_key)
 
     from iat.api.db import get_available_seller_execution_agents_db
 
@@ -6976,9 +6959,8 @@ def admin_debug_eligible_seller_runtime_agents(
 @app.get("/admin/seller-runtime/debug-agent/{seller_agent_id}")
 def admin_debug_seller_runtime_agent(
     seller_agent_id: str,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    enforce_admin_key(x_api_key)
 
     from iat.api.db import get_conn, release_conn, qmark
 
@@ -7024,9 +7006,8 @@ def admin_debug_seller_runtime_agent(
 @app.post("/admin/seller-runtime/activate-parent/{seller_agent_id}")
 def admin_activate_seller_runtime_parent(
     seller_agent_id: str,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    enforce_admin_key(x_api_key)
 
     from iat.api.db import get_conn, release_conn, qmark
     import time
@@ -7091,9 +7072,8 @@ def admin_list_action_runtime_memory(
     limit: int = 100,
     memory_type: str = None,
     subject_id: str = None,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    enforce_admin_key(x_api_key)
 
     from iat.api.db import list_action_runtime_memory_db
 
@@ -7106,8 +7086,7 @@ def admin_list_action_runtime_memory(
 
 
 @app.get("/admin/action-engine/runtime/events")
-def admin_list_action_runtime_events(x_api_key: str = Header(default="")):
-    enforce_admin_key(x_api_key)
+def admin_list_action_runtime_events(_admin: bool = Depends(require_admin)):
 
     from iat.api.db import list_action_runtime_events_db
 
@@ -7115,8 +7094,7 @@ def admin_list_action_runtime_events(x_api_key: str = Header(default="")):
 
 
 @app.get("/admin/action-engine/runtime/policy")
-def admin_get_action_runtime_policy(x_api_key: str = Header(default="")):
-    enforce_admin_key(x_api_key)
+def admin_get_action_runtime_policy(_admin: bool = Depends(require_admin)):
 
     from iat.action_engine.runtime_policy_engine import inspect_runtime_policy_engine
 
@@ -7125,8 +7103,7 @@ def admin_get_action_runtime_policy(x_api_key: str = Header(default="")):
 
 
 @app.get("/admin/action-engine/runtime/circuit-breaker/{service_name}")
-def admin_get_action_runtime_circuit_breaker(service_name: str, x_api_key: str = Header(default="")):
-    enforce_admin_key(x_api_key)
+def admin_get_action_runtime_circuit_breaker(service_name: str, _admin: bool = Depends(require_admin)):
 
     from iat.api.db import get_action_circuit_breaker_db
 
@@ -7134,8 +7111,7 @@ def admin_get_action_runtime_circuit_breaker(service_name: str, x_api_key: str =
 
 
 @app.post("/admin/action-engine/runtime/circuit-breaker/{service_name}/set")
-def admin_set_action_runtime_circuit_breaker(service_name: str, payload: dict, x_api_key: str = Header(default="")):
-    enforce_admin_key(x_api_key)
+def admin_set_action_runtime_circuit_breaker(service_name: str, payload: dict, _admin: bool = Depends(require_admin)):
 
     from iat.api.db import upsert_action_circuit_breaker_db
 
@@ -7151,8 +7127,7 @@ def admin_set_action_runtime_circuit_breaker(service_name: str, payload: dict, x
 
 
 @app.get("/admin/action-engine/runtime/dead-letter")
-def admin_list_action_dead_letter_queue(x_api_key: str = Header(default="")):
-    enforce_admin_key(x_api_key)
+def admin_list_action_dead_letter_queue(_admin: bool = Depends(require_admin)):
 
     from iat.api.db import list_action_dead_letter_queue_db
 
@@ -7161,8 +7136,7 @@ def admin_list_action_dead_letter_queue(x_api_key: str = Header(default="")):
 
 
 @app.get("/admin/action-engine/workers")
-def admin_list_action_workers(x_api_key: str = Header(default="")):
-    enforce_admin_key(x_api_key)
+def admin_list_action_workers(_admin: bool = Depends(require_admin)):
 
     from iat.api.db import list_action_workers_db
 
@@ -7170,8 +7144,7 @@ def admin_list_action_workers(x_api_key: str = Header(default="")):
 
 
 @app.post("/admin/action-engine/workers/register")
-def admin_register_action_worker(payload: dict = Body(default=None), x_api_key: str = Header(default="")):
-    enforce_admin_key(x_api_key)
+def admin_register_action_worker(payload: dict = Body(default=None), _admin: bool = Depends(require_admin)):
 
     from iat.api.db import register_action_worker_db
 
@@ -7186,8 +7159,7 @@ def admin_register_action_worker(payload: dict = Body(default=None), x_api_key: 
 
 
 @app.post("/admin/action-engine/workers/heartbeat")
-def admin_heartbeat_action_worker(payload: dict = Body(default=None), x_api_key: str = Header(default="")):
-    enforce_admin_key(x_api_key)
+def admin_heartbeat_action_worker(payload: dict = Body(default=None), _admin: bool = Depends(require_admin)):
 
     from iat.api.db import heartbeat_action_worker_db
 
@@ -7201,8 +7173,7 @@ def admin_heartbeat_action_worker(payload: dict = Body(default=None), x_api_key:
 
 
 @app.post("/admin/action-engine/workers/result")
-def admin_mark_action_worker_result(payload: dict = Body(default=None), x_api_key: str = Header(default="")):
-    enforce_admin_key(x_api_key)
+def admin_mark_action_worker_result(payload: dict = Body(default=None), _admin: bool = Depends(require_admin)):
 
     from iat.api.db import mark_action_worker_result_db
 
@@ -7217,8 +7188,7 @@ def admin_mark_action_worker_result(payload: dict = Body(default=None), x_api_ke
 
 
 @app.get("/admin/action-engine/core")
-def admin_inspect_action_execution_core(x_api_key: str = Header(default="")):
-    enforce_admin_key(x_api_key)
+def admin_inspect_action_execution_core(_admin: bool = Depends(require_admin)):
 
     from iat.action_engine.execution_core import inspect_execution_core
 
@@ -7226,8 +7196,7 @@ def admin_inspect_action_execution_core(x_api_key: str = Header(default="")):
 
 
 @app.post("/admin/action-engine/core/submit")
-def admin_submit_action_to_execution_core(payload: dict = Body(default=None), x_api_key: str = Header(default="")):
-    enforce_admin_key(x_api_key)
+def admin_submit_action_to_execution_core(payload: dict = Body(default=None), _admin: bool = Depends(require_admin)):
 
     from iat.action_engine.execution_core import submit_action_to_core
 
@@ -7246,8 +7215,7 @@ def admin_submit_action_to_execution_core(payload: dict = Body(default=None), x_
 
 
 @app.post("/admin/action-engine/core/process-next")
-def admin_process_next_action_core(x_api_key: str = Header(default="")):
-    enforce_admin_key(x_api_key)
+def admin_process_next_action_core(_admin: bool = Depends(require_admin)):
 
     from iat.action_engine.execution_core import process_next_core_action
 
@@ -7256,8 +7224,7 @@ def admin_process_next_action_core(x_api_key: str = Header(default="")):
 
 
 @app.post("/admin/settlements/{settlement_id}/execution-supervisor/run")
-def admin_run_settlement_execution_supervisor(settlement_id: str, x_api_key: str = Header(default="")):
-    enforce_admin_key(x_api_key)
+def admin_run_settlement_execution_supervisor(settlement_id: str, _admin: bool = Depends(require_admin)):
 
     from iat.api.db import execute_settlement_supervisor_action_db
 
@@ -7269,8 +7236,7 @@ def admin_run_settlement_execution_supervisor(settlement_id: str, x_api_key: str
 
 
 @app.get("/admin/settlements/{settlement_id}/execution-supervisor")
-def admin_inspect_settlement_execution_supervisor(settlement_id: str, x_api_key: str = Header(default="")):
-    enforce_admin_key(x_api_key)
+def admin_inspect_settlement_execution_supervisor(settlement_id: str, _admin: bool = Depends(require_admin)):
 
     from iat.api.db import inspect_settlement_execution_supervisor_db
 
@@ -7281,7 +7247,7 @@ def admin_inspect_settlement_execution_supervisor(settlement_id: str, x_api_key:
 @app.post("/admin/settlements/{settlement_id}/recover-wallets")
 def admin_recover_settlement_wallets(
     settlement_id: str,
-    request: Request = None,
+    _admin: bool = Depends(require_admin),
 ):
     """
     Recover an existing settlement after corrected wallet configuration.
@@ -7290,14 +7256,7 @@ def admin_recover_settlement_wallets(
     recomputed before the existing financial record may return to the
     controlled settlement workflow.
     """
-    expected_key = os.getenv("IAT_ADMIN_API_KEY")
-    provided_key = request.headers.get("x-api-key") if request else None
 
-    if not expected_key or provided_key != expected_key:
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     from iat.api.db import (
         get_settlement_by_id_db,
@@ -7413,16 +7372,9 @@ def admin_recover_settlement_wallets(
 @app.post("/admin/settlements/{settlement_id}/advance-workflow")
 def admin_advance_settlement_workflow(
     settlement_id: str,
-    request: Request = None,
+    _admin: bool = Depends(require_admin),
 ):
-    expected_key = os.getenv("IAT_ADMIN_API_KEY")
-    provided_key = request.headers.get("x-api-key") if request else None
 
-    if expected_key and provided_key != expected_key:
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     result = advance_settlement_workflow_db(
         settlement_id=settlement_id,
@@ -7436,16 +7388,9 @@ def admin_advance_settlement_workflow(
 @app.post("/admin/settlements/transition")
 def admin_transition_settlement_state(
     req: AdminSettlementStatusUpdateRequest,
-    request: Request = None,
+    _admin: bool = Depends(require_admin),
 ):
-    expected_key = os.getenv("IAT_ADMIN_API_KEY")
-    provided_key = request.headers.get("x-api-key") if request else None
 
-    if expected_key and provided_key != expected_key:
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     result = update_settlement_status_db(
         settlement_id=req.settlement_id,
@@ -7464,15 +7409,10 @@ def admin_transition_settlement_state(
 
 
 @app.get("/admin/debug-db-env")
-def admin_debug_db_env(request: Request = None):
-    expected_key = os.getenv("IAT_ADMIN_API_KEY")
-    provided_key = request.headers.get("x-api-key") if request else None
+def admin_debug_db_env(
+    _admin: bool = Depends(require_admin),
+):
 
-    if expected_key and provided_key != expected_key:
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     from iat.api.db import USE_POSTGRES
 
@@ -7488,16 +7428,9 @@ def admin_debug_db_env(request: Request = None):
 @app.get("/admin/settlements")
 def admin_list_settlements(
     limit: int = 20,
-    request: Request = None,
+    _admin: bool = Depends(require_admin),
 ):
-    expected_key = os.getenv("IAT_ADMIN_API_KEY")
-    provided_key = request.headers.get("x-api-key") if request else None
 
-    if expected_key and provided_key != expected_key:
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     return {
         "status": "ok",
@@ -7508,15 +7441,10 @@ def admin_list_settlements(
 
 
 @app.post("/admin/test-settlement-safety")
-def admin_test_settlement_safety(request: Request):
-    expected_key = os.getenv("IAT_ADMIN_API_KEY")
-    provided_key = request.headers.get("x-api-key")
+def admin_test_settlement_safety(
+    _admin: bool = Depends(require_admin),
+):
 
-    if expected_key and provided_key != expected_key:
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     order = {
         "order_id": "ADMIN_SETTLEMENT_TEST",
@@ -7543,15 +7471,10 @@ def admin_test_settlement_safety(request: Request):
 
 
 @app.post("/admin/test-onchain-slash-agent/{agent_id}")
-def admin_test_onchain_slash_agent(agent_id: str, request: Request, amount: float = 0.1):
-    expected_key = os.getenv("IAT_ADMIN_API_KEY")
-    provided_key = request.headers.get("x-api-key")
+def admin_test_onchain_slash_agent(agent_id: str, amount: float = 0.1,
+    _admin: bool = Depends(require_admin),
+):
 
-    if expected_key and provided_key != expected_key:
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     onchain = execute_onchain_slash(
         agent_id,
@@ -7568,15 +7491,10 @@ def admin_test_onchain_slash_agent(agent_id: str, request: Request, amount: floa
 
 
 @app.post("/admin/test-slash-agent/{agent_id}")
-def admin_test_slash_agent(agent_id: str, request: Request, slash_ratio: float = 0.10):
-    expected_key = os.getenv("IAT_ADMIN_API_KEY")
-    provided_key = request.headers.get("x-api-key")
+def admin_test_slash_agent(agent_id: str, slash_ratio: float = 0.10,
+    _admin: bool = Depends(require_admin),
+):
 
-    if expected_key and provided_key != expected_key:
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     result = slash_agent_stake_db(
         agent_id,
@@ -7774,15 +7692,10 @@ def admin_execute_agent_unstake(
 
 
 @app.post("/admin/verify-agent-stake")
-def admin_verify_agent_stake(req: AgentStakeVerifyRequest, request: Request):
-    expected_key = os.getenv("IAT_ADMIN_API_KEY")
-    provided_key = request.headers.get("x-api-key")
+def admin_verify_agent_stake(req: AgentStakeVerifyRequest,
+    _admin: bool = Depends(require_admin),
+):
 
-    if expected_key and provided_key != expected_key:
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     escrow_wallet = os.getenv("IAT_ESCROW_WALLET")
 
@@ -7873,9 +7786,8 @@ def internal_orchestrate_seller_risk(
 @app.post("/admin/adaptive-policy/deactivate")
 def admin_deactivate_adaptive_policy(
     payload: dict,
-    x_api_key: str | None = Header(default=None),
+    _admin: bool = Depends(require_admin),
 ):
-    enforce_admin_key(x_api_key)
 
     scope = payload.get("scope")
     service = payload.get("service")
@@ -10689,9 +10601,8 @@ def internal_foundation_decision(
 @app.post("/admin/seller/approve")
 def admin_approve_seller(
     req: SellerApprovalRequest,
-    x_api_key: str = Header(default="")
+    _admin: bool = Depends(require_admin)
 ):
-    enforce_admin_key(x_api_key)
 
     return approve_seller_db(req.seller_id)
 
@@ -11513,9 +11424,8 @@ class SellerRejectRequest(BaseModel):
 @app.post("/admin/seller/reject")
 def admin_reject_seller(
     req: SellerRejectRequest,
-    x_api_key: str = Header(default="")
+    _admin: bool = Depends(require_admin)
 ):
-    enforce_admin_key(x_api_key)
 
     return reject_seller_db(
         seller_id=req.seller_id,
@@ -11530,9 +11440,8 @@ class SellerApproveOverrideRequest(BaseModel):
 @app.post("/admin/seller/approve-override")
 def admin_approve_seller_override(
     req: SellerApproveOverrideRequest,
-    x_api_key: str = Header(default="")
+    _admin: bool = Depends(require_admin)
 ):
-    enforce_admin_key(x_api_key)
 
     return approve_seller_db(
         seller_id=req.seller_id,
@@ -11543,9 +11452,8 @@ def admin_approve_seller_override(
 @app.get("/admin/seller/{seller_id}")
 def admin_get_seller(
     seller_id: str,
-    x_api_key: str = Header(default="")
+    _admin: bool = Depends(require_admin)
 ):
-    enforce_admin_key(x_api_key)
 
     seller = get_seller_db(seller_id)
 
@@ -11565,9 +11473,8 @@ def admin_get_seller(
 @app.get("/admin/seller/{seller_id}/governance-events")
 def admin_seller_governance_events(
     seller_id: str,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    enforce_admin_key(x_api_key)
 
     return {
         "status": "ok",
@@ -11587,9 +11494,8 @@ class AdminSellerRiskEventRequest(BaseModel):
 @app.post("/admin/seller/risk-event")
 def admin_seller_risk_event(
     req: AdminSellerRiskEventRequest,
-    x_api_key: str = Header(default="")
+    _admin: bool = Depends(require_admin)
 ):
-    enforce_admin_key(x_api_key)
 
     return apply_seller_risk_event_db(
         seller_id=req.seller_id,
@@ -11610,9 +11516,8 @@ class AdminSellerAgentRuntimeUpdateRequest(BaseModel):
 @app.post("/admin/seller-agent/runtime-status")
 def admin_seller_agent_runtime_status(
     req: AdminSellerAgentRuntimeUpdateRequest,
-    x_api_key: str = Header(default="")
+    _admin: bool = Depends(require_admin)
 ):
-    enforce_admin_key(x_api_key)
 
     return update_seller_agent_runtime_status_db(
         seller_agent_id=req.seller_agent_id,
@@ -11627,9 +11532,8 @@ def admin_seller_agent_runtime_status(
 @app.get("/admin/seller-containment-events")
 def admin_seller_containment_events(
     limit: int = 50,
-    x_api_key: str = Header(None),
+    _admin: bool = Depends(require_admin),
 ):
-    enforce_admin_key(x_api_key)
 
     from iat.api.db import (
         list_seller_containment_events_db,
@@ -11891,9 +11795,8 @@ def start_runtime_governance_loop():
 @app.get("/admin/seller-risk-dashboard")
 def admin_seller_risk_dashboard(
     limit: int = 100,
-    x_api_key: str = Header(default="")
+    _admin: bool = Depends(require_admin)
 ):
-    enforce_admin_key(x_api_key)
 
     from iat.api.db import list_seller_risk_dashboard_db
 
@@ -11911,9 +11814,8 @@ class AdminSellerTrustRecomputeRequest(BaseModel):
 @app.post("/admin/seller/recompute-trust")
 def admin_seller_recompute_trust(
     req: AdminSellerTrustRecomputeRequest,
-    x_api_key: str = Header(default="")
+    _admin: bool = Depends(require_admin)
 ):
-    enforce_admin_key(x_api_key)
 
     from iat.api.db import recompute_seller_trust_tier_db
 
@@ -11933,9 +11835,8 @@ class AdminSellerStatusUpdateRequest(BaseModel):
 @app.post("/admin/seller/update-status")
 def admin_seller_update_status(
     req: AdminSellerStatusUpdateRequest,
-    x_api_key: str = Header(default="")
+    _admin: bool = Depends(require_admin)
 ):
-    enforce_admin_key(x_api_key)
 
     from iat.api.db import update_seller_status_governed_db
 
@@ -12017,9 +11918,8 @@ class AdminSellerRecoveryDecisionRequest(BaseModel):
 @app.post("/admin/seller/recovery-decision")
 def admin_seller_recovery_decision(
     req: AdminSellerRecoveryDecisionRequest,
-    x_api_key: str = Header(default="")
+    _admin: bool = Depends(require_admin)
 ):
-    enforce_admin_key(x_api_key)
 
     from iat.api.db import decide_seller_recovery_request_db
 
@@ -12035,9 +11935,8 @@ def admin_seller_recovery_decision(
 def admin_seller_governance_events(
     seller_id: str = None,
     limit: int = 100,
-    x_api_key: str = Header(default="")
+    _admin: bool = Depends(require_admin)
 ):
-    enforce_admin_key(x_api_key)
 
     from iat.api.db import list_seller_governance_events_db
 
@@ -12051,9 +11950,8 @@ def admin_seller_governance_events(
 @app.get("/admin/threat-memory-nodes")
 def admin_threat_memory_nodes(
     limit: int = 100,
-    x_api_key: str = Header(default="")
+    _admin: bool = Depends(require_admin)
 ):
-    enforce_admin_key(x_api_key)
 
     from iat.api.db import list_threat_memory_nodes_db
 
@@ -12066,9 +11964,8 @@ def admin_threat_memory_nodes(
 @app.get("/admin/seller/autonomous-governance-recommendation/{seller_id}")
 def admin_seller_autonomous_governance_recommendation(
     seller_id: str,
-    x_api_key: str = Header(default="")
+    _admin: bool = Depends(require_admin)
 ):
-    enforce_admin_key(x_api_key)
 
     from iat.api.db import compute_autonomous_governance_recommendation_db
 
@@ -12081,9 +11978,8 @@ def admin_seller_autonomous_governance_recommendation(
 @app.post("/admin/seller/record-autonomous-governance-recommendation/{seller_id}")
 def admin_record_autonomous_governance_recommendation(
     seller_id: str,
-    x_api_key: str = Header(default="")
+    _admin: bool = Depends(require_admin)
 ):
-    enforce_admin_key(x_api_key)
 
     from iat.api.db import record_autonomous_governance_recommendation_db
 
@@ -12096,9 +11992,8 @@ def admin_record_autonomous_governance_recommendation(
 @app.get("/admin/seller/simulate-protocol-response/{seller_id}")
 def admin_simulate_protocol_response(
     seller_id: str,
-    x_api_key: str = Header(default="")
+    _admin: bool = Depends(require_admin)
 ):
-    enforce_admin_key(x_api_key)
 
     from iat.api.db import simulate_protocol_response_impact_db
 
@@ -12111,9 +12006,8 @@ def admin_simulate_protocol_response(
 @app.post("/admin/seller/record-protocol-response-simulation/{seller_id}")
 def admin_record_protocol_response_simulation(
     seller_id: str,
-    x_api_key: str = Header(default="")
+    _admin: bool = Depends(require_admin)
 ):
-    enforce_admin_key(x_api_key)
 
     from iat.api.db import record_protocol_response_simulation_db
 
@@ -12126,9 +12020,8 @@ def admin_record_protocol_response_simulation(
 @app.get("/admin/seller/autonomous-recovery-recommendation/{seller_id}")
 def admin_autonomous_recovery_recommendation(
     seller_id: str,
-    x_api_key: str = Header(default="")
+    _admin: bool = Depends(require_admin)
 ):
-    enforce_admin_key(x_api_key)
 
     from iat.api.db import compute_autonomous_recovery_recommendation_db
 
@@ -12140,9 +12033,8 @@ def admin_autonomous_recovery_recommendation(
 @app.post("/admin/seller/record-autonomous-recovery-recommendation/{seller_id}")
 def admin_record_autonomous_recovery_recommendation(
     seller_id: str,
-    x_api_key: str = Header(default="")
+    _admin: bool = Depends(require_admin)
 ):
-    enforce_admin_key(x_api_key)
 
     from iat.api.db import record_autonomous_recovery_recommendation_db
 
@@ -12155,9 +12047,8 @@ def admin_record_autonomous_recovery_recommendation(
 @app.get("/admin/seller/simulate-rehabilitation/{seller_id}")
 def admin_simulate_rehabilitation(
     seller_id: str,
-    x_api_key: str = Header(default="")
+    _admin: bool = Depends(require_admin)
 ):
-    enforce_admin_key(x_api_key)
 
     from iat.api.db import simulate_rehabilitation_impact_db
 
@@ -12169,9 +12060,8 @@ def admin_simulate_rehabilitation(
 @app.post("/admin/seller/record-rehabilitation-simulation/{seller_id}")
 def admin_record_rehabilitation_simulation(
     seller_id: str,
-    x_api_key: str = Header(default="")
+    _admin: bool = Depends(require_admin)
 ):
-    enforce_admin_key(x_api_key)
 
     from iat.api.db import record_rehabilitation_impact_simulation_db
 
@@ -12184,9 +12074,8 @@ def admin_record_rehabilitation_simulation(
 @app.get("/admin/seller/rehabilitation-execution-gate/{seller_id}")
 def admin_rehabilitation_execution_gate(
     seller_id: str,
-    x_api_key: str = Header(default="")
+    _admin: bool = Depends(require_admin)
 ):
-    enforce_admin_key(x_api_key)
 
     from iat.api.db import authorize_rehabilitation_execution_db
 
@@ -12197,7 +12086,9 @@ def admin_rehabilitation_execution_gate(
 
 
 @app.get("/admin/db-status")
-def db_status_admin():
+def db_status_admin(
+    _admin: bool = Depends(require_admin),
+):
     from iat.api.db import USE_POSTGRES, DATABASE_URL, DB_PATH, get_conn, release_conn
 
     conn = None

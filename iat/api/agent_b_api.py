@@ -9488,13 +9488,8 @@ def admin_protocol_adaptation_reviews_evaluate(
     min_reviews: int = 2,
     max_avg_risk: float = 0.60,
     min_avg_confidence: float = 0.65,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     return evaluate_protocol_adaptation_reviews_db(
         adaptation_id=adaptation_id,
@@ -9672,13 +9667,8 @@ def admin_protocol_rollback_reviews_evaluate(
     min_reviews: int = 2,
     max_avg_risk: float = 0.60,
     min_avg_confidence: float = 0.65,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     return evaluate_protocol_rollback_reviews_db(
         rollback_id=rollback_id,
@@ -9821,10 +9811,8 @@ def internal_seller_agent_factory_review_store(
 @app.get("/admin/seller-agent-factory-reviews/evaluate/{factory_request_id}")
 def admin_seller_agent_factory_reviews_evaluate(
     factory_request_id: str,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
 
     return evaluate_seller_agent_factory_reviews_db(
         factory_request_id=factory_request_id
@@ -10093,10 +10081,8 @@ def internal_seller_agent_runtime_review_store(
 @app.get("/admin/seller-agent-runtime-reviews/evaluate/{seller_agent_id}")
 def admin_seller_agent_runtime_reviews_evaluate(
     seller_agent_id: str,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
 
     return evaluate_seller_agent_runtime_reviews_db(
         seller_agent_id=seller_agent_id
@@ -10197,10 +10183,8 @@ def internal_seller_agent_activation_governance_review_store(
 @app.get("/admin/seller-agent-activation-governance-reviews/evaluate/{seller_agent_id}")
 def admin_seller_agent_activation_governance_reviews_evaluate(
     seller_agent_id: str,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
 
     return evaluate_seller_agent_activation_governance_reviews_db(
         seller_agent_id=seller_agent_id
@@ -10293,10 +10277,8 @@ def internal_seller_agent_simulation_review_store(
 @app.get("/admin/seller-agent-simulation-reviews/evaluate/{factory_request_id}")
 def admin_seller_agent_simulation_reviews_evaluate(
     factory_request_id: str,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
 
     return evaluate_seller_agent_simulation_reviews_db(
         factory_request_id=factory_request_id
@@ -10387,10 +10369,8 @@ def internal_seller_agent_sandbox_review_store(
 @app.get("/admin/seller-agent-sandbox-reviews/evaluate/{factory_request_id}")
 def admin_seller_agent_sandbox_reviews_evaluate(
     factory_request_id: str,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
 
     return evaluate_seller_agent_sandbox_reviews_db(
         factory_request_id=factory_request_id

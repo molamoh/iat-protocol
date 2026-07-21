@@ -7496,10 +7496,8 @@ def admin_test_lock_agent_stake(
 @app.post("/admin/request-agent-unstake/{agent_id}")
 def admin_request_agent_unstake(
     agent_id: str,
-    x_api_key: str | None = Header(default=None),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
 
     agent = get_agent_db(agent_id)
 
@@ -7553,10 +7551,8 @@ def admin_request_agent_unstake(
 @app.post("/admin/execute-agent-unstake/{agent_id}")
 def admin_execute_agent_unstake(
     agent_id: str,
-    x_api_key: str | None = Header(default=None),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
 
     cooldown_seconds = 86400
 
@@ -8680,13 +8676,8 @@ def seller_list_agent_factory_requests(
 @app.post("/admin/seller-agent-factory/review/{factory_request_id}")
 def admin_review_seller_agent_factory_request(
     factory_request_id: str,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     return run_seller_agent_factory_review_db(factory_request_id)
 
@@ -8695,13 +8686,8 @@ def admin_review_seller_agent_factory_request(
 @app.post("/admin/seller-agent-factory/sandbox/{factory_request_id}")
 def admin_run_seller_agent_factory_sandbox(
     factory_request_id: str,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     return run_seller_agent_sandbox_review_db(factory_request_id)
 
@@ -8710,13 +8696,8 @@ def admin_run_seller_agent_factory_sandbox(
 @app.post("/admin/seller-agent-factory/simulation/{factory_request_id}")
 def admin_run_seller_agent_factory_simulation(
     factory_request_id: str,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     return run_seller_agent_simulation_review_db(factory_request_id)
 
@@ -8725,13 +8706,8 @@ def admin_run_seller_agent_factory_simulation(
 @app.post("/admin/seller-agent-factory/generate/{factory_request_id}")
 def admin_generate_seller_agents_from_factory_request(
     factory_request_id: str,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     return run_seller_agent_generation_db(factory_request_id)
 
@@ -8740,13 +8716,8 @@ def admin_generate_seller_agents_from_factory_request(
 @app.post("/admin/seller-agent/activate/{seller_agent_id}")
 def admin_activate_seller_agent(
     seller_agent_id: str,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     return run_seller_agent_activation_review_db(seller_agent_id)
 
@@ -12265,10 +12236,8 @@ class SellerAgentFactoryManualApproveRequest(BaseModel):
 def admin_seller_agent_factory_manual_approve(
     factory_request_id: str,
     req: SellerAgentFactoryManualApproveRequest,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
 
     return manual_approve_seller_agent_factory_request_db(
         factory_request_id=factory_request_id,

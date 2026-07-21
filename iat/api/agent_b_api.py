@@ -9492,13 +9492,8 @@ def admin_protocol_adaptation_reviews(
     reviewer_id: str | None = None,
     review_decision: str | None = None,
     limit: int = 50,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     return get_protocol_adaptation_reviews_db(
         adaptation_id=adaptation_id,
@@ -9680,13 +9675,8 @@ def admin_protocol_rollback_reviews(
     reviewer_id: str | None = None,
     review_decision: str | None = None,
     limit: int = 50,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     return get_protocol_rollback_reviews_db(
         rollback_id=rollback_id,
@@ -9846,10 +9836,8 @@ def admin_seller_agent_factory_reviews(
     reviewer_id: str | None = None,
     review_decision: str | None = None,
     limit: int = 50,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
 
     return get_seller_agent_factory_reviews_db(
         factory_request_id=factory_request_id,
@@ -10118,10 +10106,8 @@ def admin_seller_agent_runtime_reviews(
     reviewer_id: str | None = None,
     review_decision: str | None = None,
     limit: int = 50,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
 
     return get_seller_agent_runtime_reviews_db(
         seller_agent_id=seller_agent_id,
@@ -10224,10 +10210,8 @@ def admin_seller_agent_activation_governance_reviews(
     reviewer_id: str | None = None,
     review_decision: str | None = None,
     limit: int = 50,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
 
     return get_seller_agent_activation_governance_reviews_db(
         seller_agent_id=seller_agent_id,
@@ -10324,10 +10308,8 @@ def admin_seller_agent_simulation_reviews(
     reviewer_id: str | None = None,
     review_decision: str | None = None,
     limit: int = 50,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
 
     return get_seller_agent_simulation_reviews_db(
         factory_request_id=factory_request_id,
@@ -10420,10 +10402,8 @@ def admin_seller_agent_sandbox_reviews(
     reviewer_id: str | None = None,
     review_decision: str | None = None,
     limit: int = 50,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
 
     return get_seller_agent_sandbox_reviews_db(
         factory_request_id=factory_request_id,
@@ -12298,13 +12278,8 @@ def seller_payouts(
 @app.get("/admin/sellers/pending")
 def admin_pending_sellers(
     limit: int = 100,
-    x_api_key: str = Header(default="")
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     sellers = list_sellers_db(limit=limit)
 

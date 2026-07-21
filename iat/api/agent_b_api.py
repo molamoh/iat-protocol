@@ -8832,13 +8832,8 @@ def admin_protocol_memory(
     subject_id: str | None = None,
     status: str = "active",
     limit: int = 50,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     return get_protocol_memory_db(
         memory_type=memory_type,
@@ -8855,13 +8850,8 @@ def admin_protocol_memory_search(
     memory_type: str | None = None,
     scope: str | None = None,
     limit: int = 50,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     return search_protocol_memory_db(
         query=query,
@@ -8952,13 +8942,8 @@ def internal_protocol_memory_learning_cycle(
 @app.get("/admin/protocol-strategy-context")
 def admin_protocol_strategy_context(
     limit: int = 100,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     return build_protocol_strategy_context_db(limit=limit)
 
@@ -8985,13 +8970,8 @@ def admin_protocol_knowledge(
     subject_id: str | None = None,
     status: str = "active",
     limit: int = 50,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     return get_protocol_knowledge_db(
         knowledge_type=knowledge_type,
@@ -9048,13 +9028,8 @@ def internal_protocol_knowledge_promote_memory(
 @app.get("/admin/protocol-knowledge-context")
 def admin_protocol_knowledge_context(
     limit: int = 100,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     return build_protocol_knowledge_context_db(limit=limit)
 
@@ -9084,13 +9059,8 @@ def admin_protocol_hypotheses(
     subject_id: str | None = None,
     status: str | None = None,
     limit: int = 50,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     return get_protocol_hypotheses_db(
         hypothesis_type=hypothesis_type,
@@ -9175,13 +9145,8 @@ def admin_protocol_experiments(
     status: str | None = None,
     hypothesis_id: int | None = None,
     limit: int = 50,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     return get_protocol_experiments_db(
         experiment_type=experiment_type,
@@ -9298,13 +9263,8 @@ def admin_protocol_adaptations(
     experiment_id: int | None = None,
     hypothesis_id: int | None = None,
     limit: int = 50,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     return get_protocol_adaptations_db(
         adaptation_type=adaptation_type,
@@ -9417,13 +9377,8 @@ def admin_protocol_rollbacks(
     subject_id: str | None = None,
     status: str | None = None,
     limit: int = 50,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     return get_protocol_rollbacks_db(
         adaptation_id=adaptation_id,
@@ -9574,13 +9529,8 @@ def admin_protocol_adaptation_monitors(
     subject_id: str | None = None,
     status: str | None = None,
     limit: int = 50,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     return get_protocol_adaptation_monitors_db(
         adaptation_id=adaptation_id,
@@ -9763,13 +9713,8 @@ def admin_protocol_rollback_proposals(
     subject_id: str | None = None,
     status: str | None = None,
     limit: int = 50,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     return get_protocol_rollback_proposals_db(
         rollback_id=rollback_id,

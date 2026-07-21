@@ -1566,13 +1566,8 @@ def compute_seller_pre_risk_score(seller, related_context=None):
 @app.post("/admin/recompute-seller-fingerprints/{seller_id}")
 def recompute_seller_fingerprints(
     seller_id: str,
-    x_api_key: str | None = Header(default=None),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     seller = get_agent_db(seller_id)
 
@@ -1710,13 +1705,8 @@ def admin_threat_memory(
     scope: str | None = None,
     subject_id: str | None = None,
     limit: int = 50,
-    x_api_key: str | None = Header(default=None),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     memory = get_active_threat_memory_db(
         scope=scope,
@@ -1734,13 +1724,8 @@ def admin_threat_memory(
 @app.post("/admin/seller-threat-forecast/{seller_id}")
 def admin_seller_threat_forecast(
     seller_id: str,
-    x_api_key: str | None = Header(default=None),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     seller = get_agent_db(seller_id)
 
@@ -1874,13 +1859,8 @@ def internal_refresh_adaptive_defense(
 @app.post("/admin/compute-adaptive-policy/{seller_id}")
 def admin_compute_adaptive_policy(
     seller_id: str,
-    x_api_key: str | None = Header(default=None),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     seller = get_agent_db(seller_id)
 
@@ -1913,13 +1893,8 @@ def admin_compute_adaptive_policy(
 @app.post("/admin/detect-seller-cluster/{seller_id}")
 def admin_detect_seller_cluster(
     seller_id: str,
-    x_api_key: str | None = Header(default=None),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     seller = get_agent_db(seller_id)
 
@@ -1937,13 +1912,8 @@ def admin_detect_seller_cluster(
 @app.post("/admin/enrich-seller-graph/{seller_id}")
 def admin_enrich_seller_graph(
     seller_id: str,
-    x_api_key: str | None = Header(default=None),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     seller = get_agent_db(seller_id)
 
@@ -1961,13 +1931,8 @@ def admin_enrich_seller_graph(
 @app.get("/admin/seller-graph/{seller_id}")
 def admin_seller_graph(
     seller_id: str,
-    x_api_key: str | None = Header(default=None),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     seller = get_agent_db(seller_id)
 
@@ -2071,13 +2036,8 @@ def apply_foundation_decision_gate(
 @app.post("/admin/seller-risk-review/{seller_id}")
 def admin_seller_risk_review(
     seller_id: str,
-    x_api_key: str | None = Header(default=None),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     seller = get_agent_db(seller_id)
 
@@ -2209,13 +2169,8 @@ def admin_seller_risk_review(
 def admin_seller_rehabilitate(
     seller_id: str,
     req: SellerRehabilitationRequest,
-    x_api_key: str | None = Header(default=None),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     seller = get_agent_db(seller_id)
 
@@ -2310,9 +2265,7 @@ def admin_seller_rehabilitate(
 
 
 @app.post("/admin/seller-review/{seller_id}")
-def admin_seller_review(seller_id: str, req: SellerReviewRequest, x_api_key: str | None = Header(default=None)):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
+def admin_seller_review(seller_id: str, req: SellerReviewRequest, _admin: bool = Depends(require_admin)):
 
     agent = get_agent_db(seller_id)
 
@@ -2704,9 +2657,7 @@ def agent_heartbeat(req: RegisterAgentRequest, x_api_key: str | None = Header(de
 
 
 @app.post("/admin/disable-localhost-agents")
-def admin_disable_localhost_agents(x_api_key: str | None = Header(default=None)):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
+def admin_disable_localhost_agents(_admin: bool = Depends(require_admin)):
 
     import sqlite3
     from iat.api.db import DB_PATH
@@ -2743,9 +2694,7 @@ def admin_disable_localhost_agents(x_api_key: str | None = Header(default=None))
 
 
 @app.post("/admin/reactivate-agent/{agent_id}")
-def admin_reactivate_agent(agent_id: str, x_api_key: str | None = Header(default=None)):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
+def admin_reactivate_agent(agent_id: str, _admin: bool = Depends(require_admin)):
 
     agent = reactivate_agent_db(agent_id)
 
@@ -2763,9 +2712,7 @@ def admin_reactivate_agent(agent_id: str, x_api_key: str | None = Header(default
 
 
 @app.delete("/admin/delete-agent/{agent_id}")
-def admin_delete_agent(agent_id: str, x_api_key: str | None = Header(default=None)):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
+def admin_delete_agent(agent_id: str, _admin: bool = Depends(require_admin)):
 
     try:
         deleted = delete_agent_db(agent_id)
@@ -2790,9 +2737,7 @@ def admin_delete_agent(agent_id: str, x_api_key: str | None = Header(default=Non
 
 
 @app.post("/admin/delegate-stake")
-def admin_delegate_stake(req: DelegationRequest, x_api_key: str | None = Header(default=None)):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
+def admin_delegate_stake(req: DelegationRequest, _admin: bool = Depends(require_admin)):
 
     agent = get_agent_db(req.agent_id)
 

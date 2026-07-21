@@ -2972,10 +2972,8 @@ def admin_foundation_decision_queue(
 @app.get("/admin/foundation-decision/{decision_id}")
 def admin_get_foundation_decision(
     decision_id: str,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
 
     from iat.api.db import get_foundation_decision_db
 
@@ -2998,10 +2996,8 @@ def admin_get_foundation_decision(
 def admin_approve_foundation_decision(
     decision_id: str,
     payload: dict | None = None,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
 
     from iat.api.db import approve_foundation_decision_db
 
@@ -3024,13 +3020,8 @@ def admin_approve_foundation_decision(
 def admin_foundation_decision_execution_simulation(
     decision_id: str,
     payload: dict | None = None,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     from iat.governance.execution_controller import (
         simulate_foundation_execution_controller,
@@ -3050,13 +3041,8 @@ def admin_foundation_decision_execution_simulation(
 @app.get("/admin/foundation-decision/{decision_id}/execution-plan")
 def admin_foundation_decision_execution_plan(
     decision_id: str,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     from iat.governance.execution_planner import (
         build_foundation_execution_plan,
@@ -3070,13 +3056,8 @@ def admin_foundation_decision_execution_plan(
 @app.post("/admin/foundation-decision/{decision_id}/dispatch-dry-run")
 def admin_dry_run_foundation_decision_dispatch(
     decision_id: str,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     from iat.api.db import dry_run_foundation_decision_dispatch_db
 
@@ -3089,10 +3070,8 @@ def admin_dry_run_foundation_decision_dispatch(
 def admin_reject_foundation_decision(
     decision_id: str,
     payload: dict | None = None,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
 
     from iat.api.db import reject_foundation_decision_db
 

@@ -18568,6 +18568,64 @@ def build_foundation_decision_context_db(order_id):
                 "reason": contribution_result,
             })
 
+    protocol_strategy_context = None
+    protocol_strategy_context_status = "unavailable"
+
+    try:
+        strategy_memories_result = get_protocol_memory_db(
+            status="active",
+            limit=100,
+        )
+
+        strategy_memories = (
+            strategy_memories_result.get("memory", [])
+            if isinstance(strategy_memories_result, dict)
+            else []
+        )
+
+        latest_strategy_memory = next(
+            (
+                memory
+                for memory in strategy_memories
+                if memory.get("memory_type")
+                == "protocol_strategy_context_memory"
+            ),
+            None,
+        )
+
+        if latest_strategy_memory:
+            protocol_strategy_context = {
+                "context_type": "protocol_strategy_context_advisory",
+                "memory_id": latest_strategy_memory.get("memory_id"),
+                "confidence": latest_strategy_memory.get("confidence"),
+                "memory_strength": latest_strategy_memory.get(
+                    "memory_strength"
+                ),
+                "importance_score": latest_strategy_memory.get(
+                    "importance_score"
+                ),
+                "memory_payload": latest_strategy_memory.get(
+                    "memory_payload"
+                ),
+                "tags": latest_strategy_memory.get("tags"),
+                "updated_at": latest_strategy_memory.get("updated_at"),
+                "memory_authority": "advisory_only",
+                "strategy_context_governs_protocol": False,
+                "foundation_agents_remain_protocol_authority": True,
+            }
+            protocol_strategy_context_status = "available"
+
+    except Exception as strategy_context_error:
+        protocol_strategy_context = {
+            "context_type": "protocol_strategy_context_advisory",
+            "status": "error",
+            "error": type(strategy_context_error).__name__,
+            "memory_authority": "advisory_only",
+            "strategy_context_governs_protocol": False,
+            "foundation_agents_remain_protocol_authority": True,
+        }
+        protocol_strategy_context_status = "error"
+
     decision_context = {
         "context_type": "foundation_decision_context",
         "governance_authority": "iat_protocol_core_only",
@@ -18579,6 +18637,8 @@ def build_foundation_decision_context_db(order_id):
         "verified_seller_contributions": verified_contributions,
         "skipped_contributions": skipped_contributions,
         "contribution_count": len(verified_contributions),
+        "protocol_strategy_context_status": protocol_strategy_context_status,
+        "protocol_strategy_context": protocol_strategy_context,
         "foundation_rules": {
             "seller_governance_authority": False,
             "seller_decision_authority": False,

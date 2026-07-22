@@ -1,0 +1,2 @@
+from iat.intelligence.decision_adapter import integrate_protocol_decision
+from iat.intelligence.runtime_dispatcher import dispatch_protocol_decision

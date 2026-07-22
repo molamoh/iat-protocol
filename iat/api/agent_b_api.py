@@ -282,6 +282,61 @@ def require_admin(
     return True
 
 
+def enforce_foundation_agent_authority(
+    requested_agent_type: str | None,
+    x_api_key: str | None,
+    existing_agent_type: str | None = None,
+    *,
+    principal_id: str | None = None,
+    resource: str = "agent_identity",
+):
+    """
+    Protect Foundation identity through the centralized Security Layer.
+
+    The route-level function remains for backward compatibility while all
+    credential evaluation is delegated to the reusable authority engine.
+    """
+    requested_type = str(requested_agent_type or "").strip().lower()
+    existing_type = str(existing_agent_type or "").strip().lower()
+
+    foundation_identity_involved = (
+        requested_type == "foundation"
+        or existing_type == "foundation"
+    )
+
+    if not foundation_identity_involved:
+        return True
+
+    from iat.intelligence.runtime_dispatcher import (
+        dispatch_protocol_decision,
+    )
+    from iat.security.authorities import (
+        evaluate_foundation_authority,
+    )
+
+    decision = evaluate_foundation_authority(x_api_key)
+
+    dispatch_protocol_decision(
+        decision=decision,
+        principal_id=principal_id,
+        principal_type="foundation_agent",
+        resource=resource,
+        source_type="foundation_authority_engine",
+        source_id=principal_id or resource,
+        context={
+            "requested_agent_type": requested_type or None,
+            "existing_agent_type": existing_type or None,
+            "foundation_identity_involved": True,
+        },
+    )
+
+    enforce_foundation_authority(
+        x_api_key,
+        decision=decision,
+    )
+    return True
+
+
 
 def payment_wallet_for(agent_wallet):
     escrow_wallet = os.getenv("IAT_ESCROW_WALLET")
@@ -736,6 +791,7 @@ def _ensure_dict(value, default=None):
 from iat.action_engine.protocol_runtime import run_foundation_supplier_pipeline
 
 from iat.action_engine.protocol_runtime import deliver_service
+from iat.security.authorities import enforce_foundation_authority
 
 @app.post("/internal/seller/apply-risk-decay/{seller_id}")
 def apply_seller_risk_decay(
@@ -2594,12 +2650,12 @@ def apply_seller_stake_gate(agent):
 def register_agent(req: RegisterAgentRequest, x_api_key: str | None = Header(default=None)):
     agent = req.model_dump()
 
-    if agent.get("agent_type") == "foundation":
-        if not require_admin_key(x_api_key):
-            return {
-                "status": "error",
-                "message": "unauthorized_foundation_agent_registration",
-            }
+    enforce_foundation_agent_authority(
+        requested_agent_type=agent.get("agent_type"),
+        x_api_key=x_api_key,
+        principal_id=agent.get("agent_id"),
+        resource="agent_registration",
+    )
 
     agent = apply_seller_stake_gate(agent)
     register_agent_db(agent)
@@ -2627,19 +2683,17 @@ def agent_heartbeat(req: RegisterAgentRequest, x_api_key: str | None = Header(de
 
     existing_agent = get_agent_db(agent.get("agent_id"))
 
-    if existing_agent and existing_agent.get("agent_type") == "foundation":
-        if not require_admin_key(x_api_key):
-            return {
-                "status": "error",
-                "message": "unauthorized_foundation_agent_update",
-            }
-
-    if agent.get("agent_type") == "foundation":
-        if not require_admin_key(x_api_key):
-            return {
-                "status": "error",
-                "message": "unauthorized_foundation_agent_registration",
-            }
+    enforce_foundation_agent_authority(
+        requested_agent_type=agent.get("agent_type"),
+        existing_agent_type=(
+            existing_agent.get("agent_type")
+            if existing_agent
+            else None
+        ),
+        x_api_key=x_api_key,
+        principal_id=agent.get("agent_id"),
+        resource="agent_registration_update",
+    )
 
     agent = apply_seller_stake_gate(agent)
     register_agent_db(agent)
@@ -11350,8 +11404,60 @@ def internal_runtime_heartbeat_scan(
 
 
 def runtime_heartbeat_governance_loop():
+    protocol_cognition_last_run_at = 0
+
     while True:
         try:
+            now = int(time.time())
+
+            try:
+                cognition_enabled = str(
+                    os.getenv(
+                        "IAT_ENABLE_AUTONOMOUS_PROTOCOL_COGNITION",
+                        "true",
+                    )
+                ).lower() == "true"
+
+                cognition_interval_seconds = max(
+                    300,
+                    int(
+                        os.getenv(
+                            "IAT_PROTOCOL_COGNITION_INTERVAL_SECONDS",
+                            "900",
+                        )
+                    ),
+                )
+
+                cognition_due = (
+                    protocol_cognition_last_run_at <= 0
+                    or now - protocol_cognition_last_run_at
+                    >= cognition_interval_seconds
+                )
+
+                if cognition_enabled and cognition_due:
+                    cognition_result = build_protocol_strategy_context_db(
+                        limit=100
+                    )
+
+                    protocol_cognition_last_run_at = now
+
+                    print(
+                        "[IAT_AUTONOMOUS_PROTOCOL_COGNITION]",
+                        {
+                            "status": cognition_result.get("status"),
+                            "interval_seconds": cognition_interval_seconds,
+                            "strategy_context": (
+                                cognition_result.get("strategy_context") or {}
+                            ).get("memory_summary"),
+                        },
+                    )
+
+            except Exception as cognition_error:
+                print(
+                    "[IAT_AUTONOMOUS_PROTOCOL_COGNITION_ERROR]",
+                    str(cognition_error),
+                )
+
             if str(os.getenv("IAT_ENABLE_AUTONOMOUS_SETTLEMENT_ORCHESTRATOR", "false")).lower() == "true":
                 try:
                     settlement_run = run_settlement_orchestrator_once_db(limit=50)

@@ -2909,13 +2909,8 @@ def admin_market_intelligence(
 def admin_service_seller_resolution(
     service: str,
     limit: int = 20,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     from iat.api.db import (
         get_available_seller_execution_agents_db,
@@ -4943,9 +4938,7 @@ def internal_foundation_finalize_order(
 
 
 @app.post("/admin/test-consensus-delivery/{order_id}")
-def admin_test_consensus_delivery(order_id: str, x_api_key: str | None = Header(default=None)):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
+def admin_test_consensus_delivery(order_id: str, _admin: bool = Depends(require_admin)):
 
     order = get_order_db(order_id)
 
@@ -4970,9 +4963,7 @@ def admin_test_consensus_delivery(order_id: str, x_api_key: str | None = Header(
 
 
 @app.post("/admin/debug-consensus-raw/{order_id}")
-def admin_debug_consensus_raw(order_id: str, x_api_key: str | None = Header(default=None)):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
+def admin_debug_consensus_raw(order_id: str, _admin: bool = Depends(require_admin)):
 
     order = get_order_db(order_id)
 
@@ -5007,9 +4998,7 @@ def admin_debug_consensus_raw(order_id: str, x_api_key: str | None = Header(defa
 
 
 @app.post("/admin/test-buyer-consensus/{order_id}")
-def admin_test_buyer_consensus(order_id: str, x_api_key: str | None = Header(default=None)):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
+def admin_test_buyer_consensus(order_id: str, _admin: bool = Depends(require_admin)):
 
     order = get_order_db(order_id)
 
@@ -7428,10 +7417,8 @@ def admin_test_slash_agent(agent_id: str, slash_ratio: float = 0.10,
 def admin_test_lock_agent_stake(
     agent_id: str,
     amount: float = 100,
-    x_api_key: str | None = Header(default=None),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
 
     agent = get_agent_db(agent_id)
 

@@ -9803,10 +9803,8 @@ def admin_seller_agent_factory_approvals(
     seller_id: str | None = None,
     status: str | None = None,
     limit: int = 50,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
 
     return get_seller_agent_factory_approvals_db(
         factory_request_id=factory_request_id,
@@ -9951,10 +9949,8 @@ def admin_seller_runtime_risk_events(
     source_action_type: str | None = None,
     severity: str | None = None,
     limit: int = 50,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
 
     return get_seller_runtime_risk_events_db(
         seller_id=seller_id,
@@ -9973,10 +9969,8 @@ def admin_seller_agent_runtime_governance_reviews(
     governance_status: str | None = None,
     recommended_action: str | None = None,
     limit: int = 50,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
 
     return get_seller_agent_runtime_governance_reviews_db(
         seller_agent_id=seller_agent_id,
@@ -10068,10 +10062,8 @@ def admin_seller_agent_runtime_actions(
     action_type: str | None = None,
     execution_status: str | None = None,
     limit: int = 50,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
 
     return get_seller_agent_runtime_actions_db(
         seller_agent_id=seller_agent_id,
@@ -10169,10 +10161,8 @@ def admin_seller_agent_activation_approvals(
     seller_id: str | None = None,
     status: str | None = None,
     limit: int = 50,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
 
     return get_seller_agent_activation_approvals_db(
         seller_agent_id=seller_agent_id,
@@ -10262,10 +10252,8 @@ def admin_seller_agent_simulation_approvals(
     seller_id: str | None = None,
     status: str | None = None,
     limit: int = 50,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
 
     return get_seller_agent_simulation_approvals_db(
         factory_request_id=factory_request_id,
@@ -10354,10 +10342,8 @@ def admin_seller_agent_sandbox_approvals(
     seller_id: str | None = None,
     status: str | None = None,
     limit: int = 50,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
 
     return get_seller_agent_sandbox_approvals_db(
         factory_request_id=factory_request_id,
@@ -12255,10 +12241,8 @@ class SellerAgentManualActivateRequest(BaseModel):
 def admin_seller_agent_manual_activate(
     seller_agent_id: str,
     req: SellerAgentManualActivateRequest,
-    x_api_key: str = Header(default=""),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {"status": "error", "message": "unauthorized"}
 
     return manual_activate_seller_agent_db(
         seller_agent_id=seller_agent_id,

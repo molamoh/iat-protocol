@@ -3356,13 +3356,8 @@ def buyer_topic_changed(previous_session, new_intent):
 @app.get("/admin/buyers")
 def admin_list_buyers(
     limit: int = 100,
-    x_api_key: str | None = Header(default=None),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     safe_limit = max(1, min(int(limit or 100), 500))
     buyers = list_buyers_db(limit=safe_limit)
@@ -3377,13 +3372,8 @@ def admin_list_buyers(
 @app.get("/admin/buyer/{buyer_wallet}")
 def admin_get_buyer(
     buyer_wallet: str,
-    x_api_key: str | None = Header(default=None),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     buyer_wallet = str(buyer_wallet or "").strip()
 
@@ -3411,13 +3401,8 @@ def admin_get_buyer(
 @app.post("/admin/buyer/ban")
 def admin_ban_buyer(
     req: AdminBuyerActionRequest,
-    x_api_key: str | None = Header(default=None),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     buyer_wallet = str(req.buyer_wallet or "").strip()
     reason = str(req.reason or "admin_governance_action").strip()
@@ -3463,13 +3448,8 @@ def admin_ban_buyer(
 @app.post("/admin/buyer/unban")
 def admin_unban_buyer(
     req: AdminBuyerActionRequest,
-    x_api_key: str | None = Header(default=None),
+    _admin: bool = Depends(require_admin),
 ):
-    if not require_admin_key(x_api_key):
-        return {
-            "status": "error",
-            "message": "unauthorized",
-        }
 
     buyer_wallet = str(req.buyer_wallet or "").strip()
 

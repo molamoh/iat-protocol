@@ -7905,42 +7905,14 @@ def validate_seller_runtime(url):
             "message": "missing_runtime_url",
         }
 
-    parsed = urlparse(url)
+    from iat.security.network import UnsafeNetworkTarget, validate_public_runtime_url
 
-    hostname = str(parsed.hostname or "").lower()
-
-    blocked_hosts = [
-        "localhost",
-        "127.0.0.1",
-        "0.0.0.0",
-    ]
-
-    blocked_prefixes = [
-        "10.",
-        "192.168.",
-        "172.16.",
-        "172.17.",
-        "172.18.",
-        "172.19.",
-    ]
-
-    if hostname in blocked_hosts:
+    try:
+        target_validation = validate_public_runtime_url(url)
+    except UnsafeNetworkTarget as exc:
         return {
             "status": "error",
-            "message": "localhost_runtime_not_allowed",
-        }
-
-    for prefix in blocked_prefixes:
-        if hostname.startswith(prefix):
-            return {
-                "status": "error",
-                "message": "private_network_runtime_not_allowed",
-            }
-
-    if parsed.scheme not in ["http", "https"]:
-        return {
-            "status": "error",
-            "message": "invalid_runtime_scheme",
+            "message": str(exc),
         }
 
     try:
@@ -7991,6 +7963,7 @@ def validate_seller_runtime(url):
             "runtime_health_score": runtime_health_score,
             "http_status": response.status_code,
             "content_type": content_type,
+            "target_validation": target_validation,
         }
 
     except Exception as e:
@@ -8004,7 +7977,7 @@ def validate_seller_runtime(url):
 
 
 class SellerRegisterAgentRequest(BaseModel):
-    api_key: str = Field(min_length=16, max_length=200)
+    api_key: str | None = Field(default=None, min_length=16, max_length=200)
     agent_id: str = Field(min_length=3, max_length=120)
     service: str = Field(min_length=3, max_length=120)
     url: str | None = Field(default=None, max_length=500)
@@ -8018,10 +7991,13 @@ class SellerRegisterAgentRequest(BaseModel):
 
 
 @app.post("/seller/register-agent")
-def seller_register_agent(req: SellerRegisterAgentRequest):
+def seller_register_agent(
+    req: SellerRegisterAgentRequest,
+    x_seller_api_key: str | None = Header(default=None),
+):
     init_db()
 
-    auth = authenticate_seller_api_key_db(req.api_key)
+    auth = authenticate_seller_api_key_db(x_seller_api_key or req.api_key)
 
     if auth.get("status") != "ok":
         return auth

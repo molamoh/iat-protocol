@@ -29,6 +29,16 @@ _MANIFEST: dict[str, Any] = {
         "create_order": "/create-order",
         "verify_payment": "/buyer/verify-payment",
     },
+    "seller": {
+        "discovery": "/seller/v1/discovery",
+        "readiness": "/seller/v1/readiness",
+        "economics": "/seller/v1/economics/estimate",
+        "integration_contract": "/seller/v1/integration-contract",
+        "register": "/seller/register",
+        "register_agent": "/seller/register-agent",
+        "catalog": "/seller/catalog/items",
+        "dashboard": "/seller/dashboard",
+    },
     "sandbox": {
         "offers": "/sandbox/v1/offers",
         "preview": "/sandbox/v1/preview",
@@ -104,6 +114,20 @@ def build_capabilities_document() -> dict[str, Any]:
                 "sandbox_only": True,
                 "self_modifying_code": False,
             },
+            {
+                "id": "seller_readiness_assessment",
+                "stability": "stable",
+                "autonomous": True,
+                "account_required": False,
+                "production_side_effects": False,
+            },
+            {
+                "id": "seller_economics_estimation",
+                "stability": "stable",
+                "autonomous": True,
+                "transparent_commission": True,
+                "simulation_only": True,
+            },
         ],
         "safety_invariants": [
             "sandbox_never_moves_funds",
@@ -130,6 +154,9 @@ execute an order, verify a result, and settle payment under explicit policies.
 - Machine manifest: `/.well-known/iat.json`
 - Public OpenAPI contract: `/openapi-public.json`
 - Capabilities and safety invariants: `/v1/capabilities`
+- Seller journey and commission policy: `/seller/v1/discovery`
+- Seller readiness assessment: `POST /seller/v1/readiness`
+- Seller economics estimator: `POST /seller/v1/economics/estimate`
 - No-funds sandbox offers: `/sandbox/v1/offers`
 - No-funds sandbox preview: `POST /sandbox/v1/preview`
 - No-funds sandbox purchase: `POST /sandbox/v1/purchase`

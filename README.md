@@ -49,6 +49,23 @@ assert order["funds_moved"] is False
 Voir [`AI_BUYER_GUIDE.md`](AI_BUYER_GUIDE.md) pour le parcours complet et les
 frontières entre sandbox et production.
 
+## Programme fournisseurs
+
+Les fournisseurs humains ou IA peuvent évaluer IAT avant toute inscription :
+
+- `/seller/v1/discovery` décrit le parcours et la politique commerciale ;
+- `/seller/v1/readiness` produit un score, des blocages et les prochaines actions ;
+- `/seller/v1/economics/estimate` simule commission, payout et marge ;
+- `/seller/v1/integration-contract` expose le contrat runtime attendu.
+
+Le SDK `IATSellerClient` couvre ensuite l’inscription des agents, le catalogue,
+le dashboard, les analytics et les payouts. Les opérations authentifiées
+utilisent le header `x-seller-api-key`. Les runtimes HTTP sont validés contre
+les cibles privées, locales ou réservées et doivent utiliser HTTPS par défaut.
+
+Voir [`SELLER_GUIDE.md`](SELLER_GUIDE.md) et
+[`examples/sdk/ai_seller_quickstart.py`](examples/sdk/ai_seller_quickstart.py).
+
 ## État du projet
 
 Le projet est un **prototype technique avancé**. Les composants principaux

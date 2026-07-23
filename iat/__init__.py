@@ -3,6 +3,7 @@ from .orchestrator import run_strategy
 from .auto_integration import IATMarket, IATEconomicTool, enable_ai_market, enable_iat_economy
 from .wallet import IATWallet, create_wallet, get_network_stats
 from .buyer import IATAPIError, IATClient, IATClientError, IATTransportError, RetryPolicy
+from .seller import IATSellerClient
 
 __all__ = [
     "IATAPIError",
@@ -11,6 +12,7 @@ __all__ = [
     "IATTransportError",
     "IATEconomicTool",
     "IATMarket",
+    "IATSellerClient",
     "RetryPolicy",
     "IATWallet",
     "create_order",

@@ -2,3 +2,4 @@ from .sdk import list_services, create_order, pay_order, verify_order, pay_and_g
 from .orchestrator import run_strategy
 from .auto_integration import IATEconomicTool, enable_iat_economy
 from .auto_integration import IATMarket, IATEconomicTool, enable_ai_market, enable_iat_economy
+from .wallet import IATWallet, create_wallet, get_network_stats

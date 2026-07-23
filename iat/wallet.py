@@ -35,14 +35,19 @@ class IATWallet:
             return {"success": True, "agent_id": self.agent_id, "certificate": certificate[:16] + "...", "message": "VerifAI certification successful"}
         return {"success": False, "message": "VerifAI certification failed"}
 
-    def pay(self, to_agent: str, amount: float, metadata: dict = {}) -> dict:
+    def pay(self, to_agent: str, amount: float, metadata: Optional[dict] = None) -> dict:
         if not self.certified:
             return {"success": False, "error": "Wallet not VerifAI certified. Call certify() first.", "code": "CERT_001"}
         if amount <= 0:
             return {"success": False, "error": "Amount must be greater than 0", "code": "AMT_001"}
         if self.balance < amount:
             return {"success": False, "error": "Insufficient IAT balance", "code": "BAL_001"}
-        result = self._protocol.submit_transaction(from_agent=self.agent_id, to_agent=to_agent, amount=amount, metadata=metadata)
+        result = self._protocol.submit_transaction(
+            from_agent=self.agent_id,
+            to_agent=to_agent,
+            amount=amount,
+            metadata=metadata or {},
+        )
         if result["success"]:
             self.balance -= amount
             self.transactions.append(result)

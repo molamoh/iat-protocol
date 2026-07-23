@@ -1,28 +1,37 @@
-# IAT Protocol Integrations
+# Intégrations
 
-This folder contains adapters that allow open-source AI agent frameworks to use IAT Protocol as an economic execution layer.
+Les adaptateurs présents permettent à différents frameworks d’appeler
+`pay_and_get_service`.
 
-## Available Integrations
+Intégrations suivies dans le dépôt :
 
-- CrewAI
-- LangChain
-- AutoGPT
-- OpenAgents
+- AgentVerse ;
+- AutoGPT ;
+- CrewAI ;
+- framework générique ;
+- LangChain ;
+- MetaGPT ;
+- SuperAGI.
 
-## Security
+Le niveau d’intégration est variable : certains modules sont des wrappers
+minimaux et ne sont pas testés contre toutes les versions des frameworks.
 
-Never hardcode private wallet paths in public code.
+Configuration commune :
 
-Use an environment variable:
+```bash
+export IAT_API_URL="http://127.0.0.1:8000"
+export IAT_ADMIN_API_KEY="..."
+export IAT_KEYPAIR_PATH="/run/secrets/buyer-keypair.json"
+```
 
-export IAT_KEYPAIR_PATH="/secure/path/to/keypair.json"
+Le SDK utilise `/buyer/verify-payment` par défaut. Une intégration ne doit
+surcharger `IAT_VERIFY_PAYMENT_PATH` que pour communiquer temporairement avec
+un déploiement historique.
 
-## Concept
+Avant un paiement réel :
 
-Agents can use IAT as a tool to:
-
-1. Discover a service
-2. Pay with IAT
-3. Verify payment on-chain
-4. Receive the result
-5. Continue reasoning
+- vérifier le service et le prix ;
+- utiliser un wallet à faible exposition ;
+- ne jamais injecter le contenu du keypair dans un prompt ;
+- traiter `foundation_review_required` comme un état en attente ;
+- ne pas relancer un paiement déjà réclamé.

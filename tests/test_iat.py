@@ -1,11 +1,7 @@
 # IAT Protocol — Unit Tests
 # © molamoh 2026 — All rights reserved
 
-import sys
-sys.path.insert(0, '..')
-
 from iat import create_wallet, get_network_stats
-from iat.verifai import VerifAI
 
 def test_wallet_creation():
     """Test wallet creation."""

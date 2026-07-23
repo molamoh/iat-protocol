@@ -5,6 +5,7 @@ import time
 import uuid
 import requests
 import threading
+from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 from fastapi import FastAPI, Header, Body, Request, Depends, HTTPException
@@ -21,6 +22,12 @@ from iat.onchain import (
 )
 
 from iat.api.execution_engine import select_best_agent, compute_agent_score
+from iat.api.schemas import (
+    BuyerConfirmRequest,
+    BuyerPreviewRequest,
+    OrderRequest,
+    VerifyPaymentRequest,
+)
 from iat.api.foundation_decision import select_best_execution_agent
 from iat.api.buyer_intent import (
     normalize_buyer_intent,
@@ -236,10 +243,18 @@ INTERNAL_DOCS_ENABLED = (
     == "true"
 )
 
+
+@asynccontextmanager
+async def application_lifespan(_app: FastAPI):
+    initialize_application()
+    yield
+
+
 app = FastAPI(
     docs_url="/docs" if INTERNAL_DOCS_ENABLED else None,
     redoc_url="/redoc" if INTERNAL_DOCS_ENABLED else None,
     openapi_url="/openapi.json" if INTERNAL_DOCS_ENABLED else None,
+    lifespan=application_lifespan,
 )
 
 def require_admin_key(x_api_key):
@@ -346,9 +361,6 @@ def payment_wallet_for(agent_wallet):
 def payment_target():
     return "escrow" if os.getenv("IAT_ESCROW_WALLET") else "seller"
 
-
-init_db()
-init_agents_table()
 
 WALLET_A = "DUtz7zHeVsd8mnJhWM52z5LsC9NqY6SVRjCBPgNM8Qrj"
 IAT_MINT = "3vRGo1VpGbZH67Ur2UG7VNUqSqQyApLQEcCxgnqK4f4Z"
@@ -468,36 +480,9 @@ class SellerAgentFactoryRequest(BaseModel):
     metadata: dict | str = {}
 
 
-class OrderRequest(BaseModel):
-    service: str
-    query: str | None = None
-    buyer_wallet: str | None = None
-    buyer_intent: dict | None = None
-    requirements: dict | None = None
-    buyer_context: dict | None = None
-    locked_agent_id: str | None = None
-
-
-
-
 class AdminBuyerActionRequest(BaseModel):
     buyer_wallet: str
     reason: str | None = None
-
-
-class BuyerPreviewRequest(BaseModel):
-    buyer_wallet: str
-    prompt: str
-    max_price: float | None = None
-    session_id: str | None = None
-    debug: bool = False
-
-
-class BuyerConfirmRequest(BaseModel):
-    buyer_wallet: str
-    session_id: str
-    max_price: float | None = None
-    debug: bool = False
 
 
 class InternalSellerSuccessRequest(BaseModel):
@@ -530,12 +515,6 @@ class SellerReviewRequest(BaseModel):
     risk_score: float | None = None
     trust_tier: str | None = None
     available: bool | None = None
-
-
-class VerifyPaymentRequest(BaseModel):
-    order_id: str
-    tx_signature: str
-
 
 
 def COALESCE_BUYER_ACCESS_SAFE(agent):
@@ -4566,6 +4545,12 @@ def verify_payment(req: VerifyPaymentRequest, x_api_key: str | None = Header(def
         memo_ok = True
 
     if sender_ok and receiver_ok and mint_ok and amount_ok and memo_ok:
+        if not save_processed_tx_db(req.tx_signature):
+            return {
+                "status": "tx_already_processed",
+                "reason": "transaction_claim_lost",
+            }
+
         if not deliver:
             return {
                 "status": "paid",
@@ -4626,7 +4611,6 @@ def verify_payment(req: VerifyPaymentRequest, x_api_key: str | None = Header(def
 
         new_reputation = None
 
-        save_processed_tx_db(req.tx_signature)
         update_order_delivered_db(req.order_id, req.tx_signature, result)
 
         settlement_result = None
@@ -11635,8 +11619,23 @@ def runtime_heartbeat_governance_loop():
         time.sleep(60)
 
 
-@app.on_event("startup")
-def start_runtime_governance_loop():
+def initialize_application():
+    init_db()
+
+    runtime_loop_enabled = (
+        str(
+            os.getenv(
+                "IAT_ENABLE_RUNTIME_GOVERNANCE_LOOP",
+                "true",
+            )
+        ).strip().lower()
+        == "true"
+    )
+
+    if not runtime_loop_enabled:
+        print("[IAT] Runtime heartbeat governance loop disabled")
+        return
+
     thread = threading.Thread(
         target=runtime_heartbeat_governance_loop,
         daemon=True
@@ -11711,7 +11710,7 @@ class SellerRecoveryRequest(BaseModel):
     api_key: str = Field(min_length=10, max_length=300)
     requested_status: str = "watchlist"
     reason: str = Field(default="", max_length=2000)
-    evidence: dict = {}
+    evidence: dict = Field(default_factory=dict)
 
 
 @app.post("/seller/request-recovery")
@@ -11733,34 +11732,6 @@ def seller_request_recovery(req: SellerRecoveryRequest):
 
     return create_seller_recovery_request_db(
         seller_id=seller_id,
-        requested_status=req.requested_status,
-        reason=req.reason,
-        evidence=req.evidence,
-    )
-
-
-
-class SellerRecoveryRequest(BaseModel):
-    api_key: str = Field(min_length=10, max_length=300)
-    requested_status: str = "watchlist"
-    reason: str = Field(default="", max_length=2000)
-    evidence: dict = {}
-
-
-@app.post("/seller/request-recovery")
-def seller_request_recovery(req: SellerRecoveryRequest):
-    seller = authenticate_seller_api_key_db(req.api_key)
-
-    if not seller:
-        return {
-            "status": "error",
-            "message": "invalid_seller_api_key",
-        }
-
-    from iat.api.db import create_seller_recovery_request_db
-
-    return create_seller_recovery_request_db(
-        seller_id=seller.get("seller_id"),
         requested_status=req.requested_status,
         reason=req.reason,
         evidence=req.evidence,
@@ -11791,7 +11762,7 @@ def admin_seller_recovery_decision(
 
 
 @app.get("/admin/seller-governance-events")
-def admin_seller_governance_events(
+def admin_list_seller_governance_events(
     seller_id: str = None,
     limit: int = 100,
     _admin: bool = Depends(require_admin)
@@ -12383,4 +12354,3 @@ def platform_graph():
     from iat.platform.graph import build_protocol_graph
 
     return build_protocol_graph(**_platform_graph_providers())
-

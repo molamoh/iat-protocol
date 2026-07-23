@@ -2,6 +2,11 @@ import os
 import time
 import requests
 
+from iat.api.endpoints import (
+    CREATE_ORDER_PATH,
+    SERVICES_PATH,
+    VERIFY_PAYMENT_PATH,
+)
 from iat.transfer import send_iat
 
 
@@ -66,13 +71,13 @@ def post_with_retry(url, json=None, headers=None, timeout=60, retries=3, delay=2
 
 
 def list_services():
-    r = requests.get(f"{API}/services", headers=auth_headers(), timeout=30)
+    r = requests.get(f"{API}{SERVICES_PATH}", headers=auth_headers(), timeout=30)
     return safe_json_response(r)
 
 
 def create_order(service, query=None):
     r = post_with_retry(
-        f"{API}/create-order",
+        f"{API}{CREATE_ORDER_PATH}",
         json={"service": service, "query": query},
         headers=auth_headers(),
         timeout=30,
@@ -100,8 +105,12 @@ def pay_order(order, keypair_path):
 
 
 def verify_order(order_id, tx_signature):
+    verify_path = os.getenv(
+        "IAT_VERIFY_PAYMENT_PATH",
+        VERIFY_PAYMENT_PATH,
+    )
     r = post_with_retry(
-        f"{API}/verify-payment-multicall",
+        f"{API}{verify_path}",
         json={
             "order_id": order_id,
             "tx_signature": tx_signature,
@@ -141,7 +150,11 @@ def pay_and_get_service(service, keypair_path, max_attempts=24, delay=5, query=N
     for attempt in range(max_attempts):
         result = verify_order(order_id, tx)
 
-        if result.get("status") in ["paid", "paid_multicall_success"]:
+        if result.get("status") in [
+            "paid",
+            "delivered",
+            "paid_multicall_success",
+        ]:
             return {
                 "status": "success",
                 "order_id": order_id,

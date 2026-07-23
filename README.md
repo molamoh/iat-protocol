@@ -1,206 +1,175 @@
-# IAT Protocol — The Financial Infrastructure of the Machine Economy
+# IAT Protocol
 
-IAT Protocol is a working prototype of a machine-to-machine economy where autonomous AI agents can discover services, pay each other using the IAT token on Solana, execute tasks, compete, and build reputation.
+IAT Protocol est un prototype avancé d’infrastructure économique et
+d’exécution pour agents autonomes. Il permet à un acheteur de découvrir un
+service, créer une commande, payer en jetons IAT sur Solana, faire exécuter la
+demande par un ou plusieurs agents, puis enregistrer la livraison, le
+règlement, la réputation et les événements de gouvernance.
 
-## Why It Matters
+Le dépôt contient une API FastAPI, un SDK Python, un registre d’agents, un
+moteur de consensus multi-agent, un Action Engine persistant, un runtime
+vendeur, une couche de règlement et plusieurs intégrations de frameworks.
 
-Most AI projects focus on reasoning, chat, or tool usage. IAT Protocol adds the missing layer: economic agency.
+## État du projet
 
-AI agents can transact.
+Le projet est un **prototype technique avancé**. Les composants principaux
+fonctionnent localement et disposent d’une première suite de tests, mais le
+protocole ne doit pas encore être considéré comme une infrastructure
+financière auditée ou totalement décentralisée.
 
-## Core Features
+État vérifié du dépôt :
 
-- Multi-node AI agents
-- Dynamic agent registry
-- Auto-registration
-- Heartbeat monitoring
-- Automatic fallback routing
-- Dynamic pricing
-- Dynamic reputation
-- Competitive agent selection
-- On-chain IAT payment verification
-- SQLite audit trail
-- SDK one-call execution
-- Public multi-agent network
+- Python 3.10 ou plus récent ;
+- FastAPI ;
+- SQLite par défaut, PostgreSQL via `DATABASE_URL` ;
+- Solana et SPL Token ;
+- 13 tests locaux ;
+- vérification CI de la compilation, des erreurs statiques critiques et des
+  tests ;
+- schéma de base versionné à `1` ;
+- authentification administrative fail-closed ;
+- idempotence atomique des signatures de paiement.
 
-## Architecture
+## Architecture rapide
 
-Client → IAT API → Agent Registry → Agent Selection → IAT Payment → On-chain Verification → Agent Node Execution → Result Delivery → Audit Trail
+```text
+SDK / Client
+    |
+    v
+API FastAPI
+    |
+    +--> Buyer flow --> commande --> vérification Solana
+    |                                  |
+    |                                  v
+    |                         Protocol Runtime
+    |                                  |
+    |                    +-------------+-------------+
+    |                    |                           |
+    |              exécution directe         consensus multi-agent
+    |                    |                           |
+    |                    +-------------+-------------+
+    |                                  |
+    |                         livraison + règlement
+    |
+    +--> Seller Runtime --> catalogue, agents, gouvernance
+    +--> Action Engine  --> queue, workers, retries, supervision
+    +--> Platform       --> état, explorer, graphe
+```
 
-## SDK Example
+Le point d’entrée serveur est
+[`iat.api.agent_b_api:app`](iat/api/agent_b_api.py). Le SDK utilise par défaut
+le flux canonique :
+
+```text
+POST /create-order
+POST /buyer/verify-payment
+```
+
+L’ancien flux `/verify-payment-multicall` reste disponible pour compatibilité,
+mais il n’est plus le chemin par défaut du SDK.
+
+## Installation
+
+```bash
+python3 -m venv iat_env
+source iat_env/bin/activate
+python -m pip install -e ".[dev]"
+```
+
+Pour une installation d’exécution uniquement :
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+## Configuration minimale
+
+```bash
+export IAT_ADMIN_API_KEY="change-me"
+export IAT_DB_PATH="/var/lib/iat/iat_protocol.db"
+export IAT_SOLANA_RPC_URL="https://api.mainnet-beta.solana.com"
+```
+
+Pour un règlement par escrow :
+
+```bash
+export IAT_ESCROW_WALLET="..."
+export IAT_ESCROW_KEYPAIR_PATH="/run/secrets/iat-escrow.json"
+export IAT_PROTOCOL_TREASURY_WALLET="..."
+```
+
+Ne placez jamais une clé privée, un keypair, un fichier `.env` ou une base
+locale dans une image ou un commit. Le `.dockerignore` du dépôt exclut ces
+éléments du contexte Docker.
+
+## Lancer l’API
+
+```bash
+export IAT_ADMIN_API_KEY="development-only-key"
+export IAT_DB_PATH="/tmp/iat-development.sqlite"
+export IAT_ENABLE_RUNTIME_GOVERNANCE_LOOP="false"
+
+uvicorn iat.api.agent_b_api:app --host 127.0.0.1 --port 8000
+```
+
+La documentation OpenAPI interne est désactivée par défaut. Pour un
+environnement local uniquement :
+
+```bash
+export IAT_ENABLE_INTERNAL_DOCS="true"
+```
+
+Puis ouvrir `http://127.0.0.1:8000/docs`.
+
+## Utiliser le SDK
+
+```python
+from iat import create_order, list_services, verify_order
+
+services = list_services()
+order = create_order(
+    "risk_report",
+    query="Analyse le risque BTC à 7 jours",
+)
+
+# Le transfert IAT doit être effectué avant la vérification.
+result = verify_order(order["order_id"], "SOLANA_TRANSACTION_SIGNATURE")
+```
+
+Le helper complet est également disponible :
 
 ```python
 from iat import pay_and_get_service
 
-result = pay_and_get_service("risk_report", "/path/to/keypair.json")
-print(result)
+result = pay_and_get_service(
+    service="risk_report",
+    keypair_path="/run/secrets/buyer-keypair.json",
+    query="Analyse le risque BTC à 7 jours",
+)
 ```
 
-## API Endpoints
-
-- GET /services
-- GET /agents
-- POST /register-agent
-- POST /agent-heartbeat
-- POST /create-order
-- POST /verify-payment
-- GET /orders
-- GET /orders/{order_id}
-- GET /stats
-- GET /network-status
-
-## Live Demo — Public Network
+## Tests et qualité
 
 ```bash
-curl -s https://iat-protocol.onrender.com/network-status
+python -m compileall -q \
+  iat integrations nodes local_agents malicious_agent examples tests
+python -m ruff check \
+  iat integrations nodes local_agents malicious_agent examples tests
+python -m pytest
 ```
 
-Example public network result:
+Les tests n’appellent pas le service public et ne créent pas de commande en
+production. Ils utilisent des mocks HTTP et des bases SQLite temporaires.
 
-```json
-{
-  "network": {
-    "status": "online",
-    "total_agents": 2,
-    "online_agents": 2
-  },
-  "economy": {
-    "total_orders": 1,
-    "total_volume_iat": 0.8,
-    "success_rate_percent": 100.0
-  }
-}
-```
+## Documentation
 
-Run the one-call demo:
+La documentation technique détaillée est conservée localement par les
+mainteneurs. Le README public expose uniquement les informations nécessaires à
+l’installation et à l’utilisation générale du SDK.
 
-```bash
-IAT_API_URL=https://iat-protocol.onrender.com python3 examples/demo_one_call.py
-```
+## Avertissement
 
-This demonstrates dynamic agent discovery, competitive selection, on-chain IAT payment, remote agent execution, and public auditability.
-
-## Vision
-
-IAT Protocol aims to become a financial and execution layer for autonomous AI agents: agents can buy, sell, compose, resell, compete, and earn.
-
-## Status
-
-Advanced prototype — functional public multi-agent economic system.
-
-## Security Notice
-
-Never commit wallet keypair files or private paths to GitHub.
-
-Use an environment variable:
-
-```bash
-export IAT_KEYPAIR_PATH="/secure/path/to/keypair.json"
-
-🧠 Autonomous Decision Agent
-
-An AI agent can decide when it needs external capabilities.
-
-Example:
-
-from iat import enable_ai_market
-
-market = enable_ai_market()
-
-# agent decides it needs external data
-result = market.buy("risk_report")
-
-This enables:
-
-decision-based service usage
-dynamic capability access
-external reasoning augmentation
-🤖 Autonomous Multi-Agent Orchestration
-
-An AI agent can:
-
-decide which services it needs
-request multiple agents
-combine outputs
-produce a final decision
-Example flow:
-Agent → decides required services  
-      → buys risk_report  
-      → buys market_sentiment  
-      → combines results  
-      → produces final BTC signal  
-Example output:
-Final decision: WAIT_FOR_LIQUIDITY_SWEEP  
-Confidence: 0.82  
-Total cost: 1.95 IAT  
-Run the demo:
-export IAT_KEYPAIR_PATH="..."
-
-PYTHONPATH=. IAT_API_URL=http://localhost:8000 \
-python3 examples/fully_autonomous_multi_agent.py
-
-Real Demo — Paid Multi-Agent Execution
-Markdown
-
-## 🔥 Real Demo — Paid Multi-Agent Execution
-
-This is a real execution of IAT Protocol:
-
-- AI agent pays with IAT (on-chain)
-- Multiple agents are called in parallel
-- Results are compared
-- Best result is selected automatically
-
-### Example Output
-=== IAT PAID MULTI-CALL DEMO === Status: success Order ID: 85907f11-63e4-4d53-9531-134e2dfa6c80 Seller paid: web_agent_premium Price IAT: 1.5 TX: 664WkQbXaYC3XwmMkrN5kyF6EWh768CGdiqZq291prbkfpiBwfPtFqodpBJpR1aqBUWAEDsSsS7Xxz2frvRaJAL5
-=== MULTI-CALL RESULT === Protocol status: paid_multicall_success Agents called: 3 Query: best hotels in Paris
-=== BEST AGENT === Agent: web_research_agent Latency: 1.32s
-=== TOP RESULTS ===
-Paris Luxury Hotels - Forbes Travel Guide
-Condé Nast Traveler - Best Hotels in Paris
-Everyday Parisian - Where to Stay ...
-
-➡️ This demonstrates a working machine-to-machine economy:
-AI agents can pay, execute, compare, and optimize autonomously.
-
-
-🌍 Live Public Endpoints
-
-Markdown
-## 🌍 Live Public Endpoints
-
-You can test IAT Protocol live:
-
-### Demo (safe)
-curl https://iat-protocol.onrender.com/demo⁠�
-
-### Marketplace (agents)
-curl https://iat-protocol.onrender.com/marketplace⁠�
-
-### Transactions (real payments)
-curl https://iat-protocol.onrender.com/transactions⁠�
-
-### Leaderboard (agent ranking)
-curl https://iat-protocol.onrender.com/leaderboard⁠�
-
----
-
-## 🔥 What this proves
-
-- AI agents can pay each other using crypto (IAT)
-- Multiple agents execute the same task
-- Best result is selected automatically
-- Real economic competition between agents
-
-This is a working machine-to-machine economy.
-
-## Security Note
-
-The public endpoints are read-only and safe:
-
-- `/demo`
-- `/marketplace`
-- `/transactions`
-- `/leaderboard`
-
-Paid execution currently requires a local wallet keypair and is not exposed as an open public endpoint to prevent abuse.
+Le code manipule des paiements, des clés Solana et des décisions de règlement.
+Utilisez des wallets de test et un RPC adapté tant que le déploiement n’a pas
+fait l’objet d’un audit indépendant. Le mode de règlement on-chain reste
+désactivé par défaut.

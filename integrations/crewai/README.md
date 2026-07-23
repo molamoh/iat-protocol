@@ -4,6 +4,7 @@ This tool allows CrewAI agents to buy services from the IAT Protocol marketplace
 
 ## Usage
 
+```python
 from crewai import Agent, Task, Crew
 from integrations.crewai.iat_tool import IATPayAndGetServiceTool
 
@@ -25,3 +26,14 @@ task = Task(
 crew = Crew(agents=[agent], tasks=[task])
 result = crew.kickoff()
 print(result)
+```
+
+Required environment:
+
+```bash
+export IAT_API_URL="http://127.0.0.1:8000"
+export IAT_KEYPAIR_PATH="/run/secrets/buyer-keypair.json"
+```
+
+The tool performs a real token transfer when invoked. Use a controlled wallet
+and environment.

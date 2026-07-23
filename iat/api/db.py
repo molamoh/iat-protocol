@@ -5,6 +5,7 @@ pool = None
 import os
 import sqlite3
 import json
+import secrets
 import time
 import uuid
 from iat.seller_runtime.runtime import run_seller_runtime
@@ -15,6 +16,7 @@ from pathlib import Path
 DB_PATH = Path(os.getenv("IAT_DB_PATH", "iat_protocol.db"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 USE_POSTGRES = bool(DATABASE_URL)
+SCHEMA_VERSION = 1
 
 def is_postgres():
     return bool(USE_POSTGRES)
@@ -7414,6 +7416,13 @@ def init_db():
     cur = conn.cursor()
 
     cur.execute("""
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+        version INTEGER PRIMARY KEY,
+        applied_at INTEGER NOT NULL
+    )
+    """)
+
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS orders (
         order_id TEXT PRIMARY KEY,
         service TEXT NOT NULL,
@@ -7531,6 +7540,29 @@ def init_db():
     init_buyer_sessions_table()
     init_buyer_conversation_sessions_table()
     init_foundation_decision_queue_table()
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    if USE_POSTGRES:
+        cur.execute(
+            f"""
+            INSERT INTO schema_migrations (version, applied_at)
+            VALUES ({p}, {p})
+            ON CONFLICT (version) DO NOTHING
+            """,
+            (SCHEMA_VERSION, int(time.time())),
+        )
+    else:
+        cur.execute(
+            f"""
+            INSERT OR IGNORE INTO schema_migrations (version, applied_at)
+            VALUES ({p}, {p})
+            """,
+            (SCHEMA_VERSION, int(time.time())),
+        )
+    conn.commit()
+    release_conn(conn)
 
 
 def init_agents_table():
@@ -8095,6 +8127,9 @@ def run_seller_agent_sandbox_review_db(factory_request_id):
         factory_request_id=factory_request_id,
         status="approved",
         limit=1,
+    )
+    review_evaluation = evaluate_seller_agent_factory_reviews_db(
+        factory_request_id=factory_request_id,
     )
 
     if approvals_result.get("count", 0) < 1:
@@ -12644,6 +12679,12 @@ def is_tx_processed_db(tx_signature):
 
 
 def save_processed_tx_db(tx_signature):
+    """Atomically claim a transaction signature.
+
+    Returns ``True`` only for the caller that inserted the signature. This
+    closes the check-then-insert race that could otherwise execute one payment
+    concurrently more than once.
+    """
     conn = get_conn()
     cur = conn.cursor()
     p = qmark()
@@ -12658,8 +12699,10 @@ def save_processed_tx_db(tx_signature):
         INSERT OR IGNORE INTO processed_txs (tx_signature, processed_at)
         VALUES ({p}, {p})
         """, (tx_signature, int(time.time())))
+    inserted = cur.rowcount == 1
     conn.commit()
     release_conn(locals().get("conn"))
+    return inserted
 
 
 def register_agent_db(agent):
@@ -13716,24 +13759,6 @@ def compute_seller_fingerprints_db(agent_id):
         agent_id,
     ))
 
-    seller_id = row_get(row, "seller_id")
-    seller_risk_application = None
-
-    if seller_id and divergence_detected:
-        seller_severity = min(0.35, max(0.05, 1.0 - consensus_score))
-
-        seller_risk_application = apply_seller_risk_event_db(
-            seller_id=seller_id,
-            event_type="consensus_failure",
-            severity=seller_severity,
-            reason=json.dumps({
-                "agent_id": agent_id,
-                "seller_agent_id": row_get(row, "seller_agent_id"),
-                "consensus_score": consensus_score,
-                "disagreement_rate": disagreement_rate,
-            }),
-        )
-
     conn.commit()
     release_conn(conn)
 
@@ -14148,6 +14173,14 @@ def get_active_adaptive_policy_db(
     return policy
 
 
+def create_seller_api_key():
+    """
+    Generate high-entropy seller API keys.
+    Seller keys are protocol economic credentials.
+    """
+    return "iat_sk_" + secrets.token_hex(24)
+
+
 def compute_adaptive_defense_policy_db(
     scope,
     service=None,
@@ -14158,19 +14191,6 @@ def compute_adaptive_defense_policy_db(
     Compute adaptive defense policy from live protocol intelligence.
     Advisory-only policy hardening.
     """
-    import uuid
-
-import secrets
-
-
-def create_seller_api_key():
-    """
-    Generate high-entropy seller API keys.
-    Seller keys are protocol economic credentials.
-    """
-    return "iat_sk_" + secrets.token_hex(24)
-
-
     cluster = cluster or {}
     threat_memory = threat_memory or []
 
@@ -24592,72 +24612,6 @@ def update_seller_agent_runtime_status_db(
 
     conn.commit()
     release_conn(conn)
-
-    try:
-        conn2 = get_conn()
-        cur2 = conn2.cursor()
-        p2 = qmark()
-        now2 = int(time.time())
-
-        cur2.execute(f"""
-            UPDATE sellers
-            SET seller_status = 'active',
-                verification_status = 'foundation_verified',
-                trust_score = 100,
-                risk_score = 0,
-                updated_at = {p2}
-            WHERE seller_id = {p2}
-        """, (now2, seller_id))
-
-        cur2.execute(f"""
-            UPDATE agents
-            SET available = 1,
-                seller_status = 'active',
-                verification_status = 'foundation_verified',
-                updated_at = {p2}
-            WHERE agent_id = {p2}
-        """, (now2, seller_agent.get("agent_id")))
-
-        conn2.commit()
-        release_conn(conn2)
-    except Exception:
-        try:
-            release_conn(conn2)
-        except Exception:
-            pass
-
-    try:
-        conn2 = get_conn()
-        cur2 = conn2.cursor()
-        p2 = qmark()
-        now2 = int(time.time())
-
-        cur2.execute(f"""
-            UPDATE sellers
-            SET seller_status = 'active',
-                verification_status = 'foundation_verified',
-                trust_score = 100,
-                risk_score = 0,
-                updated_at = {p2}
-            WHERE seller_id = {p2}
-        """, (now2, seller_id))
-
-        cur2.execute(f"""
-            UPDATE agents
-            SET available = 1,
-                seller_status = 'active',
-                verification_status = 'foundation_verified',
-                updated_at = {p2}
-            WHERE agent_id = {p2}
-        """, (now2, seller_agent.get("agent_id")))
-
-        conn2.commit()
-        release_conn(conn2)
-    except Exception:
-        try:
-            release_conn(conn2)
-        except Exception:
-            pass
 
     return {
         "status": "ok",

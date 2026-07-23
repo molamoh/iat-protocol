@@ -515,7 +515,7 @@ def compute_buyer_agent_score(agent, order=None):
         routing_topics = extract_topics_from_result(
             {"data": {
                 "entities": [],
-                "claims": [f"uncertain:{c}" for c in extracted_claims[:10]],
+                "claims": [],
                 "structured_signals": {},
                 "metrics": {},
             }},
@@ -3684,5 +3684,4 @@ def compute_seller_routing_modifier(agent):
         "modifier": round(modifier, 6),
         "reason": "seller_routing_modifier_applied",
     }
-
 

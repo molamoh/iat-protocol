@@ -30,7 +30,7 @@ class PoAITProtocol:
                           from_agent: str,
                           to_agent: str, 
                           amount: float,
-                          metadata: dict = {}) -> dict:
+                          metadata: Optional[dict] = None) -> dict:
         """
         Submit a transaction between two AI agents.
         This transaction will also validate 3 pending transactions.
@@ -66,7 +66,7 @@ class PoAITProtocol:
             "burn": burn_amount,
             "timestamp": time.time_ns(),
             "status": "pending",
-            "metadata": metadata,
+            "metadata": metadata or {},
             "validates": []
         }
 

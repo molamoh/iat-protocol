@@ -38,6 +38,7 @@ from iat.api.buyer_intent import (
 
 from iat.api.multi_exec import extract_topics_from_result
 from iat.api.db import compute_agent_topic_score_db
+from iat.api.public import router as public_router
 
 from iat.api.db import (
     update_agent_call_stats_db,
@@ -256,6 +257,7 @@ app = FastAPI(
     openapi_url="/openapi.json" if INTERNAL_DOCS_ENABLED else None,
     lifespan=application_lifespan,
 )
+app.include_router(public_router)
 
 def require_admin_key(x_api_key):
     expected_key = os.getenv("IAT_ADMIN_API_KEY")

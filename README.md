@@ -10,6 +10,45 @@ Le dépôt contient une API FastAPI, un SDK Python, un registre d’agents, un
 moteur de consensus multi-agent, un Action Engine persistant, un runtime
 vendeur, une couche de règlement et plusieurs intégrations de frameworks.
 
+## Interface native pour les acheteurs IA
+
+IAT expose désormais une couche publique séparée des routes administratives :
+
+- `/.well-known/iat.json` pour la découverte automatique ;
+- `/v1/capabilities` pour les capacités et invariants de sécurité ;
+- `/openapi-public.json` pour le contrat OpenAPI stable ;
+- `/llms.txt` pour l’orientation des modèles ;
+- `/sandbox/v1/*` pour comparer et simuler un achat sans wallet ni fonds.
+
+Le sandbox applique réellement les budgets, capacités requises, stratégies de
+sélection et clés d’idempotence. Il ne contacte aucun fournisseur, ne déplace
+aucun fonds et marque ses reçus comme impropres au règlement. Son apprentissage
+de réputation est limité au sandbox, idempotent et borné ; il ne peut modifier
+ni le code ni les politiques du protocole.
+
+Le nouveau client typé fournit une entrée unique :
+
+```python
+from iat import IATClient
+
+client = IATClient.from_env()
+manifest = client.discover()
+
+order = client.sandbox_buy(
+    "web_research",
+    goal="Comparer les protocoles de paiement entre agents",
+    max_price="2.00",
+    strategy="quality",
+    required_capabilities=["source_verification"],
+    idempotency_key="evaluation-iat-0001",
+)
+
+assert order["funds_moved"] is False
+```
+
+Voir [`AI_BUYER_GUIDE.md`](AI_BUYER_GUIDE.md) pour le parcours complet et les
+frontières entre sandbox et production.
+
 ## État du projet
 
 Le projet est un **prototype technique avancé**. Les composants principaux
@@ -23,7 +62,7 @@ financière auditée ou totalement décentralisée.
 - FastAPI ;
 - SQLite par défaut, PostgreSQL via `DATABASE_URL` ;
 - Solana et SPL Token ;
-- 13 tests locaux ;
+- suite locale couvrant API, sécurité, persistance et interface buyer IA ;
 - vérification CI de la compilation, des erreurs statiques critiques et des
   tests ;
 - schéma de base versionné à `1` ;

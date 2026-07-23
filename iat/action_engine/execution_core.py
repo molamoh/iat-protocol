@@ -22,6 +22,7 @@ def submit_action_to_core(
     priority="normal",
     timeout_seconds=300,
     retry_policy=None,
+    orchestration=None,
 ) -> Dict[str, Any]:
     action_context = build_action_context(
         action_type=action_type,
@@ -32,6 +33,7 @@ def submit_action_to_core(
         priority=priority,
         timeout_seconds=timeout_seconds,
         retry_policy=retry_policy,
+        orchestration=orchestration,
     )
 
     validation = validate_action_context(action_context)

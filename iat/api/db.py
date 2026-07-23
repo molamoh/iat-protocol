@@ -16,7 +16,7 @@ from pathlib import Path
 DB_PATH = Path(os.getenv("IAT_DB_PATH", "iat_protocol.db"))
 DATABASE_URL = os.getenv("DATABASE_URL")
 USE_POSTGRES = bool(DATABASE_URL)
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 def is_postgres():
     return bool(USE_POSTGRES)
@@ -7533,6 +7533,8 @@ def init_db():
     init_seller_governance_events_table()
     init_adaptive_defense_tables()
     init_settlements_table()
+    from iat.api.ledger_db import init_ledger_tables
+    init_ledger_tables()
     init_buyers_table()
     init_agent_topic_stats_table()
     init_delegations_table()
@@ -9901,6 +9903,9 @@ def init_settlements_table():
         "execution_claimed_at": "INTEGER",
         "execution_broadcast_at": "INTEGER",
         "execution_last_error": "TEXT",
+        "gross_amount_minor": "BIGINT",
+        "protocol_commission_amount_minor": "BIGINT",
+        "seller_payout_amount_minor": "BIGINT",
     }
 
     for column, definition in guard_columns.items():
@@ -9916,6 +9921,11 @@ def init_settlements_table():
             # SQLite raises when the column already exists.
             # PostgreSQL uses ADD COLUMN IF NOT EXISTS.
             pass
+
+    cur.execute("""
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_settlements_order_unique
+    ON settlements(order_id)
+    """)
 
     conn.commit()
     release_conn(conn)
@@ -9963,80 +9973,108 @@ def record_settlement_db(order_id, settlement):
     if not order_id or not isinstance(settlement, dict):
         return None
 
-    existing = get_settlement_by_order_id_db(order_id)
-
-    if existing:
-        return {
-            "status": "settlement_already_recorded",
-            "settlement_id": existing.get("settlement_id"),
-            "order_id": order_id,
-            "existing_settlement": existing,
-            "idempotent": True,
-        }
-
     settlement_execution = settlement.get("settlement_execution") or {}
     now = int(time.time())
     settlement_id = str(uuid.uuid4())
     p = qmark()
+    from iat.ledger import iat_to_minor
+    from iat.api.ledger_db import post_settlement_allocation_conn
+
+    gross_amount = settlement.get("gross_amount_iat", 0) or 0
+    commission_amount = settlement.get("protocol_commission_amount_iat", 0) or 0
+    payout_amount = settlement.get("seller_payout_amount_iat", 0) or 0
+    gross_minor = iat_to_minor(gross_amount)
+    commission_minor = iat_to_minor(commission_amount)
+    payout_minor = iat_to_minor(payout_amount)
 
     conn = get_conn()
     cur = conn.cursor()
-
-    cur.execute(f"""
-    INSERT INTO settlements (
-        settlement_id,
-        order_id,
-        winner_id,
-        winner_wallet,
-        treasury_wallet,
-        gross_amount_iat,
-        protocol_commission_rate,
-        protocol_commission_amount_iat,
-        seller_payout_amount_iat,
-        settlement_status,
-        winner_payment_status,
-        onchain_settlement_enabled,
-        commission_tx_signature,
-        seller_payout_tx_signature,
-        settlement_payload,
-        created_at,
-        updated_at
-    )
-    VALUES (
-        {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p},
-        {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}
-    )
-    """, (
-        settlement_id,
-        order_id,
-        settlement.get("winner_id"),
-        settlement.get("winner_wallet"),
-        settlement.get("protocol_treasury_wallet")
-        or settlement_execution.get("treasury_wallet"),
-        float(settlement.get("gross_amount_iat", 0) or 0),
-        float(settlement.get("protocol_commission_rate", 0) or 0),
-        float(settlement.get("protocol_commission_amount_iat", 0) or 0),
-        float(settlement.get("seller_payout_amount_iat", 0) or 0),
-        settlement_execution.get("status")
-        or settlement.get("winner_payment_status")
-        or "created",
-        settlement.get("winner_payment_status"),
-        1 if settlement_execution.get("onchain_settlement_enabled") else 0,
-        settlement_execution.get("commission_tx_signature"),
-        settlement_execution.get("seller_payout_tx_signature"),
-        json.dumps(settlement),
-        now,
-        now,
-    ))
-
-    conn.commit()
-    release_conn(conn)
-
-    return {
-        "status": "settlement_recorded",
-        "settlement_id": settlement_id,
-        "order_id": order_id,
-    }
+    try:
+        cur.execute(f"""
+        INSERT INTO settlements (
+            settlement_id,
+            order_id,
+            winner_id,
+            winner_wallet,
+            treasury_wallet,
+            gross_amount_iat,
+            protocol_commission_rate,
+            protocol_commission_amount_iat,
+            seller_payout_amount_iat,
+            gross_amount_minor,
+            protocol_commission_amount_minor,
+            seller_payout_amount_minor,
+            settlement_status,
+            winner_payment_status,
+            onchain_settlement_enabled,
+            commission_tx_signature,
+            seller_payout_tx_signature,
+            settlement_payload,
+            created_at,
+            updated_at
+        )
+        VALUES (
+            {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p},
+            {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}
+        )
+        """, (
+            settlement_id,
+            order_id,
+            settlement.get("winner_id"),
+            settlement.get("winner_wallet"),
+            settlement.get("protocol_treasury_wallet")
+            or settlement_execution.get("treasury_wallet"),
+            float(gross_amount),
+            float(settlement.get("protocol_commission_rate", 0) or 0),
+            float(commission_amount),
+            float(payout_amount),
+            gross_minor,
+            commission_minor,
+            payout_minor,
+            settlement_execution.get("status")
+            or settlement.get("winner_payment_status")
+            or "created",
+            settlement.get("winner_payment_status"),
+            1 if settlement_execution.get("onchain_settlement_enabled") else 0,
+            settlement_execution.get("commission_tx_signature"),
+            settlement_execution.get("seller_payout_tx_signature"),
+            json.dumps(settlement),
+            now,
+            now,
+        ))
+        ledger = post_settlement_allocation_conn(
+            conn,
+            settlement_id=settlement_id,
+            order_id=order_id,
+            seller_id=settlement.get("winner_id"),
+            gross_amount_iat=gross_amount,
+            protocol_commission_amount_iat=commission_amount,
+            seller_payout_amount_iat=payout_amount,
+        )
+        conn.commit()
+        return {
+            "status": "settlement_recorded",
+            "settlement_id": settlement_id,
+            "order_id": order_id,
+            "ledger": ledger,
+        }
+    except Exception:
+        conn.rollback()
+        existing = get_settlement_by_order_id_db(order_id)
+        if existing:
+            return {
+                "status": "settlement_already_recorded",
+                "settlement_id": existing.get("settlement_id"),
+                "order_id": order_id,
+                "existing_settlement": existing,
+                "idempotent": True,
+            }
+        raise
+    finally:
+        try:
+            release_conn(conn)
+        except Exception:
+            pass
 
 
 
@@ -10366,7 +10404,7 @@ def update_settlement_status_db(
 
     settlement_payload["state_history"] = state_history
     settlement_payload["last_state_transition"] = transition_event
-    settlement_payload["state_machine_version"] = "settlement_state_machine_v1"
+    settlement_payload["state_machine_version"] = "settlement_state_machine_v2"
 
     cur.execute(f"""
     UPDATE settlements
@@ -10376,6 +10414,7 @@ def update_settlement_status_db(
         settlement_payload = {p},
         updated_at = {p}
     WHERE settlement_id = {p}
+      AND settlement_status = {p}
     """, (
         next_status,
         commission_tx_signature,
@@ -10383,7 +10422,19 @@ def update_settlement_status_db(
         json.dumps(settlement_payload),
         now,
         settlement_id,
+        current_status,
     ))
+
+    if int(cur.rowcount or 0) != 1:
+        conn.rollback()
+        release_conn(conn)
+        return {
+            "status": "transition_conflict",
+            "settlement_id": settlement_id,
+            "previous_status": current_status,
+            "next_status": next_status,
+            "reason": "settlement_state_changed_concurrently",
+        }
 
     conn.commit()
     release_conn(conn)

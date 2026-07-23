@@ -6712,6 +6712,40 @@ def admin_update_settlement_status(
     )
 
 
+@app.get("/admin/ledger/reconciliation")
+def admin_reconcile_financial_ledger(
+    limit: int = 1000,
+    _admin: bool = Depends(require_admin),
+):
+    from iat.api.ledger_db import reconcile_ledger
+
+    return reconcile_ledger(limit=limit)
+
+
+@app.get("/admin/ledger/transactions/{transaction_id}")
+def admin_get_financial_ledger_transaction(
+    transaction_id: str,
+    _admin: bool = Depends(require_admin),
+):
+    from iat.api.ledger_db import get_ledger_transaction
+
+    transaction = get_ledger_transaction(transaction_id)
+    if not transaction:
+        raise HTTPException(status_code=404, detail="ledger_transaction_not_found")
+    return transaction
+
+
+@app.post("/admin/ledger/backfill-settlements")
+def admin_backfill_financial_ledger(
+    dry_run: bool = True,
+    limit: int = 1000,
+    _admin: bool = Depends(require_admin),
+):
+    from iat.api.ledger_db import backfill_settlement_allocations
+
+    return backfill_settlement_allocations(dry_run=dry_run, limit=limit)
+
+
 @app.get("/admin/settlement/validate-transition")
 def admin_validate_settlement_transition(
     current_status: str,

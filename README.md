@@ -82,7 +82,10 @@ financière auditée ou totalement décentralisée.
 - suite locale couvrant API, sécurité, persistance et interface buyer IA ;
 - vérification CI de la compilation, des erreurs statiques critiques et des
   tests ;
-- schéma de base versionné à `1` ;
+- ledger de settlement en partie double avec montants entiers à 8 décimales ;
+- création atomique et idempotente du settlement et de son allocation ;
+- réconciliation administrative et backfill contrôlé des anciens settlements ;
+- schéma de base versionné à `2` ;
 - authentification administrative fail-closed ;
 - idempotence atomique des signatures de paiement.
 
@@ -229,3 +232,8 @@ Le code manipule des paiements, des clés Solana et des décisions de règlement
 Utilisez des wallets de test et un RPC adapté tant que le déploiement n’a pas
 fait l’objet d’un audit indépendant. Le mode de règlement on-chain reste
 désactivé par défaut.
+
+Le ledger version 1 garantit l’équilibre de l’allocation comptable d’un
+settlement, mais ne constitue pas à lui seul une preuve de transfert on-chain.
+Voir [`FINANCIAL_RELIABILITY.md`](FINANCIAL_RELIABILITY.md) pour les invariants,
+la migration et le runbook d’incident.

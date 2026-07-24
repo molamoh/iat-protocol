@@ -15,6 +15,7 @@ iat_protocol.db
 
 # Test / cache
 .pytest_cache/
+/target/
 *.json
 iat_wallets_v2.json
 iat_wallets_v2.json

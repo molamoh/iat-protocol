@@ -28,6 +28,13 @@ _MANIFEST: dict[str, Any] = {
         "services": "/services",
         "create_order": "/create-order",
         "verify_payment": "/buyer/verify-payment",
+        "universal_checkout_quote": "/payments/v1/universal/quote",
+        "universal_checkout_prepare": "/payments/v1/universal/{quote_id}/prepare",
+        "universal_checkout_submit": "/payments/v1/universal/{quote_id}/submit",
+        "universal_checkout_confirm": "/payments/v1/universal/{quote_id}/confirm",
+        "universal_checkout_deliver": "/payments/v1/universal/{quote_id}/deliver",
+        "universal_checkout_compensation": "/payments/v1/universal/{quote_id}/compensation/request",
+        "universal_checkout_status": "/payments/v1/universal/{quote_id}",
     },
     "seller": {
         "discovery": "/seller/v1/discovery",
@@ -74,6 +81,14 @@ _MANIFEST: dict[str, Any] = {
         "rpc": IAT_NETWORK,
         "asset": "IAT",
         "modes": ["direct", "escrow"],
+        "checkout_inputs": "configured_solana_assets",
+        "hybrid_routes": ["treasury", "raydium", "fail_closed"],
+        "treasury_program": "iat_checkout_v1",
+        "atomic_treasury_execution": True,
+        "finalized_confirmation_required": True,
+        "global_transaction_replay_protection": True,
+        "buyer_wallet_signature_required": True,
+        "server_custody": False,
     },
     "security": {
         "sandbox_isolation": True,
@@ -137,6 +152,15 @@ def build_capabilities_document() -> dict[str, Any]:
                 "human_approval_supported": True,
             },
             {
+                "id": "hybrid_universal_checkout",
+                "stability": "beta",
+                "autonomous": True,
+                "routes": ["treasury", "raydium", "fail_closed"],
+                "order_bound": True,
+                "custodial": False,
+                "buyer_wallet_signature_required": True,
+            },
+            {
                 "id": "bounded_reputation_learning",
                 "stability": "beta",
                 "autonomous": True,
@@ -175,6 +199,9 @@ def build_capabilities_document() -> dict[str, Any]:
             "growth_outreach_requires_auditable_authorization",
             "growth_opt_out_is_immediately_suppressed",
             "growth_outreach_is_limited_to_once_per_24_hours",
+            "treasury_iat_is_released_only_into_order_settlement",
+            "checkout_quotes_are_wallet_bound_short_lived_and_capped",
+            "raydium_is_never_used_as_the_primary_price_oracle",
         ],
     }
 
@@ -202,14 +229,16 @@ execute an order, verify a result, and settle payment under explicit policies.
 - No-funds sandbox offers: `/sandbox/v1/offers`
 - No-funds sandbox preview: `POST /sandbox/v1/preview`
 - No-funds sandbox purchase: `POST /sandbox/v1/purchase`
+- Hybrid payment quote: `POST /payments/v1/universal/quote`
 - Authenticated invitation response: `POST /growth/v1/respond`
 
 ## Production buyer flow
 
 1. Discover services with `GET /services`.
 2. Create an order with `POST /create-order`.
-3. Transfer the requested IAT amount only after validating the order.
-4. Verify the transaction with `POST /buyer/verify-payment`.
+3. Pay directly in IAT, or request an order-bound hybrid checkout quote.
+4. Sign the displayed Solana transaction in the buyer wallet.
+5. Verify the transaction with `POST /buyer/verify-payment`.
 
 Never treat sandbox receipts as production settlement proofs. Never expose
 wallet secrets, API keys, raw prompts, or private execution context.

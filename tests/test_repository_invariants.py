@@ -1,9 +1,18 @@
 from pathlib import Path
 
 from iat.api.agent_b_api import app
+from iat.config import IAT_TOKEN_ADDRESS
+from iat.onchain import IAT_MINT as ONCHAIN_IAT_MINT
+from iat.transfer import IAT_MINT as TRANSFER_IAT_MINT
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_iat_mint_has_one_canonical_source_of_truth():
+    assert IAT_TOKEN_ADDRESS == "3vRGo1VpGbZH67Ur2UG7VNUqSqQyApLQEcCxgnqK4f4Z"
+    assert ONCHAIN_IAT_MINT == IAT_TOKEN_ADDRESS
+    assert TRANSFER_IAT_MINT == IAT_TOKEN_ADDRESS
 
 
 def test_fastapi_routes_are_unique():

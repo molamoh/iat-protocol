@@ -1,0 +1,544 @@
+import json
+
+import pytest
+from fastapi import HTTPException
+
+from iat.api import checkout_api, db
+from iat import checkout_compensation, checkout_delivery
+from iat.checkout import RaydiumSnapshot
+
+
+NOW = 2_000_000_000
+BUYER = "Buyer111111111111111111111111111111111"
+SECRET = "buyer-secret-long-enough-123"
+
+
+@pytest.fixture()
+def checkout_database(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "checkout.sqlite")
+    monkeypatch.setattr(db, "USE_POSTGRES", False)
+    monkeypatch.setattr(checkout_api.time, "time", lambda: NOW)
+    monkeypatch.setenv("IAT_TREASURY_CHECKOUT_ENABLED", "true")
+    monkeypatch.setenv("IAT_RAYDIUM_CHECKOUT_ENABLED", "true")
+    monkeypatch.setenv("IAT_TREASURY_INVENTORY_IAT", "500")
+    monkeypatch.setenv("IAT_REFERENCE_PRICE_USD", "0.25")
+    monkeypatch.setenv(
+        "IAT_TREASURY_PROGRAM_ID",
+        "IATCheckout11111111111111111111111111111",
+    )
+    monkeypatch.setenv(
+        "IAT_TREASURY_IAT_VAULT",
+        "Treasury1111111111111111111111111111111",
+    )
+    monkeypatch.setenv(
+        "IAT_CHECKOUT_ASSETS_JSON",
+        json.dumps(
+            {
+                "USDC": {
+                    "mint": "USDC1111111111111111111111111111111111",
+                    "decimals": 6,
+                    "usd_price": "1",
+                    "oracle": "pyth",
+                    "observed_at": NOW - 2,
+                }
+            }
+        ),
+    )
+    db.init_db()
+    checkout_api.init_checkout_db()
+    db.create_order_db(
+        "ord-api",
+        {
+            "service": "research",
+            "price": 10,
+            "seller_id": "seller-1",
+            "seller_wallet": "seller-wallet",
+            "buyer_secret": SECRET,
+            "buyer_wallet": BUYER,
+            "created_at": NOW - 10,
+            "updated_at": NOW - 10,
+            "status": "created",
+        },
+    )
+
+
+def request(**overrides):
+    values = {
+        "order_id": "ord-api",
+        "buyer_wallet": BUYER,
+        "buyer_secret": SECRET,
+        "input_asset": "USDC",
+    }
+    values.update(overrides)
+    return checkout_api.UniversalQuoteRequest(**values)
+
+
+def test_quote_is_persisted_idempotently_and_secret_is_not_stored(checkout_database):
+    first = checkout_api.create_universal_quote(
+        request(), idempotency_key="checkout-idempotency-0001"
+    )
+    second = checkout_api.create_universal_quote(
+        request(), idempotency_key="checkout-idempotency-0001"
+    )
+
+    assert first["quote_id"] == second["quote_id"]
+    assert first["route"] == "treasury"
+    conn = db.get_conn()
+    row = conn.execute("SELECT * FROM universal_checkout_quotes").fetchone()
+    db.release_conn(conn)
+    assert SECRET not in json.dumps(dict(row))
+    assert len(first["intent_hash"]) == 64
+
+
+def test_idempotency_key_cannot_be_reused_for_another_request(checkout_database):
+    checkout_api.create_universal_quote(
+        request(), idempotency_key="checkout-idempotency-0002"
+    )
+
+    with pytest.raises(HTTPException) as rejected:
+        checkout_api.create_universal_quote(
+            request(input_asset="USDT"),
+            idempotency_key="checkout-idempotency-0002",
+        )
+
+    assert rejected.value.status_code == 409
+
+
+def test_one_order_cannot_reserve_multiple_active_quotes(checkout_database):
+    first = checkout_api.create_universal_quote(
+        request(), idempotency_key="checkout-active-order-0001"
+    )
+    with pytest.raises(HTTPException) as rejected:
+        checkout_api.create_universal_quote(
+            request(),
+            idempotency_key="checkout-active-order-0002",
+        )
+    assert rejected.value.status_code == 409
+    assert rejected.value.detail["code"] == "order_has_active_checkout_quote"
+    assert rejected.value.detail["quote_id"] == first["quote_id"]
+
+
+def test_order_secret_and_wallet_are_both_required(checkout_database):
+    with pytest.raises(HTTPException) as rejected:
+        checkout_api.create_universal_quote(
+            request(buyer_secret="wrong-secret-long-enough"),
+            idempotency_key="checkout-idempotency-0003",
+        )
+
+    assert rejected.value.status_code == 403
+
+
+def test_prepare_returns_contract_but_never_signs_for_buyer(checkout_database):
+    quote = checkout_api.create_universal_quote(
+        request(), idempotency_key="checkout-idempotency-0004"
+    )
+    prepared = checkout_api.prepare_universal_checkout(
+        quote["quote_id"],
+        checkout_api.UniversalPrepareRequest(
+            buyer_wallet=BUYER,
+            buyer_secret=SECRET,
+        ),
+    )
+
+    assert prepared["status"] == "prepared"
+    assert prepared["transaction_contract"]["buyer_signer"] == BUYER
+    assert prepared["transaction_contract"]["atomic_execution_required"] is True
+    assert prepared["readiness"]["server_custody"] is False
+    assert prepared["readiness"]["serialized_transaction"] == (
+        "buyer_wallet_must_add_blockhash_and_sign"
+    )
+    assert prepared["readiness"]["instruction_plan"].startswith(
+        "configuration_error:"
+    )
+
+
+def test_status_credentials_are_headers_not_query_contract(checkout_database):
+    quote = checkout_api.create_universal_quote(
+        request(), idempotency_key="checkout-idempotency-0005"
+    )
+    status = checkout_api.get_universal_quote(
+        quote["quote_id"],
+        buyer_wallet=BUYER,
+        buyer_secret=SECRET,
+    )
+    assert status["quote_id"] == quote["quote_id"]
+
+    with pytest.raises(HTTPException) as rejected:
+        checkout_api.get_universal_quote(
+            quote["quote_id"],
+            buyer_wallet=None,
+            buyer_secret=None,
+        )
+    assert rejected.value.status_code == 403
+
+
+def test_live_raydium_payload_is_private_and_builds_escrow_transaction(
+    checkout_database,
+    monkeypatch,
+):
+    monkeypatch.setenv("IAT_TREASURY_CHECKOUT_ENABLED", "false")
+    monkeypatch.setenv("IAT_RAYDIUM_LIVE_ENABLED", "true")
+    monkeypatch.setenv("IAT_RAYDIUM_ALLOWED_POOLS", "pool-approved")
+    monkeypatch.setenv("IAT_RAYDIUM_QUOTES_JSON", "{}")
+    provider_payload = {
+        "provider": "raydium_trade_api_v2",
+        "quote_response": {"success": True, "data": {"opaque": True}},
+        "maximum_input_minor": 3_000_000,
+    }
+    monkeypatch.setattr(
+        checkout_api,
+        "_live_raydium_quote",
+        lambda **_: (
+            RaydiumSnapshot(
+                input_amount=checkout_api.Decimal("2.5"),
+                output_iat=checkout_api.Decimal("10"),
+                price_impact_bps=50,
+                pool_liquidity_usd=checkout_api.Decimal("25000"),
+                pool_id="pool-approved",
+                observed_at=NOW,
+            ),
+            provider_payload,
+        ),
+    )
+    monkeypatch.setattr(
+        checkout_api,
+        "_raydium_transaction_plan",
+        lambda payload: {
+            "provider": payload["_provider_payload"]["provider"],
+            "transaction_base64": "mock-transaction",
+            "output_to_buyer_wallet": False,
+            "simulation_required": True,
+        },
+    )
+    monkeypatch.setattr(
+        checkout_api,
+        "message_hash_from_transaction_base64",
+        lambda _: "ab" * 32,
+    )
+
+    created = checkout_api.create_universal_quote(
+        request(),
+        idempotency_key="checkout-idempotency-raydium",
+    )
+    assert created["route"] == "raydium"
+    assert "_provider_payload" not in created
+    assert created["expires_at"] - created["created_at"] == 25
+    assert created["input"]["amount_semantics"] == "maximum"
+
+    status = checkout_api.get_universal_quote(
+        created["quote_id"],
+        buyer_wallet=BUYER,
+        buyer_secret=SECRET,
+    )
+    assert "_provider_payload" not in status
+
+    prepared = checkout_api.prepare_universal_checkout(
+        created["quote_id"],
+        checkout_api.UniversalPrepareRequest(
+            buyer_wallet=BUYER,
+            buyer_secret=SECRET,
+        ),
+    )
+    assert prepared["readiness"]["instruction_plan"] == "ready"
+    assert prepared["raydium_transaction"]["output_to_buyer_wallet"] is False
+
+
+def test_submit_confirm_and_global_replay_protection(
+    checkout_database,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        checkout_api,
+        "_treasury_instruction_plan",
+        lambda payload, order_id: {
+            "program_id": "program",
+            "quote_authority": "quote-authority",
+            "anti_replay": {
+                "payment_intent": "payment-intent",
+                "order_hash_hex": "01" * 32,
+                "quote_hash_hex": "02" * 32,
+                "nonce": 7,
+            },
+        },
+    )
+    quote = checkout_api.create_universal_quote(
+        request(),
+        idempotency_key="checkout-confirmation-0001",
+    )
+    checkout_api.prepare_universal_checkout(
+        quote["quote_id"],
+        checkout_api.UniversalPrepareRequest(
+            buyer_wallet=BUYER,
+            buyer_secret=SECRET,
+        ),
+    )
+    signature = str(checkout_api.Signature.default())
+    submitted = checkout_api.submit_universal_checkout(
+        quote["quote_id"],
+        checkout_api.UniversalSubmitRequest(
+            buyer_wallet=BUYER,
+            buyer_secret=SECRET,
+            tx_signature=signature,
+        ),
+    )
+    assert submitted["status"] == "submitted"
+
+    class Verifier:
+        def verify(self, **kwargs):
+            assert kwargs["signature"] == signature
+            return {
+                "status": "confirmed",
+                "route": "treasury",
+                "signature": signature,
+                "finalized": True,
+            }
+
+    monkeypatch.setattr(checkout_api, "_checkout_verifier", lambda: Verifier())
+    confirmed = checkout_api.confirm_universal_checkout(
+        quote["quote_id"],
+        checkout_api.UniversalPrepareRequest(
+            buyer_wallet=BUYER,
+            buyer_secret=SECRET,
+        ),
+    )
+    duplicate = checkout_api.confirm_universal_checkout(
+        quote["quote_id"],
+        checkout_api.UniversalPrepareRequest(
+            buyer_wallet=BUYER,
+            buyer_secret=SECRET,
+        ),
+    )
+    assert confirmed["payment_verified"] is True
+    assert duplicate["idempotent"] is True
+    assert confirmed["delivery"]["state"] == "completed"
+    assert db.get_order_db("ord-api")["status"] == "delivered"
+    assert db.is_tx_processed_db(signature) is True
+
+
+def _enqueue_test_delivery(state="paid"):
+    conn = db.get_conn()
+    try:
+        conn.execute(
+            "UPDATE orders SET status = ?, tx_signature = ? WHERE order_id = ?",
+            (state, "tx-delivery", "ord-api"),
+        )
+        checkout_delivery.enqueue_delivery_tx(
+            conn.cursor(),
+            quote_id="quote-delivery",
+            order_id="ord-api",
+            tx_signature="tx-delivery",
+            now=NOW,
+        )
+        conn.commit()
+    finally:
+        db.release_conn(conn)
+
+
+def test_delivery_failure_is_retryable_and_payment_remains_paid(
+    checkout_database,
+    monkeypatch,
+):
+    _enqueue_test_delivery()
+    monkeypatch.setenv("IAT_CHECKOUT_DELIVERY_RETRY_BASE_SECONDS", "30")
+
+    delivery = checkout_delivery.run_checkout_delivery(
+        "quote-delivery",
+        now=NOW,
+        executor=lambda order, signature: {"error": "provider_unreachable"},
+    )
+
+    assert delivery["state"] == "retryable_failure"
+    assert delivery["next_attempt_at"] == NOW + 30
+    assert delivery["last_error_code"] == "provider_unreachable"
+    order = db.get_order_db("ord-api")
+    assert order["status"] == "paid"
+    assert order["used"] is False
+    assert order["tx_signature"] == "tx-delivery"
+
+
+def test_delivery_retry_wait_is_enforced(checkout_database):
+    _enqueue_test_delivery()
+    calls = []
+    first = checkout_delivery.run_checkout_delivery(
+        "quote-delivery",
+        now=NOW,
+        executor=lambda order, signature: {"error": "temporary"},
+    )
+    second = checkout_delivery.run_checkout_delivery(
+        "quote-delivery",
+        now=NOW + 1,
+        executor=lambda order, signature: calls.append(signature),
+    )
+
+    assert first["state"] == "retryable_failure"
+    assert second["claimed"] is False
+    assert calls == []
+
+
+def test_delivery_review_state_preserves_payment(checkout_database):
+    _enqueue_test_delivery()
+    delivery = checkout_delivery.run_checkout_delivery(
+        "quote-delivery",
+        now=NOW,
+        executor=lambda order, signature: {
+            "status": "foundation_review_required",
+            "delivery_authorized": False,
+        },
+    )
+
+    assert delivery["state"] == "review_required"
+    order = db.get_order_db("ord-api")
+    assert order["status"] == "foundation_review_required"
+    assert order["used"] is False
+
+
+def test_delivery_is_idempotent_after_completion(checkout_database):
+    _enqueue_test_delivery()
+    calls = []
+
+    def executor(order, signature):
+        calls.append((order["order_id"], signature))
+        return {"status": "success", "result": "delivered"}
+
+    first = checkout_delivery.run_checkout_delivery(
+        "quote-delivery", now=NOW, executor=executor
+    )
+    second = checkout_delivery.run_checkout_delivery(
+        "quote-delivery", now=NOW + 100, executor=executor
+    )
+
+    assert first["state"] == "completed"
+    assert second["state"] == "completed"
+    assert second["claimed"] is False
+    assert calls == [("ord-api", "tx-delivery")]
+    assert db.get_order_db("ord-api")["used"] is True
+
+
+def test_exhausted_delivery_can_only_be_redriven_with_audited_reason(
+    checkout_database,
+    monkeypatch,
+):
+    _enqueue_test_delivery()
+    monkeypatch.setenv("IAT_CHECKOUT_DELIVERY_MAX_ATTEMPTS", "1")
+    failed = checkout_delivery.run_checkout_delivery(
+        "quote-delivery",
+        now=NOW,
+        executor=lambda order, signature: {"error": "provider_offline"},
+    )
+    assert failed["state"] == "exhausted"
+
+    with pytest.raises(ValueError, match="redrive_reason_length_invalid"):
+        checkout_delivery.redrive_exhausted_delivery(
+            "quote-delivery", reason="retry", now=NOW + 10
+        )
+
+    redriven = checkout_delivery.redrive_exhausted_delivery(
+        "quote-delivery",
+        reason="Provider health was manually verified before redrive.",
+        now=NOW + 10,
+    )
+    assert redriven["state"] == "pending"
+    events = checkout_delivery.delivery_events("quote-delivery")
+    assert events[0]["event_type"] == "admin_redrive"
+    assert events[0]["from_state"] == "exhausted"
+    assert events[0]["to_state"] == "pending"
+    assert events[0]["reason"].startswith("Provider health")
+
+
+def test_delivery_dashboard_excludes_result_and_credentials(checkout_database):
+    _enqueue_test_delivery()
+    dashboard = checkout_delivery.delivery_dashboard(limit=10)
+
+    assert dashboard["state_counts"] == {"pending": 1}
+    assert dashboard["total"] == 1
+    item = dashboard["items"][0]
+    assert "result_payload" not in item
+    assert "buyer_secret" not in item
+    assert "tx_signature" not in item
+
+
+def _confirmed_quote_with_delivery():
+    quote = checkout_api.create_universal_quote(
+        request(), idempotency_key="checkout-compensation-0001"
+    )
+    conn = db.get_conn()
+    try:
+        conn.execute(
+            "UPDATE universal_checkout_quotes SET state = ? WHERE quote_id = ?",
+            ("confirmed", quote["quote_id"]),
+        )
+        conn.execute(
+            "UPDATE orders SET status = ?, tx_signature = ? WHERE order_id = ?",
+            ("paid", "tx-compensation", "ord-api"),
+        )
+        checkout_delivery.enqueue_delivery_tx(
+            conn.cursor(),
+            quote_id=quote["quote_id"],
+            order_id="ord-api",
+            tx_signature="tx-compensation",
+            now=NOW,
+        )
+        conn.commit()
+    finally:
+        db.release_conn(conn)
+    return quote
+
+
+def test_exhausted_delivery_automatically_opens_treasury_compensation(
+    checkout_database,
+    monkeypatch,
+):
+    quote = _confirmed_quote_with_delivery()
+    monkeypatch.setenv("IAT_CHECKOUT_DELIVERY_MAX_ATTEMPTS", "1")
+    checkout_delivery.run_checkout_delivery(
+        quote["quote_id"],
+        now=NOW,
+        executor=lambda order, signature: {"error": "provider_offline"},
+    )
+
+    compensation = checkout_compensation.get_compensation(quote["quote_id"])
+    assert compensation["state"] == "pending_review"
+    assert compensation["refund_asset"] == "USDC"
+    assert compensation["refund_mint"] == "USDC1111111111111111111111111111111111"
+    assert compensation["refund_amount_minor"] == "2512500"
+    assert compensation["eligibility_reason"] == "delivery_attempts_exhausted"
+
+
+def test_compensation_decision_is_governed_and_idempotent(
+    checkout_database,
+    monkeypatch,
+):
+    quote = _confirmed_quote_with_delivery()
+    monkeypatch.setenv("IAT_CHECKOUT_DELIVERY_MAX_ATTEMPTS", "1")
+    checkout_delivery.run_checkout_delivery(
+        quote["quote_id"],
+        now=NOW,
+        executor=lambda order, signature: {"error": "provider_offline"},
+    )
+
+    approved = checkout_compensation.decide_compensation(
+        quote["quote_id"],
+        approve=True,
+        reason="Verified terminal non-delivery and refund destination.",
+        now=NOW + 1,
+    )
+    duplicate = checkout_compensation.decide_compensation(
+        quote["quote_id"],
+        approve=True,
+        reason="Verified terminal non-delivery and refund destination.",
+        now=NOW + 2,
+    )
+
+    assert approved["state"] == "approved"
+    assert approved["payout_signature"] is None
+    assert duplicate["idempotent"] is True
+
+
+def test_compensation_is_rejected_before_terminal_non_delivery(checkout_database):
+    quote = _confirmed_quote_with_delivery()
+    with pytest.raises(ValueError, match="compensation_not_eligible"):
+        checkout_compensation.request_compensation(
+            quote["quote_id"],
+            requested_by="authenticated_buyer",
+            now=NOW,
+        )

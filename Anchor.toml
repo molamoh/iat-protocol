@@ -1,0 +1,17 @@
+[toolchain]
+anchor_version = "0.32.1"
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.localnet]
+iat_checkout = "2F3RqbnM7uLobjbTzRJspCGuoPbvLJyq6jQNdmY1JP4y"
+
+[provider]
+cluster = "Localnet"
+wallet = "~/.config/solana/id.json"
+
+[workspace]
+members = ["programs/iat-checkout"]
+

@@ -42,6 +42,18 @@ from iat.api.public import router as public_router
 from iat.api.growth_api import build_growth_router
 from iat.api.decision_api import build_decision_router
 from iat.api.growth_public import router as growth_public_router
+from iat.api.checkout_api import init_checkout_db, router as checkout_router
+from iat.checkout_delivery import (
+    delivery_dashboard,
+    delivery_events,
+    redrive_exhausted_delivery,
+    start_checkout_delivery_worker,
+)
+from iat.checkout_compensation import (
+    compensation_dashboard,
+    decide_compensation,
+)
+from iat.config import IAT_TOKEN_ADDRESS
 
 from iat.api.db import (
     update_agent_call_stats_db,
@@ -242,6 +254,15 @@ class DelegationRequest(BaseModel):
     amount: float
 
 
+class CheckoutDeliveryRedriveRequest(BaseModel):
+    reason: str = Field(min_length=8, max_length=500)
+
+
+class CheckoutCompensationDecisionRequest(BaseModel):
+    approve: bool
+    reason: str = Field(min_length=8, max_length=500)
+
+
 INTERNAL_DOCS_ENABLED = (
     os.getenv("IAT_ENABLE_INTERNAL_DOCS", "false").strip().lower()
     == "true"
@@ -262,6 +283,7 @@ app = FastAPI(
 )
 app.include_router(public_router)
 app.include_router(growth_public_router)
+app.include_router(checkout_router)
 
 def require_admin_key(x_api_key):
     expected_key = os.getenv("IAT_ADMIN_API_KEY")
@@ -373,7 +395,7 @@ def payment_target():
 
 
 WALLET_A = "DUtz7zHeVsd8mnJhWM52z5LsC9NqY6SVRjCBPgNM8Qrj"
-IAT_MINT = "3vRGo1VpGbZH67Ur2UG7VNUqSqQyApLQEcCxgnqK4f4Z"
+IAT_MINT = IAT_TOKEN_ADDRESS
 ORDER_TTL = 1800
 
 
@@ -11641,6 +11663,9 @@ def runtime_heartbeat_governance_loop():
 
 def initialize_application():
     init_db()
+    init_checkout_db()
+    if start_checkout_delivery_worker():
+        print("[IAT] Universal checkout delivery worker started")
     from iat.growth import init_growth_tables, start_growth_loop
 
     init_growth_tables()
@@ -11671,6 +11696,74 @@ def initialize_application():
     print(
         "[IAT] Runtime heartbeat governance loop started"
     )
+
+
+@app.get("/admin/checkout-delivery/dashboard")
+def admin_checkout_delivery_dashboard(
+    limit: int = 50,
+    _admin: bool = Depends(require_admin),
+):
+    return delivery_dashboard(limit=limit)
+
+
+@app.get("/admin/checkout-delivery/{quote_id}/events")
+def admin_checkout_delivery_events(
+    quote_id: str,
+    limit: int = 100,
+    _admin: bool = Depends(require_admin),
+):
+    return {
+        "status": "ok",
+        "quote_id": quote_id,
+        "events": delivery_events(quote_id, limit=limit),
+    }
+
+
+@app.post("/admin/checkout-delivery/{quote_id}/redrive")
+def admin_checkout_delivery_redrive(
+    quote_id: str,
+    req: CheckoutDeliveryRedriveRequest,
+    _admin: bool = Depends(require_admin),
+):
+    try:
+        return redrive_exhausted_delivery(
+            quote_id,
+            reason=req.reason,
+        )
+    except ValueError as exc:
+        code = str(exc)
+        status_code = 404 if code == "delivery_not_found" else 409
+        if code == "redrive_reason_length_invalid":
+            status_code = 422
+        raise HTTPException(status_code=status_code, detail=code) from exc
+
+
+@app.get("/admin/checkout-compensation/dashboard")
+def admin_checkout_compensation_dashboard(
+    limit: int = 100,
+    _admin: bool = Depends(require_admin),
+):
+    return compensation_dashboard(limit=limit)
+
+
+@app.post("/admin/checkout-compensation/{quote_id}/decision")
+def admin_checkout_compensation_decision(
+    quote_id: str,
+    req: CheckoutCompensationDecisionRequest,
+    _admin: bool = Depends(require_admin),
+):
+    try:
+        return decide_compensation(
+            quote_id,
+            approve=req.approve,
+            reason=req.reason,
+        )
+    except ValueError as exc:
+        code = str(exc)
+        status_code = 404 if code == "compensation_not_found" else 409
+        if code == "compensation_decision_reason_invalid":
+            status_code = 422
+        raise HTTPException(status_code=status_code, detail=code) from exc
 
 
 

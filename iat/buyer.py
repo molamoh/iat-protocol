@@ -216,6 +216,129 @@ class IATClient:
             json={"order_id": order_id, "tx_signature": transaction_signature},
         )
 
+    def universal_checkout_quote(
+        self,
+        order_id: str,
+        *,
+        buyer_wallet: str,
+        buyer_secret: str,
+        input_asset: str,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        key = idempotency_key or f"iat-checkout-{secrets.token_urlsafe(18)}"
+        return self._request(
+            "POST",
+            "/payments/v1/universal/quote",
+            json={
+                "order_id": order_id,
+                "buyer_wallet": buyer_wallet,
+                "buyer_secret": buyer_secret,
+                "input_asset": input_asset,
+            },
+            headers={"Idempotency-Key": key},
+            retry_safe=True,
+        )
+
+    def prepare_universal_checkout(
+        self,
+        quote_id: str,
+        *,
+        buyer_wallet: str,
+        buyer_secret: str,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/payments/v1/universal/{quote_id}/prepare",
+            json={"buyer_wallet": buyer_wallet, "buyer_secret": buyer_secret},
+            retry_safe=True,
+        )
+
+    def universal_checkout_status(
+        self,
+        quote_id: str,
+        *,
+        buyer_wallet: str,
+        buyer_secret: str,
+    ) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            f"/payments/v1/universal/{quote_id}",
+            headers={
+                "X-IAT-Buyer-Wallet": buyer_wallet,
+                "X-IAT-Order-Secret": buyer_secret,
+            },
+        )
+
+    def submit_universal_checkout(
+        self,
+        quote_id: str,
+        *,
+        buyer_wallet: str,
+        buyer_secret: str,
+        transaction_signature: str,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/payments/v1/universal/{quote_id}/submit",
+            json={
+                "buyer_wallet": buyer_wallet,
+                "buyer_secret": buyer_secret,
+                "tx_signature": transaction_signature,
+            },
+            retry_safe=True,
+        )
+
+    def confirm_universal_checkout(
+        self,
+        quote_id: str,
+        *,
+        buyer_wallet: str,
+        buyer_secret: str,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/payments/v1/universal/{quote_id}/confirm",
+            json={
+                "buyer_wallet": buyer_wallet,
+                "buyer_secret": buyer_secret,
+            },
+            retry_safe=True,
+        )
+
+    def deliver_universal_checkout(
+        self,
+        quote_id: str,
+        *,
+        buyer_wallet: str,
+        buyer_secret: str,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/payments/v1/universal/{quote_id}/deliver",
+            json={
+                "buyer_wallet": buyer_wallet,
+                "buyer_secret": buyer_secret,
+            },
+            retry_safe=True,
+        )
+
+    def request_universal_checkout_compensation(
+        self,
+        quote_id: str,
+        *,
+        buyer_wallet: str,
+        buyer_secret: str,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/payments/v1/universal/{quote_id}/compensation/request",
+            json={
+                "buyer_wallet": buyer_wallet,
+                "buyer_secret": buyer_secret,
+            },
+            retry_safe=True,
+        )
+
     @staticmethod
     def _sandbox_payload(
         service: str,

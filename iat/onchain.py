@@ -4,6 +4,7 @@ from solders.pubkey import Pubkey
 from solders.signature import Signature
 from solders.keypair import Keypair
 from solana.rpc.types import TokenAccountOpts
+from iat.config import IAT_TOKEN_ADDRESS
 
 import json
 import os
@@ -13,7 +14,7 @@ RPC = (
     or os.getenv("SOLANA_RPC_URL")
     or "https://api.mainnet-beta.solana.com"
 )
-IAT_MINT = "3vRGo1VpGbZH67Ur2UG7VNUqSqQyApLQEcCxgnqK4f4Z"
+IAT_MINT = IAT_TOKEN_ADDRESS
 
 client = Client(RPC)
 

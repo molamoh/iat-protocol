@@ -1,0 +1,1059 @@
+"""Public universal-checkout API with fail-closed configuration."""
+
+from __future__ import annotations
+
+import json
+import os
+import secrets
+import threading
+import time
+import uuid
+from contextlib import contextmanager
+from dataclasses import replace
+from decimal import Decimal, ROUND_UP
+from typing import Any
+
+from fastapi import APIRouter, Header, HTTPException
+from pydantic import BaseModel, Field
+from solders.pubkey import Pubkey
+from solders.signature import Signature
+from spl.token.instructions import get_associated_token_address
+
+from iat.checkout import (
+    AssetSnapshot,
+    CheckoutPolicy,
+    CheckoutRejected,
+    RaydiumSnapshot,
+    canonical_hash,
+    decimal_value,
+    quote_hybrid_checkout,
+)
+from iat.checkout_solana import (
+    SPL_TOKEN_PROGRAM_ID,
+    SolanaPlanError,
+    build_treasury_instruction_plan,
+)
+from iat.config import IAT_DECIMALS, IAT_TOKEN_ADDRESS
+from iat.raydium import (
+    RaydiumClient,
+    RaydiumError,
+    RaydiumPolicy,
+)
+from iat.checkout_verifier import (
+    CheckoutVerificationError,
+    SolanaCheckoutVerifier,
+    message_hash_from_transaction_base64,
+)
+from iat.api.db import get_conn, get_order_db, qmark, release_conn
+from iat.api import db as database
+from iat.checkout_delivery import (
+    enqueue_delivery_tx,
+    init_checkout_delivery_db,
+    public_delivery_status,
+    run_checkout_delivery,
+)
+from iat.checkout_compensation import (
+    get_compensation,
+    init_compensation_db,
+    public_compensation,
+    request_compensation,
+)
+
+
+router = APIRouter(prefix="/payments/v1/universal", tags=["universal-checkout"])
+ACTIVE_STATES = ("quoted", "prepared", "submitted")
+_LOCAL_RESERVATION_LOCK = threading.RLock()
+_POSTGRES_RESERVATION_LOCK_ID = 4_280_024_071
+
+
+class UniversalQuoteRequest(BaseModel):
+    order_id: str = Field(min_length=1, max_length=128)
+    buyer_wallet: str = Field(min_length=32, max_length=64)
+    buyer_secret: str = Field(min_length=16, max_length=256)
+    input_asset: str = Field(min_length=2, max_length=16)
+
+
+class UniversalPrepareRequest(BaseModel):
+    buyer_wallet: str = Field(min_length=32, max_length=64)
+    buyer_secret: str = Field(min_length=16, max_length=256)
+
+
+class UniversalSubmitRequest(UniversalPrepareRequest):
+    tx_signature: str = Field(min_length=64, max_length=128)
+
+
+def _bool_env(name: str, default: bool = False) -> bool:
+    return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _decimal_env(name: str, default: str) -> Decimal:
+    return decimal_value(os.getenv(name, default), name.lower())
+
+
+def _json_env(name: str) -> dict[str, Any]:
+    raw = os.getenv(name, "{}")
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise CheckoutRejected(f"invalid_{name.lower()}") from exc
+    if not isinstance(value, dict):
+        raise CheckoutRejected(f"invalid_{name.lower()}")
+    return value
+
+
+def load_checkout_policy() -> CheckoutPolicy:
+    pools = tuple(
+        item.strip()
+        for item in os.getenv("IAT_RAYDIUM_ALLOWED_POOLS", "").split(",")
+        if item.strip()
+    )
+    return CheckoutPolicy(
+        treasury_enabled=_bool_env("IAT_TREASURY_CHECKOUT_ENABLED"),
+        raydium_enabled=_bool_env("IAT_RAYDIUM_CHECKOUT_ENABLED"),
+        quote_ttl_seconds=int(os.getenv("IAT_CHECKOUT_QUOTE_TTL_SECONDS", "60")),
+        oracle_max_age_seconds=int(os.getenv("IAT_CHECKOUT_ORACLE_MAX_AGE_SECONDS", "90")),
+        treasury_spread_bps=int(os.getenv("IAT_TREASURY_SPREAD_BPS", "50")),
+        max_order_iat=_decimal_env("IAT_CHECKOUT_MAX_ORDER_IAT", "100"),
+        wallet_daily_iat_cap=_decimal_env("IAT_CHECKOUT_WALLET_DAILY_IAT_CAP", "250"),
+        treasury_daily_iat_cap=_decimal_env("IAT_TREASURY_DAILY_IAT_CAP", "1000"),
+        treasury_inventory_iat=_decimal_env("IAT_TREASURY_INVENTORY_IAT", "0"),
+        iat_usd_reference_price=_decimal_env("IAT_REFERENCE_PRICE_USD", "0"),
+        max_raydium_price_impact_bps=int(
+            os.getenv("IAT_RAYDIUM_MAX_PRICE_IMPACT_BPS", "300")
+        ),
+        min_raydium_liquidity_usd=_decimal_env(
+            "IAT_RAYDIUM_MIN_LIQUIDITY_USD", "10000"
+        ),
+        max_reference_deviation_bps=int(
+            os.getenv("IAT_CHECKOUT_MAX_REFERENCE_DEVIATION_BPS", "500")
+        ),
+        allowed_raydium_pools=pools,
+        treasury_program_id=os.getenv("IAT_TREASURY_PROGRAM_ID", "").strip(),
+        treasury_vault=os.getenv("IAT_TREASURY_IAT_VAULT", "").strip(),
+    )
+
+
+def init_checkout_db() -> None:
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS universal_checkout_quotes (
+                quote_id TEXT PRIMARY KEY,
+                order_id TEXT NOT NULL,
+                buyer_wallet TEXT NOT NULL,
+                input_asset TEXT NOT NULL,
+                route TEXT NOT NULL,
+                required_iat TEXT NOT NULL,
+                state TEXT NOT NULL,
+                intent_hash TEXT NOT NULL,
+                request_hash TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                quote_payload TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                tx_signature TEXT,
+                execution_evidence TEXT
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_checkout_wallet_created
+            ON universal_checkout_quotes (buyer_wallet, created_at)
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_checkout_order_state
+            ON universal_checkout_quotes (order_id, state)
+            """
+        )
+        try:
+            if database.USE_POSTGRES:
+                cur.execute(
+                    "ALTER TABLE universal_checkout_quotes "
+                    "ADD COLUMN IF NOT EXISTS execution_evidence TEXT"
+                )
+            else:
+                cur.execute(
+                    "ALTER TABLE universal_checkout_quotes "
+                    "ADD COLUMN execution_evidence TEXT"
+                )
+        except Exception:
+            pass
+        cur.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_checkout_tx_signature
+            ON universal_checkout_quotes (tx_signature)
+            WHERE tx_signature IS NOT NULL
+            """
+        )
+        conn.commit()
+    finally:
+        release_conn(conn)
+    init_checkout_delivery_db()
+    init_compensation_db()
+
+
+def _public_quote(row: Any) -> dict[str, Any]:
+    value = dict(row)
+    payload = json.loads(value.pop("quote_payload"))
+    payload.pop("_provider_payload", None)
+    payload.update(
+        {
+            "quote_id": value["quote_id"],
+            "state": value["state"],
+            "created_at": value["created_at"],
+            "expires_at": value["expires_at"],
+        }
+    )
+    return payload
+
+
+def _get_quote(quote_id: str) -> dict[str, Any] | None:
+    init_checkout_db()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        p = qmark()
+        cur.execute(
+            f"SELECT * FROM universal_checkout_quotes WHERE quote_id = {p}",
+            (quote_id,),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        release_conn(conn)
+
+
+def _get_by_idempotency(key: str) -> dict[str, Any] | None:
+    init_checkout_db()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        p = qmark()
+        cur.execute(
+            f"SELECT * FROM universal_checkout_quotes WHERE idempotency_key = {p}",
+            (key,),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        release_conn(conn)
+
+
+def _active_quote_for_order(order_id: str, now: int) -> dict[str, Any] | None:
+    init_checkout_db()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        p = qmark()
+        states = ", ".join([p] * len(ACTIVE_STATES))
+        cur.execute(
+            f"""
+            SELECT * FROM universal_checkout_quotes
+            WHERE order_id = {p} AND expires_at >= {p}
+              AND state IN ({states})
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (order_id, now, *ACTIVE_STATES),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        release_conn(conn)
+
+
+def _reserved_iat(
+    *,
+    buyer_wallet: str | None = None,
+    route: str | None = None,
+    now: int,
+) -> Decimal:
+    init_checkout_db()
+    day_start = now - (now % 86400)
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        p = qmark()
+        states = ", ".join([p] * len(ACTIVE_STATES))
+        values: list[Any] = [day_start, now, *ACTIVE_STATES]
+        wallet_filter = ""
+        if buyer_wallet:
+            wallet_filter = f" AND buyer_wallet = {p}"
+            values.append(buyer_wallet)
+        route_filter = ""
+        if route:
+            route_filter = f" AND route = {p}"
+            values.append(route)
+        cur.execute(
+            f"""
+            SELECT required_iat FROM universal_checkout_quotes
+            WHERE created_at >= {p} AND expires_at >= {p}
+              AND state IN ({states}){wallet_filter}{route_filter}
+            """,
+            tuple(values),
+        )
+        return sum(
+            (decimal_value(dict(row)["required_iat"], "reserved_iat") for row in cur.fetchall()),
+            Decimal("0"),
+        )
+    finally:
+        release_conn(conn)
+
+
+def _asset_snapshot(symbol: str) -> AssetSnapshot:
+    normalized = symbol.strip().upper()
+    registry = _json_env("IAT_CHECKOUT_ASSETS_JSON")
+    value = registry.get(normalized)
+    if not isinstance(value, dict):
+        raise CheckoutRejected("unsupported_input_asset")
+    return AssetSnapshot.from_mapping(normalized, value)
+
+
+def _raydium_snapshot(symbol: str) -> RaydiumSnapshot | None:
+    registry = _json_env("IAT_RAYDIUM_QUOTES_JSON")
+    value = registry.get(symbol.strip().upper())
+    return RaydiumSnapshot.from_mapping(value) if isinstance(value, dict) else None
+
+
+def _raydium_client(maximum_input_minor: int) -> RaydiumClient:
+    return RaydiumClient(
+        RaydiumPolicy(
+            timeout_seconds=float(os.getenv("IAT_RAYDIUM_TIMEOUT_SECONDS", "8")),
+            slippage_bps=int(os.getenv("IAT_RAYDIUM_SLIPPAGE_BPS", "100")),
+            max_price_impact_bps=int(
+                os.getenv("IAT_RAYDIUM_MAX_PRICE_IMPACT_BPS", "300")
+            ),
+            max_input_amount_minor=maximum_input_minor,
+            allowed_pools=tuple(
+                value.strip()
+                for value in os.getenv("IAT_RAYDIUM_ALLOWED_POOLS", "").split(",")
+                if value.strip()
+            ),
+            allowed_programs=tuple(
+                value.strip()
+                for value in os.getenv("IAT_RAYDIUM_ALLOWED_PROGRAMS", "").split(",")
+                if value.strip()
+            ),
+            compute_unit_price_micro_lamports=int(
+                os.getenv("IAT_RAYDIUM_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS", "50000")
+            ),
+        )
+    )
+
+
+def _live_raydium_quote(
+    *,
+    order: dict[str, Any],
+    asset: AssetSnapshot,
+    policy: CheckoutPolicy,
+) -> tuple[RaydiumSnapshot, dict[str, Any]]:
+    required_iat = decimal_value(order.get("price"), "order_price")
+    expected_input = required_iat * policy.iat_usd_reference_price / asset.usd_price
+    maximum_multiplier = Decimal(
+        10_000
+        + policy.max_reference_deviation_bps
+        + int(os.getenv("IAT_RAYDIUM_SLIPPAGE_BPS", "100"))
+    ) / Decimal(10_000)
+    maximum_input_minor = int(
+        (
+            expected_input
+            * maximum_multiplier
+            * (Decimal(10) ** asset.decimals)
+        ).quantize(Decimal("1"), rounding=ROUND_UP)
+    )
+    asset_registry = _json_env("IAT_CHECKOUT_ASSETS_JSON")
+    asset_config = asset_registry.get(asset.symbol)
+    if not isinstance(asset_config, dict):
+        raise RaydiumError("asset_execution_configuration_missing")
+    output_minor = int(
+        (required_iat * (Decimal(10) ** IAT_DECIMALS)).quantize(
+            Decimal("1"),
+            rounding=ROUND_UP,
+        )
+    )
+    client = _raydium_client(maximum_input_minor)
+    pool_liquidity = client.fetch_pool_liquidity_usd(
+        input_mint=asset.mint,
+        output_mint=IAT_TOKEN_ADDRESS,
+    )
+    validated = client.quote_exact_output(
+        input_mint=asset.mint,
+        output_mint=IAT_TOKEN_ADDRESS,
+        output_amount_minor=output_minor,
+        input_decimals=asset.decimals,
+        output_decimals=IAT_DECIMALS,
+        pool_liquidity_usd=pool_liquidity,
+    )
+    return validated.snapshot, {
+        "provider": "raydium_trade_api_v2",
+        "quote_response": validated.response,
+        "maximum_input_minor": maximum_input_minor,
+    }
+
+
+def _treasury_instruction_plan(payload: dict[str, Any], order_id: str) -> dict[str, Any]:
+    assets = _json_env("IAT_CHECKOUT_ASSETS_JSON")
+    asset = assets.get(str(payload["input"]["asset"]).upper())
+    if not isinstance(asset, dict):
+        raise SolanaPlanError("asset_execution_configuration_missing")
+    try:
+        ratio_numerator = int(asset["onchain_ratio_numerator"])
+        ratio_denominator = int(asset["onchain_ratio_denominator"])
+        expected_input = (
+            int(payload["output"]["amount_minor"]) * ratio_numerator
+            + ratio_denominator
+            - 1
+        ) // ratio_denominator
+    except (KeyError, TypeError, ValueError, ZeroDivisionError) as exc:
+        raise SolanaPlanError("onchain_price_ratio_missing_or_invalid") from exc
+    if ratio_numerator <= 0 or ratio_denominator <= 0:
+        raise SolanaPlanError("onchain_price_ratio_missing_or_invalid")
+    if expected_input != int(payload["input"]["amount_minor"]):
+        raise SolanaPlanError("quote_does_not_match_onchain_price_ratio")
+    input_program = str(asset.get("token_program") or SPL_TOKEN_PROGRAM_ID)
+    try:
+        buyer_input = get_associated_token_address(
+            Pubkey.from_string(payload["buyer_wallet"]),
+            Pubkey.from_string(payload["input"]["mint"]),
+            token_program_id=Pubkey.from_string(input_program),
+        )
+    except Exception as exc:
+        raise SolanaPlanError("invalid_buyer_token_account_derivation") from exc
+    return build_treasury_instruction_plan(
+        quote=payload,
+        order_id=order_id,
+        program_id=os.getenv("IAT_TREASURY_PROGRAM_ID", ""),
+        quote_authority=os.getenv("IAT_TREASURY_QUOTE_AUTHORITY", ""),
+        treasury_iat_vault=os.getenv("IAT_TREASURY_IAT_VAULT", ""),
+        settlement_escrow=os.getenv("IAT_TREASURY_SETTLEMENT_ESCROW", ""),
+        treasury_input_vault=str(asset.get("treasury_vault") or ""),
+        buyer_input_account=str(buyer_input),
+        input_token_program=input_program,
+        iat_token_program=os.getenv(
+            "IAT_IAT_TOKEN_PROGRAM",
+            str(SPL_TOKEN_PROGRAM_ID),
+        ),
+    )
+
+
+def _raydium_transaction_plan(payload: dict[str, Any]) -> dict[str, Any]:
+    provider = payload.get("_provider_payload")
+    if not isinstance(provider, dict) or provider.get("provider") != "raydium_trade_api_v2":
+        raise RaydiumError("raydium_live_quote_payload_missing")
+    assets = _json_env("IAT_CHECKOUT_ASSETS_JSON")
+    asset = assets.get(str(payload["input"]["asset"]).upper())
+    if not isinstance(asset, dict):
+        raise RaydiumError("asset_execution_configuration_missing")
+    input_program = Pubkey.from_string(
+        str(asset.get("token_program") or SPL_TOKEN_PROGRAM_ID)
+    )
+    buyer_input = get_associated_token_address(
+        Pubkey.from_string(payload["buyer_wallet"]),
+        Pubkey.from_string(payload["input"]["mint"]),
+        token_program_id=input_program,
+    )
+    return _raydium_client(int(provider["maximum_input_minor"])).build_exact_output_transaction(
+        quote_response=provider["quote_response"],
+        buyer_wallet=payload["buyer_wallet"],
+        input_account=str(buyer_input),
+        settlement_escrow=os.getenv("IAT_TREASURY_SETTLEMENT_ESCROW", ""),
+        expected_input_mint=payload["input"]["mint"],
+        expected_output_mint=payload["output"]["mint"],
+        expected_output_amount_minor=int(payload["output"]["amount_minor"]),
+    )
+
+
+def _authorize_order(req: UniversalQuoteRequest | UniversalPrepareRequest, order: dict[str, Any]) -> None:
+    expected_secret = str(order.get("buyer_secret") or "")
+    expected_wallet = str(order.get("buyer_wallet") or "")
+    if not expected_secret or not secrets.compare_digest(req.buyer_secret, expected_secret):
+        raise HTTPException(status_code=403, detail="invalid_order_credential")
+    if not expected_wallet or not secrets.compare_digest(req.buyer_wallet, expected_wallet):
+        raise HTTPException(status_code=403, detail="invalid_order_credential")
+
+
+@contextmanager
+def _reservation_guard():
+    """Serialize cap checks across threads and PostgreSQL application workers."""
+
+    with _LOCAL_RESERVATION_LOCK:
+        lock_connection = None
+        try:
+            if database.USE_POSTGRES:
+                lock_connection = get_conn()
+                cursor = lock_connection.cursor()
+                cursor.execute(
+                    "SELECT pg_advisory_lock(%s)",
+                    (_POSTGRES_RESERVATION_LOCK_ID,),
+                )
+            yield
+        finally:
+            if lock_connection is not None:
+                try:
+                    cursor = lock_connection.cursor()
+                    cursor.execute(
+                        "SELECT pg_advisory_unlock(%s)",
+                        (_POSTGRES_RESERVATION_LOCK_ID,),
+                    )
+                finally:
+                    release_conn(lock_connection)
+
+
+def _create_universal_quote(
+    req: UniversalQuoteRequest,
+    idempotency_key: str | None,
+):
+    if not idempotency_key or not 16 <= len(idempotency_key) <= 128:
+        raise HTTPException(status_code=400, detail="valid_idempotency_key_required")
+    order = get_order_db(req.order_id)
+    if not order:
+        raise HTTPException(status_code=404, detail="order_not_found")
+    _authorize_order(req, order)
+
+    request_hash = canonical_hash(
+        {
+            "order_id": req.order_id,
+            "buyer_wallet": req.buyer_wallet,
+            "input_asset": req.input_asset.upper(),
+        }
+    )
+    previous = _get_by_idempotency(idempotency_key)
+    if previous:
+        if previous["request_hash"] != request_hash:
+            raise HTTPException(status_code=409, detail="idempotency_key_conflict")
+        return _public_quote(previous)
+
+    now = int(time.time())
+    active = _active_quote_for_order(req.order_id, now)
+    if active:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "order_has_active_checkout_quote",
+                "quote_id": active["quote_id"],
+                "state": active["state"],
+                "expires_at": active["expires_at"],
+            },
+        )
+    asset_snapshot = None
+    checkout_policy = None
+    provider_payload = None
+    try:
+        asset_snapshot = _asset_snapshot(req.input_asset)
+        checkout_policy = load_checkout_policy()
+        result = quote_hybrid_checkout(
+            order=order,
+            buyer_wallet=req.buyer_wallet,
+            asset=asset_snapshot,
+            policy=checkout_policy,
+            wallet_iat_today=_reserved_iat(buyer_wallet=req.buyer_wallet, now=now),
+            treasury_iat_today=_reserved_iat(route="treasury", now=now),
+            raydium=_raydium_snapshot(req.input_asset),
+            now=now,
+        )
+    except CheckoutRejected as exc:
+        live_enabled = _bool_env("IAT_RAYDIUM_LIVE_ENABLED")
+        if (
+            exc.code == "no_safe_checkout_route"
+            and live_enabled
+            and checkout_policy is not None
+            and checkout_policy.raydium_enabled
+            and asset_snapshot is not None
+        ):
+            try:
+                live_snapshot, provider_payload = _live_raydium_quote(
+                    order=order,
+                    asset=asset_snapshot,
+                    policy=checkout_policy,
+                )
+                result = quote_hybrid_checkout(
+                    order=order,
+                    buyer_wallet=req.buyer_wallet,
+                    asset=asset_snapshot,
+                    policy=replace(
+                        checkout_policy,
+                        quote_ttl_seconds=min(
+                            checkout_policy.quote_ttl_seconds,
+                            25,
+                        ),
+                    ),
+                    wallet_iat_today=_reserved_iat(
+                        buyer_wallet=req.buyer_wallet,
+                        now=now,
+                    ),
+                    treasury_iat_today=_reserved_iat(
+                        route="treasury",
+                        now=now,
+                    ),
+                    raydium=live_snapshot,
+                    now=now,
+                )
+            except (CheckoutRejected, RaydiumError) as live_exc:
+                code = getattr(live_exc, "code", "raydium_quote_failed")
+                details = getattr(live_exc, "details", {})
+                raise HTTPException(
+                    status_code=422,
+                    detail={"code": code, "details": details},
+                ) from live_exc
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": exc.code, "details": exc.details},
+            ) from exc
+    if provider_payload is not None:
+        result["_provider_payload"] = provider_payload
+
+    quote_id = f"uq_{uuid.uuid4().hex}"
+    result["quote_id"] = quote_id
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        p = qmark()
+        cur.execute(
+            f"""
+            INSERT INTO universal_checkout_quotes (
+                quote_id, order_id, buyer_wallet, input_asset, route,
+                required_iat, state, intent_hash, request_hash, idempotency_key,
+                quote_payload, created_at, expires_at, updated_at
+            ) VALUES ({", ".join([p] * 14)})
+            """,
+            (
+                quote_id,
+                req.order_id,
+                req.buyer_wallet,
+                req.input_asset.upper(),
+                result["route"],
+                result["output"]["amount"],
+                "quoted",
+                result["intent_hash"],
+                request_hash,
+                idempotency_key,
+                json.dumps(result, sort_keys=True),
+                result["created_at"],
+                result["expires_at"],
+                now,
+            ),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        previous = _get_by_idempotency(idempotency_key)
+        if previous and previous["request_hash"] == request_hash:
+            return _public_quote(previous)
+        raise
+    finally:
+        release_conn(conn)
+    public_result = dict(result)
+    public_result.pop("_provider_payload", None)
+    return public_result
+
+
+@router.post("/quote")
+def create_universal_quote(
+    req: UniversalQuoteRequest,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
+    with _reservation_guard():
+        return _create_universal_quote(req, idempotency_key)
+
+
+@router.post("/{quote_id}/prepare")
+def prepare_universal_checkout(quote_id: str, req: UniversalPrepareRequest):
+    row = _get_quote(quote_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="quote_not_found")
+    order = get_order_db(row["order_id"])
+    if not order:
+        raise HTTPException(status_code=404, detail="order_not_found")
+    _authorize_order(req, order)
+    if not secrets.compare_digest(req.buyer_wallet, row["buyer_wallet"]):
+        raise HTTPException(status_code=403, detail="invalid_order_credential")
+    now = int(time.time())
+    if now >= int(row["expires_at"]):
+        raise HTTPException(status_code=410, detail="quote_expired")
+    if row["state"] == "prepared" and row.get("execution_evidence"):
+        evidence = json.loads(row["execution_evidence"])
+        return evidence["prepared_response"]
+    if row["state"] != "quoted":
+        raise HTTPException(status_code=409, detail="quote_not_preparable")
+
+    payload = json.loads(row["quote_payload"])
+    response = {
+        "status": "prepared",
+        "quote_id": quote_id,
+        "intent_hash": row["intent_hash"],
+        "route": row["route"],
+        "expires_at": row["expires_at"],
+        "transaction_contract": {
+            "network": "solana",
+            "buyer_signer": row["buyer_wallet"],
+            "input": payload["input"],
+            "minimum_iat_output": payload["output"],
+            "iat_destination": "order_settlement_escrow_only",
+            "order_id": row["order_id"],
+            "atomic_execution_required": True,
+            "simulation_required_before_submission": True,
+        },
+        "readiness": {
+            "policy_and_reservation": "ready",
+            "instruction_plan": "unavailable",
+            "serialized_transaction": "buyer_wallet_must_add_blockhash_and_sign",
+            "server_custody": False,
+        },
+    }
+    proof: dict[str, Any] | None = None
+    if row["route"] == "treasury":
+        try:
+            plan = _treasury_instruction_plan(
+                payload,
+                row["order_id"],
+            )
+            response["solana_instruction_plan"] = plan
+            response["readiness"]["instruction_plan"] = "ready"
+            replay = plan["anti_replay"]
+            proof = {
+                "buyer_wallet": row["buyer_wallet"],
+                "program_id": plan["program_id"],
+                "quote_authority": plan["quote_authority"],
+                "payment_intent": replay["payment_intent"],
+                "order_hash_hex": replay["order_hash_hex"],
+                "quote_hash_hex": replay["quote_hash_hex"],
+                "input_mint": payload["input"]["mint"],
+                "input_amount": int(payload["input"]["amount_minor"]),
+                "iat_amount": int(payload["output"]["amount_minor"]),
+                "nonce": int(replay["nonce"]),
+            }
+        except (CheckoutRejected, SolanaPlanError) as exc:
+            response["readiness"]["instruction_plan"] = f"configuration_error:{exc}"
+    else:
+        try:
+            plan = _raydium_transaction_plan(payload)
+            response["raydium_transaction"] = plan
+            response["readiness"]["instruction_plan"] = "ready"
+            response["readiness"]["serialized_transaction"] = (
+                "ready_for_buyer_simulation_and_signature"
+            )
+            proof = {
+                "buyer_wallet": row["buyer_wallet"],
+                "message_hash": message_hash_from_transaction_base64(
+                    plan["transaction_base64"]
+                ),
+            }
+        except (CheckoutRejected, RaydiumError, KeyError, ValueError) as exc:
+            response["readiness"]["instruction_plan"] = f"configuration_error:{exc}"
+    if proof is None:
+        return response
+
+    stored_evidence = {
+        "proof": proof,
+        "prepared_response": response,
+    }
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        p = qmark()
+        cur.execute(
+            f"""
+            UPDATE universal_checkout_quotes
+            SET state = {p}, execution_evidence = {p}, updated_at = {p}
+            WHERE quote_id = {p} AND state = {p}
+            """,
+            (
+                "prepared",
+                json.dumps(stored_evidence, sort_keys=True),
+                now,
+                quote_id,
+                "quoted",
+            ),
+        )
+        if cur.rowcount != 1:
+            conn.rollback()
+            winner = _get_quote(quote_id)
+            if winner and winner.get("execution_evidence"):
+                return json.loads(winner["execution_evidence"])["prepared_response"]
+            raise HTTPException(status_code=409, detail="quote_prepare_conflict")
+        conn.commit()
+    finally:
+        release_conn(conn)
+    return response
+
+
+@router.post("/{quote_id}/submit")
+def submit_universal_checkout(quote_id: str, req: UniversalSubmitRequest):
+    try:
+        Signature.from_string(req.tx_signature)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="invalid_transaction_signature") from exc
+    row = _get_quote(quote_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="quote_not_found")
+    order = get_order_db(row["order_id"])
+    if not order:
+        raise HTTPException(status_code=404, detail="order_not_found")
+    _authorize_order(req, order)
+    if row["state"] == "submitted":
+        if secrets.compare_digest(str(row.get("tx_signature") or ""), req.tx_signature):
+            return {
+                "status": "submitted",
+                "quote_id": quote_id,
+                "tx_signature": req.tx_signature,
+                "idempotent": True,
+            }
+        raise HTTPException(status_code=409, detail="quote_already_submitted")
+    if row["state"] != "prepared" or not row.get("execution_evidence"):
+        raise HTTPException(status_code=409, detail="quote_not_submittable")
+    if int(time.time()) >= int(row["expires_at"]):
+        raise HTTPException(status_code=410, detail="quote_expired")
+
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        p = qmark()
+        cur.execute(
+            f"""
+            UPDATE universal_checkout_quotes
+            SET state = {p}, tx_signature = {p}, updated_at = {p}
+            WHERE quote_id = {p} AND state = {p}
+            """,
+            ("submitted", req.tx_signature, int(time.time()), quote_id, "prepared"),
+        )
+        if cur.rowcount != 1:
+            conn.rollback()
+            raise HTTPException(status_code=409, detail="transaction_claim_conflict")
+        conn.commit()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        conn.rollback()
+        raise HTTPException(status_code=409, detail="transaction_signature_already_claimed") from exc
+    finally:
+        release_conn(conn)
+    return {
+        "status": "submitted",
+        "quote_id": quote_id,
+        "tx_signature": req.tx_signature,
+        "next_step": f"/payments/v1/universal/{quote_id}/confirm",
+        "idempotent": False,
+    }
+
+
+def _checkout_verifier() -> SolanaCheckoutVerifier:
+    rpc_url = (
+        os.getenv("IAT_CHECKOUT_SOLANA_RPC_URL")
+        or os.getenv("IAT_SOLANA_RPC_URL")
+        or ""
+    )
+    if not rpc_url:
+        raise CheckoutVerificationError("checkout_rpc_not_configured", retryable=True)
+    return SolanaCheckoutVerifier(
+        rpc_url,
+        timeout_seconds=float(os.getenv("IAT_CHECKOUT_RPC_TIMEOUT_SECONDS", "10")),
+    )
+
+
+def _finalize_checkout(row: dict[str, Any], proof: dict[str, Any]) -> None:
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        p = qmark()
+        signature = row["tx_signature"]
+        now = int(time.time())
+        if database.USE_POSTGRES:
+            cur.execute(
+                f"""
+                INSERT INTO processed_txs (tx_signature, processed_at)
+                VALUES ({p}, {p}) ON CONFLICT (tx_signature) DO NOTHING
+                """,
+                (signature, now),
+            )
+        else:
+            cur.execute(
+                f"""
+                INSERT OR IGNORE INTO processed_txs (tx_signature, processed_at)
+                VALUES ({p}, {p})
+                """,
+                (signature, now),
+            )
+        if cur.rowcount != 1:
+            conn.rollback()
+            raise HTTPException(status_code=409, detail="transaction_already_processed")
+        cur.execute(
+            f"""
+            UPDATE universal_checkout_quotes
+            SET state = {p}, updated_at = {p}
+            WHERE quote_id = {p} AND state = {p} AND tx_signature = {p}
+            """,
+            ("confirmed", now, row["quote_id"], "submitted", signature),
+        )
+        if cur.rowcount != 1:
+            conn.rollback()
+            raise HTTPException(status_code=409, detail="confirmation_state_conflict")
+        cur.execute(
+            f"""
+            UPDATE orders SET status = {p}, tx_signature = {p}, updated_at = {p}
+            WHERE order_id = {p} AND used = {p}
+            """,
+            ("paid", signature, now, row["order_id"], 0),
+        )
+        enqueue_delivery_tx(
+            cur,
+            quote_id=row["quote_id"],
+            order_id=row["order_id"],
+            tx_signature=signature,
+            now=now,
+        )
+        conn.commit()
+    finally:
+        release_conn(conn)
+
+
+@router.post("/{quote_id}/confirm")
+def confirm_universal_checkout(quote_id: str, req: UniversalPrepareRequest):
+    row = _get_quote(quote_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="quote_not_found")
+    order = get_order_db(row["order_id"])
+    if not order:
+        raise HTTPException(status_code=404, detail="order_not_found")
+    _authorize_order(req, order)
+    if row["state"] == "confirmed":
+        return {
+            "status": "confirmed",
+            "quote_id": quote_id,
+            "tx_signature": row["tx_signature"],
+            "delivery": run_checkout_delivery(quote_id),
+            "idempotent": True,
+        }
+    if row["state"] != "submitted" or not row.get("execution_evidence"):
+        raise HTTPException(status_code=409, detail="quote_not_confirmable")
+    evidence = json.loads(row["execution_evidence"])
+    try:
+        proof = _checkout_verifier().verify(
+            signature=row["tx_signature"],
+            route=row["route"],
+            evidence=evidence["proof"],
+        )
+    except CheckoutVerificationError as exc:
+        if exc.retryable:
+            return {
+                "status": "pending",
+                "quote_id": quote_id,
+                "reason": exc.code,
+                "retryable": True,
+            }
+        conn = get_conn()
+        try:
+            cur = conn.cursor()
+            p = qmark()
+            cur.execute(
+                f"""
+                UPDATE universal_checkout_quotes
+                SET state = {p}, updated_at = {p}
+                WHERE quote_id = {p} AND state = {p}
+                """,
+                ("failed", int(time.time()), quote_id, "submitted"),
+            )
+            conn.commit()
+        finally:
+            release_conn(conn)
+        raise HTTPException(
+            status_code=422,
+            detail={"code": exc.code, "retryable": False},
+        ) from exc
+    _finalize_checkout(row, proof)
+    delivery = run_checkout_delivery(quote_id)
+    return {
+        **proof,
+        "quote_id": quote_id,
+        "order_id": row["order_id"],
+        "payment_verified": True,
+        "delivery": delivery,
+        "idempotent": False,
+    }
+
+
+@router.post("/{quote_id}/deliver")
+def deliver_universal_checkout(quote_id: str, req: UniversalPrepareRequest):
+    row = _get_quote(quote_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="quote_not_found")
+    order = get_order_db(row["order_id"])
+    if not order:
+        raise HTTPException(status_code=404, detail="order_not_found")
+    _authorize_order(req, order)
+    if row["state"] != "confirmed":
+        raise HTTPException(status_code=409, detail="payment_not_confirmed")
+    return {
+        "status": "delivery_checked",
+        "quote_id": quote_id,
+        "payment_verified": True,
+        "delivery": run_checkout_delivery(quote_id),
+    }
+
+
+@router.post("/{quote_id}/compensation/request")
+def request_universal_checkout_compensation(
+    quote_id: str,
+    req: UniversalPrepareRequest,
+):
+    row = _get_quote(quote_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="quote_not_found")
+    order = get_order_db(row["order_id"])
+    if not order:
+        raise HTTPException(status_code=404, detail="order_not_found")
+    _authorize_order(req, order)
+    if row["state"] != "confirmed":
+        raise HTTPException(status_code=409, detail="payment_not_confirmed")
+    try:
+        compensation = request_compensation(
+            quote_id,
+            requested_by="authenticated_buyer",
+        )
+    except ValueError as exc:
+        code = str(exc)
+        status_code = 404 if code == "checkout_delivery_not_found" else 409
+        raise HTTPException(status_code=status_code, detail=code) from exc
+    return {
+        "status": "compensation_requested",
+        "quote_id": quote_id,
+        "payment_verified": True,
+        "compensation": public_compensation(compensation),
+        "idempotent": compensation.get("idempotent", False),
+    }
+
+
+@router.get("/{quote_id}")
+def get_universal_quote(
+    quote_id: str,
+    buyer_wallet: str | None = Header(default=None, alias="X-IAT-Buyer-Wallet"),
+    buyer_secret: str | None = Header(default=None, alias="X-IAT-Order-Secret"),
+):
+    if not buyer_wallet or not buyer_secret:
+        raise HTTPException(status_code=403, detail="invalid_order_credential")
+    row = _get_quote(quote_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="quote_not_found")
+    order = get_order_db(row["order_id"])
+    if not order:
+        raise HTTPException(status_code=404, detail="order_not_found")
+    _authorize_order(
+        UniversalPrepareRequest(
+            buyer_wallet=buyer_wallet,
+            buyer_secret=buyer_secret,
+        ),
+        order,
+    )
+    result = _public_quote(row)
+    if result["state"] in ACTIVE_STATES and int(time.time()) >= int(row["expires_at"]):
+        result["state"] = "expired"
+    if result["state"] == "confirmed":
+        result["delivery"] = public_delivery_status(quote_id)
+        result["compensation"] = public_compensation(get_compensation(quote_id))
+    return result

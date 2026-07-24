@@ -5,6 +5,7 @@ from solders.pubkey import Pubkey
 from solders.instruction import Instruction
 from spl.token.instructions import transfer_checked, TransferCheckedParams, get_associated_token_address, create_associated_token_account
 from spl.token.constants import TOKEN_PROGRAM_ID
+from iat.config import IAT_TOKEN_ADDRESS
 
 import os
 
@@ -13,7 +14,7 @@ RPC = (
     or os.getenv("SOLANA_RPC_URL")
     or "https://api.mainnet-beta.solana.com"
 )
-IAT_MINT = "3vRGo1VpGbZH67Ur2UG7VNUqSqQyApLQEcCxgnqK4f4Z"
+IAT_MINT = IAT_TOKEN_ADDRESS
 
 # Memo program
 MEMO_PROGRAM_ID = Pubkey.from_string("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
@@ -393,4 +394,3 @@ def send_iat_split_atomic(
 
     response = client.send_raw_transaction(bytes(transaction))
     return str(response.value)
-

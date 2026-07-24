@@ -39,6 +39,8 @@ from iat.api.buyer_intent import (
 from iat.api.multi_exec import extract_topics_from_result
 from iat.api.db import compute_agent_topic_score_db
 from iat.api.public import router as public_router
+from iat.api.growth_api import build_growth_router
+from iat.api.growth_public import router as growth_public_router
 
 from iat.api.db import (
     update_agent_call_stats_db,
@@ -258,6 +260,7 @@ app = FastAPI(
     lifespan=application_lifespan,
 )
 app.include_router(public_router)
+app.include_router(growth_public_router)
 
 def require_admin_key(x_api_key):
     expected_key = os.getenv("IAT_ADMIN_API_KEY")
@@ -297,6 +300,9 @@ def require_admin(
     """
     enforce_admin_key(x_api_key)
     return True
+
+
+app.include_router(build_growth_router(require_admin))
 
 
 def enforce_foundation_agent_authority(
@@ -11633,6 +11639,11 @@ def runtime_heartbeat_governance_loop():
 
 def initialize_application():
     init_db()
+    from iat.growth import init_growth_tables, start_growth_loop
+
+    init_growth_tables()
+    if start_growth_loop():
+        print("[IAT] Autonomous growth engine loop started")
 
     runtime_loop_enabled = (
         str(

@@ -150,9 +150,21 @@ export GROQ_API_KEY="gsk_..."
 export GROQ_MODEL="openai/gpt-oss-20b"
 # low, medium ou high (low limite la latence des tâches JSON courantes).
 export GROQ_REASONING_EFFORT="low"
+
+# Autonomous acquisition engine (safe rollout defaults)
+export IAT_ENABLE_AUTONOMOUS_GROWTH="false"
+export IAT_GROWTH_DISCOVERY_ENABLED="false"
+export IAT_GROWTH_OUTBOUND_ENABLED="false"
+export IAT_GROWTH_INTERVAL_SECONDS="900"
+export IAT_GROWTH_RESPONSE_SECRET="replace-with-a-long-random-secret"
 export IAT_DB_PATH="/var/lib/iat/iat_protocol.db"
 export IAT_SOLANA_RPC_URL="https://api.mainnet-beta.solana.com"
 ```
+
+Le moteur d’acquisition machine-to-machine est documenté dans
+[`GROWTH_ENGINE.md`](GROWTH_ENGINE.md). Il qualifie les prospects et prépare des
+campagnes en continu, avec consentement explicite, quotas, approbation,
+idempotence, protection SSRF et audit complet.
 
 Pour un règlement par escrow :
 

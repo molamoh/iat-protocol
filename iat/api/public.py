@@ -247,14 +247,17 @@ def sandbox_feedback(order_id: str, payload: SandboxFeedbackRequest):
 
 @lru_cache(maxsize=1)
 def public_openapi_schema() -> dict:
+    from iat.api.growth_public import router as growth_public_router
+
     return get_openapi(
         title="IAT Protocol Public API",
         version=IAT_VERSION,
         description=(
             "Stable machine-discovery and isolated buyer sandbox contract. "
-            "Sandbox routes never move funds or call production suppliers."
+            "Sandbox routes never move funds or call production suppliers. "
+            "Growth responses require invitation-scoped authentication."
         ),
-        routes=router.routes,
+        routes=[*router.routes, *growth_public_router.routes],
     )
 
 

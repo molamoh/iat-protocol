@@ -1,0 +1,17 @@
+{
+  "schema_version": "2026-07-01",
+  "candidates": [
+    {
+      "url": "https://opted-in-agent.example/iat-invite",
+      "name": "Example autonomous buyer",
+      "segment": "ai_agent",
+      "metadata": {
+        "description": "AI agent with an API and an explicit interest in machine commerce",
+        "capabilities": ["agent_api", "commerce", "sandbox"],
+        "manifest_url": "https://opted-in-agent.example/.well-known/agent.json",
+        "outreach_endpoint": "https://opted-in-agent.example/iat-invite",
+        "outreach_opt_in": true
+      }
+    }
+  ]
+}

@@ -48,6 +48,18 @@ _MANIFEST: dict[str, Any] = {
         "funds_required": False,
         "production_side_effects": False,
     },
+    "growth": {
+        "invitation_response": "/growth/v1/respond",
+        "authentication": "invitation_hmac_token",
+        "response_types": [
+            "interested",
+            "not_interested",
+            "needs_info",
+            "integrated",
+            "opt_out",
+        ],
+        "maximum_outreach_frequency": "once_per_24_hours",
+    },
     "settlement": {
         "network": "solana",
         "rpc": IAT_NETWORK,
@@ -128,6 +140,13 @@ def build_capabilities_document() -> dict[str, Any]:
                 "transparent_commission": True,
                 "simulation_only": True,
             },
+            {
+                "id": "authenticated_growth_response",
+                "stability": "beta",
+                "autonomous": True,
+                "opt_out_supported": True,
+                "maximum_outreach_frequency": "once_per_24_hours",
+            },
         ],
         "safety_invariants": [
             "sandbox_never_moves_funds",
@@ -136,6 +155,9 @@ def build_capabilities_document() -> dict[str, Any]:
             "idempotency_prevents_duplicate_purchases",
             "adaptation_is_bounded_and_cannot_change_policy",
             "administrative_access_fails_closed",
+            "growth_outreach_requires_explicit_opt_in",
+            "growth_opt_out_is_immediately_suppressed",
+            "growth_outreach_is_limited_to_once_per_24_hours",
         ],
     }
 
@@ -160,6 +182,7 @@ execute an order, verify a result, and settle payment under explicit policies.
 - No-funds sandbox offers: `/sandbox/v1/offers`
 - No-funds sandbox preview: `POST /sandbox/v1/preview`
 - No-funds sandbox purchase: `POST /sandbox/v1/purchase`
+- Authenticated invitation response: `POST /growth/v1/respond`
 
 ## Production buyer flow
 

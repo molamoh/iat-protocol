@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Iterable
 
+from iat.intelligence.decision_core import DecisionPolicy, evaluate_candidates
+
 
 SANDBOX_VERSION = "iat_buyer_sandbox_v1"
 MAX_BUDGET = Decimal("1000000")
@@ -369,9 +371,44 @@ class BuyerSandbox:
             and offer.price <= maximum
             and required.issubset(set(offer.capabilities))
         ]
+        decision = evaluate_candidates(
+            [
+                {
+                    "candidate_id": offer.offer_id,
+                    "price": float(offer.price),
+                    "quality": offer.quality,
+                    "trust": offer.trust,
+                    "reliability": offer.reliability,
+                    "latency_score": max(
+                        0.0,
+                        100.0 - math.log10(max(10, offer.latency_ms)) * 25.0,
+                    ),
+                    "capabilities": list(offer.capabilities),
+                }
+                for offer in eligible
+            ],
+            policy=DecisionPolicy(
+                strategy=request["strategy"],
+                maximum_price=float(maximum),
+                required_capabilities=tuple(required),
+            ),
+            decision_type="select_sandbox_offer",
+            context={"service": request["service"]},
+        )
+        core_scores = {
+            item["candidate_id"]: item
+            for item in decision["ranked_candidates"]
+        }
         ranked = []
         for offer in eligible:
-            score, components = self._score(offer, request["strategy"], maximum)
+            core = core_scores[offer.offer_id]
+            learned = self._adjustment(offer.offer_id)
+            score = round(max(0.0, min(100.0, core["score"] + learned)), 4)
+            components = {
+                **core["metrics"],
+                "bounded_learning": learned,
+                "weighted_contributions": core["contributions"],
+            }
             public = offer.public(self._adjustment(offer.offer_id))
             public.update(
                 {

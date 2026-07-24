@@ -57,6 +57,8 @@ def build_seller_discovery() -> dict[str, Any]:
                 "step": "evaluate",
                 "routes": [
                     "/seller/v1/readiness",
+                    "/seller/v1/intelligence/analyze",
+                    "/seller/v1/intelligence/demand/forecast",
                     "/seller/v1/economics/estimate",
                     "/seller/v1/integration-contract",
                 ],
@@ -93,6 +95,7 @@ def build_seller_discovery() -> dict[str, Any]:
             "foundation_mediated_buyer_privacy",
             "verifiable_execution_evidence",
             "explainable_supplier_selection",
+            "governed_competitive_intelligence",
             "atomic_commission_and_seller_payout",
             "autonomous_runtime_health_and_recovery",
         ],

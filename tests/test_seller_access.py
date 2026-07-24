@@ -140,6 +140,8 @@ def test_public_openapi_contains_seller_evaluation_routes():
 
     assert "/seller/v1/discovery" in schema["paths"]
     assert "/seller/v1/readiness" in schema["paths"]
+    assert "/seller/v1/intelligence/analyze" in schema["paths"]
+    assert "/seller/v1/intelligence/demand/forecast" in schema["paths"]
     assert "/seller/v1/economics/estimate" in schema["paths"]
     assert "/seller/v1/integration-contract" in schema["paths"]
 
@@ -161,6 +163,58 @@ def test_seller_client_uses_dedicated_header_for_authenticated_routes():
     headers = session.request.call_args.kwargs["headers"]
     assert headers["x-seller-api-key"] == "seller-secret"
     assert "x-api-key" not in headers
+
+
+def test_seller_client_can_run_public_competitive_analysis():
+    response = Mock(status_code=200)
+    response.json.return_value = {
+        "status": "ok",
+        "governance": {"production_side_effects": False},
+    }
+    session = Mock()
+    session.request.return_value = response
+    client = IATSellerClient("https://iat.test", session=session)
+    offer = {
+        "offer_id": "seller",
+        "price": 2,
+        "quality": 90,
+        "trust": 90,
+        "reliability": 90,
+        "latency_score": 90,
+        "capabilities": ["search"],
+    }
+
+    result = client.analyze_competitiveness(
+        offer,
+        [offer | {"offer_id": "a"}, offer | {"offer_id": "b"}],
+    )
+
+    assert result["governance"]["production_side_effects"] is False
+    assert session.request.call_args.args[:2] == (
+        "POST",
+        "https://iat.test/seller/v1/intelligence/analyze",
+    )
+
+
+def test_seller_client_can_forecast_aggregated_demand():
+    response = Mock(status_code=200)
+    response.json.return_value = {
+        "status": "ok",
+        "governance": {"buyer_identifiers_accepted": False},
+    }
+    session = Mock()
+    session.request.return_value = response
+    client = IATSellerClient("https://iat.test", session=session)
+
+    result = client.forecast_demand(
+        [{"period": f"2026-01-{day:02d}", "demand": 10} for day in range(1, 15)]
+    )
+
+    assert result["governance"]["buyer_identifiers_accepted"] is False
+    assert session.request.call_args.args[:2] == (
+        "POST",
+        "https://iat.test/seller/v1/intelligence/demand/forecast",
+    )
 
 
 def test_seller_client_never_puts_key_in_register_agent_body():

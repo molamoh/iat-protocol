@@ -172,6 +172,25 @@ class IATClient:
             },
         )
 
+    def simulate_decision(
+        self,
+        candidates: list[Mapping[str, Any]],
+        *,
+        decision_type: str = "select_offer",
+        policy: Mapping[str, Any] | None = None,
+        context: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/intelligence/v1/decisions/simulate",
+            json={
+                "decision_type": decision_type,
+                "candidates": [dict(item) for item in candidates],
+                "policy": dict(policy or {}),
+                "context": dict(context or {}),
+            },
+        )
+
     def create_order(
         self,
         service: str,

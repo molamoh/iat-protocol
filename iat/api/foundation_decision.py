@@ -3,6 +3,42 @@ import hashlib
 import time
 
 from iat.api.execution_engine import rank_agents
+from iat.intelligence.decision_core import DecisionPolicy, evaluate_candidates
+
+
+def _percent(value: Any, *, ratio: bool = False) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if ratio and number <= 1:
+        number *= 100
+    return max(0.0, min(100.0, number))
+
+
+def _shadow_intelligence_decision(ranked: List[Dict[str, Any]], context: Dict[str, Any]) -> dict:
+    prices = [max(0.0, float(item.get("price_iat") or 0)) for item in ranked]
+    maximum_price = max(prices + [1.0])
+    candidates = []
+    for item in ranked:
+        risk = _percent(item.get("risk_score", 50))
+        latency = max(0.0, float(item.get("latency") or 0))
+        candidates.append({
+            "candidate_id": str(item.get("agent_id") or item.get("id") or ""),
+            "price": max(0.0, float(item.get("price_iat") or 0)),
+            "quality": _percent(item.get("governance_score", 50)),
+            "trust": _percent(item.get("trust_score", 50)),
+            "reliability": _percent(item.get("success_rate", 0), ratio=True),
+            "latency_score": max(0.0, min(100.0, 100 / (1 + latency / 1_000))),
+            "capabilities": list(item.get("capabilities") or []),
+            "facts": {"risk_score": risk, "foundation_score": item.get("score")},
+        })
+    return evaluate_candidates(
+        candidates,
+        policy=DecisionPolicy(strategy="safest", maximum_price=maximum_price),
+        decision_type="select_execution_agent",
+        context={"mode": "shadow", **context},
+    )
 
 
 def select_best_execution_agent(
@@ -24,6 +60,16 @@ def select_best_execution_agent(
         }
 
     selected = ranked[0]
+    try:
+        shadow = _shadow_intelligence_decision(ranked, context)
+    except Exception as exc:
+        shadow = {
+            "status": "shadow_evaluation_failed",
+            "error": type(exc).__name__,
+            "production_side_effects": False,
+        }
+    shadow_selected_id = (shadow.get("selected") or {}).get("candidate_id")
+    foundation_selected_id = selected.get("agent_id")
 
     decision_payload = {
         "execution_allowed": True,
@@ -75,7 +121,18 @@ def select_best_execution_agent(
             "candidate_count": len(ranked),
             "ranking_engine": "execution_engine_v2",
             "trust_engine": "iat_unified_trust_engine_v1",
+            "decision_intelligence_mode": "shadow",
+            "decision_intelligence_diverged": (
+                shadow["status"] != "shadow_evaluation_failed"
+                and shadow_selected_id != foundation_selected_id
+            ),
+            "decision_intelligence_error": (
+                shadow.get("error")
+                if shadow["status"] == "shadow_evaluation_failed"
+                else None
+            ),
         },
+        "decision_intelligence_shadow": shadow,
     }
 
     return decision

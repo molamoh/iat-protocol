@@ -16,6 +16,19 @@ from iat.discovery import (
     build_discovery_manifest,
     build_llms_document,
 )
+from iat.intelligence.decision_core import (
+    DecisionPolicy,
+    DecisionValidationError,
+    evaluate_candidates,
+)
+from iat.intelligence.seller_intelligence import (
+    SellerIntelligenceError,
+    analyze_seller_offer,
+)
+from iat.intelligence.demand_forecasting import (
+    DemandForecastError,
+    forecast_demand,
+)
 from iat.sandbox import (
     BuyerSandbox,
     SandboxConflictError,
@@ -26,6 +39,7 @@ from iat.seller_growth import (
     SellerGrowthValidationError,
     build_integration_contract,
     build_seller_discovery,
+    current_commission_rate,
     estimate_seller_economics,
     evaluate_seller_readiness,
 )
@@ -86,6 +100,63 @@ class SellerReadinessRequest(StrictPublicModel):
     evidence_types: list[str] = Field(default_factory=list, max_length=50)
 
 
+class SellerCompetitiveOffer(StrictPublicModel):
+    offer_id: str = Field(min_length=1, max_length=160)
+    price: float = Field(ge=0, le=1_000_000_000)
+    quality: float = Field(ge=0, le=100)
+    trust: float = Field(ge=0, le=100)
+    reliability: float = Field(ge=0, le=100)
+    latency_score: float = Field(ge=0, le=100)
+    capabilities: list[str] = Field(default_factory=list, max_length=50)
+
+
+class SellerIntelligenceRequest(StrictPublicModel):
+    seller_offer: SellerCompetitiveOffer
+    market_offers: list[SellerCompetitiveOffer] = Field(min_length=2, max_length=100)
+    monthly_orders: int = Field(default=0, ge=0, le=10_000_000)
+    variable_cost_per_order: float = Field(default=0, ge=0, le=1_000_000_000)
+    commission_rate: float | None = Field(default=None, ge=0, le=.5)
+    price_elasticity: float = Field(default=1, ge=0, le=5)
+
+
+class AggregatedDemandObservation(StrictPublicModel):
+    period: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    demand: int = Field(ge=0, le=100_000_000)
+
+
+class DemandForecastRequest(StrictPublicModel):
+    observations: list[AggregatedDemandObservation] = Field(min_length=14, max_length=365)
+    horizon_days: int = Field(default=7, ge=1, le=30)
+    capacity_per_day: int | None = Field(default=None, ge=0, le=100_000_000)
+    headroom_ratio: float = Field(default=.20, ge=0, le=2)
+
+
+class DecisionCandidateRequest(StrictPublicModel):
+    candidate_id: str = Field(min_length=1, max_length=160)
+    price: float = Field(ge=0, le=1_000_000_000)
+    quality: float = Field(ge=0, le=100)
+    trust: float = Field(ge=0, le=100)
+    reliability: float = Field(ge=0, le=100)
+    latency_score: float = Field(ge=0, le=100)
+    capabilities: list[str] = Field(default_factory=list, max_length=50)
+    facts: dict = Field(default_factory=dict)
+
+
+class DecisionPolicyRequest(StrictPublicModel):
+    strategy: Literal["balanced", "cheapest", "fastest", "safest", "quality"] = "balanced"
+    maximum_price: float | None = Field(default=None, gt=0, le=1_000_000_000)
+    required_capabilities: list[str] = Field(default_factory=list, max_length=20)
+    minimum_trust: float = Field(default=0, ge=0, le=100)
+    minimum_reliability: float = Field(default=0, ge=0, le=100)
+
+
+class DecisionSimulationRequest(StrictPublicModel):
+    decision_type: str = Field(default="select_offer", min_length=3, max_length=80)
+    candidates: list[DecisionCandidateRequest] = Field(min_length=1, max_length=100)
+    policy: DecisionPolicyRequest = Field(default_factory=DecisionPolicyRequest)
+    context: dict = Field(default_factory=dict)
+
+
 def _client_error(exc: Exception, *, status_code: int = 422) -> HTTPException:
     return HTTPException(status_code=status_code, detail=str(exc))
 
@@ -108,6 +179,30 @@ def capabilities():
     return build_capabilities_document()
 
 
+@router.post(
+    "/intelligence/v1/decisions/simulate",
+    tags=["intelligence"],
+    summary="Simulate an explainable multi-objective IAT decision",
+)
+def simulate_decision(payload: DecisionSimulationRequest):
+    policy = DecisionPolicy(
+        strategy=payload.policy.strategy,
+        maximum_price=payload.policy.maximum_price,
+        required_capabilities=tuple(payload.policy.required_capabilities),
+        minimum_trust=payload.policy.minimum_trust,
+        minimum_reliability=payload.policy.minimum_reliability,
+    )
+    try:
+        return evaluate_candidates(
+            [item.model_dump() for item in payload.candidates],
+            policy=policy,
+            decision_type=payload.decision_type,
+            context=payload.context,
+        )
+    except DecisionValidationError as exc:
+        raise _client_error(exc) from exc
+
+
 @router.get(
     "/seller/v1/discovery",
     tags=["seller"],
@@ -124,6 +219,46 @@ def seller_discovery():
 )
 def seller_readiness(payload: SellerReadinessRequest):
     return evaluate_seller_readiness(payload.model_dump())
+
+
+@router.post(
+    "/seller/v1/intelligence/analyze",
+    tags=["seller"],
+    summary="Simulate seller competitive positioning and governed recommendations",
+)
+def seller_intelligence(payload: SellerIntelligenceRequest):
+    try:
+        return analyze_seller_offer(
+            payload.seller_offer.model_dump(),
+            [item.model_dump() for item in payload.market_offers],
+            monthly_orders=payload.monthly_orders,
+            variable_cost_per_order=payload.variable_cost_per_order,
+            commission_rate=(
+                payload.commission_rate
+                if payload.commission_rate is not None
+                else float(current_commission_rate())
+            ),
+            price_elasticity=payload.price_elasticity,
+        )
+    except SellerIntelligenceError as exc:
+        raise _client_error(exc) from exc
+
+
+@router.post(
+    "/seller/v1/intelligence/demand/forecast",
+    tags=["seller"],
+    summary="Forecast aggregated seller demand with uncertainty and privacy thresholds",
+)
+def seller_demand_forecast(payload: DemandForecastRequest):
+    try:
+        return forecast_demand(
+            [item.model_dump() for item in payload.observations],
+            horizon_days=payload.horizon_days,
+            capacity_per_day=payload.capacity_per_day,
+            headroom_ratio=payload.headroom_ratio,
+        )
+    except DemandForecastError as exc:
+        raise _client_error(exc) from exc
 
 
 @router.post(

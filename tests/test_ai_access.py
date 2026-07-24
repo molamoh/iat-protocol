@@ -44,6 +44,7 @@ def test_discovery_manifest_is_defensively_copied():
 
     assert second["protocol"]["name"] == "IAT Protocol"
     assert second["sandbox"]["funds_required"] is False
+    assert second["intelligence"]["simulate_decision"] == "/intelligence/v1/decisions/simulate"
 
 
 def test_sandbox_preview_enforces_budget_and_capabilities(sandbox):
@@ -180,6 +181,33 @@ def test_client_discovery_uses_machine_manifest():
 
     assert result["protocol"]["name"] == "IAT Protocol"
     assert session.request.call_args.args[:2] == ("GET", "https://iat.test/.well-known/iat.json")
+
+
+def test_client_can_request_explainable_decision_simulation():
+    response = Mock(status_code=200)
+    response.json.return_value = {"status": "selected", "production_side_effects": False}
+    session = Mock()
+    session.request.return_value = response
+    client = IATClient("https://iat.test", session=session)
+
+    result = client.simulate_decision(
+        [{
+            "candidate_id": "seller-a",
+            "price": 2,
+            "quality": 90,
+            "trust": 95,
+            "reliability": 94,
+            "latency_score": 80,
+            "capabilities": ["search"],
+        }],
+        policy={"strategy": "safest", "maximum_price": 5},
+    )
+
+    assert result["production_side_effects"] is False
+    assert session.request.call_args.args[:2] == (
+        "POST",
+        "https://iat.test/intelligence/v1/decisions/simulate",
+    )
 
 
 def test_client_retries_idempotent_sandbox_purchase():

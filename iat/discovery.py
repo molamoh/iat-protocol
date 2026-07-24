@@ -32,6 +32,8 @@ _MANIFEST: dict[str, Any] = {
     "seller": {
         "discovery": "/seller/v1/discovery",
         "readiness": "/seller/v1/readiness",
+        "competitive_intelligence": "/seller/v1/intelligence/analyze",
+        "demand_forecast": "/seller/v1/intelligence/demand/forecast",
         "economics": "/seller/v1/economics/estimate",
         "integration_contract": "/seller/v1/integration-contract",
         "register": "/seller/register",
@@ -46,6 +48,13 @@ _MANIFEST: dict[str, Any] = {
         "order": "/sandbox/v1/orders/{order_id}",
         "feedback": "/sandbox/v1/orders/{order_id}/feedback",
         "funds_required": False,
+        "production_side_effects": False,
+    },
+    "intelligence": {
+        "simulate_decision": "/intelligence/v1/decisions/simulate",
+        "engine_version": "iat_decision_core_v2",
+        "policy_version": "iat_decision_policy_v2",
+        "explainable": True,
         "production_side_effects": False,
     },
     "growth": {
@@ -106,6 +115,14 @@ def build_capabilities_document() -> dict[str, Any]:
                 "side_effects": False,
             },
             {
+                "id": "multi_objective_decision_simulation",
+                "stability": "beta",
+                "autonomous": True,
+                "explainable": True,
+                "auditable": True,
+                "side_effects": False,
+            },
+            {
                 "id": "sandbox_purchase",
                 "stability": "stable",
                 "autonomous": True,
@@ -155,7 +172,7 @@ def build_capabilities_document() -> dict[str, Any]:
             "idempotency_prevents_duplicate_purchases",
             "adaptation_is_bounded_and_cannot_change_policy",
             "administrative_access_fails_closed",
-            "growth_outreach_requires_explicit_opt_in",
+            "growth_outreach_requires_auditable_authorization",
             "growth_opt_out_is_immediately_suppressed",
             "growth_outreach_is_limited_to_once_per_24_hours",
         ],
@@ -176,8 +193,11 @@ execute an order, verify a result, and settle payment under explicit policies.
 - Machine manifest: `/.well-known/iat.json`
 - Public OpenAPI contract: `/openapi-public.json`
 - Capabilities and safety invariants: `/v1/capabilities`
+- Explainable decision simulation: `POST /intelligence/v1/decisions/simulate`
 - Seller journey and commission policy: `/seller/v1/discovery`
 - Seller readiness assessment: `POST /seller/v1/readiness`
+- Seller competitive intelligence: `POST /seller/v1/intelligence/analyze`
+- Aggregated demand forecast: `POST /seller/v1/intelligence/demand/forecast`
 - Seller economics estimator: `POST /seller/v1/economics/estimate`
 - No-funds sandbox offers: `/sandbox/v1/offers`
 - No-funds sandbox preview: `POST /sandbox/v1/preview`

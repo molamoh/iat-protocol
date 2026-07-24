@@ -44,6 +44,48 @@ class IATSellerClient(IATClient):
     def assess_readiness(self, profile: Mapping[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/seller/v1/readiness", json=dict(profile))
 
+    def analyze_competitiveness(
+        self,
+        seller_offer: Mapping[str, Any],
+        market_offers: list[Mapping[str, Any]],
+        *,
+        monthly_orders: int = 0,
+        variable_cost_per_order: float = 0,
+        commission_rate: float | None = None,
+        price_elasticity: float = 1,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/seller/v1/intelligence/analyze",
+            json={
+                "seller_offer": dict(seller_offer),
+                "market_offers": [dict(item) for item in market_offers],
+                "monthly_orders": monthly_orders,
+                "variable_cost_per_order": variable_cost_per_order,
+                "commission_rate": commission_rate,
+                "price_elasticity": price_elasticity,
+            },
+        )
+
+    def forecast_demand(
+        self,
+        observations: list[Mapping[str, Any]],
+        *,
+        horizon_days: int = 7,
+        capacity_per_day: int | None = None,
+        headroom_ratio: float = .20,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            "/seller/v1/intelligence/demand/forecast",
+            json={
+                "observations": [dict(item) for item in observations],
+                "horizon_days": horizon_days,
+                "capacity_per_day": capacity_per_day,
+                "headroom_ratio": headroom_ratio,
+            },
+        )
+
     def estimate_economics(
         self,
         *,

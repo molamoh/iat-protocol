@@ -40,6 +40,7 @@ from iat.api.multi_exec import extract_topics_from_result
 from iat.api.db import compute_agent_topic_score_db
 from iat.api.public import router as public_router
 from iat.api.growth_api import build_growth_router
+from iat.api.decision_api import build_decision_router
 from iat.api.growth_public import router as growth_public_router
 
 from iat.api.db import (
@@ -303,6 +304,7 @@ def require_admin(
 
 
 app.include_router(build_growth_router(require_admin))
+app.include_router(build_decision_router(require_admin))
 
 
 def enforce_foundation_agent_authority(

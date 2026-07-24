@@ -312,11 +312,7 @@ def receive_invitation(
     }
 
 
-@app.get("/admin/invitations")
-def list_invitations(
-    limit: int = 100,
-    _admin: bool = Depends(require_test_agent_admin),
-):
+def _invitation_audit(limit: int):
     limit = max(1, min(int(limit), 500))
     conn = _connect()
     try:
@@ -334,3 +330,12 @@ def list_invitations(
         }
     finally:
         conn.close()
+
+
+@app.get("/admin/invitations")
+@app.get("/audit/invitations")
+def list_invitations(
+    limit: int = 100,
+    _admin: bool = Depends(require_test_agent_admin),
+):
+    return _invitation_audit(limit)

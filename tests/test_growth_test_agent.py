@@ -113,6 +113,13 @@ def test_admin_authentication_fails_closed(test_agent, monkeypatch):
     assert unconfigured.value.status_code == 401
 
 
+def test_protected_audit_routes_are_both_registered(test_agent):
+    routes = {route.path for route in test_agent.app.routes}
+
+    assert "/admin/invitations" in routes
+    assert "/audit/invitations" in routes
+
+
 def test_health_exposes_no_secret(test_agent):
     result = test_agent.health()
 

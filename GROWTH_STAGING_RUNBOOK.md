@@ -3,6 +3,9 @@
 This runbook is for an explicitly opted-in staging agent. It must not be used
 to contact an unrelated production service.
 
+The reference receiver can be deployed by following
+`GROWTH_TEST_AGENT_RENDER.md`.
+
 ## 1. Required external test target
 
 The target must expose an HTTPS endpoint accepting:

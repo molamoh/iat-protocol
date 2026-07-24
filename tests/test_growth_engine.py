@@ -164,13 +164,50 @@ def test_action_is_blocked_without_explicit_opt_in(growth_db):
     result = growth.propose_action(prospect["prospect_id"], campaign["campaign_id"])
 
     assert result["status"] == "blocked"
-    assert result["reason"] == "explicit_opt_in_required"
+    assert result["reason"] == "authorization_required"
     with pytest.raises(growth.GrowthValidationError, match="blocked_action"):
         growth.approve_action(
             result["action_id"],
             approved_by="admin",
             reason="attempt to bypass consent",
         )
+
+
+def test_verified_public_manifest_permission_authorizes_outreach(growth_db):
+    prospect = _prospect(
+        outreach_permission={
+            "allowed": True,
+            "source": "agent_manifest",
+            "evidence_url": "https://agents.example.com/.well-known/agent.json",
+            "observed_at": growth._now(),
+        }
+    )
+    qualified = growth.qualify_prospect(prospect["prospect_id"])
+    campaign = _active_campaign()
+
+    proposed = growth.propose_action(prospect["prospect_id"], campaign["campaign_id"])
+
+    assert qualified["signals"]["public_outreach_permission"] is True
+    assert qualified["signals"]["outreach_authorized"] is True
+    assert proposed["status"] == "proposed"
+
+
+@pytest.mark.parametrize(
+    "permission",
+    [
+        {"allowed": True, "source": "scraped_page", "evidence_url": "https://agents.example.com/a", "observed_at": 1},
+        {"allowed": True, "source": "agent_manifest", "evidence_url": "https://other.example/a", "observed_at": 1},
+        {"allowed": True, "source": "agent_manifest", "evidence_url": "https://agents.example.com/a"},
+    ],
+)
+def test_unverifiable_public_permission_fails_closed(growth_db, permission):
+    prospect = _prospect(outreach_permission=permission)
+    growth.qualify_prospect(prospect["prospect_id"])
+    campaign = _active_campaign()
+
+    proposed = growth.propose_action(prospect["prospect_id"], campaign["campaign_id"])
+
+    assert proposed["status"] == "blocked"
 
 
 def test_approved_action_stays_disabled_until_global_outbound_enabled(growth_db):

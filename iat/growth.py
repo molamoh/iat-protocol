@@ -510,6 +510,51 @@ def list_prospects(*, status: str | None = None, limit: int = 100) -> dict:
         release_conn(conn)
 
 
+PUBLIC_OUTREACH_PERMISSION_SOURCES = {
+    "agent_manifest",
+    "machine_registry",
+    "published_outreach_endpoint",
+}
+
+
+def outreach_authorization(prospect: dict) -> dict:
+    """Return a fail-closed, auditable authorization decision."""
+    metadata = prospect.get("metadata", {})
+    if metadata.get("do_not_contact") is True:
+        return {"authorized": False, "reason": "do_not_contact"}
+    if metadata.get("outreach_opt_in") is True:
+        return {
+            "authorized": True,
+            "reason": "explicit_opt_in",
+            "evidence": {"source": "explicit_opt_in"},
+        }
+    permission = metadata.get("outreach_permission")
+    if not isinstance(permission, dict) or permission.get("allowed") is not True:
+        return {"authorized": False, "reason": "authorization_required"}
+    source = str(permission.get("source") or "")
+    evidence_url = str(permission.get("evidence_url") or "")
+    observed_at = permission.get("observed_at")
+    if source not in PUBLIC_OUTREACH_PERMISSION_SOURCES:
+        return {"authorized": False, "reason": "untrusted_permission_source"}
+    try:
+        evidence = canonicalize_prospect_url(evidence_url)
+    except (GrowthValidationError, TypeError):
+        return {"authorized": False, "reason": "invalid_permission_evidence"}
+    if urlparse(evidence).hostname != prospect.get("domain"):
+        return {"authorized": False, "reason": "permission_domain_mismatch"}
+    if not isinstance(observed_at, int) or observed_at <= 0:
+        return {"authorized": False, "reason": "permission_observation_required"}
+    return {
+        "authorized": True,
+        "reason": "verified_public_permission",
+        "evidence": {
+            "source": source,
+            "evidence_url": evidence,
+            "observed_at": observed_at,
+        },
+    }
+
+
 def qualify_prospect(prospect_id: str) -> dict:
     prospect = get_prospect(prospect_id)
     if not prospect:
@@ -522,12 +567,15 @@ def qualify_prospect(prospect_id: str) -> dict:
             metadata.get("description"), metadata.get("capabilities"), metadata.get("tags"),
         )
     )
+    authorization = outreach_authorization(prospect)
     signals: dict[str, Any] = {
         "https": prospect["canonical_url"].startswith("https://"),
         "machine_interface": any(term in text for term in ("api", "agent", "mcp", "ai", "llm")),
         "commerce_relevance": any(term in text for term in ("commerce", "payment", "market", "seller", "buyer")),
         "integration_evidence": bool(metadata.get("openapi_url") or metadata.get("manifest_url")),
         "explicit_opt_in": metadata.get("outreach_opt_in") is True,
+        "public_outreach_permission": authorization["reason"] == "verified_public_permission",
+        "outreach_authorized": authorization["authorized"],
         "blocked": metadata.get("do_not_contact") is True,
     }
     score = 10.0
@@ -535,7 +583,7 @@ def qualify_prospect(prospect_id: str) -> dict:
     score += 25 if signals["machine_interface"] else 0
     score += 20 if signals["commerce_relevance"] else 0
     score += 15 if signals["integration_evidence"] else 0
-    score += 15 if signals["explicit_opt_in"] else 0
+    score += 15 if signals["outreach_authorized"] else 0
     if prospect["segment"] != "unknown":
         score += 10
     if signals["blocked"]:
@@ -821,7 +869,8 @@ def propose_action(prospect_id: str, campaign_id: str) -> dict:
 
     metadata = prospect.get("metadata", {})
     policy = campaign.get("policy", {})
-    opt_in = metadata.get("outreach_opt_in") is True
+    authorization = outreach_authorization(prospect)
+    opt_in = authorization["authorized"]
     blocked = metadata.get("do_not_contact") is True
     risk = "low" if opt_in else "high"
     status = "proposed"
@@ -829,7 +878,7 @@ def propose_action(prospect_id: str, campaign_id: str) -> dict:
     if blocked:
         status, reason = "blocked", "do_not_contact"
     elif policy.get("require_opt_in", True) and not opt_in:
-        status, reason = "blocked", "explicit_opt_in_required"
+        status, reason = "blocked", authorization["reason"]
 
     endpoint = metadata.get("outreach_endpoint") or prospect["canonical_url"]
     action_id = f"gact_{uuid.uuid4().hex}"
@@ -929,7 +978,18 @@ def propose_action(prospect_id: str, campaign_id: str) -> dict:
         conn.commit()
     finally:
         release_conn(conn)
-    record_growth_event("action_proposed", prospect_id=prospect_id, campaign_id=campaign_id, action_id=action_id, metadata={"status": status, "reason": reason})
+    record_growth_event(
+        "action_proposed",
+        prospect_id=prospect_id,
+        campaign_id=campaign_id,
+        action_id=action_id,
+        metadata={
+            "status": status,
+            "reason": reason,
+            "authorization_reason": authorization["reason"],
+            "authorization_evidence": authorization.get("evidence", {}),
+        },
+    )
     return {"status": status, "action_id": action_id, "risk_level": risk, "reason": reason}
 
 
@@ -1030,8 +1090,9 @@ def execute_action(action_id: str) -> dict:
             raise GrowthValidationError("growth_response_secret_required_for_outbound")
         prospect = get_prospect(action["prospect_id"])
         metadata = prospect.get("metadata", {}) if prospect else {}
-        if not prospect or metadata.get("outreach_opt_in") is not True or metadata.get("do_not_contact") is True:
-            raise GrowthValidationError("outbound_requires_current_explicit_opt_in")
+        authorization = outreach_authorization(prospect) if prospect else {"authorized": False}
+        if not authorization["authorized"]:
+            raise GrowthValidationError("outbound_requires_current_authorization")
         eligibility = prospect_outreach_eligibility(action["prospect_id"])
         # Ignore the action currently being executed: its proposal created the
         # cooldown entry. Any newer/different action remains a hard stop.

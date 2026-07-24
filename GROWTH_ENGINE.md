@@ -6,7 +6,11 @@ without allowing uncontrolled outreach.
 ## Safety model
 
 - External delivery is disabled unless `IAT_GROWTH_OUTBOUND_ENABLED=true`.
-- A prospect must explicitly declare `metadata.outreach_opt_in=true`.
+- A prospect must either declare `metadata.outreach_opt_in=true` or publish a
+  same-domain, timestamped permission in `metadata.outreach_permission`.
+- Public permission sources are restricted to `agent_manifest`,
+  `machine_registry` and `published_outreach_endpoint`; scraped pages and
+  cross-domain claims fail closed.
 - `metadata.do_not_contact=true` always wins and permanently blocks proposals.
 - Actions are unique per campaign, prospect and action type.
 - Redirects are disabled and every endpoint passes public-network SSRF validation.
@@ -37,12 +41,28 @@ export IAT_GROWTH_RESPONSE_SECRET=replace-with-a-long-random-secret
 
 The heartbeat qualifies newly discovered prospects, applies campaign filters,
 respects daily limits and creates idempotent actions. It can execute only actions
-covered by an explicit pre-approved campaign policy and a current prospect opt-in.
+covered by an explicit pre-approved campaign policy and a current, auditable
+prospect authorization.
 
 Discovery feeds return either a JSON array or `{"candidates": [...]}`. Each
 candidate contains `url`, `name`, `segment` and optional `metadata`. A cycle reads
 at most 20 configured feeds, 1 MB per feed and 100 candidates per feed.
 See `examples/growth/registry-feed.json` for the registry contract.
+
+A registry may publish authorization as:
+
+```json
+{
+  "outreach_permission": {
+    "allowed": true,
+    "source": "agent_manifest",
+    "evidence_url": "https://agent.example/.well-known/agent.json",
+    "observed_at": 1784915886
+  }
+}
+```
+
+The evidence URL must use HTTPS and belong to the prospect domain.
 
 ## Admin workflow
 

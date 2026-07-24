@@ -145,6 +145,11 @@ python -m pip install -r requirements.txt
 
 ```bash
 export IAT_ADMIN_API_KEY="change-me"
+export GROQ_API_KEY="gsk_..."
+# Modèle recommandé par Groq. Facultatif : c'est aussi la valeur par défaut.
+export GROQ_MODEL="openai/gpt-oss-20b"
+# low, medium ou high (low limite la latence des tâches JSON courantes).
+export GROQ_REASONING_EFFORT="low"
 export IAT_DB_PATH="/var/lib/iat/iat_protocol.db"
 export IAT_SOLANA_RPC_URL="https://api.mainnet-beta.solana.com"
 ```

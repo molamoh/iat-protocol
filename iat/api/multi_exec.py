@@ -60,6 +60,12 @@ import requests
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from iat.api.groq_config import (
+    GROQ_CHAT_COMPLETIONS_URL,
+    effective_groq_model,
+    groq_json_request,
+)
+
 
 
 def parse_json_dict(value):
@@ -1479,20 +1485,18 @@ Your output must include:
 
     try:
         r = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
+            GROQ_CHAT_COMPLETIONS_URL,
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
-            json={
-                "model": os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"),
-                "messages": [
+            json=groq_json_request(
+                [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                "temperature": 0.2,
-                "response_format": {"type": "json_object"},
-            },
+                temperature=0.2,
+            ),
             timeout=30,
         )
 
@@ -1580,6 +1584,7 @@ Your output must include:
             "role": profile.get("role"),
             "specialty": profile.get("specialty"),
             "provider": "groq",
+            "model": effective_groq_model(),
             "phase": phase,
         })
 
@@ -1611,6 +1616,7 @@ Your output must include:
             "execution_layer": "foundation_internal",
             "engine": profile.get("engine"),
             "provider": "groq",
+            "model": effective_groq_model(),
             "phase": phase,
             "web_evidence": web_evidence,
 
@@ -3684,4 +3690,3 @@ def compute_seller_routing_modifier(agent):
         "modifier": round(modifier, 6),
         "reason": "seller_routing_modifier_applied",
     }
-

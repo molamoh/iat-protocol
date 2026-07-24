@@ -2,6 +2,8 @@ import os
 import json
 import requests
 
+from iat.api.groq_config import GROQ_CHAT_COMPLETIONS_URL, groq_json_request
+
 
 def fallback_intent(prompt: str):
     return {
@@ -142,20 +144,18 @@ Return JSON with this exact shape:
 
     try:
         r = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
+            GROQ_CHAT_COMPLETIONS_URL,
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
-            json={
-                "model": os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"),
-                "messages": [
+            json=groq_json_request(
+                [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                "temperature": 0.1,
-                "response_format": {"type": "json_object"},
-            },
+                temperature=0.1,
+            ),
             timeout=20,
         )
 
@@ -433,20 +433,18 @@ JSON format:
 
     try:
         r = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
+            GROQ_CHAT_COMPLETIONS_URL,
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
-            json={
-                "model": os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"),
-                "messages": [
+            json=groq_json_request(
+                [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                "temperature": 0.1,
-                "response_format": {"type": "json_object"},
-            },
+                temperature=0.1,
+            ),
             timeout=30,
         )
 
@@ -535,14 +533,13 @@ Return JSON only:
 
     try:
         r = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
+            GROQ_CHAT_COMPLETIONS_URL,
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
-            json={
-                "model": os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"),
-                "messages": [
+            json=groq_json_request(
+                [
                     {"role": "system", "content": system_prompt},
                     {
                         "role": "user",
@@ -553,9 +550,8 @@ Return JSON only:
                         ),
                     },
                 ],
-                "temperature": 0.2,
-                "response_format": {"type": "json_object"},
-            },
+                temperature=0.2,
+            ),
             timeout=30,
         )
 
@@ -583,4 +579,3 @@ Return JSON only:
             "error": str(e),
             "confidence": 0.1,
         }
-

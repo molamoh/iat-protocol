@@ -229,14 +229,23 @@ IAT mint:                2ZT8Yh4kPYCJ8BQmx6uNPCAXVUHqQF8rd8h7cia5UeD7
 Treasury IAT vault:      5suHr716G6W2tvswJmDmUYjwwMVpcZLEKhUHAXQnPX9n
 Settlement escrow:       DELbTQnbDk3ua1bUJWPpBgbxzKBQjJUN9EGzcPKk36SX
 Authority/quote signer:  EPabAZ3CtMkbjduLrNcDZuXaEp37Ge9cmrnwWF9TY5wc
+USDC devnet mint:        4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU
+Treasury USDC vault:     jDvREhHHJuwveKZJPAa2WbzhHktkkn9qdcvMXCdX95j
+USDC asset policy PDA:   DAm5ka4UL5ueC9PtHaFmunugXHt2Mbtr2SUvgTspZujr
+Test buyer usage PDA:    36XKisX19UmwRhuiHiy2p9EuftNpW3EaJeMmZW8s8BCb
 ```
 
 The mint uses the classic SPL Token program with 8 decimals, no freeze
 authority, and an initial 10,000 test-IAT inventory in the PDA-controlled
 treasury vault. Protocol limits are 100 IAT per order, 250 IAT per wallet per
-day, and 1,000 IAT treasury output per day. The protocol remains paused and
-both public checkout routes remain disabled until an input asset and its
-governed price policy are configured.
+day, and 1,000 IAT treasury output per day. The Circle USDC devnet mint uses
+the classic SPL Token program with 6 decimals. The PDA-controlled USDC vault
+holds 10 test-USDC, while the test buyer retains 10 test-USDC. Its durable
+asset account is configured for a 201/20,000 minor-unit ratio, equivalent to
+1.005 USDC per IAT, and a 100 IAT order cap. Asset-policy timestamps expire
+after at most 900 seconds and must be refreshed immediately before a smoke
+test. The protocol remains paused and both public checkout routes remain
+disabled until that controlled activation.
 
 Asset and Raydium JSON values are trusted server-side adapter snapshots, never
 client input. Each treasury asset contains `mint`, `decimals`, `usd_price`,

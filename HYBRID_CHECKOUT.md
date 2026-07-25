@@ -183,6 +183,7 @@ All routes fail closed by default.
 ```text
 IAT_TREASURY_CHECKOUT_ENABLED=false
 IAT_RAYDIUM_CHECKOUT_ENABLED=false
+IAT_TOKEN_ADDRESS=
 IAT_REFERENCE_PRICE_USD=0
 IAT_TREASURY_INVENTORY_IAT=0
 IAT_TREASURY_PROGRAM_ID=
@@ -210,6 +211,32 @@ IAT_CHECKOUT_RPC_TIMEOUT_SECONDS=10
 IAT_CHECKOUT_ASSETS_JSON={}
 IAT_RAYDIUM_QUOTES_JSON={}
 ```
+
+`IAT_TOKEN_ADDRESS` defaults to the canonical mainnet mint. Deployments on
+another cluster must override it explicitly; an empty value falls back to the
+mainnet mint and therefore cannot silently select an invalid token.
+
+### Current devnet deployment
+
+The checkout program and its initial paused configuration are deployed on
+Solana devnet:
+
+```text
+Program:                 GN2d9tgQvwWqFaGuVomqBxcngW8c3CPWe4JRG6bP4rD
+Config PDA:              fWaLoVxfaex7feYLfYWH4hs8i42ju56M8iZ2vxqjGid
+Vault authority PDA:     BmCjmMWzY4GrSBwMEnAisqrvBj8duSc7pg73DiGwarwH
+IAT mint:                2ZT8Yh4kPYCJ8BQmx6uNPCAXVUHqQF8rd8h7cia5UeD7
+Treasury IAT vault:      5suHr716G6W2tvswJmDmUYjwwMVpcZLEKhUHAXQnPX9n
+Settlement escrow:       DELbTQnbDk3ua1bUJWPpBgbxzKBQjJUN9EGzcPKk36SX
+Authority/quote signer:  EPabAZ3CtMkbjduLrNcDZuXaEp37Ge9cmrnwWF9TY5wc
+```
+
+The mint uses the classic SPL Token program with 8 decimals, no freeze
+authority, and an initial 10,000 test-IAT inventory in the PDA-controlled
+treasury vault. Protocol limits are 100 IAT per order, 250 IAT per wallet per
+day, and 1,000 IAT treasury output per day. The protocol remains paused and
+both public checkout routes remain disabled until an input asset and its
+governed price policy are configured.
 
 Asset and Raydium JSON values are trusted server-side adapter snapshots, never
 client input. Each treasury asset contains `mint`, `decimals`, `usd_price`,

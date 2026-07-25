@@ -1,7 +1,14 @@
 # IAT Protocol — Configuration
 # © molamoh 2026 — All rights reserved
 
-IAT_TOKEN_ADDRESS = "3vRGo1VpGbZH67Ur2UG7VNUqSqQyApLQEcCxgnqK4f4Z"
+import os
+
+
+DEFAULT_IAT_TOKEN_ADDRESS = "3vRGo1VpGbZH67Ur2UG7VNUqSqQyApLQEcCxgnqK4f4Z"
+IAT_TOKEN_ADDRESS = (
+    os.getenv("IAT_TOKEN_ADDRESS", DEFAULT_IAT_TOKEN_ADDRESS).strip()
+    or DEFAULT_IAT_TOKEN_ADDRESS
+)
 IAT_NETWORK = "https://api.mainnet-beta.solana.com"
 IAT_VERSION = "1.0.0"
 IAT_DECIMALS = 8

@@ -4197,6 +4197,7 @@ def make_buyer_order_response(order_response):
         "status": "order_created",
         "foundation_decision": order_response.get("foundation_decision"),
         "order_id": order_id,
+        "buyer_secret": order_response.get("buyer_secret"),
         "amount_iat": price,
         "payment": {
             "token": "IAT",

@@ -5,13 +5,12 @@ anchor_version = "0.32.1"
 resolution = true
 skip-lint = false
 
-[programs.localnet]
-iat_checkout = "2F3RqbnM7uLobjbTzRJspCGuoPbvLJyq6jQNdmY1JP4y"
+[programs.devnet]
+iat_checkout = "GN2d9tgQvwWqFaGuVomqBxcngW8c3CPWe4JRG6bP4rD"
 
 [provider]
-cluster = "Localnet"
-wallet = "~/.config/solana/id.json"
+cluster = "Devnet"
+wallet = "~/pool-wallet.json"
 
 [workspace]
 members = ["programs/iat-checkout"]
-

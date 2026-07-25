@@ -270,9 +270,8 @@ Client callbacks and balance-only evidence are never trusted.
 
 ## Solana program
 
-The Anchor 0.32.1 program is in `programs/iat-checkout`. Its local placeholder
-program address is `2F3RqbnM7uLobjbTzRJspCGuoPbvLJyq6jQNdmY1JP4y`; it must be
-replaced by the actual deployment address before devnet configuration.
+The Anchor 0.32.1 program is in `programs/iat-checkout`. Its devnet program
+address is `GN2d9tgQvwWqFaGuVomqBxcngW8c3CPWe4JRG6bP4rD`.
 
 It implements:
 

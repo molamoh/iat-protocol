@@ -1,7 +1,7 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token_interface::{self, Mint, TokenAccount, TokenInterface, TransferChecked};
 
-declare_id!("2F3RqbnM7uLobjbTzRJspCGuoPbvLJyq6jQNdmY1JP4y");
+declare_id!("GN2d9tgQvwWqFaGuVomqBxcngW8c3CPWe4JRG6bP4rD");
 
 const SECONDS_PER_DAY: i64 = 86_400;
 const MAX_ASSET_POLICY_LIFETIME_SECONDS: i64 = 900;

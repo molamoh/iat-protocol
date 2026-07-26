@@ -493,7 +493,7 @@ def complete_collection_job(
 ) -> None:
     _finish_collection_job(
         job_id,
-        status="review_required",
+        status="completed",
         result_json=_canonical_json(result),
         error_code=None,
         now=now,
@@ -564,7 +564,8 @@ def collection_job_stats() -> dict[str, Any]:
             "jobs": {
                 "queued": counts.get("queued", 0),
                 "processing": counts.get("processing", 0),
-                "review_required": counts.get("review_required", 0),
+                "completed": counts.get("completed", 0),
+                "legacy_review_required": counts.get("review_required", 0),
                 "failed": counts.get("failed", 0),
             },
             "automatic_publication": False,
@@ -641,7 +642,7 @@ def list_review_candidates(
     status: str = "pending_review",
     limit: int = 100,
 ) -> dict[str, Any]:
-    allowed = {"pending_review", "approved", "rejected"}
+    allowed = {"pending_review", "approved", "rejected", "quarantined"}
     if status not in allowed:
         raise GOIARepositoryError("invalid_candidate_status")
     marker = qmark()
@@ -665,6 +666,86 @@ def list_review_candidates(
             row.pop("raw_hash", None)
             items.append(row)
         return {"status": "ok", "count": len(items), "items": items}
+    finally:
+        release_conn(conn)
+
+
+def get_review_candidate(candidate_id: str) -> dict[str, Any]:
+    marker = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"""
+            SELECT c.*, m.manifest_json
+            FROM goia_review_candidates c
+            JOIN goia_merchants m ON m.provider_id = c.provider_id
+            WHERE c.candidate_id = {marker}
+            """,
+            (candidate_id,),
+        )
+        row = _row(cur.fetchone())
+        if row is None:
+            raise GOIARepositoryError("candidate_not_found")
+        row["raw"] = json.loads(row.pop("raw_json"))
+        row["provider_manifest"] = json.loads(row.pop("manifest_json"))
+        normalized = row.pop("normalized_json", None)
+        row["normalized"] = json.loads(normalized) if normalized else None
+        row.pop("raw_hash", None)
+        return row
+    finally:
+        release_conn(conn)
+
+
+def quarantine_review_candidate(
+    candidate_id: str,
+    *,
+    policy: str,
+    reason: str,
+    now: int | None = None,
+) -> dict[str, Any]:
+    timestamp = int(now or time.time())
+    marker = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"SELECT status, reviewer, reason FROM goia_review_candidates WHERE candidate_id = {marker}",
+            (candidate_id,),
+        )
+        candidate = _row(cur.fetchone())
+        if candidate is None:
+            raise GOIARepositoryError("candidate_not_found")
+        if candidate["status"] == "quarantined":
+            if candidate["reviewer"] != policy or candidate["reason"] != reason:
+                raise GOIARepositoryError("candidate_quarantine_conflict")
+            return {
+                "candidate_id": candidate_id,
+                "state": "duplicate",
+                "status": "quarantined",
+                "reason": reason,
+            }
+        if candidate["status"] != "pending_review":
+            raise GOIARepositoryError("candidate_not_pending")
+        cur.execute(
+            f"""
+            UPDATE goia_review_candidates
+            SET status = 'quarantined', reviewer = {marker}, reason = {marker},
+                reviewed_at = {marker}, updated_at = {marker}
+            WHERE candidate_id = {marker} AND status = 'pending_review'
+            """,
+            (policy, reason, timestamp, timestamp, candidate_id),
+        )
+        conn.commit()
+        return {
+            "candidate_id": candidate_id,
+            "state": "quarantined",
+            "status": "quarantined",
+            "reason": reason,
+        }
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         release_conn(conn)
 

@@ -49,10 +49,33 @@ Inspect bounded aggregate status with:
 GET /admin/goia/collection/stats
 ```
 
-## Review and publication
+## Autonomous review and publication
 
 Collection never publishes an offer directly. Review candidates are available
-only through administrator-authenticated routes:
+to the deterministic autonomous review policy. The normal production flow
+requires no human operator:
+
+```text
+collection
+  -> autonomous normalization
+  -> deterministic evidence and policy checks
+  -> approved and indexed, or quarantined
+```
+
+The policy `goia_autonomous_review_v1` requires:
+
+- one supported Schema.org product or service type;
+- exactly one structured `Offer`;
+- an exact decimal price and ISO currency declared by the provider;
+- recognized availability;
+- a canonical URL matching the collected provider page;
+- an exact URL and SHA-256 evidence binding.
+
+Incomplete, conflicting, unavailable, or unsupported candidates are
+quarantined and never published.
+
+Administrator-authenticated routes remain available for audit and emergency
+override, but are not part of the normal operating path:
 
 ```text
 GET /admin/goia/review/candidates?status=pending_review
@@ -60,16 +83,16 @@ POST /admin/goia/review/candidates/{candidate_id}/approve
 POST /admin/goia/review/candidates/{candidate_id}/reject
 ```
 
-Approval requires a complete, strictly validated `OfferObservation`, reviewer,
-and reason. The observation must:
+An emergency approval requires a complete, strictly validated
+`OfferObservation`, reviewer, and reason. The observation must:
 
 - belong to the provider attached to the collection job;
 - contain evidence with the exact collected source URL;
 - contain the exact SHA-256 hash of the collected page.
 
-Approval is idempotent. Reusing an approved candidate with a different
-observation is rejected. Rejection is also idempotent and never inserts an
-observation into the public search index.
+Autonomous and emergency approval are idempotent. Reusing an approved
+candidate with a different observation is rejected. Rejection is also
+idempotent and never inserts an observation into the public search index.
 
 ## Worker
 

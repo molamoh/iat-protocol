@@ -26,6 +26,12 @@ marchand et conservé séparément de l'index. L'approbation administrative exig
 une `OfferObservation` complète dont l'URL et le hash de preuve correspondent
 exactement à la page collectée. Les approbations et rejets sont idempotents.
 
+Mise à jour autonomie : la revue humaine n'est plus une dépendance du chemin
+normal. La politique déterministe `goia_autonomous_review_v1` normalise,
+vérifie et publie seule les candidats complets ; les cas incertains sont mis en
+quarantaine. Les routes administratives sont conservées uniquement pour audit
+et commande d'urgence.
+
 ## 1. Résumé exécutif
 
 IAT Protocol possède déjà une base substantielle pour devenir l'infrastructure

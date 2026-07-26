@@ -6,6 +6,10 @@ import pytest
 import iat.goia.collector as collector
 import iat.goia.collector_worker as worker
 import iat.goia.repository as repository
+from iat.goia.autonomous_review import (
+    AUTONOMOUS_REVIEW_POLICY,
+    autonomously_review_candidate,
+)
 from iat.goia.contracts import MerchantProviderManifest, OfferObservation
 
 
@@ -314,14 +318,23 @@ def test_worker_never_publishes_candidates_directly(monkeypatch):
     )
     monkeypatch.setattr(
         worker,
+        "autonomously_review_candidate",
+        lambda candidate_id: {
+            "candidate_id": candidate_id,
+            "status": "approved",
+        },
+    )
+    monkeypatch.setattr(
+        worker,
         "complete_collection_job",
         lambda job_id, result: completed.update(job_id=job_id, result=result),
     )
 
     result = worker.process_one_job()
 
-    assert result["publication_status"] == "review_required"
-    assert completed["result"]["publication_status"] == "review_required"
+    assert result["publication_status"] == "autonomously_reviewed"
+    assert result["approved_count"] == 1
+    assert completed["result"]["publication_status"] == "autonomously_reviewed"
     assert completed["result"]["candidate_ids"] == ["goc_candidate_001"]
 
 
@@ -354,7 +367,7 @@ def test_collection_queue_is_idempotent_and_claimed_once(goia_db):
         now=1_020,
     )
     stats = repository.collection_job_stats()
-    assert stats["jobs"]["review_required"] == 1
+    assert stats["jobs"]["completed"] == 1
     assert stats["automatic_publication"] is False
 
 
@@ -424,6 +437,25 @@ def _pending_candidate():
         "name": "Translation API",
         "url": "https://merchant.example/product",
         "offers": {"price": "20.00", "priceCurrency": "EUR"},
+        "review_required": True,
+    }
+
+
+def _autonomous_candidate(**offer_updates):
+    offer = {
+        "@type": "Offer",
+        "price": "20.00",
+        "priceCurrency": "EUR",
+        "availability": "https://schema.org/InStock",
+    }
+    offer.update(offer_updates)
+    return {
+        "source_url": "https://merchant.example/product",
+        "source_sha256": "d" * 64,
+        "schema_types": ["SoftwareApplication"],
+        "name": "Translation API",
+        "url": "https://merchant.example/product",
+        "offers": offer,
         "review_required": True,
     }
 
@@ -507,4 +539,55 @@ def test_rejected_candidate_never_reaches_index(goia_db):
 
     assert rejected["state"] == "rejected"
     assert duplicate["state"] == "duplicate"
+    assert repository.goia_index_stats(now=1_100)["observations"] == 0
+
+
+def test_autonomous_review_publishes_complete_structured_offer(goia_db):
+    repository.upsert_merchant(_provider(), now=900)
+    job = repository.enqueue_collection_job(
+        provider_id="gop_provider_001",
+        url="https://merchant.example/product",
+        idempotency_key="autonomous-job-key-0001",
+        now=950,
+    )
+    repository.claim_collection_job(now=960)
+    candidate_id = repository.store_review_candidates(
+        job_id=job["job_id"],
+        provider_id="gop_provider_001",
+        candidates=[_autonomous_candidate()],
+        now=1_000,
+    )[0]
+
+    result = autonomously_review_candidate(candidate_id)
+
+    assert result["status"] == "approved"
+    assert result["policy"] == AUTONOMOUS_REVIEW_POLICY
+    assert repository.goia_index_stats(now=1_100)["observations"] == 1
+    approved = repository.list_review_candidates(status="approved")["items"][0]
+    assert approved["reviewer"] == AUTONOMOUS_REVIEW_POLICY
+    assert approved["reason"] == "deterministic_policy_and_exact_evidence_passed"
+
+
+def test_autonomous_review_quarantines_incomplete_offer_without_human(goia_db):
+    repository.upsert_merchant(_provider(), now=900)
+    job = repository.enqueue_collection_job(
+        provider_id="gop_provider_001",
+        url="https://merchant.example/product",
+        idempotency_key="autonomous-job-key-0002",
+        now=950,
+    )
+    repository.claim_collection_job(now=960)
+    candidate_id = repository.store_review_candidates(
+        job_id=job["job_id"],
+        provider_id="gop_provider_001",
+        candidates=[_autonomous_candidate(availability=None)],
+        now=1_000,
+    )[0]
+
+    result = autonomously_review_candidate(candidate_id)
+    duplicate = autonomously_review_candidate(candidate_id)
+
+    assert result["status"] == "quarantined"
+    assert result["reason"] == "recognized_availability_required"
+    assert duplicate["state"] == "already_quarantined"
     assert repository.goia_index_stats(now=1_100)["observations"] == 0

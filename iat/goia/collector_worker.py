@@ -18,6 +18,7 @@ from iat.goia.repository import (
     init_goia_tables,
     store_review_candidates,
 )
+from iat.goia.autonomous_review import autonomously_review_candidate
 
 
 def collection_enabled() -> bool:
@@ -36,6 +37,12 @@ def process_one_job() -> dict:
             provider_id=job["provider_id"],
             candidates=candidates,
         )
+        decisions = [
+            autonomously_review_candidate(candidate_id)
+            for candidate_id in candidate_ids
+        ]
+        approved_count = sum(item["status"] == "approved" for item in decisions)
+        quarantined_count = sum(item["status"] == "quarantined" for item in decisions)
         complete_collection_job(
             job["job_id"],
             result={
@@ -43,14 +50,19 @@ def process_one_job() -> dict:
                 "source_sha256": document.sha256,
                 "candidate_count": len(candidates),
                 "candidate_ids": candidate_ids,
-                "publication_status": "review_required",
+                "approved_count": approved_count,
+                "quarantined_count": quarantined_count,
+                "publication_status": "autonomously_reviewed",
+                "review_policy": "goia_autonomous_review_v1",
             },
         )
         return {
             "status": "completed",
             "job_id": job["job_id"],
             "candidate_count": len(candidates),
-            "publication_status": "review_required",
+            "approved_count": approved_count,
+            "quarantined_count": quarantined_count,
+            "publication_status": "autonomously_reviewed",
         }
     except GOIACollectionError as exc:
         fail_collection_job(job["job_id"], error_code=str(exc))

@@ -5,12 +5,14 @@ from iat.api.goia_public import (
     goia_manifest,
     goia_ranking_policy,
     validate_search_intent,
+    validate_native_catalog,
 )
 from iat.api.public import public_openapi_schema
 from iat.goia.contracts import (
     MerchantProviderManifest,
     OfferObservation,
     SearchIntent,
+    NativeCatalogDocument,
 )
 from iat.goia.discovery import build_goia_manifest, build_ranking_policy
 from iat.discovery import build_capabilities_document, build_discovery_manifest
@@ -63,7 +65,7 @@ def test_goia_manifest_is_defensively_copied_and_local_only():
         "autonomous_stale_lease_recovery": True,
         "autonomous_quarantine_retries": 3,
         "autonomous_provider_source_discovery": True,
-        "supported_source_types": ["sitemap"],
+        "supported_source_types": ["sitemap", "goia_json"],
         "sitemap_page_job_limit": 100,
         "persistence": True,
         "index_scope": "controlled_catalogs_only",
@@ -204,4 +206,30 @@ def test_public_openapi_contains_goia_local_search():
     schema = public_openapi_schema()
 
     assert "/goia/v1/search" in schema["paths"]
+    assert "/goia/v1/contracts/catalog/validate" in schema["paths"]
     assert "/admin/goia/catalogs/ingest" not in schema["paths"]
+
+
+def test_native_catalog_validation_is_side_effect_free():
+    catalog = NativeCatalogDocument(
+        provider_id="gop_native_001",
+        generated_at=1_000,
+        expires_at=2_000,
+        offers=[
+            {
+                "offer_id": "native-api-plan",
+                "kind": "api",
+                "title": "Native Translation API",
+                "canonical_url": "https://native.example/api",
+                "total_price": "15.00",
+                "currency": "EUR",
+                "availability": "available",
+            }
+        ],
+    )
+
+    result = validate_native_catalog(catalog)
+
+    assert result["status"] == "valid"
+    assert result["offer_count"] == 1
+    assert result["production_side_effects"] is False

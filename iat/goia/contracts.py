@@ -132,3 +132,32 @@ class MerchantProviderManifest(StrictGOIAModel):
         if self.commercial_relationship != "none" and not self.attribution_supported:
             raise ValueError("commercial_relationship_requires_attribution")
         return self
+
+
+class NativeCatalogOffer(StrictGOIAModel):
+    offer_id: str = Field(min_length=3, max_length=160)
+    kind: Literal["software", "api", "hosting", "digital_service"]
+    title: str = Field(min_length=3, max_length=500)
+    canonical_url: HttpUrl
+    total_price: MoneyString
+    currency: CurrencyCode
+    availability: Literal["available", "limited", "unavailable"]
+
+
+class NativeCatalogDocument(StrictGOIAModel):
+    contract_version: Literal["goia_catalog_v1"] = "goia_catalog_v1"
+    provider_id: str = Field(pattern=r"^gop_[a-zA-Z0-9_-]{8,100}$")
+    generated_at: int = Field(gt=0)
+    expires_at: int = Field(gt=0)
+    offers: list[NativeCatalogOffer] = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_catalog_lifetime(self):
+        if self.expires_at <= self.generated_at:
+            raise ValueError("catalog_expires_at_must_follow_generated_at")
+        if self.expires_at - self.generated_at > 604_800:
+            raise ValueError("catalog_lifetime_exceeds_seven_days")
+        offer_ids = [item.offer_id for item in self.offers]
+        if len(offer_ids) != len(set(offer_ids)):
+            raise ValueError("duplicate_catalog_offer_id")
+        return self

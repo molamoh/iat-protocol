@@ -106,6 +106,42 @@ provider manifest
 Non-sitemap source types remain visible as unsupported instead of being
 silently treated as pages.
 
+## Native GOIA JSON catalog
+
+A provider can avoid page-by-page extraction by declaring a `goia_json`
+catalog source. The public contract validator is:
+
+```text
+POST /goia/v1/contracts/catalog/validate
+```
+
+Minimal document:
+
+```json
+{
+  "contract_version": "goia_catalog_v1",
+  "provider_id": "gop_example_001",
+  "generated_at": 1785020000,
+  "expires_at": 1785106400,
+  "offers": [
+    {
+      "offer_id": "translation-api-pro",
+      "kind": "api",
+      "title": "Translation API Pro",
+      "canonical_url": "https://merchant.example/products/api-pro",
+      "total_price": "15.00",
+      "currency": "EUR",
+      "availability": "available"
+    }
+  ]
+}
+```
+
+Native catalogs are limited to 500 unique offers and a seven-day lifetime.
+The provider, freshness, currency, exact decimal prices, and same-domain offer
+URLs are validated. Every generated observation is bound to the exact catalog
+URL and SHA-256 document hash.
+
 Administrator-authenticated routes remain available for audit and emergency
 override, but are not part of the normal operating path:
 
@@ -152,6 +188,7 @@ The first collector supports:
   `Service`;
 - periodic provider sitemap seeding;
 - bounded sitemap expansion into prioritized page jobs.
+- native `goia_json` catalogs with autonomous publication.
 
 JavaScript rendering, redirects, unaffiliated public Internet discovery, and
-non-sitemap catalog adapters are deliberately not enabled.
+CSV/XML/API catalog adapters are deliberately not enabled.

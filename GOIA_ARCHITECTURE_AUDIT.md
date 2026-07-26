@@ -42,6 +42,11 @@ par les marchands selon leur fenêtre de fraîcheur. Les sitemaps prioritaires
 produisent un nombre borné de jobs enfants, idempotents et limités aux domaines
 autorisés. Aucun moteur de recherche privé n'est utilisé.
 
+Mise à jour catalogue natif : les marchands peuvent publier un catalogue
+`goia_catalog_v1` borné et versionné. GOIA vérifie automatiquement fournisseur,
+fraîcheur, prix, devise, disponibilité et domaine, puis lie chaque observation
+au hash exact du catalogue avant publication autonome.
+
 ## 1. Résumé exécutif
 
 IAT Protocol possède déjà une base substantielle pour devenir l'infrastructure

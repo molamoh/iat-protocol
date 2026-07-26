@@ -3,6 +3,8 @@
 from .contracts import (
     GOIA_CONTRACT_VERSION,
     MerchantProviderManifest,
+    NativeCatalogDocument,
+    NativeCatalogOffer,
     OfferObservation,
     SearchIntent,
 )
@@ -10,6 +12,8 @@ from .contracts import (
 __all__ = [
     "GOIA_CONTRACT_VERSION",
     "MerchantProviderManifest",
+    "NativeCatalogDocument",
+    "NativeCatalogOffer",
     "OfferObservation",
     "SearchIntent",
 ]

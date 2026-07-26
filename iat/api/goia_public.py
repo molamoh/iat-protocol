@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from iat.goia.contracts import (
     MerchantProviderManifest,
+    NativeCatalogDocument,
     OfferObservation,
     SearchIntent,
 )
@@ -44,6 +45,17 @@ def validate_provider_manifest(payload: MerchantProviderManifest):
     return {
         "status": "valid",
         "contract": "MerchantProviderManifest",
+        "normalized": payload.model_dump(mode="json"),
+        "production_side_effects": False,
+    }
+
+
+@router.post("/goia/v1/contracts/catalog/validate")
+def validate_native_catalog(payload: NativeCatalogDocument):
+    return {
+        "status": "valid",
+        "contract": "NativeCatalogDocument",
+        "offer_count": len(payload.offers),
         "normalized": payload.model_dump(mode="json"),
         "production_side_effects": False,
     }

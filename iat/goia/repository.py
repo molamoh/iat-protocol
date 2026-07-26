@@ -451,7 +451,7 @@ def enqueue_collection_job(
     priority: int = 50,
     now: int | None = None,
 ) -> dict[str, Any]:
-    if job_type not in {"page", "sitemap"}:
+    if job_type not in {"page", "sitemap", "catalog_json"}:
         raise GOIARepositoryError("invalid_collection_job_type")
     bounded_priority = max(0, min(int(priority), 100))
     timestamp = int(now or time.time())
@@ -1047,7 +1047,7 @@ def seed_due_catalog_sources(
             if len(seeded) >= max(1, min(int(limit), 500)):
                 break
             source_type = str(source.get("source_type") or "")
-            if source_type != "sitemap":
+            if source_type not in {"sitemap", "goia_json"}:
                 unsupported.append(
                     {
                         "provider_id": merchant["provider_id"],
@@ -1064,8 +1064,8 @@ def seed_due_catalog_sources(
                 idempotency_key=(
                     f"goia-source:{merchant['provider_id']}:{source['source_id']}:{window}"
                 ),
-                job_type="sitemap",
-                priority=100,
+                job_type="sitemap" if source_type == "sitemap" else "catalog_json",
+                priority=100 if source_type == "sitemap" else 90,
                 now=timestamp,
             )
             if result["state"] == "created":

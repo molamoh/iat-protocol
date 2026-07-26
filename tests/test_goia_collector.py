@@ -47,6 +47,24 @@ def _provider():
     )
 
 
+def _native_provider():
+    return MerchantProviderManifest(
+        provider_id="gop_native_001",
+        name="Native Merchant",
+        website="https://native.example",
+        countries=["FR"],
+        currencies=["EUR"],
+        catalogs=[
+            {
+                "source_id": "catalog-native",
+                "source_type": "goia_json",
+                "url": "https://native.example/.well-known/goia-catalog.json",
+                "refresh_interval_seconds": 3_600,
+            }
+        ],
+    )
+
+
 def _review_observation(*, source_sha256="d" * 64):
     return OfferObservation(
         observation_id="goo_reviewed_offer_001",
@@ -273,9 +291,86 @@ def test_json_ld_extraction_produces_review_candidates_only():
             "name": "Translation API",
             "url": "https://merchant.example/product",
             "offers": payload["offers"],
+            "extraction_method": "json_ld",
             "review_required": True,
         }
     ]
+
+
+def _native_catalog_document(**updates):
+    payload = {
+        "contract_version": "goia_catalog_v1",
+        "provider_id": "gop_native_001",
+        "generated_at": 1_000,
+        "expires_at": 2_000,
+        "offers": [
+            {
+                "offer_id": "native-api-plan",
+                "kind": "api",
+                "title": "Native Translation API",
+                "canonical_url": "https://native.example/products/api-plan",
+                "total_price": "15.00",
+                "currency": "EUR",
+                "availability": "available",
+            }
+        ],
+    }
+    payload.update(updates)
+    body = json.dumps(payload).encode()
+    return collector.CollectedDocument(
+        url="https://native.example/.well-known/goia-catalog.json",
+        content_type="application/json",
+        body=body,
+        sha256="9" * 64,
+    )
+
+
+def test_native_catalog_is_strict_fresh_and_provider_bound():
+    candidates = collector.extract_native_catalog_candidates(
+        _native_catalog_document(),
+        provider_id="gop_native_001",
+        now=1_100,
+    )
+
+    assert candidates[0]["goia_kind"] == "api"
+    assert candidates[0]["extraction_method"] == "partner_catalog"
+    assert candidates[0]["source_sha256"] == "9" * 64
+
+    with pytest.raises(collector.GOIACollectionError, match="provider_mismatch"):
+        collector.extract_native_catalog_candidates(
+            _native_catalog_document(),
+            provider_id="gop_other_001",
+            now=1_100,
+        )
+    with pytest.raises(collector.GOIACollectionError, match="catalog_expired"):
+        collector.extract_native_catalog_candidates(
+            _native_catalog_document(),
+            provider_id="gop_native_001",
+            now=2_001,
+        )
+
+
+def test_native_catalog_rejects_offer_on_another_domain():
+    document = _native_catalog_document(
+        offers=[
+            {
+                "offer_id": "external-api-plan",
+                "kind": "api",
+                "title": "External API",
+                "canonical_url": "https://other.example/api",
+                "total_price": "10.00",
+                "currency": "EUR",
+                "availability": "available",
+            }
+        ]
+    )
+
+    with pytest.raises(collector.GOIACollectionError, match="offer_domain_mismatch"):
+        collector.extract_native_catalog_candidates(
+            document,
+            provider_id="gop_native_001",
+            now=1_100,
+        )
 
 
 def test_worker_is_disabled_by_default(monkeypatch):
@@ -702,6 +797,56 @@ def test_catalog_sources_seed_once_per_refresh_window(goia_db):
     claimed = repository.claim_collection_job(now=10_801)
     assert claimed["job_type"] == "sitemap"
     assert claimed["priority"] == 100
+
+
+def test_native_catalog_source_is_seeded_below_sitemap_priority(goia_db):
+    repository.upsert_merchant(_provider(), now=900)
+    repository.upsert_merchant(_native_provider(), now=900)
+
+    seeded = repository.seed_due_catalog_sources(now=7_200)
+    first = repository.claim_collection_job(now=7_201)
+    repository.complete_collection_job(first["job_id"], result={}, now=7_202)
+    second = repository.claim_collection_job(now=7_203)
+
+    assert seeded["seeded_count"] == 2
+    assert first["job_type"] == "sitemap"
+    assert first["priority"] == 100
+    assert second["job_type"] == "catalog_json"
+    assert second["priority"] == 90
+
+
+def test_native_catalog_flows_through_autonomous_publication(goia_db):
+    provider = _native_provider()
+    repository.upsert_merchant(provider, now=900)
+    job = repository.enqueue_collection_job(
+        provider_id=provider.provider_id,
+        url="https://native.example/.well-known/goia-catalog.json",
+        idempotency_key="native-catalog-job-0001",
+        job_type="catalog_json",
+        priority=90,
+        now=1_050,
+    )
+    repository.claim_collection_job(now=1_060)
+    candidates = collector.extract_native_catalog_candidates(
+        _native_catalog_document(),
+        provider_id=provider.provider_id,
+        now=1_100,
+    )
+    candidate_id = repository.store_review_candidates(
+        job_id=job["job_id"],
+        provider_id=provider.provider_id,
+        candidates=candidates,
+        now=1_100,
+    )[0]
+
+    decision = autonomously_review_candidate(candidate_id)
+
+    assert decision["status"] == "approved"
+    approved = repository.list_review_candidates(status="approved")["items"][0]
+    assert approved["normalized"]["kind"] == "api"
+    assert approved["normalized"]["offer_id"] == "native-api-plan"
+    assert approved["normalized"]["expires_at"] == 2_000
+    assert approved["normalized"]["evidence"][0]["extraction_method"] == "partner_catalog"
 
 
 def test_sitemap_pages_are_bounded_parented_and_idempotent(goia_db):

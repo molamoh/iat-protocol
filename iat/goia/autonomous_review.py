@@ -62,8 +62,16 @@ def normalize_candidate(candidate_record: dict) -> OfferObservation:
     manifest = candidate_record["provider_manifest"]
     source_url = candidate_record["source_url"]
     canonical_url = str(raw.get("url") or "")
-    if canonical_url != source_url:
+    extraction_method = str(raw.get("extraction_method") or "json_ld")
+    if extraction_method not in {"json_ld", "partner_catalog"}:
+        raise GOIAAutonomousReviewError("unsupported_extraction_method")
+    if extraction_method == "json_ld" and canonical_url != source_url:
         raise GOIAAutonomousReviewError("canonical_url_must_match_collected_source")
+    if (
+        extraction_method == "partner_catalog"
+        and urlparse(canonical_url).hostname != urlparse(source_url).hostname
+    ):
+        raise GOIAAutonomousReviewError("catalog_offer_source_domain_mismatch")
     if urlparse(canonical_url).hostname != urlparse(str(manifest["website"])).hostname:
         raise GOIAAutonomousReviewError("canonical_url_provider_domain_mismatch")
     name = str(raw.get("name") or "").strip()
@@ -92,23 +100,35 @@ def normalize_candidate(candidate_record: dict) -> OfferObservation:
         ).encode()
     ).hexdigest()
     observed_at = int(candidate_record["created_at"])
+    catalog_expiry = int(raw.get("catalog_expires_at") or observed_at + 3_600)
+    expires_at = min(observed_at + 604_800, catalog_expiry)
+    if expires_at <= observed_at:
+        raise GOIAAutonomousReviewError("candidate_expired_before_review")
     relationship = str(manifest.get("commercial_relationship") or "none")
+    declared_kind = raw.get("goia_kind")
+    normalized_kind = (
+        str(declared_kind)
+        if declared_kind in {"software", "api", "hosting", "digital_service"}
+        else _kind(list(raw.get("schema_types") or []))
+    )
+    declared_offer_id = str(raw.get("goia_offer_id") or "").strip()
+    normalized_offer_id = declared_offer_id or f"offer_{stable[32:64]}"
     return OfferObservation(
         observation_id=f"goo_{stable[:32]}",
-        offer_id=f"offer_{stable[32:64]}",
+        offer_id=normalized_offer_id,
         merchant_id=candidate_record["provider_id"],
-        kind=_kind(list(raw.get("schema_types") or [])),
+        kind=normalized_kind,
         title=name,
         canonical_url=canonical_url,
         total_price=price,
         currency=currency,
         availability=availability,
         observed_at=observed_at,
-        expires_at=observed_at + 3_600,
+        expires_at=expires_at,
         evidence=[
             {
                 "source_url": source_url,
-                "extraction_method": "json_ld",
+                "extraction_method": extraction_method,
                 "content_sha256": candidate_record["source_sha256"],
                 "observed_at": observed_at,
             }

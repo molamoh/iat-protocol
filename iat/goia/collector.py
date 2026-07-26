@@ -13,8 +13,10 @@ from xml.etree import ElementTree
 
 import requests
 from bs4 import BeautifulSoup
+from pydantic import ValidationError
 
 from iat.security.network import UnsafeNetworkTarget, validate_public_runtime_url
+from iat.goia.contracts import NativeCatalogDocument
 
 
 GOIA_USER_AGENT = "GOIABot/0.1 (+https://iat-protocol-latest.onrender.com/.well-known/goia.json)"
@@ -239,7 +241,68 @@ def extract_commercial_json_ld(document: CollectedDocument) -> list[dict]:
                         "name": str(node.get("name") or "")[:500],
                         "url": str(node.get("url") or document.url)[:2_000],
                         "offers": node.get("offers"),
+                        "extraction_method": "json_ld",
                         "review_required": True,
                     }
                 )
     return extracted[:500]
+
+
+def extract_native_catalog_candidates(
+    document: CollectedDocument,
+    *,
+    provider_id: str,
+    now: int,
+) -> list[dict]:
+    if document.content_type not in {"application/json", "application/ld+json"}:
+        raise GOIACollectionError("native_catalog_json_required")
+    try:
+        payload = json.loads(document.body)
+        catalog = NativeCatalogDocument.model_validate(payload)
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise GOIACollectionError("invalid_native_catalog") from exc
+    if catalog.provider_id != provider_id:
+        raise GOIACollectionError("native_catalog_provider_mismatch")
+    if catalog.generated_at > now + 300:
+        raise GOIACollectionError("native_catalog_generated_in_future")
+    if catalog.expires_at <= now:
+        raise GOIACollectionError("native_catalog_expired")
+    source_host = str(urlparse(document.url).hostname or "").lower()
+    candidates = []
+    schema_type = {
+        "software": "SoftwareApplication",
+        "api": "SoftwareApplication",
+        "hosting": "Service",
+        "digital_service": "Service",
+    }
+    availability = {
+        "available": "https://schema.org/InStock",
+        "limited": "https://schema.org/LimitedAvailability",
+        "unavailable": "https://schema.org/OutOfStock",
+    }
+    for offer in catalog.offers:
+        canonical_url = str(offer.canonical_url)
+        if str(urlparse(canonical_url).hostname or "").lower() != source_host:
+            raise GOIACollectionError("native_catalog_offer_domain_mismatch")
+        candidates.append(
+            {
+                "source_url": document.url,
+                "source_sha256": document.sha256,
+                "schema_types": [schema_type[offer.kind]],
+                "goia_kind": offer.kind,
+                "goia_offer_id": offer.offer_id,
+                "name": offer.title,
+                "url": canonical_url,
+                "offers": {
+                    "@type": "Offer",
+                    "price": offer.total_price,
+                    "priceCurrency": offer.currency,
+                    "availability": availability[offer.availability],
+                },
+                "extraction_method": "partner_catalog",
+                "catalog_generated_at": catalog.generated_at,
+                "catalog_expires_at": catalog.expires_at,
+                "review_required": True,
+            }
+        )
+    return candidates

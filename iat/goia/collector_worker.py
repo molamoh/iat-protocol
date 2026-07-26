@@ -9,6 +9,7 @@ import time
 from iat.goia.collector import (
     GOIACollectionError,
     extract_commercial_json_ld,
+    extract_native_catalog_candidates,
     extract_sitemap_urls,
     fetch_allowed_document,
 )
@@ -68,7 +69,14 @@ def process_one_job() -> dict:
                 "quarantine_retries": retries,
                 "source_discovery": source_discovery,
             }
-        candidates = extract_commercial_json_ld(document)
+        if job.get("job_type") == "catalog_json":
+            candidates = extract_native_catalog_candidates(
+                document,
+                provider_id=job["provider_id"],
+                now=int(time.time()),
+            )
+        else:
+            candidates = extract_commercial_json_ld(document)
         candidate_ids = store_review_candidates(
             job_id=job["job_id"],
             provider_id=job["provider_id"],
@@ -96,6 +104,7 @@ def process_one_job() -> dict:
         return {
             "status": "completed",
             "job_id": job["job_id"],
+            "job_type": job.get("job_type") or "page",
             "candidate_count": len(candidates),
             "approved_count": approved_count,
             "quarantined_count": quarantined_count,

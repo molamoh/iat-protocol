@@ -836,8 +836,6 @@ def submit_universal_checkout(quote_id: str, req: UniversalSubmitRequest):
         raise HTTPException(status_code=409, detail="quote_already_submitted")
     if row["state"] != "prepared" or not row.get("execution_evidence"):
         raise HTTPException(status_code=409, detail="quote_not_submittable")
-    if int(time.time()) >= int(row["expires_at"]):
-        raise HTTPException(status_code=410, detail="quote_expired")
 
     conn = get_conn()
     try:

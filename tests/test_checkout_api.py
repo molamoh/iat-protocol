@@ -384,6 +384,57 @@ def test_submit_confirm_and_global_replay_protection(
     assert db.is_tx_processed_db(signature) is True
 
 
+def test_late_signature_registration_allows_onchain_recovery(
+    checkout_database,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        checkout_api,
+        "_treasury_instruction_plan",
+        lambda payload, order_id: {
+            "program_id": "program",
+            "quote_authority": "quote-authority",
+            "anti_replay": {
+                "payment_intent": "payment-intent",
+                "order_hash_hex": "01" * 32,
+                "quote_hash_hex": "02" * 32,
+                "nonce": 7,
+            },
+        },
+    )
+    quote = checkout_api.create_universal_quote(
+        request(),
+        idempotency_key="checkout-late-signature-0001",
+    )
+    checkout_api.prepare_universal_checkout(
+        quote["quote_id"],
+        checkout_api.UniversalPrepareRequest(
+            buyer_wallet=BUYER,
+            buyer_secret=SECRET,
+        ),
+    )
+    conn = db.get_conn()
+    try:
+        conn.execute(
+            "UPDATE universal_checkout_quotes SET expires_at = ? WHERE quote_id = ?",
+            (NOW - 1, quote["quote_id"]),
+        )
+        conn.commit()
+    finally:
+        db.release_conn(conn)
+
+    submitted = checkout_api.submit_universal_checkout(
+        quote["quote_id"],
+        checkout_api.UniversalSubmitRequest(
+            buyer_wallet=BUYER,
+            buyer_secret=SECRET,
+            tx_signature=str(checkout_api.Signature.default()),
+        ),
+    )
+
+    assert submitted["status"] == "submitted"
+
+
 def _enqueue_test_delivery(state="paid"):
     conn = db.get_conn()
     try:

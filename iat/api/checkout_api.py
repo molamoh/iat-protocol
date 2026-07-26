@@ -91,11 +91,18 @@ def _decimal_env(name: str, default: str) -> Decimal:
 
 
 def _json_env(name: str) -> dict[str, Any]:
-    raw = os.getenv(name, "{}")
+    raw = os.getenv(name, "{}").strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] == "'":
+        raw = raw[1:-1]
     try:
         value = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise CheckoutRejected(f"invalid_{name.lower()}") from exc
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise CheckoutRejected(f"invalid_{name.lower()}") from exc
     if not isinstance(value, dict):
         raise CheckoutRejected(f"invalid_{name.lower()}")
     return value

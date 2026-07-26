@@ -73,6 +73,30 @@ def request(**overrides):
     return checkout_api.UniversalQuoteRequest(**values)
 
 
+@pytest.mark.parametrize(
+    "encoded",
+    [
+        '{"USDC":{"mint":"mint"}}',
+        '"{\\"USDC\\":{\\"mint\\":\\"mint\\"}}"',
+        """'{"USDC":{"mint":"mint"}}'""",
+    ],
+)
+def test_json_env_accepts_render_safe_object_encodings(monkeypatch, encoded):
+    monkeypatch.setenv("IAT_CHECKOUT_ASSETS_JSON", encoded)
+
+    assert checkout_api._json_env("IAT_CHECKOUT_ASSETS_JSON") == {
+        "USDC": {"mint": "mint"}
+    }
+
+
+@pytest.mark.parametrize("encoded", ["[]", '"[]"', "not-json"])
+def test_json_env_rejects_non_object_values(monkeypatch, encoded):
+    monkeypatch.setenv("IAT_CHECKOUT_ASSETS_JSON", encoded)
+
+    with pytest.raises(checkout_api.CheckoutRejected):
+        checkout_api._json_env("IAT_CHECKOUT_ASSETS_JSON")
+
+
 def test_quote_is_persisted_idempotently_and_secret_is_not_stored(checkout_database):
     first = checkout_api.create_universal_quote(
         request(), idempotency_key="checkout-idempotency-0001"

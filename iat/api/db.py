@@ -1,4 +1,4 @@
-from psycopg2.pool import SimpleConnectionPool
+from psycopg2.pool import ThreadedConnectionPool
 from psycopg2.extras import RealDictCursor
 
 pool = None
@@ -23,8 +23,6 @@ def is_postgres():
 
 
 
-from psycopg2.pool import SimpleConnectionPool
-
 pool = None
 
 def get_conn():
@@ -32,7 +30,7 @@ def get_conn():
 
     if USE_POSTGRES:
         if pool is None:
-            pool = SimpleConnectionPool(
+            pool = ThreadedConnectionPool(
                 1,
                 20,
                 DATABASE_URL,

@@ -247,6 +247,123 @@ pub mod iat_checkout {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn purchase_iat_with_usdc(
+        ctx: Context<PurchaseIatWithUsdc>,
+        order_hash: [u8; 32],
+        quote_hash: [u8; 32],
+        nonce: u64,
+        input_amount: u64,
+        iat_amount: u64,
+        expires_at: i64,
+    ) -> Result<()> {
+        let clock = Clock::get()?;
+        require!(!ctx.accounts.config.paused, CheckoutError::ProtocolPaused);
+        require!(
+            iat_amount > 0 && input_amount > 0,
+            CheckoutError::InvalidAmount
+        );
+        require!(
+            clock.unix_timestamp < expires_at,
+            CheckoutError::QuoteExpired
+        );
+        require!(
+            expires_at <= ctx.accounts.asset.valid_until,
+            CheckoutError::AssetPriceExpired
+        );
+        require!(ctx.accounts.asset.enabled, CheckoutError::AssetDisabled);
+        require!(
+            iat_amount <= ctx.accounts.config.max_order_iat
+                && iat_amount <= ctx.accounts.asset.max_order_iat,
+            CheckoutError::OrderCapExceeded
+        );
+        require!(order_hash != [0; 32], CheckoutError::InvalidOrderHash);
+        require!(quote_hash != [0; 32], CheckoutError::InvalidQuoteHash);
+        require_keys_neq!(
+            ctx.accounts.buyer_input.key(),
+            ctx.accounts.treasury_input_vault.key(),
+            CheckoutError::DuplicateAccount
+        );
+        require_keys_neq!(
+            ctx.accounts.treasury_iat_vault.key(),
+            ctx.accounts.buyer_iat_destination.key(),
+            CheckoutError::DuplicateAccount
+        );
+
+        let required_input = calculate_required_input(
+            iat_amount,
+            ctx.accounts.asset.ratio_numerator,
+            ctx.accounts.asset.ratio_denominator,
+        )?;
+        require!(
+            input_amount == required_input,
+            CheckoutError::IncorrectInputAmount
+        );
+        require!(
+            ctx.accounts.treasury_iat_vault.amount >= iat_amount,
+            CheckoutError::TreasuryInventoryInsufficient
+        );
+
+        let day = clock.unix_timestamp.div_euclid(SECONDS_PER_DAY);
+        apply_usage_limits(
+            &mut ctx.accounts.config,
+            &mut ctx.accounts.wallet_usage,
+            day,
+            iat_amount,
+        )?;
+
+        let input_transfer = TransferChecked {
+            from: ctx.accounts.buyer_input.to_account_info(),
+            mint: ctx.accounts.input_mint.to_account_info(),
+            to: ctx.accounts.treasury_input_vault.to_account_info(),
+            authority: ctx.accounts.buyer.to_account_info(),
+        };
+        token_interface::transfer_checked(
+            CpiContext::new(
+                ctx.accounts.input_token_program.to_account_info(),
+                input_transfer,
+            ),
+            input_amount,
+            ctx.accounts.input_mint.decimals,
+        )?;
+
+        let config_key = ctx.accounts.config.key();
+        let signer_seeds: &[&[u8]] = &[
+            b"vault-authority",
+            config_key.as_ref(),
+            &[ctx.accounts.config.vault_authority_bump],
+        ];
+        let signer = &[signer_seeds];
+        let iat_transfer = TransferChecked {
+            from: ctx.accounts.treasury_iat_vault.to_account_info(),
+            mint: ctx.accounts.iat_mint.to_account_info(),
+            to: ctx.accounts.buyer_iat_destination.to_account_info(),
+            authority: ctx.accounts.vault_authority.to_account_info(),
+        };
+        token_interface::transfer_checked(
+            CpiContext::new_with_signer(
+                ctx.accounts.iat_token_program.to_account_info(),
+                iat_transfer,
+                signer,
+            ),
+            iat_amount,
+            ctx.accounts.iat_mint.decimals,
+        )?;
+
+        let payment = &mut ctx.accounts.payment_intent;
+        payment.config = ctx.accounts.config.key();
+        payment.order_hash = order_hash;
+        payment.quote_hash = quote_hash;
+        payment.buyer = ctx.accounts.buyer.key();
+        payment.input_mint = ctx.accounts.input_mint.key();
+        payment.input_amount = input_amount;
+        payment.iat_amount = iat_amount;
+        payment.nonce = nonce;
+        payment.executed_at = clock.unix_timestamp;
+        payment.bump = ctx.bumps.payment_intent;
+        Ok(())
+    }
+
     pub fn set_paused(ctx: Context<AdminConfig>, paused: bool) -> Result<()> {
         ctx.accounts.config.paused = paused;
         Ok(())
@@ -461,6 +578,94 @@ pub struct ExecuteTreasuryCheckout<'info> {
         token::token_program = iat_token_program
     )]
     pub settlement_escrow: Box<InterfaceAccount<'info, TokenAccount>>,
+    /// CHECK: PDA authority is validated by canonical seeds and never deserialized.
+    #[account(
+        seeds = [b"vault-authority", config.key().as_ref()],
+        bump = config.vault_authority_bump
+    )]
+    pub vault_authority: UncheckedAccount<'info>,
+    pub input_token_program: Interface<'info, TokenInterface>,
+    pub iat_token_program: Interface<'info, TokenInterface>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+#[instruction(order_hash: [u8; 32], quote_hash: [u8; 32], nonce: u64)]
+pub struct PurchaseIatWithUsdc<'info> {
+    #[account(mut)]
+    pub buyer: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [b"config"],
+        bump = config.bump
+    )]
+    pub config: Box<Account<'info, ProtocolConfig>>,
+    #[account(
+        seeds = [b"asset", config.key().as_ref(), input_mint.key().as_ref()],
+        bump = asset.bump,
+        has_one = config @ CheckoutError::InvalidAsset,
+        constraint = asset.input_mint == input_mint.key() @ CheckoutError::InvalidAsset
+    )]
+    pub asset: Box<Account<'info, AssetConfig>>,
+    #[account(
+        mut,
+        seeds = [b"wallet-usage", config.key().as_ref(), buyer.key().as_ref()],
+        bump = wallet_usage.bump,
+        has_one = config @ CheckoutError::InvalidUsage,
+        has_one = buyer @ CheckoutError::InvalidUsage
+    )]
+    pub wallet_usage: Box<Account<'info, WalletUsage>>,
+    #[account(
+        init,
+        payer = buyer,
+        space = 8 + PaymentIntent::INIT_SPACE,
+        seeds = [
+            b"payment",
+            config.key().as_ref(),
+            order_hash.as_ref(),
+            buyer.key().as_ref(),
+            nonce.to_le_bytes().as_ref()
+        ],
+        bump
+    )]
+    pub payment_intent: Box<Account<'info, PaymentIntent>>,
+    pub input_mint: Box<InterfaceAccount<'info, Mint>>,
+    #[account(
+        address = config.iat_mint @ CheckoutError::InvalidIatMint
+    )]
+    pub iat_mint: Box<InterfaceAccount<'info, Mint>>,
+    #[account(
+        mut,
+        token::mint = input_mint,
+        token::authority = buyer,
+        token::token_program = input_token_program
+    )]
+    pub buyer_input: Box<InterfaceAccount<'info, TokenAccount>>,
+    #[account(
+        mut,
+        address = asset.treasury_input_vault @ CheckoutError::InvalidTreasuryVault,
+        token::mint = input_mint,
+        token::authority = vault_authority,
+        token::token_program = input_token_program,
+        constraint = input_token_program.key() == asset.token_program
+            @ CheckoutError::InvalidTokenProgram
+    )]
+    pub treasury_input_vault: Box<InterfaceAccount<'info, TokenAccount>>,
+    #[account(
+        mut,
+        address = config.treasury_iat_vault @ CheckoutError::InvalidTreasuryVault,
+        token::mint = iat_mint,
+        token::authority = vault_authority,
+        token::token_program = iat_token_program
+    )]
+    pub treasury_iat_vault: Box<InterfaceAccount<'info, TokenAccount>>,
+    #[account(
+        mut,
+        token::mint = iat_mint,
+        token::authority = buyer,
+        token::token_program = iat_token_program
+    )]
+    pub buyer_iat_destination: Box<InterfaceAccount<'info, TokenAccount>>,
     /// CHECK: PDA authority is validated by canonical seeds and never deserialized.
     #[account(
         seeds = [b"vault-authority", config.key().as_ref()],

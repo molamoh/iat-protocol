@@ -31,7 +31,7 @@ from iat.checkout import (
 from iat.checkout_solana import (
     SPL_TOKEN_PROGRAM_ID,
     SolanaPlanError,
-    build_treasury_instruction_plan,
+    build_direct_usdc_purchase_plan,
 )
 from iat.config import IAT_DECIMALS, IAT_TOKEN_ADDRESS
 from iat.raydium import (
@@ -424,28 +424,34 @@ def _treasury_instruction_plan(payload: dict[str, Any], order_id: str) -> dict[s
     if expected_input != int(payload["input"]["amount_minor"]):
         raise SolanaPlanError("quote_does_not_match_onchain_price_ratio")
     input_program = str(asset.get("token_program") or SPL_TOKEN_PROGRAM_ID)
+    iat_program = os.getenv(
+        "IAT_IAT_TOKEN_PROGRAM",
+        str(SPL_TOKEN_PROGRAM_ID),
+    )
     try:
+        buyer = Pubkey.from_string(payload["buyer_wallet"])
         buyer_input = get_associated_token_address(
-            Pubkey.from_string(payload["buyer_wallet"]),
+            buyer,
             Pubkey.from_string(payload["input"]["mint"]),
             token_program_id=Pubkey.from_string(input_program),
         )
+        buyer_iat = get_associated_token_address(
+            buyer,
+            Pubkey.from_string(payload["output"]["mint"]),
+            token_program_id=Pubkey.from_string(iat_program),
+        )
     except Exception as exc:
         raise SolanaPlanError("invalid_buyer_token_account_derivation") from exc
-    return build_treasury_instruction_plan(
+    return build_direct_usdc_purchase_plan(
         quote=payload,
         order_id=order_id,
         program_id=os.getenv("IAT_TREASURY_PROGRAM_ID", ""),
-        quote_authority=os.getenv("IAT_TREASURY_QUOTE_AUTHORITY", ""),
         treasury_iat_vault=os.getenv("IAT_TREASURY_IAT_VAULT", ""),
-        settlement_escrow=os.getenv("IAT_TREASURY_SETTLEMENT_ESCROW", ""),
         treasury_input_vault=str(asset.get("treasury_vault") or ""),
         buyer_input_account=str(buyer_input),
+        buyer_iat_account=str(buyer_iat),
         input_token_program=input_program,
-        iat_token_program=os.getenv(
-            "IAT_IAT_TOKEN_PROGRAM",
-            str(SPL_TOKEN_PROGRAM_ID),
-        ),
+        iat_token_program=iat_program,
     )
 
 
@@ -702,7 +708,7 @@ def prepare_universal_checkout(quote_id: str, req: UniversalPrepareRequest):
             "buyer_signer": row["buyer_wallet"],
             "input": payload["input"],
             "minimum_iat_output": payload["output"],
-            "iat_destination": "order_settlement_escrow_only",
+            "iat_destination": "buyer_associated_token_account",
             "order_id": row["order_id"],
             "atomic_execution_required": True,
             "simulation_required_before_submission": True,
@@ -727,7 +733,6 @@ def prepare_universal_checkout(quote_id: str, req: UniversalPrepareRequest):
             proof = {
                 "buyer_wallet": row["buyer_wallet"],
                 "program_id": plan["program_id"],
-                "quote_authority": plan["quote_authority"],
                 "payment_intent": replay["payment_intent"],
                 "order_hash_hex": replay["order_hash_hex"],
                 "quote_hash_hex": replay["quote_hash_hex"],
@@ -736,6 +741,11 @@ def prepare_universal_checkout(quote_id: str, req: UniversalPrepareRequest):
                 "iat_amount": int(payload["output"]["amount_minor"]),
                 "nonce": int(replay["nonce"]),
             }
+            if plan.get("delivery_mode") == "direct_to_buyer":
+                proof["delivery_mode"] = "direct_to_buyer"
+                proof["iat_destination"] = plan["display"]["iat_destination"]
+            else:
+                proof["quote_authority"] = plan["quote_authority"]
         except (CheckoutRejected, SolanaPlanError) as exc:
             response["readiness"]["instruction_plan"] = f"configuration_error:{exc}"
     else:

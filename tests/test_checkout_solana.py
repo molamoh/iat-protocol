@@ -7,6 +7,7 @@ from solders.pubkey import Pubkey
 from iat.checkout_solana import (
     SPL_TOKEN_PROGRAM_ID,
     SolanaPlanError,
+    build_direct_usdc_purchase_plan,
     build_treasury_instruction_plan,
 )
 from iat.config import IAT_TOKEN_ADDRESS
@@ -114,3 +115,55 @@ def test_plan_rejects_invalid_programs(field, value, reason):
 def test_raydium_quote_cannot_enter_treasury_program():
     with pytest.raises(SolanaPlanError, match="treasury_route_required"):
         build(quote(route="raydium"))
+
+
+def test_direct_usdc_purchase_needs_only_buyer_and_delivers_to_buyer_account():
+    value = quote()
+    buyer_iat = key()
+    plan = build_direct_usdc_purchase_plan(
+        quote=value,
+        order_id="ord-direct",
+        program_id=key(),
+        treasury_iat_vault=key(),
+        treasury_input_vault=key(),
+        buyer_input_account=key(),
+        buyer_iat_account=buyer_iat,
+        input_token_program=str(SPL_TOKEN_PROGRAM_ID),
+        iat_token_program=str(SPL_TOKEN_PROGRAM_ID),
+    )
+
+    assert plan["buyer_signature_required"] is True
+    assert plan["protocol_authorization_signature_required"] is False
+    assert plan["delivery_mode"] == "direct_to_buyer"
+    assert plan["display"]["iat_destination"] == buyer_iat
+    assert plan["display"]["iat_recipient_owner"] == value["buyer_wallet"]
+    prerequisite = plan["buyer_iat_account_prerequisite"]
+    assert prerequisite["query_account"] == buyer_iat
+    assert prerequisite["include_only_when_account_is_missing"] is True
+    assert prerequisite["data_base64"] == ""
+    assert len(plan["execute"]["accounts"]) == 15
+    assert [item for item in plan["execute"]["accounts"] if item["signer"]] == [
+        {
+            "address": value["buyer_wallet"],
+            "signer": True,
+            "writable": True,
+        }
+    ]
+    assert len(base64.b64decode(plan["execute"]["data_base64"])) == 104
+
+
+def test_direct_purchase_rejects_non_usdc_input():
+    value = quote()
+    value["input"]["asset"] = "SOL"
+    with pytest.raises(SolanaPlanError, match="usdc_input_required"):
+        build_direct_usdc_purchase_plan(
+            quote=value,
+            order_id="ord-direct",
+            program_id=key(),
+            treasury_iat_vault=key(),
+            treasury_input_vault=key(),
+            buyer_input_account=key(),
+            buyer_iat_account=key(),
+            input_token_program=str(SPL_TOKEN_PROGRAM_ID),
+            iat_token_program=str(SPL_TOKEN_PROGRAM_ID),
+        )

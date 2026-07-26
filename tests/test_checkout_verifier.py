@@ -11,6 +11,7 @@ from solders.signature import Signature
 from solders.transaction import VersionedTransaction
 
 from iat.checkout_verifier import (
+    DIRECT_USDC_PURCHASE_DISCRIMINATOR,
     PAYMENT_INTENT_DISCRIMINATOR,
     CheckoutVerificationError,
     SolanaCheckoutVerifier,
@@ -40,14 +41,51 @@ class Session:
         return Response(self.responses.pop(0))
 
 
-def transaction(*, buyer, program, payment=None, quote_authority=None):
-    accounts = [AccountMeta(program, False, False)]
-    if quote_authority:
-        accounts.append(AccountMeta(quote_authority, True, False))
-    if payment:
-        accounts.append(AccountMeta(payment, False, True))
+def transaction(
+    *,
+    buyer,
+    program,
+    payment=None,
+    quote_authority=None,
+    iat_destination=None,
+    direct=False,
+):
+    if direct:
+        if payment is None or iat_destination is None:
+            raise ValueError("direct transaction requires payment and destination")
+        addresses = [
+            buyer,
+            Pubkey.new_unique(),
+            Pubkey.new_unique(),
+            Pubkey.new_unique(),
+            payment,
+            Pubkey.new_unique(),
+            Pubkey.new_unique(),
+            Pubkey.new_unique(),
+            Pubkey.new_unique(),
+            Pubkey.new_unique(),
+            iat_destination,
+            Pubkey.new_unique(),
+            Pubkey.new_unique(),
+            Pubkey.new_unique(),
+            Pubkey.new_unique(),
+        ]
+        accounts = [
+            AccountMeta(address, index == 0, index in {0, 1, 3, 4, 7, 8, 9, 10})
+            for index, address in enumerate(addresses)
+        ]
+        data = DIRECT_USDC_PURCHASE_DISCRIMINATOR + b"proof"
+    else:
+        accounts = [AccountMeta(program, False, False)]
+        if quote_authority:
+            accounts.append(AccountMeta(quote_authority, True, False))
+        if payment:
+            accounts.append(AccountMeta(payment, False, True))
+        if iat_destination:
+            accounts.append(AccountMeta(iat_destination, False, True))
+        data = b"proof"
     message = Message.new_with_blockhash(
-        [Instruction(program, b"proof", accounts)],
+        [Instruction(program, data, accounts)],
         buyer,
         Hash.default(),
     )
@@ -287,5 +325,89 @@ def test_treasury_tampered_payment_intent_is_rejected():
                 "input_amount": 1,
                 "iat_amount": 2,
                 "nonce": 3,
+            },
+        )
+
+
+def test_direct_purchase_requires_buyer_iat_destination_but_no_server_signer():
+    buyer = Pubkey.new_unique()
+    program, payment = Pubkey.new_unique(), Pubkey.new_unique()
+    iat_destination = Pubkey.new_unique()
+    config, input_mint = Pubkey.new_unique(), Pubkey.new_unique()
+    order_hash = hashlib.sha256(b"direct-order").digest()
+    quote_hash = hashlib.sha256(b"direct-quote").digest()
+    data = payment_intent_data(
+        config=config,
+        order_hash=order_hash,
+        quote_hash=quote_hash,
+        buyer=buyer,
+        input_mint=input_mint,
+        input_amount=1_507_500,
+        iat_amount=150_000_000,
+        nonce=77,
+    )
+    _, encoded = transaction(
+        buyer=buyer,
+        program=program,
+        payment=payment,
+        iat_destination=iat_destination,
+        direct=True,
+    )
+    verifier = SolanaCheckoutVerifier(
+        "https://rpc.example",
+        session=Session(
+            finalized(
+                encoded,
+                {
+                    "owner": str(program),
+                    "executable": False,
+                    "data": [base64.b64encode(data).decode(), "base64"],
+                },
+            )
+        ),
+    )
+
+    result = verifier.verify(
+        signature=str(Signature.default()),
+        route="treasury",
+        evidence={
+            "buyer_wallet": str(buyer),
+            "program_id": str(program),
+            "delivery_mode": "direct_to_buyer",
+            "iat_destination": str(iat_destination),
+            "payment_intent": str(payment),
+            "order_hash_hex": order_hash.hex(),
+            "quote_hash_hex": quote_hash.hex(),
+            "input_mint": str(input_mint),
+            "input_amount": 1_507_500,
+            "iat_amount": 150_000_000,
+            "nonce": 77,
+        },
+    )
+    assert result["status"] == "confirmed"
+
+
+def test_direct_purchase_rejects_missing_buyer_iat_destination():
+    buyer = Pubkey.new_unique()
+    program, payment = Pubkey.new_unique(), Pubkey.new_unique()
+    _, encoded = transaction(buyer=buyer, program=program, payment=payment)
+    verifier = SolanaCheckoutVerifier(
+        "https://rpc.example",
+        session=Session(finalized(encoded)),
+    )
+
+    with pytest.raises(
+        CheckoutVerificationError,
+        match="direct_purchase_instruction_missing",
+    ):
+        verifier.verify(
+            signature=str(Signature.default()),
+            route="treasury",
+            evidence={
+                "buyer_wallet": str(buyer),
+                "program_id": str(program),
+                "delivery_mode": "direct_to_buyer",
+                "iat_destination": str(Pubkey.new_unique()),
+                "payment_intent": str(payment),
             },
         )

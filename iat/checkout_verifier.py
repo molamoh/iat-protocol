@@ -17,6 +17,9 @@ from solders.transaction import VersionedTransaction
 PAYMENT_INTENT_DISCRIMINATOR = hashlib.sha256(
     b"account:PaymentIntent"
 ).digest()[:8]
+DIRECT_USDC_PURCHASE_DISCRIMINATOR = hashlib.sha256(
+    b"global:purchase_iat_with_usdc"
+).digest()[:8]
 
 
 class CheckoutVerificationError(RuntimeError):
@@ -162,21 +165,35 @@ class SolanaCheckoutVerifier:
         evidence: Mapping[str, Any],
     ) -> None:
         program = Pubkey.from_string(str(evidence.get("program_id") or ""))
-        quote_authority = Pubkey.from_string(
-            str(evidence.get("quote_authority") or "")
-        )
         payment_intent = Pubkey.from_string(
             str(evidence.get("payment_intent") or "")
         )
         static_keys = set(transaction.message.account_keys)
-        signer_count = transaction.message.header.num_required_signatures
-        signer_keys = set(list(transaction.message.account_keys)[:signer_count])
-        if (
-            program not in static_keys
-            or payment_intent not in static_keys
-            or quote_authority not in signer_keys
-        ):
+        if program not in static_keys or payment_intent not in static_keys:
             raise CheckoutVerificationError("treasury_accounts_missing_from_transaction")
+        if evidence.get("delivery_mode") == "direct_to_buyer":
+            iat_destination = Pubkey.from_string(
+                str(evidence.get("iat_destination") or "")
+            )
+            self._verify_direct_purchase_instruction(
+                transaction,
+                program=program,
+                buyer=Pubkey.from_string(str(evidence.get("buyer_wallet") or "")),
+                payment_intent=payment_intent,
+                iat_destination=iat_destination,
+            )
+        else:
+            quote_authority = Pubkey.from_string(
+                str(evidence.get("quote_authority") or "")
+            )
+            signer_count = transaction.message.header.num_required_signatures
+            signer_keys = set(
+                list(transaction.message.account_keys)[:signer_count]
+            )
+            if quote_authority not in signer_keys:
+                raise CheckoutVerificationError(
+                    "treasury_accounts_missing_from_transaction"
+                )
         account = self._account(str(payment_intent))
         if account.get("owner") != str(program) or account.get("executable") is True:
             raise CheckoutVerificationError("payment_intent_owner_mismatch")
@@ -211,6 +228,39 @@ class SolanaCheckoutVerifier:
         }
         if actual != expected:
             raise CheckoutVerificationError("payment_intent_evidence_mismatch")
+
+    @staticmethod
+    def _verify_direct_purchase_instruction(
+        transaction: VersionedTransaction,
+        *,
+        program: Pubkey,
+        buyer: Pubkey,
+        payment_intent: Pubkey,
+        iat_destination: Pubkey,
+    ) -> None:
+        keys = list(transaction.message.account_keys)
+        for instruction in transaction.message.instructions:
+            try:
+                instruction_program = keys[instruction.program_id_index]
+                instruction_keys = [keys[index] for index in instruction.accounts]
+            except (IndexError, TypeError) as exc:
+                raise CheckoutVerificationError(
+                    "invalid_direct_purchase_instruction"
+                ) from exc
+            if instruction_program != program:
+                continue
+            if not bytes(instruction.data).startswith(
+                DIRECT_USDC_PURCHASE_DISCRIMINATOR
+            ):
+                continue
+            if (
+                len(instruction_keys) == 15
+                and instruction_keys[0] == buyer
+                and instruction_keys[4] == payment_intent
+                and instruction_keys[10] == iat_destination
+            ):
+                return
+        raise CheckoutVerificationError("direct_purchase_instruction_missing")
 
     def _require_finalized(self, signature: str) -> None:
         result = self._rpc(

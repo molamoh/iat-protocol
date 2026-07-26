@@ -15,6 +15,12 @@ de catalogues contrôlés et une recherche organique locale sont implémentés. 
 recherche n'effectue aucun accès réseau, les résultats sponsorisés sont exclus
 du classement organique et le crawling reste explicitement désactivé.
 
+Mise à jour phase 3 : un worker de collecte séparé et désactivé par défaut est
+implémenté pour les domaines explicitement autorisés. Il respecte `robots.txt`,
+refuse les redirections, borne les documents, analyse les sitemaps et extrait
+le JSON-LD commercial. Toute extraction reste en `review_required` et ne peut
+pas publier automatiquement une offre.
+
 ## 1. Résumé exécutif
 
 IAT Protocol possède déjà une base substantielle pour devenir l'infrastructure

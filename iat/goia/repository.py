@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+import uuid
 from typing import Any
 
 from iat.api.db import get_conn, qmark, release_conn
@@ -79,6 +80,29 @@ def init_goia_tables() -> None:
             """
             CREATE INDEX IF NOT EXISTS idx_goia_offer_merchant
             ON goia_offer_observations(merchant_id, offer_id, observed_at)
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS goia_collection_jobs (
+                job_id TEXT PRIMARY KEY,
+                idempotency_key TEXT NOT NULL UNIQUE,
+                url TEXT NOT NULL,
+                status TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                result_json TEXT,
+                error_code TEXT,
+                created_at INTEGER NOT NULL,
+                started_at INTEGER,
+                completed_at INTEGER,
+                updated_at INTEGER NOT NULL
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_goia_collection_jobs_status
+            ON goia_collection_jobs(status, created_at)
             """
         )
         conn.commit()
@@ -310,6 +334,177 @@ def goia_index_stats(*, now: int | None = None) -> dict[str, Any]:
             "current_observations": current,
             "expired_observations": observations - current,
             "as_of": timestamp,
+        }
+    finally:
+        release_conn(conn)
+
+
+def enqueue_collection_job(
+    *,
+    url: str,
+    idempotency_key: str,
+    now: int | None = None,
+) -> dict[str, Any]:
+    timestamp = int(now or time.time())
+    marker = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"SELECT * FROM goia_collection_jobs WHERE idempotency_key = {marker}",
+            (idempotency_key,),
+        )
+        existing = _row(cur.fetchone())
+        if existing is not None:
+            if existing["url"] != url:
+                raise GOIARepositoryError("collection_idempotency_conflict")
+            return {
+                "job_id": existing["job_id"],
+                "state": "duplicate",
+                "status": existing["status"],
+            }
+        job_id = f"goj_{uuid.uuid4().hex}"
+        cur.execute(
+            f"""
+            INSERT INTO goia_collection_jobs (
+                job_id, idempotency_key, url, status, attempts,
+                created_at, updated_at
+            ) VALUES ({", ".join([marker] * 7)})
+            """,
+            (job_id, idempotency_key, url, "queued", 0, timestamp, timestamp),
+        )
+        conn.commit()
+        return {"job_id": job_id, "state": "created", "status": "queued"}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_conn(conn)
+
+
+def claim_collection_job(*, now: int | None = None) -> dict[str, Any] | None:
+    timestamp = int(now or time.time())
+    marker = qmark()
+    for _attempt in range(3):
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                """
+                SELECT * FROM goia_collection_jobs
+                WHERE status = 'queued'
+                ORDER BY created_at ASC, job_id ASC
+                LIMIT 1
+                """
+            )
+            selected = _row(cur.fetchone())
+            if selected is None:
+                return None
+            cur.execute(
+                f"""
+                UPDATE goia_collection_jobs
+                SET status = 'processing', attempts = attempts + 1,
+                    started_at = {marker}, updated_at = {marker}
+                WHERE job_id = {marker} AND status = 'queued'
+                """,
+                (timestamp, timestamp, selected["job_id"]),
+            )
+            if cur.rowcount != 1:
+                conn.rollback()
+                continue
+            conn.commit()
+            selected["status"] = "processing"
+            selected["attempts"] = int(selected["attempts"]) + 1
+            selected["started_at"] = timestamp
+            return selected
+        finally:
+            release_conn(conn)
+    return None
+
+
+def complete_collection_job(
+    job_id: str,
+    *,
+    result: dict[str, Any],
+    now: int | None = None,
+) -> None:
+    _finish_collection_job(
+        job_id,
+        status="review_required",
+        result_json=_canonical_json(result),
+        error_code=None,
+        now=now,
+    )
+
+
+def fail_collection_job(
+    job_id: str,
+    *,
+    error_code: str,
+    now: int | None = None,
+) -> None:
+    _finish_collection_job(
+        job_id,
+        status="failed",
+        result_json=None,
+        error_code=str(error_code)[:160],
+        now=now,
+    )
+
+
+def _finish_collection_job(
+    job_id: str,
+    *,
+    status: str,
+    result_json: str | None,
+    error_code: str | None,
+    now: int | None,
+) -> None:
+    timestamp = int(now or time.time())
+    marker = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"""
+            UPDATE goia_collection_jobs
+            SET status = {marker}, result_json = {marker}, error_code = {marker},
+                completed_at = {marker}, updated_at = {marker}
+            WHERE job_id = {marker} AND status = 'processing'
+            """,
+            (status, result_json, error_code, timestamp, timestamp, job_id),
+        )
+        if cur.rowcount != 1:
+            raise GOIARepositoryError("collection_job_not_processing")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_conn(conn)
+
+
+def collection_job_stats() -> dict[str, Any]:
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT status, COUNT(*) AS count
+            FROM goia_collection_jobs
+            GROUP BY status
+            """
+        )
+        counts = {str(row["status"]): int(row["count"]) for row in map(dict, cur.fetchall())}
+        return {
+            "status": "ok",
+            "jobs": {
+                "queued": counts.get("queued", 0),
+                "processing": counts.get("processing", 0),
+                "review_required": counts.get("review_required", 0),
+                "failed": counts.get("failed", 0),
+            },
+            "automatic_publication": False,
         }
     finally:
         release_conn(conn)

@@ -55,6 +55,8 @@ def test_goia_manifest_is_defensively_copied_and_local_only():
     assert second["capabilities"] == {
         "search": True,
         "crawl": False,
+        "controlled_collection_worker": True,
+        "collection_enabled_by_default": False,
         "persistence": True,
         "index_scope": "controlled_catalogs_only",
         "contract_validation": True,
@@ -73,8 +75,11 @@ def test_iat_discovery_advertises_only_controlled_local_search():
     assert manifest["goia"]["status"] == "local_index_pilot"
     assert manifest["goia"]["search_available"] is True
     assert manifest["goia"]["crawl_available"] is False
+    assert manifest["goia"]["controlled_collection_worker"] is True
+    assert manifest["goia"]["collection_enabled_by_default"] is False
     assert capability["contract_validation"] is True
     assert capability["search_available"] is True
+    assert capability["collection_enabled_by_default"] is False
     assert capability["index_scope"] == "controlled_catalogs_only"
 
 

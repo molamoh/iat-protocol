@@ -32,10 +32,14 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "search": "/goia/v1/search",
         "catalog_ingest": "/admin/goia/catalogs/ingest",
         "index_stats": "/admin/goia/index/stats",
+        "collection_enqueue": "/admin/goia/collection/jobs",
+        "collection_stats": "/admin/goia/collection/stats",
     },
     "capabilities": {
         "search": True,
         "crawl": False,
+        "controlled_collection_worker": True,
+        "collection_enabled_by_default": False,
         "persistence": True,
         "index_scope": "controlled_catalogs_only",
         "contract_validation": True,
@@ -48,6 +52,8 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "external_content_is_untrusted_data",
         "validation_never_triggers_network_access",
         "local_search_never_triggers_network_access",
+        "collection_requires_exact_host_allowlist",
+        "collection_candidates_require_review",
         "checkout_devnet_is_unchanged",
     ],
 }

@@ -288,6 +288,16 @@ def test_worker_is_disabled_by_default(monkeypatch):
 def test_worker_never_publishes_candidates_directly(monkeypatch):
     monkeypatch.setattr(
         worker,
+        "recover_stale_collection_jobs",
+        lambda: {"status": "ok", "recovered_count": 0, "exhausted_count": 0},
+    )
+    monkeypatch.setattr(
+        worker,
+        "schedule_due_quarantine_retries",
+        lambda: {"status": "ok", "scheduled_count": 0, "exhausted_count": 0},
+    )
+    monkeypatch.setattr(
+        worker,
         "claim_collection_job",
         lambda: {
             "job_id": "goj_test",
@@ -368,7 +378,8 @@ def test_collection_queue_is_idempotent_and_claimed_once(goia_db):
     )
     stats = repository.collection_job_stats()
     assert stats["jobs"]["completed"] == 1
-    assert stats["automatic_publication"] is False
+    assert stats["collection_direct_publication"] is False
+    assert stats["autonomous_policy_publication"] is True
 
 
 def test_phase_three_collection_jobs_are_migrated_fail_closed(tmp_path, monkeypatch):
@@ -591,3 +602,73 @@ def test_autonomous_review_quarantines_incomplete_offer_without_human(goia_db):
     assert result["reason"] == "recognized_availability_required"
     assert duplicate["state"] == "already_quarantined"
     assert repository.goia_index_stats(now=1_100)["observations"] == 0
+
+
+def test_quarantine_retries_use_bounded_exponential_backoff(goia_db):
+    repository.upsert_merchant(_provider(), now=900)
+    job = repository.enqueue_collection_job(
+        provider_id="gop_provider_001",
+        url="https://merchant.example/product",
+        idempotency_key="retry-source-job-0001",
+        now=950,
+    )
+    repository.claim_collection_job(now=960)
+    candidate_id = repository.store_review_candidates(
+        job_id=job["job_id"],
+        provider_id="gop_provider_001",
+        candidates=[_autonomous_candidate(availability=None)],
+        now=1_000,
+    )[0]
+    repository.quarantine_review_candidate(
+        candidate_id,
+        policy=AUTONOMOUS_REVIEW_POLICY,
+        reason="recognized_availability_required",
+        now=1_000,
+    )
+
+    first = repository.schedule_due_quarantine_retries(now=4_600)
+    second = repository.schedule_due_quarantine_retries(now=11_800)
+    third = repository.schedule_due_quarantine_retries(now=26_200)
+    exhausted = repository.schedule_due_quarantine_retries(now=55_000)
+
+    assert first["scheduled"][0]["retry_count"] == 1
+    assert first["scheduled"][0]["next_retry_at"] == 11_800
+    assert second["scheduled"][0]["retry_count"] == 2
+    assert third["scheduled"][0]["retry_count"] == 3
+    assert exhausted["exhausted"] == [candidate_id]
+    final = repository.list_review_candidates(status="quarantine_exhausted")
+    assert final["count"] == 1
+
+
+def test_stale_worker_leases_are_recovered_then_exhausted(goia_db):
+    repository.upsert_merchant(_provider(), now=900)
+    repository.enqueue_collection_job(
+        provider_id="gop_provider_001",
+        url="https://merchant.example/product",
+        idempotency_key="stale-job-key-0001",
+        now=950,
+    )
+
+    first = repository.claim_collection_job(now=1_000)
+    recovered_one = repository.recover_stale_collection_jobs(
+        now=1_400,
+        lease_seconds=300,
+    )
+    second = repository.claim_collection_job(now=1_500)
+    recovered_two = repository.recover_stale_collection_jobs(
+        now=1_900,
+        lease_seconds=300,
+    )
+    third = repository.claim_collection_job(now=2_000)
+    exhausted = repository.recover_stale_collection_jobs(
+        now=2_400,
+        lease_seconds=300,
+    )
+
+    assert first["attempts"] == 1
+    assert second["attempts"] == 2
+    assert third["attempts"] == 3
+    assert recovered_one["recovered_count"] == 1
+    assert recovered_two["recovered_count"] == 1
+    assert exhausted["exhausted_count"] == 1
+    assert repository.collection_job_stats()["jobs"]["failed"] == 1

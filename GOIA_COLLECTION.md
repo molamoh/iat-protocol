@@ -74,6 +74,15 @@ The policy `goia_autonomous_review_v1` requires:
 Incomplete, conflicting, unavailable, or unsupported candidates are
 quarantined and never published.
 
+Quarantined candidates are retried autonomously with bounded exponential
+backoff. After three unsuccessful retries, they move to
+`quarantine_exhausted` and remain excluded from search. A failed candidate
+never blocks other offers or queries.
+
+Collection jobs use a five-minute worker lease. A job abandoned by a crashed
+worker is returned to the queue automatically. After three abandoned
+attempts, it fails closed instead of looping forever.
+
 Administrator-authenticated routes remain available for audit and emergency
 override, but are not part of the normal operating path:
 

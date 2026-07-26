@@ -46,6 +46,8 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "autonomous_review_required_before_publication": True,
         "human_operation_required": False,
         "emergency_admin_override_supported": True,
+        "autonomous_stale_lease_recovery": True,
+        "autonomous_quarantine_retries": 3,
         "persistence": True,
         "index_scope": "controlled_catalogs_only",
         "contract_validation": True,
@@ -61,6 +63,8 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "collection_requires_exact_host_allowlist",
         "collection_candidates_require_autonomous_review",
         "review_evidence_must_match_collected_url_and_hash",
+        "abandoned_jobs_are_recovered_with_bounded_leases",
+        "quarantines_retry_with_bounded_exponential_backoff",
         "checkout_devnet_is_unchanged",
     ],
 }

@@ -16,6 +16,8 @@ from iat.goia.repository import (
     complete_collection_job,
     fail_collection_job,
     init_goia_tables,
+    recover_stale_collection_jobs,
+    schedule_due_quarantine_retries,
     store_review_candidates,
 )
 from iat.goia.autonomous_review import autonomously_review_candidate
@@ -26,9 +28,11 @@ def collection_enabled() -> bool:
 
 
 def process_one_job() -> dict:
+    recovery = recover_stale_collection_jobs()
+    retries = schedule_due_quarantine_retries()
     job = claim_collection_job()
     if job is None:
-        return {"status": "idle"}
+        return {"status": "idle", "recovery": recovery, "quarantine_retries": retries}
     try:
         document = fetch_allowed_document(job["url"])
         candidates = extract_commercial_json_ld(document)
@@ -63,10 +67,18 @@ def process_one_job() -> dict:
             "approved_count": approved_count,
             "quarantined_count": quarantined_count,
             "publication_status": "autonomously_reviewed",
+            "recovery": recovery,
+            "quarantine_retries": retries,
         }
     except GOIACollectionError as exc:
         fail_collection_job(job["job_id"], error_code=str(exc))
-        return {"status": "failed", "job_id": job["job_id"], "error_code": str(exc)}
+        return {
+            "status": "failed",
+            "job_id": job["job_id"],
+            "error_code": str(exc),
+            "recovery": recovery,
+            "quarantine_retries": retries,
+        }
 
 
 def main() -> int:

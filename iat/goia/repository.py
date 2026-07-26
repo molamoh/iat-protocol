@@ -133,6 +133,9 @@ def init_goia_tables() -> None:
                 normalized_json TEXT,
                 reviewer TEXT,
                 reason TEXT,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                next_retry_at INTEGER,
+                last_retry_job_id TEXT,
                 created_at INTEGER NOT NULL,
                 reviewed_at INTEGER,
                 updated_at INTEGER NOT NULL,
@@ -140,6 +143,26 @@ def init_goia_tables() -> None:
             )
             """
         )
+        try:
+            cur.execute(
+                """
+                SELECT retry_count, next_retry_at, last_retry_job_id
+                FROM goia_review_candidates LIMIT 0
+                """
+            )
+        except Exception:
+            conn.rollback()
+            cur = conn.cursor()
+            for statement in (
+                "ALTER TABLE goia_review_candidates ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0",
+                "ALTER TABLE goia_review_candidates ADD COLUMN next_retry_at INTEGER",
+                "ALTER TABLE goia_review_candidates ADD COLUMN last_retry_job_id TEXT",
+            ):
+                try:
+                    cur.execute(statement)
+                except Exception:
+                    conn.rollback()
+                    cur = conn.cursor()
         cur.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_goia_review_candidates_status
@@ -559,6 +582,17 @@ def collection_job_stats() -> dict[str, Any]:
             """
         )
         counts = {str(row["status"]): int(row["count"]) for row in map(dict, cur.fetchall())}
+        cur.execute(
+            """
+            SELECT status, COUNT(*) AS count
+            FROM goia_review_candidates
+            GROUP BY status
+            """
+        )
+        candidate_counts = {
+            str(row["status"]): int(row["count"])
+            for row in map(dict, cur.fetchall())
+        }
         return {
             "status": "ok",
             "jobs": {
@@ -568,7 +602,20 @@ def collection_job_stats() -> dict[str, Any]:
                 "legacy_review_required": counts.get("review_required", 0),
                 "failed": counts.get("failed", 0),
             },
-            "automatic_publication": False,
+            "candidates": {
+                "pending_review": candidate_counts.get("pending_review", 0),
+                "approved": candidate_counts.get("approved", 0),
+                "quarantined": candidate_counts.get("quarantined", 0),
+                "quarantine_exhausted": candidate_counts.get(
+                    "quarantine_exhausted",
+                    0,
+                ),
+                "rejected": candidate_counts.get("rejected", 0),
+            },
+            "collection_direct_publication": False,
+            "autonomous_policy_publication": True,
+            "autonomous_review": True,
+            "autonomous_recovery": True,
         }
     finally:
         release_conn(conn)
@@ -642,7 +689,13 @@ def list_review_candidates(
     status: str = "pending_review",
     limit: int = 100,
 ) -> dict[str, Any]:
-    allowed = {"pending_review", "approved", "rejected", "quarantined"}
+    allowed = {
+        "pending_review",
+        "approved",
+        "rejected",
+        "quarantined",
+        "quarantine_exhausted",
+    }
     if status not in allowed:
         raise GOIARepositoryError("invalid_candidate_status")
     marker = qmark()
@@ -731,10 +784,18 @@ def quarantine_review_candidate(
             f"""
             UPDATE goia_review_candidates
             SET status = 'quarantined', reviewer = {marker}, reason = {marker},
-                reviewed_at = {marker}, updated_at = {marker}
+                reviewed_at = {marker}, next_retry_at = {marker},
+                updated_at = {marker}
             WHERE candidate_id = {marker} AND status = 'pending_review'
             """,
-            (policy, reason, timestamp, timestamp, candidate_id),
+            (
+                policy,
+                reason,
+                timestamp,
+                timestamp + 3_600,
+                timestamp,
+                candidate_id,
+            ),
         )
         conn.commit()
         return {
@@ -742,6 +803,162 @@ def quarantine_review_candidate(
             "state": "quarantined",
             "status": "quarantined",
             "reason": reason,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_conn(conn)
+
+
+def schedule_due_quarantine_retries(
+    *,
+    now: int | None = None,
+    limit: int = 20,
+    maximum_retries: int = 3,
+) -> dict[str, Any]:
+    timestamp = int(now or time.time())
+    bounded_limit = max(1, min(int(limit), 100))
+    bounded_maximum = max(1, min(int(maximum_retries), 10))
+    marker = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"""
+            SELECT c.candidate_id, c.provider_id, c.retry_count, j.url
+            FROM goia_review_candidates c
+            JOIN goia_collection_jobs j ON j.job_id = c.job_id
+            WHERE c.status = 'quarantined'
+              AND c.next_retry_at IS NOT NULL
+              AND c.next_retry_at <= {marker}
+            ORDER BY c.next_retry_at ASC, c.candidate_id ASC
+            LIMIT {marker}
+            """,
+            (timestamp, bounded_limit),
+        )
+        due = [dict(item) for item in cur.fetchall()]
+    finally:
+        release_conn(conn)
+
+    scheduled = []
+    exhausted = []
+    for candidate in due:
+        retry_count = int(candidate["retry_count"])
+        if retry_count >= bounded_maximum:
+            conn = get_conn()
+            cur = conn.cursor()
+            try:
+                cur.execute(
+                    f"""
+                    UPDATE goia_review_candidates
+                    SET status = 'quarantine_exhausted', next_retry_at = NULL,
+                        updated_at = {marker}
+                    WHERE candidate_id = {marker} AND status = 'quarantined'
+                    """,
+                    (timestamp, candidate["candidate_id"]),
+                )
+                conn.commit()
+                if cur.rowcount == 1:
+                    exhausted.append(candidate["candidate_id"])
+            finally:
+                release_conn(conn)
+            continue
+
+        next_count = retry_count + 1
+        retry = enqueue_collection_job(
+            provider_id=candidate["provider_id"],
+            url=candidate["url"],
+            idempotency_key=f"goia-quarantine:{candidate['candidate_id']}:{next_count}",
+            now=timestamp,
+        )
+        delay = min(86_400, 3_600 * (2**next_count))
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f"""
+                UPDATE goia_review_candidates
+                SET retry_count = {marker}, next_retry_at = {marker},
+                    last_retry_job_id = {marker}, updated_at = {marker}
+                WHERE candidate_id = {marker} AND status = 'quarantined'
+                  AND retry_count = {marker}
+                """,
+                (
+                    next_count,
+                    timestamp + delay,
+                    retry["job_id"],
+                    timestamp,
+                    candidate["candidate_id"],
+                    retry_count,
+                ),
+            )
+            conn.commit()
+            if cur.rowcount == 1:
+                scheduled.append(
+                    {
+                        "candidate_id": candidate["candidate_id"],
+                        "job_id": retry["job_id"],
+                        "retry_count": next_count,
+                        "next_retry_at": timestamp + delay,
+                    }
+                )
+        finally:
+            release_conn(conn)
+    return {
+        "status": "ok",
+        "scheduled_count": len(scheduled),
+        "exhausted_count": len(exhausted),
+        "scheduled": scheduled,
+        "exhausted": exhausted,
+    }
+
+
+def recover_stale_collection_jobs(
+    *,
+    now: int | None = None,
+    lease_seconds: int = 300,
+    maximum_attempts: int = 3,
+) -> dict[str, Any]:
+    timestamp = int(now or time.time())
+    lease = max(60, min(int(lease_seconds), 3_600))
+    maximum = max(1, min(int(maximum_attempts), 10))
+    marker = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"""
+            UPDATE goia_collection_jobs
+            SET status = 'queued', started_at = NULL,
+                error_code = 'stale_lease_recovered', updated_at = {marker}
+            WHERE status = 'processing'
+              AND started_at IS NOT NULL
+              AND started_at <= {marker}
+              AND attempts < {marker}
+            """,
+            (timestamp, timestamp - lease, maximum),
+        )
+        recovered = cur.rowcount
+        cur.execute(
+            f"""
+            UPDATE goia_collection_jobs
+            SET status = 'failed', completed_at = {marker},
+                error_code = 'stale_lease_attempts_exhausted',
+                updated_at = {marker}
+            WHERE status = 'processing'
+              AND started_at IS NOT NULL
+              AND started_at <= {marker}
+              AND attempts >= {marker}
+            """,
+            (timestamp, timestamp, timestamp - lease, maximum),
+        )
+        exhausted = cur.rowcount
+        conn.commit()
+        return {
+            "status": "ok",
+            "recovered_count": recovered,
+            "exhausted_count": exhausted,
         }
     except Exception:
         conn.rollback()

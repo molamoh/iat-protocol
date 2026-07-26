@@ -32,6 +32,11 @@ vérifie et publie seule les candidats complets ; les cas incertains sont mis en
 quarantaine. Les routes administratives sont conservées uniquement pour audit
 et commande d'urgence.
 
+Mise à jour auto-récupération : les jobs abandonnés utilisent désormais des
+leases récupérables et un plafond d'essais. Les candidats en quarantaine sont
+recollectés avec un backoff exponentiel borné, puis passent en
+`quarantine_exhausted` après trois échecs sans bloquer les autres recherches.
+
 ## 1. Résumé exécutif
 
 IAT Protocol possède déjà une base substantielle pour devenir l'infrastructure

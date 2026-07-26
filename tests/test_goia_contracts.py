@@ -60,6 +60,8 @@ def test_goia_manifest_is_defensively_copied_and_local_only():
         "autonomous_review_required_before_publication": True,
         "human_operation_required": False,
         "emergency_admin_override_supported": True,
+        "autonomous_stale_lease_recovery": True,
+        "autonomous_quarantine_retries": 3,
         "persistence": True,
         "index_scope": "controlled_catalogs_only",
         "contract_validation": True,
@@ -82,11 +84,13 @@ def test_iat_discovery_advertises_only_controlled_local_search():
     assert manifest["goia"]["collection_enabled_by_default"] is False
     assert manifest["goia"]["autonomous_review_required_before_publication"] is True
     assert manifest["goia"]["human_operation_required"] is False
+    assert manifest["goia"]["autonomous_recovery"] is True
     assert capability["contract_validation"] is True
     assert capability["search_available"] is True
     assert capability["collection_enabled_by_default"] is False
     assert capability["autonomous_review_required_before_publication"] is True
     assert capability["human_operation_required"] is False
+    assert capability["autonomous_recovery"] is True
     assert capability["index_scope"] == "controlled_catalogs_only"
 
 

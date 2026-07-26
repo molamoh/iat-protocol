@@ -662,3 +662,29 @@ def test_compensation_is_rejected_before_terminal_non_delivery(checkout_database
             requested_by="authenticated_buyer",
             now=NOW,
         )
+
+
+def test_public_delivery_never_exposes_internal_order_credentials():
+    public = checkout_delivery._public_delivery(
+        {
+            "state": "review_required",
+            "result": {
+                "status": "review_required",
+                "delivery_authorized": False,
+                "execution_mode": "foundation_supplier_pipeline",
+                "foundation_decision": {
+                    "order": {
+                        "buyer_secret": SECRET,
+                        "buyer_wallet": BUYER,
+                    }
+                },
+            },
+        }
+    )
+
+    assert public["result"] == {
+        "status": "review_required",
+        "delivery_authorized": False,
+        "execution_mode": "foundation_supplier_pipeline",
+    }
+    assert SECRET not in json.dumps(public)

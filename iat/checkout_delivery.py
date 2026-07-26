@@ -239,8 +239,26 @@ def _public_delivery(delivery: dict[str, Any] | None) -> dict[str, Any]:
             "settlement_error",
         )
     }
-    if delivery.get("result") is not None:
-        result["result"] = delivery["result"]
+    raw_result = delivery.get("result")
+    if isinstance(raw_result, dict):
+        allowed_result_fields = {
+            "status",
+            "summary",
+            "recommendations",
+            "final_recommendation",
+            "confidence",
+            "sources",
+            "message",
+            "reason",
+            "delivery_authorized",
+            "execution_mode",
+            "retryable",
+        }
+        result["result"] = {
+            key: raw_result[key]
+            for key in allowed_result_fields
+            if key in raw_result
+        }
     result["retryable"] = delivery.get("state") == "retryable_failure"
     return result
 

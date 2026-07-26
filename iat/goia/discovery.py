@@ -1,0 +1,86 @@
+"""Machine-readable GOIA discovery and impartiality policy."""
+
+from __future__ import annotations
+
+from copy import deepcopy
+from typing import Any
+
+from .contracts import GOIA_CONTRACT_VERSION
+
+
+GOIA_DISCOVERY_VERSION = "2026-07-26"
+
+_GOIA_MANIFEST: dict[str, Any] = {
+    "schema_version": GOIA_DISCOVERY_VERSION,
+    "contract_version": GOIA_CONTRACT_VERSION,
+    "product": {
+        "name": "GOIA",
+        "positioning": "commercial discovery powered by IAT Protocol",
+        "status": "contracts_only",
+        "pilot": {
+            "kinds": ["software", "api", "hosting", "digital_service"],
+            "country": "FR",
+            "currency": "EUR",
+        },
+    },
+    "routes": {
+        "manifest": "/.well-known/goia.json",
+        "validate_intent": "/goia/v1/contracts/search-intent/validate",
+        "validate_offer": "/goia/v1/contracts/offer-observation/validate",
+        "validate_provider": "/goia/v1/contracts/provider/validate",
+        "ranking_policy": "/goia/v1/policies/ranking",
+    },
+    "capabilities": {
+        "search": False,
+        "crawl": False,
+        "persistence": False,
+        "contract_validation": True,
+        "production_side_effects": False,
+    },
+    "invariants": [
+        "organic_ranking_never_uses_commission",
+        "commercial_relationship_is_disclosed",
+        "prices_require_timestamped_evidence",
+        "external_content_is_untrusted_data",
+        "validation_never_triggers_network_access",
+        "checkout_devnet_is_unchanged",
+    ],
+}
+
+
+def build_goia_manifest() -> dict[str, Any]:
+    return deepcopy(_GOIA_MANIFEST)
+
+
+def build_ranking_policy() -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "policy_version": "goia_organic_ranking_v1",
+        "organic_inputs": [
+            "constraint_match",
+            "total_price",
+            "quality",
+            "trust",
+            "freshness",
+            "availability",
+            "delivery",
+            "return_policy",
+            "merchant_reliability",
+            "uncertainty",
+        ],
+        "forbidden_organic_inputs": [
+            "commission_rate",
+            "expected_commission",
+            "advertising_budget",
+            "commercial_priority",
+        ],
+        "disclosure_fields": [
+            "commercial_relationship",
+            "sponsored",
+            "commission_may_be_earned",
+            "commission_changes_organic_rank",
+        ],
+        "commission_changes_organic_rank": False,
+        "sponsored_results_separate_from_organic": True,
+        "production_side_effects": False,
+    }

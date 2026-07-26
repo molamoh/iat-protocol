@@ -42,6 +42,7 @@ from iat.api.public import router as public_router
 from iat.api.growth_api import build_growth_router
 from iat.api.decision_api import build_decision_router
 from iat.api.growth_public import router as growth_public_router
+from iat.api.goia_public import router as goia_public_router
 from iat.api.checkout_api import init_checkout_db, router as checkout_router
 from iat.checkout_delivery import (
     delivery_dashboard,
@@ -283,6 +284,7 @@ app = FastAPI(
 )
 app.include_router(public_router)
 app.include_router(growth_public_router)
+app.include_router(goia_public_router)
 app.include_router(checkout_router)
 
 def require_admin_key(x_api_key):

@@ -76,6 +76,17 @@ _MANIFEST: dict[str, Any] = {
         ],
         "maximum_outreach_frequency": "once_per_24_hours",
     },
+    "goia": {
+        "manifest": "/.well-known/goia.json",
+        "ranking_policy": "/goia/v1/policies/ranking",
+        "validate_search_intent": "/goia/v1/contracts/search-intent/validate",
+        "validate_offer_observation": "/goia/v1/contracts/offer-observation/validate",
+        "validate_provider": "/goia/v1/contracts/provider/validate",
+        "status": "contracts_only",
+        "search_available": False,
+        "crawl_available": False,
+        "production_side_effects": False,
+    },
     "settlement": {
         "network": "solana",
         "rpc": IAT_NETWORK,
@@ -188,6 +199,15 @@ def build_capabilities_document() -> dict[str, Any]:
                 "opt_out_supported": True,
                 "maximum_outreach_frequency": "once_per_24_hours",
             },
+            {
+                "id": "goia_commercial_discovery_contracts",
+                "stability": "experimental",
+                "autonomous": True,
+                "contract_validation": True,
+                "search_available": False,
+                "crawl_available": False,
+                "production_side_effects": False,
+            },
         ],
         "safety_invariants": [
             "sandbox_never_moves_funds",
@@ -231,6 +251,8 @@ execute an order, verify a result, and settle payment under explicit policies.
 - No-funds sandbox purchase: `POST /sandbox/v1/purchase`
 - Hybrid payment quote: `POST /payments/v1/universal/quote`
 - Authenticated invitation response: `POST /growth/v1/respond`
+- GOIA machine manifest: `/.well-known/goia.json`
+- GOIA organic ranking policy: `/goia/v1/policies/ranking`
 
 ## Production buyer flow
 

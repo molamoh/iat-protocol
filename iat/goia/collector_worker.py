@@ -16,6 +16,7 @@ from iat.goia.repository import (
     complete_collection_job,
     fail_collection_job,
     init_goia_tables,
+    store_review_candidates,
 )
 
 
@@ -30,13 +31,18 @@ def process_one_job() -> dict:
     try:
         document = fetch_allowed_document(job["url"])
         candidates = extract_commercial_json_ld(document)
+        candidate_ids = store_review_candidates(
+            job_id=job["job_id"],
+            provider_id=job["provider_id"],
+            candidates=candidates,
+        )
         complete_collection_job(
             job["job_id"],
             result={
                 "source_url": document.url,
                 "source_sha256": document.sha256,
                 "candidate_count": len(candidates),
-                "candidates": candidates,
+                "candidate_ids": candidate_ids,
                 "publication_status": "review_required",
             },
         )

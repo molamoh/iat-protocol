@@ -21,6 +21,11 @@ refuse les redirections, borne les documents, analyse les sitemaps et extrait
 le JSON-LD commercial. Toute extraction reste en `review_required` et ne peut
 pas publier automatiquement une offre.
 
+Mise à jour revue gouvernée : chaque candidat collecté est désormais lié à un
+marchand et conservé séparément de l'index. L'approbation administrative exige
+une `OfferObservation` complète dont l'URL et le hash de preuve correspondent
+exactement à la page collectée. Les approbations et rejets sont idempotents.
+
 ## 1. Résumé exécutif
 
 IAT Protocol possède déjà une base substantielle pour devenir l'infrastructure

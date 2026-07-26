@@ -6,6 +6,7 @@ import pytest
 import iat.goia.collector as collector
 import iat.goia.collector_worker as worker
 import iat.goia.repository as repository
+from iat.goia.contracts import MerchantProviderManifest, OfferObservation
 
 
 @pytest.fixture()
@@ -22,6 +23,49 @@ def goia_db(tmp_path, monkeypatch):
     monkeypatch.setattr(repository, "qmark", lambda: "?")
     repository.init_goia_tables()
     return database
+
+
+def _provider():
+    return MerchantProviderManifest(
+        provider_id="gop_provider_001",
+        name="Example Merchant",
+        website="https://merchant.example",
+        countries=["FR"],
+        currencies=["EUR"],
+        catalogs=[
+            {
+                "source_id": "catalog-main",
+                "source_type": "sitemap",
+                "url": "https://merchant.example/sitemap.xml",
+                "refresh_interval_seconds": 3_600,
+            }
+        ],
+    )
+
+
+def _review_observation(*, source_sha256="d" * 64):
+    return OfferObservation(
+        observation_id="goo_reviewed_offer_001",
+        offer_id="offer-reviewed-001",
+        merchant_id="gop_provider_001",
+        kind="software",
+        title="Translation API",
+        canonical_url="https://merchant.example/product",
+        total_price="20.00",
+        currency="EUR",
+        availability="available",
+        observed_at=1_000,
+        expires_at=2_000,
+        evidence=[
+            {
+                "source_url": "https://merchant.example/product",
+                "extraction_method": "json_ld",
+                "content_sha256": source_sha256,
+                "observed_at": 1_000,
+            }
+        ],
+        attribute_confidence=90,
+    )
 
 
 class FakeResponse:
@@ -241,7 +285,11 @@ def test_worker_never_publishes_candidates_directly(monkeypatch):
     monkeypatch.setattr(
         worker,
         "claim_collection_job",
-        lambda: {"job_id": "goj_test", "url": "https://merchant.example/product"},
+        lambda: {
+            "job_id": "goj_test",
+            "provider_id": "gop_provider_001",
+            "url": "https://merchant.example/product",
+        },
     )
     monkeypatch.setattr(
         worker,
@@ -261,6 +309,11 @@ def test_worker_never_publishes_candidates_directly(monkeypatch):
     completed = {}
     monkeypatch.setattr(
         worker,
+        "store_review_candidates",
+        lambda **kwargs: ["goc_candidate_001"],
+    )
+    monkeypatch.setattr(
+        worker,
         "complete_collection_job",
         lambda job_id, result: completed.update(job_id=job_id, result=result),
     )
@@ -269,16 +322,19 @@ def test_worker_never_publishes_candidates_directly(monkeypatch):
 
     assert result["publication_status"] == "review_required"
     assert completed["result"]["publication_status"] == "review_required"
-    assert completed["result"]["candidates"][0]["review_required"] is True
+    assert completed["result"]["candidate_ids"] == ["goc_candidate_001"]
 
 
 def test_collection_queue_is_idempotent_and_claimed_once(goia_db):
+    repository.upsert_merchant(_provider(), now=900)
     first = repository.enqueue_collection_job(
+        provider_id="gop_provider_001",
         url="https://merchant.example/product",
         idempotency_key="collection-key-0001",
         now=1_000,
     )
     duplicate = repository.enqueue_collection_job(
+        provider_id="gop_provider_001",
         url="https://merchant.example/product",
         idempotency_key="collection-key-0001",
         now=1_001,
@@ -300,3 +356,155 @@ def test_collection_queue_is_idempotent_and_claimed_once(goia_db):
     stats = repository.collection_job_stats()
     assert stats["jobs"]["review_required"] == 1
     assert stats["automatic_publication"] is False
+
+
+def test_phase_three_collection_jobs_are_migrated_fail_closed(tmp_path, monkeypatch):
+    database = tmp_path / "legacy-goia.db"
+    conn = sqlite3.connect(database)
+    conn.execute(
+        """
+        CREATE TABLE goia_collection_jobs (
+            job_id TEXT PRIMARY KEY,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            url TEXT NOT NULL,
+            status TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            result_json TEXT,
+            error_code TEXT,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO goia_collection_jobs (
+            job_id, idempotency_key, url, status, attempts, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "goj_legacy",
+            "legacy-key",
+            "https://merchant.example/product",
+            "queued",
+            0,
+            900,
+            900,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    def connect():
+        opened = sqlite3.connect(database)
+        opened.row_factory = sqlite3.Row
+        return opened
+
+    monkeypatch.setattr(repository, "get_conn", connect)
+    monkeypatch.setattr(repository, "release_conn", lambda opened: opened.close())
+    monkeypatch.setattr(repository, "qmark", lambda: "?")
+    repository.init_goia_tables()
+
+    conn = sqlite3.connect(database)
+    migrated = conn.execute(
+        "SELECT provider_id, status, error_code FROM goia_collection_jobs"
+    ).fetchone()
+    conn.close()
+
+    assert migrated == (None, "failed", "legacy_job_missing_provider")
+
+
+def _pending_candidate():
+    return {
+        "source_url": "https://merchant.example/product",
+        "source_sha256": "d" * 64,
+        "schema_types": ["SoftwareApplication"],
+        "name": "Translation API",
+        "url": "https://merchant.example/product",
+        "offers": {"price": "20.00", "priceCurrency": "EUR"},
+        "review_required": True,
+    }
+
+
+def _create_pending_candidate():
+    repository.upsert_merchant(_provider(), now=900)
+    job = repository.enqueue_collection_job(
+        provider_id="gop_provider_001",
+        url="https://merchant.example/product",
+        idempotency_key="review-job-key-0001",
+        now=950,
+    )
+    claimed = repository.claim_collection_job(now=960)
+    assert claimed["job_id"] == job["job_id"]
+    candidate_ids = repository.store_review_candidates(
+        job_id=job["job_id"],
+        provider_id="gop_provider_001",
+        candidates=[_pending_candidate()],
+        now=970,
+    )
+    return candidate_ids[0]
+
+
+def test_review_candidate_requires_exact_collected_evidence(goia_db):
+    candidate_id = _create_pending_candidate()
+
+    with pytest.raises(repository.GOIARepositoryError, match="evidence_mismatch"):
+        repository.approve_review_candidate(
+            candidate_id,
+            observation=_review_observation(source_sha256="e" * 64),
+            reviewer="foundation-reviewer",
+            reason="Verified offer fields against the collected page.",
+            now=1_000,
+        )
+
+    assert repository.goia_index_stats(now=1_100)["observations"] == 0
+
+
+def test_approved_candidate_is_published_once(goia_db):
+    candidate_id = _create_pending_candidate()
+    observation = _review_observation()
+
+    approved = repository.approve_review_candidate(
+        candidate_id,
+        observation=observation,
+        reviewer="foundation-reviewer",
+        reason="Verified offer fields against the collected page.",
+        now=1_000,
+    )
+    duplicate = repository.approve_review_candidate(
+        candidate_id,
+        observation=observation,
+        reviewer="foundation-reviewer",
+        reason="Verified offer fields against the collected page.",
+        now=1_001,
+    )
+
+    assert approved["state"] == "approved"
+    assert duplicate["state"] == "duplicate"
+    assert repository.goia_index_stats(now=1_100)["observations"] == 1
+    reviewed = repository.list_review_candidates(status="approved")
+    assert reviewed["items"][0]["raw"]["review_required"] is True
+    assert reviewed["items"][0]["normalized"]["observation_id"] == observation.observation_id
+
+
+def test_rejected_candidate_never_reaches_index(goia_db):
+    candidate_id = _create_pending_candidate()
+
+    rejected = repository.reject_review_candidate(
+        candidate_id,
+        reviewer="foundation-reviewer",
+        reason="Price could not be verified from the collected evidence.",
+        now=1_000,
+    )
+    duplicate = repository.reject_review_candidate(
+        candidate_id,
+        reviewer="foundation-reviewer",
+        reason="Price could not be verified from the collected evidence.",
+        now=1_001,
+    )
+
+    assert rejected["state"] == "rejected"
+    assert duplicate["state"] == "duplicate"
+    assert repository.goia_index_stats(now=1_100)["observations"] == 0

@@ -49,6 +49,28 @@ Inspect bounded aggregate status with:
 GET /admin/goia/collection/stats
 ```
 
+## Review and publication
+
+Collection never publishes an offer directly. Review candidates are available
+only through administrator-authenticated routes:
+
+```text
+GET /admin/goia/review/candidates?status=pending_review
+POST /admin/goia/review/candidates/{candidate_id}/approve
+POST /admin/goia/review/candidates/{candidate_id}/reject
+```
+
+Approval requires a complete, strictly validated `OfferObservation`, reviewer,
+and reason. The observation must:
+
+- belong to the provider attached to the collection job;
+- contain evidence with the exact collected source URL;
+- contain the exact SHA-256 hash of the collected page.
+
+Approval is idempotent. Reusing an approved candidate with a different
+observation is rejected. Rejection is also idempotent and never inserts an
+observation into the public search index.
+
 ## Worker
 
 Run separately from the public API:
@@ -75,6 +97,6 @@ The first collector supports:
   `Service`;
 - bounded sitemap XML parsing as a library primitive.
 
-Sitemap scheduling, review approval, automatic normalization into
-`OfferObservation`, JavaScript rendering, redirects, and public Internet
-discovery are deliberately not enabled.
+Sitemap scheduling, automatic normalization into `OfferObservation`,
+JavaScript rendering, redirects, and public Internet discovery are
+deliberately not enabled.

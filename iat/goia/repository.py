@@ -87,6 +87,7 @@ def init_goia_tables() -> None:
             CREATE TABLE IF NOT EXISTS goia_collection_jobs (
                 job_id TEXT PRIMARY KEY,
                 idempotency_key TEXT NOT NULL UNIQUE,
+                provider_id TEXT NOT NULL,
                 url TEXT NOT NULL,
                 status TEXT NOT NULL,
                 attempts INTEGER NOT NULL DEFAULT 0,
@@ -97,6 +98,52 @@ def init_goia_tables() -> None:
                 completed_at INTEGER,
                 updated_at INTEGER NOT NULL
             )
+            """
+        )
+        try:
+            cur.execute("SELECT provider_id FROM goia_collection_jobs LIMIT 0")
+        except Exception:
+            # Phase-3 databases predate provider-bound review. PostgreSQL marks
+            # the transaction failed after an unknown-column error, so restart
+            # the transaction before applying the additive migration.
+            conn.rollback()
+            cur = conn.cursor()
+            cur.execute(
+                "ALTER TABLE goia_collection_jobs ADD COLUMN provider_id TEXT"
+            )
+            cur.execute(
+                """
+                UPDATE goia_collection_jobs
+                SET status = 'failed',
+                    error_code = 'legacy_job_missing_provider'
+                WHERE provider_id IS NULL
+                """
+            )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS goia_review_candidates (
+                candidate_id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                source_url TEXT NOT NULL,
+                source_sha256 TEXT NOT NULL,
+                raw_json TEXT NOT NULL,
+                raw_hash TEXT NOT NULL,
+                status TEXT NOT NULL,
+                normalized_json TEXT,
+                reviewer TEXT,
+                reason TEXT,
+                created_at INTEGER NOT NULL,
+                reviewed_at INTEGER,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(job_id, raw_hash)
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_goia_review_candidates_status
+            ON goia_review_candidates(status, created_at)
             """
         )
         cur.execute(
@@ -341,6 +388,7 @@ def goia_index_stats(*, now: int | None = None) -> dict[str, Any]:
 
 def enqueue_collection_job(
     *,
+    provider_id: str,
     url: str,
     idempotency_key: str,
     now: int | None = None,
@@ -356,22 +404,37 @@ def enqueue_collection_job(
         )
         existing = _row(cur.fetchone())
         if existing is not None:
-            if existing["url"] != url:
+            if existing["url"] != url or existing["provider_id"] != provider_id:
                 raise GOIARepositoryError("collection_idempotency_conflict")
             return {
                 "job_id": existing["job_id"],
                 "state": "duplicate",
                 "status": existing["status"],
             }
+        cur.execute(
+            f"SELECT provider_id FROM goia_merchants WHERE provider_id = {marker}",
+            (provider_id,),
+        )
+        if cur.fetchone() is None:
+            raise GOIARepositoryError("merchant_not_found")
         job_id = f"goj_{uuid.uuid4().hex}"
         cur.execute(
             f"""
             INSERT INTO goia_collection_jobs (
-                job_id, idempotency_key, url, status, attempts,
+                job_id, idempotency_key, provider_id, url, status, attempts,
                 created_at, updated_at
-            ) VALUES ({", ".join([marker] * 7)})
+            ) VALUES ({", ".join([marker] * 8)})
             """,
-            (job_id, idempotency_key, url, "queued", 0, timestamp, timestamp),
+            (
+                job_id,
+                idempotency_key,
+                provider_id,
+                url,
+                "queued",
+                0,
+                timestamp,
+                timestamp,
+            ),
         )
         conn.commit()
         return {"job_id": job_id, "state": "created", "status": "queued"}
@@ -506,5 +569,221 @@ def collection_job_stats() -> dict[str, Any]:
             },
             "automatic_publication": False,
         }
+    finally:
+        release_conn(conn)
+
+
+def store_review_candidates(
+    *,
+    job_id: str,
+    provider_id: str,
+    candidates: list[dict[str, Any]],
+    now: int | None = None,
+) -> list[str]:
+    timestamp = int(now or time.time())
+    marker = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+    identifiers: list[str] = []
+    try:
+        for candidate in candidates[:500]:
+            source_url = str(candidate.get("source_url") or "")
+            source_sha256 = str(candidate.get("source_sha256") or "")
+            if not source_url or len(source_sha256) != 64:
+                raise GOIARepositoryError("candidate_source_evidence_required")
+            raw_json = _canonical_json(candidate)
+            raw_hash = _payload_hash(raw_json)
+            candidate_id = f"goc_{hashlib.sha256(f'{job_id}:{raw_hash}'.encode()).hexdigest()[:32]}"
+            cur.execute(
+                f"""
+                SELECT raw_hash FROM goia_review_candidates
+                WHERE candidate_id = {marker}
+                """,
+                (candidate_id,),
+            )
+            existing = _row(cur.fetchone())
+            if existing is None:
+                cur.execute(
+                    f"""
+                    INSERT INTO goia_review_candidates (
+                        candidate_id, job_id, provider_id, source_url,
+                        source_sha256, raw_json, raw_hash, status,
+                        created_at, updated_at
+                    ) VALUES ({", ".join([marker] * 10)})
+                    """,
+                    (
+                        candidate_id,
+                        job_id,
+                        provider_id,
+                        source_url,
+                        source_sha256,
+                        raw_json,
+                        raw_hash,
+                        "pending_review",
+                        timestamp,
+                        timestamp,
+                    ),
+                )
+            elif existing["raw_hash"] != raw_hash:
+                raise GOIARepositoryError("candidate_identity_conflict")
+            identifiers.append(candidate_id)
+        conn.commit()
+        return identifiers
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_conn(conn)
+
+
+def list_review_candidates(
+    *,
+    status: str = "pending_review",
+    limit: int = 100,
+) -> dict[str, Any]:
+    allowed = {"pending_review", "approved", "rejected"}
+    if status not in allowed:
+        raise GOIARepositoryError("invalid_candidate_status")
+    marker = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"""
+            SELECT * FROM goia_review_candidates
+            WHERE status = {marker}
+            ORDER BY created_at ASC, candidate_id ASC
+            LIMIT {marker}
+            """,
+            (status, max(1, min(int(limit), 500))),
+        )
+        items = []
+        for row in map(dict, cur.fetchall()):
+            row["raw"] = json.loads(row.pop("raw_json"))
+            normalized = row.pop("normalized_json", None)
+            row["normalized"] = json.loads(normalized) if normalized else None
+            row.pop("raw_hash", None)
+            items.append(row)
+        return {"status": "ok", "count": len(items), "items": items}
+    finally:
+        release_conn(conn)
+
+
+def approve_review_candidate(
+    candidate_id: str,
+    *,
+    observation: OfferObservation,
+    reviewer: str,
+    reason: str,
+    now: int | None = None,
+) -> dict[str, Any]:
+    timestamp = int(now or time.time())
+    marker = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"SELECT * FROM goia_review_candidates WHERE candidate_id = {marker}",
+            (candidate_id,),
+        )
+        candidate = _row(cur.fetchone())
+    finally:
+        release_conn(conn)
+    if candidate is None:
+        raise GOIARepositoryError("candidate_not_found")
+    if candidate["status"] == "approved":
+        normalized = json.loads(candidate["normalized_json"])
+        if normalized != observation.model_dump(mode="json"):
+            raise GOIARepositoryError("candidate_approval_conflict")
+        return {"candidate_id": candidate_id, "state": "duplicate", "status": "approved"}
+    if candidate["status"] != "pending_review":
+        raise GOIARepositoryError("candidate_not_pending")
+    if observation.merchant_id != candidate["provider_id"]:
+        raise GOIARepositoryError("candidate_merchant_mismatch")
+    matching_evidence = any(
+        str(item.source_url) == candidate["source_url"]
+        and item.content_sha256 == candidate["source_sha256"]
+        for item in observation.evidence
+    )
+    if not matching_evidence:
+        raise GOIARepositoryError("candidate_evidence_mismatch")
+
+    ingestion = ingest_observation(observation, now=timestamp)
+    normalized_json = _canonical_json(observation.model_dump(mode="json"))
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"""
+            UPDATE goia_review_candidates
+            SET status = 'approved', normalized_json = {marker},
+                reviewer = {marker}, reason = {marker}, reviewed_at = {marker},
+                updated_at = {marker}
+            WHERE candidate_id = {marker} AND status = 'pending_review'
+            """,
+            (
+                normalized_json,
+                reviewer,
+                reason,
+                timestamp,
+                timestamp,
+                candidate_id,
+            ),
+        )
+        if cur.rowcount != 1:
+            raise GOIARepositoryError("candidate_approval_race")
+        conn.commit()
+        return {
+            "candidate_id": candidate_id,
+            "state": "approved",
+            "status": "approved",
+            "observation": ingestion,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_conn(conn)
+
+
+def reject_review_candidate(
+    candidate_id: str,
+    *,
+    reviewer: str,
+    reason: str,
+    now: int | None = None,
+) -> dict[str, Any]:
+    timestamp = int(now or time.time())
+    marker = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"SELECT status, reviewer, reason FROM goia_review_candidates WHERE candidate_id = {marker}",
+            (candidate_id,),
+        )
+        candidate = _row(cur.fetchone())
+        if candidate is None:
+            raise GOIARepositoryError("candidate_not_found")
+        if candidate["status"] == "rejected":
+            if candidate["reviewer"] != reviewer or candidate["reason"] != reason:
+                raise GOIARepositoryError("candidate_rejection_conflict")
+            return {"candidate_id": candidate_id, "state": "duplicate", "status": "rejected"}
+        if candidate["status"] != "pending_review":
+            raise GOIARepositoryError("candidate_not_pending")
+        cur.execute(
+            f"""
+            UPDATE goia_review_candidates
+            SET status = 'rejected', reviewer = {marker}, reason = {marker},
+                reviewed_at = {marker}, updated_at = {marker}
+            WHERE candidate_id = {marker} AND status = 'pending_review'
+            """,
+            (reviewer, reason, timestamp, timestamp, candidate_id),
+        )
+        conn.commit()
+        return {"candidate_id": candidate_id, "state": "rejected", "status": "rejected"}
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         release_conn(conn)

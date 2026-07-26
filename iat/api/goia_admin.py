@@ -11,9 +11,12 @@ from iat.goia.contracts import MerchantProviderManifest, OfferObservation
 from iat.goia.repository import (
     GOIARepositoryError,
     collection_job_stats,
+    approve_review_candidate,
     enqueue_collection_job,
     goia_index_stats,
     ingest_catalog,
+    list_review_candidates,
+    reject_review_candidate,
 )
 from iat.goia.collector import GOIACollectionError, validate_collection_url
 
@@ -28,7 +31,23 @@ class CatalogIngestRequest(BaseModel):
 class CollectionJobRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
+    provider_id: str = Field(pattern=r"^gop_[a-zA-Z0-9_-]{8,100}$")
     url: str = Field(min_length=8, max_length=2_000)
+
+
+class CandidateApprovalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    reviewer: str = Field(min_length=3, max_length=120)
+    reason: str = Field(min_length=8, max_length=1_000)
+    observation: OfferObservation
+
+
+class CandidateRejectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    reviewer: str = Field(min_length=3, max_length=120)
+    reason: str = Field(min_length=8, max_length=1_000)
 
 
 def build_goia_admin_router(require_admin: Callable) -> APIRouter:
@@ -61,6 +80,7 @@ def build_goia_admin_router(require_admin: Callable) -> APIRouter:
         try:
             validate_collection_url(payload.url)
             return enqueue_collection_job(
+                provider_id=payload.provider_id,
                 url=payload.url,
                 idempotency_key=idempotency_key,
             )
@@ -72,5 +92,37 @@ def build_goia_admin_router(require_admin: Callable) -> APIRouter:
     @router.get("/collection/stats")
     def collection_stats():
         return collection_job_stats()
+
+    @router.get("/review/candidates")
+    def review_candidates(status: str = "pending_review", limit: int = 100):
+        try:
+            return list_review_candidates(status=status, limit=limit)
+        except GOIARepositoryError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.post("/review/candidates/{candidate_id}/approve")
+    def approve_candidate(candidate_id: str, payload: CandidateApprovalRequest):
+        try:
+            return approve_review_candidate(
+                candidate_id,
+                observation=payload.observation,
+                reviewer=payload.reviewer,
+                reason=payload.reason,
+            )
+        except GOIARepositoryError as exc:
+            status_code = 404 if str(exc) == "candidate_not_found" else 409
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+    @router.post("/review/candidates/{candidate_id}/reject")
+    def reject_candidate(candidate_id: str, payload: CandidateRejectionRequest):
+        try:
+            return reject_review_candidate(
+                candidate_id,
+                reviewer=payload.reviewer,
+                reason=payload.reason,
+            )
+        except GOIARepositoryError as exc:
+            status_code = 404 if str(exc) == "candidate_not_found" else 409
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
     return router

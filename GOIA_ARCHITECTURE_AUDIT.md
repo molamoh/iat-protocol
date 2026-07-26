@@ -53,6 +53,12 @@ le ratio de demandes non satisfaites et la rareté des offres, puis maintient
 des opportunités `monitoring` ou `qualified`. Cette étape ne déclenche aucun
 outreach.
 
+Mise à jour prospection structurée : GOIA extrait désormais les vendeurs
+déclarés dans les `Offer` Schema.org des comparateurs autorisés. Il conserve
+des preuves bornées, qualifie les domaines par score déterministe et les relie
+aux lacunes de marché compatibles. Un domaine découvert n'est ni visité ni
+contacté : il constitue une preuve, jamais une autorisation.
+
 ## 1. Résumé exécutif
 
 IAT Protocol possède déjà une base substantielle pour devenir l'infrastructure

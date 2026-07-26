@@ -251,6 +251,37 @@ def init_goia_tables() -> None:
             )
             """
         )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS goia_partner_prospects (
+                prospect_id TEXT PRIMARY KEY,
+                domain TEXT NOT NULL UNIQUE,
+                name TEXT NOT NULL,
+                status TEXT NOT NULL,
+                relevance_score INTEGER NOT NULL,
+                evidence_count INTEGER NOT NULL,
+                signals_json TEXT NOT NULL,
+                evidence_json TEXT NOT NULL,
+                outreach_authorized INTEGER NOT NULL DEFAULT 0,
+                contact_attempted INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS goia_opportunity_prospects (
+                opportunity_id TEXT NOT NULL,
+                prospect_id TEXT NOT NULL,
+                match_score INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(opportunity_id, prospect_id)
+            )
+            """
+        )
         conn.commit()
     finally:
         release_conn(conn)
@@ -1327,6 +1358,211 @@ def list_partnership_opportunities(
             "status": "ok",
             "count": len(items),
             "items": items,
+            "outreach_triggered": False,
+        }
+    finally:
+        release_conn(conn)
+
+
+def upsert_partner_hints(
+    hints: list[dict[str, Any]],
+    *,
+    now: int | None = None,
+) -> dict[str, Any]:
+    timestamp = int(now or time.time())
+    marker = qmark()
+    stored = []
+    for hint in hints[:500]:
+        domain = str(hint.get("domain") or "").strip().lower().rstrip(".")
+        if not domain or len(domain) > 253:
+            continue
+        evidence = {
+            "source_url": str(hint.get("source_url") or "")[:2_000],
+            "source_sha256": str(hint.get("source_sha256") or "")[:64],
+            "evidence_type": str(hint.get("evidence_type") or "")[:80],
+            "url": str(hint.get("url") or "")[:2_000],
+        }
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f"SELECT * FROM goia_partner_prospects WHERE domain = {marker}",
+                (domain,),
+            )
+            existing = _row(cur.fetchone())
+            evidence_items = json.loads(existing["evidence_json"]) if existing else []
+            if evidence not in evidence_items:
+                evidence_items.append(evidence)
+            evidence_items = evidence_items[-50:]
+            signals = json.loads(existing["signals_json"]) if existing else {
+                "kinds": [],
+                "currencies": [],
+            }
+            signals["kinds"] = sorted(
+                set(signals.get("kinds") or []) | set(hint.get("kinds") or [])
+            )[:20]
+            signals["currencies"] = sorted(
+                set(signals.get("currencies") or []) | set(hint.get("currencies") or [])
+            )[:20]
+            seller_evidence = sum(
+                item["evidence_type"] == "schema_offer_seller" for item in evidence_items
+            )
+            relevance_score = min(100, 25 + len(evidence_items) * 10 + seller_evidence * 15)
+            status = "qualified" if relevance_score >= 60 else "discovered"
+            prospect_id = "gpp_" + hashlib.sha256(domain.encode()).hexdigest()[:32]
+            values = (
+                prospect_id,
+                domain,
+                str(hint.get("name") or (existing or {}).get("name") or domain)[:300],
+                status,
+                relevance_score,
+                len(evidence_items),
+                _canonical_json(signals),
+                _canonical_json(evidence_items),
+                0,
+                0,
+                existing["created_at"] if existing else timestamp,
+                timestamp,
+            )
+            cur.execute(
+                f"""
+                INSERT INTO goia_partner_prospects (
+                    prospect_id, domain, name, status, relevance_score,
+                    evidence_count, signals_json, evidence_json,
+                    outreach_authorized, contact_attempted, created_at, updated_at
+                ) VALUES ({", ".join([marker] * 12)})
+                ON CONFLICT(domain) DO UPDATE SET
+                    name = {marker}, status = {marker}, relevance_score = {marker},
+                    evidence_count = {marker}, signals_json = {marker},
+                    evidence_json = {marker}, updated_at = {marker}
+                """,
+                values
+                + (
+                    values[2],
+                    status,
+                    relevance_score,
+                    len(evidence_items),
+                    values[6],
+                    values[7],
+                    timestamp,
+                ),
+            )
+            conn.commit()
+            stored.append(prospect_id)
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            release_conn(conn)
+    return {
+        "status": "ok",
+        "stored_count": len(set(stored)),
+        "prospect_ids": sorted(set(stored)),
+        "network_access_performed": False,
+        "outreach_triggered": False,
+    }
+
+
+def refresh_opportunity_prospect_links(*, now: int | None = None) -> dict[str, Any]:
+    timestamp = int(now or time.time())
+    conn = get_conn()
+    cur = conn.cursor()
+    marker = qmark()
+    linked = 0
+    try:
+        cur.execute(
+            """
+            SELECT opportunity_id, kind, currency
+            FROM goia_partnership_opportunities
+            WHERE status = 'qualified'
+            """
+        )
+        opportunities = list(map(dict, cur.fetchall()))
+        cur.execute(
+            """
+            SELECT prospect_id, relevance_score, signals_json
+            FROM goia_partner_prospects
+            WHERE status = 'qualified'
+            """
+        )
+        prospects = list(map(dict, cur.fetchall()))
+        for opportunity in opportunities:
+            for prospect in prospects:
+                signals = json.loads(prospect["signals_json"])
+                schema_kind = {
+                    "software": "SoftwareApplication",
+                    "api": "SoftwareApplication",
+                    "hosting": "Service",
+                    "digital_service": "Service",
+                }.get(opportunity["kind"])
+                kind_match = schema_kind in (signals.get("kinds") or [])
+                currency_match = opportunity["currency"] in (signals.get("currencies") or [])
+                if not kind_match or not currency_match:
+                    continue
+                score = min(100, int(prospect["relevance_score"]) + 20)
+                cur.execute(
+                    f"""
+                    INSERT INTO goia_opportunity_prospects (
+                        opportunity_id, prospect_id, match_score, reason,
+                        created_at, updated_at
+                    ) VALUES ({", ".join([marker] * 6)})
+                    ON CONFLICT(opportunity_id, prospect_id) DO UPDATE SET
+                        match_score = {marker}, reason = {marker}, updated_at = {marker}
+                    """,
+                    (
+                        opportunity["opportunity_id"],
+                        prospect["prospect_id"],
+                        score,
+                        "structured_kind_and_currency_match",
+                        timestamp,
+                        timestamp,
+                        score,
+                        "structured_kind_and_currency_match",
+                        timestamp,
+                    ),
+                )
+                linked += 1
+        conn.commit()
+        return {"status": "ok", "linked_count": linked, "outreach_triggered": False}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_conn(conn)
+
+
+def list_partner_prospects(
+    *,
+    status: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    if status is not None and status not in {"discovered", "qualified"}:
+        raise GOIARepositoryError("invalid_prospect_status")
+    marker = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        query = "SELECT * FROM goia_partner_prospects"
+        params: tuple[Any, ...]
+        if status:
+            query += f" WHERE status = {marker}"
+            params = (status, max(1, min(int(limit), 500)))
+        else:
+            params = (max(1, min(int(limit), 500)),)
+        query += f" ORDER BY relevance_score DESC, prospect_id ASC LIMIT {marker}"
+        cur.execute(query, params)
+        items = []
+        for row in map(dict, cur.fetchall()):
+            row["signals"] = json.loads(row.pop("signals_json"))
+            row["evidence"] = json.loads(row.pop("evidence_json"))
+            row["outreach_authorized"] = bool(row["outreach_authorized"])
+            row["contact_attempted"] = bool(row["contact_attempted"])
+            items.append(row)
+        return {
+            "status": "ok",
+            "count": len(items),
+            "items": items,
+            "network_access_performed": False,
             "outreach_triggered": False,
         }
     finally:

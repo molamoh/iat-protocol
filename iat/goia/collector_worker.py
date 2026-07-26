@@ -10,6 +10,7 @@ from iat.goia.collector import (
     GOIACollectionError,
     extract_commercial_json_ld,
     extract_native_catalog_candidates,
+    extract_partner_hints,
     extract_sitemap_urls,
     fetch_allowed_document,
 )
@@ -22,9 +23,11 @@ from iat.goia.repository import (
     init_goia_tables,
     recover_stale_collection_jobs,
     refresh_partnership_opportunities,
+    refresh_opportunity_prospect_links,
     schedule_due_quarantine_retries,
     seed_due_catalog_sources,
     store_review_candidates,
+    upsert_partner_hints,
 )
 from iat.goia.autonomous_review import autonomously_review_candidate
 
@@ -81,6 +84,10 @@ def process_one_job() -> dict:
             )
         else:
             candidates = extract_commercial_json_ld(document)
+        partner_result = {"stored_count": 0, "outreach_triggered": False}
+        if job.get("job_type") not in {"catalog_json", "sitemap"}:
+            partner_result = upsert_partner_hints(extract_partner_hints(document))
+            refresh_opportunity_prospect_links()
         candidate_ids = store_review_candidates(
             job_id=job["job_id"],
             provider_id=job["provider_id"],
@@ -103,6 +110,7 @@ def process_one_job() -> dict:
                 "quarantined_count": quarantined_count,
                 "publication_status": "autonomously_reviewed",
                 "review_policy": "goia_autonomous_review_v1",
+                "partner_prospects": partner_result,
             },
         )
         return {
@@ -113,6 +121,7 @@ def process_one_job() -> dict:
             "approved_count": approved_count,
             "quarantined_count": quarantined_count,
             "publication_status": "autonomously_reviewed",
+            "partner_prospect_count": partner_result["stored_count"],
             "recovery": recovery,
             "quarantine_retries": retries,
             "source_discovery": source_discovery,

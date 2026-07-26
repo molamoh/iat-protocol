@@ -425,6 +425,13 @@ def test_worker_never_publishes_candidates_directly(monkeypatch):
         "extract_commercial_json_ld",
         lambda document: [{"name": "candidate", "review_required": True}],
     )
+    monkeypatch.setattr(worker, "extract_partner_hints", lambda document: [])
+    monkeypatch.setattr(
+        worker,
+        "upsert_partner_hints",
+        lambda hints: {"stored_count": 0, "outreach_triggered": False},
+    )
+    monkeypatch.setattr(worker, "refresh_opportunity_prospect_links", lambda: {})
     completed = {}
     monkeypatch.setattr(
         worker,
@@ -451,6 +458,54 @@ def test_worker_never_publishes_candidates_directly(monkeypatch):
     assert result["approved_count"] == 1
     assert completed["result"]["publication_status"] == "autonomously_reviewed"
     assert completed["result"]["candidate_ids"] == ["goc_candidate_001"]
+
+
+def test_extracts_partner_hints_without_accessing_discovered_domain():
+    payload = {
+        "@context": "https://schema.org",
+        "@type": "Service",
+        "name": "Cloud comparison",
+        "offers": [
+            {
+                "@type": "Offer",
+                "price": "12.00",
+                "priceCurrency": "EUR",
+                "seller": {
+                    "@type": "Organization",
+                    "name": "Merchant One",
+                    "url": "https://merchant-one.example/plans",
+                },
+            },
+            {
+                "@type": "Offer",
+                "priceCurrency": "EUR",
+                "seller": {
+                    "name": "Unsafe",
+                    "url": "https://user:secret@unsafe.example/path",
+                },
+            },
+        ],
+    }
+    document = collector.CollectedDocument(
+        url="https://comparison.example/cloud",
+        content_type="text/html",
+        body=(
+            b'<script type="application/ld+json">'
+            + json.dumps(payload).encode()
+            + b"</script>"
+        ),
+        sha256="a" * 64,
+    )
+
+    hints = collector.extract_partner_hints(document)
+
+    assert len(hints) == 1
+    assert hints[0]["domain"] == "merchant-one.example"
+    assert hints[0]["evidence_type"] == "schema_offer_seller"
+    assert hints[0]["kinds"] == ["Service"]
+    assert hints[0]["currencies"] == ["EUR"]
+    assert hints[0]["network_access_performed"] is False
+    assert hints[0]["outreach_authorized"] is False
 
 
 def test_collection_queue_is_idempotent_and_claimed_once(goia_db):

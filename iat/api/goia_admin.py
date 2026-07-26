@@ -18,6 +18,7 @@ from iat.goia.repository import (
     ingest_catalog,
     list_review_candidates,
     list_partnership_opportunities,
+    list_partner_prospects,
     refresh_partnership_opportunities,
     reject_review_candidate,
 )
@@ -111,6 +112,13 @@ def build_goia_admin_router(require_admin: Callable) -> APIRouter:
     ):
         try:
             return list_partnership_opportunities(status=status, limit=limit)
+        except GOIARepositoryError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.get("/partnership/prospects")
+    def partnership_prospects(status: str | None = None, limit: int = 100):
+        try:
+            return list_partner_prospects(status=status, limit=limit)
         except GOIARepositoryError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 

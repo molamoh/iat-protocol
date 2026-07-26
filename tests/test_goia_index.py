@@ -270,3 +270,63 @@ def test_satisfied_low_volume_demand_remains_monitoring(goia_db):
     assert monitoring["count"] == 1
     assert monitoring["items"][0]["unmet_count"] == 0
     assert monitoring["items"][0]["reason"] == "insufficient_gap_evidence"
+
+
+def test_partner_prospect_requires_repeated_structured_evidence(goia_db):
+    base = {
+        "domain": "merchant.example",
+        "name": "Merchant",
+        "url": "https://merchant.example/offer",
+        "source_url": "https://comparison.example/cloud",
+        "source_sha256": "a" * 64,
+        "evidence_type": "schema_offer_seller",
+        "kinds": ["Service"],
+        "currencies": ["EUR"],
+    }
+    first = repository.upsert_partner_hints([base], now=1_000)
+    repository.upsert_partner_hints(
+        [{**base, "source_url": "https://comparison.example/cloud-2", "source_sha256": "b" * 64}],
+        now=1_001,
+    )
+    prospects = repository.list_partner_prospects()
+
+    assert first["network_access_performed"] is False
+    assert first["outreach_triggered"] is False
+    assert prospects["count"] == 1
+    assert prospects["items"][0]["status"] == "qualified"
+    assert prospects["items"][0]["evidence_count"] == 2
+    assert prospects["items"][0]["outreach_authorized"] is False
+    assert prospects["items"][0]["contact_attempted"] is False
+
+
+def test_qualified_prospect_links_to_market_gap_without_outreach(goia_db):
+    for offset in range(5):
+        repository.record_anonymous_demand(
+            query_fingerprint="d" * 64,
+            kind="hosting",
+            country="FR",
+            currency="EUR",
+            result_count=0,
+            now=86_400 + offset,
+        )
+    repository.refresh_partnership_opportunities(days=30, now=86_500)
+    hint = {
+        "domain": "host.example",
+        "name": "Host",
+        "url": "https://host.example/plans",
+        "source_url": "https://comparison.example/a",
+        "source_sha256": "a" * 64,
+        "evidence_type": "schema_offer_seller",
+        "kinds": ["Service"],
+        "currencies": ["EUR"],
+    }
+    repository.upsert_partner_hints([hint], now=86_501)
+    repository.upsert_partner_hints(
+        [{**hint, "source_url": "https://comparison.example/b", "source_sha256": "b" * 64}],
+        now=86_502,
+    )
+
+    linked = repository.refresh_opportunity_prospect_links(now=86_503)
+
+    assert linked["linked_count"] == 1
+    assert linked["outreach_triggered"] is False

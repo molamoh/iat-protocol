@@ -23,6 +23,7 @@ GOIA_USER_AGENT = "GOIABot/0.1 (+https://iat-protocol-latest.onrender.com/.well-
 MAX_DOCUMENT_BYTES = 1_000_000
 MAX_SITEMAP_URLS = 1_000
 MAX_JSON_LD_SCRIPTS = 100
+MAX_PARTNER_HINTS = 500
 ALLOWED_CONTENT_TYPES = {
     "text/html",
     "application/xhtml+xml",
@@ -213,6 +214,82 @@ def _json_ld_nodes(value):
         if graph is not None:
             yield from _json_ld_nodes(graph)
         yield value
+
+
+def _prospect_url(value: object) -> tuple[str, str] | None:
+    raw = str(value or "").strip()
+    if not raw or len(raw) > 2_000:
+        return None
+    parsed = urlparse(raw)
+    hostname = str(parsed.hostname or "").lower().rstrip(".")
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not hostname
+        or parsed.username
+        or parsed.password
+        or parsed.fragment
+    ):
+        return None
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        address = None
+    if address is not None and not address.is_global:
+        return None
+    return raw, hostname
+
+
+def extract_partner_hints(document: CollectedDocument) -> list[dict]:
+    """Extract merchant evidence without fetching or trusting discovered domains."""
+    if document.content_type not in {"text/html", "application/xhtml+xml"}:
+        raise GOIACollectionError("html_document_required")
+    soup = BeautifulSoup(document.body, "html.parser")
+    hints: dict[tuple[str, str], dict] = {}
+    scripts = soup.find_all("script", attrs={"type": "application/ld+json"})
+    for script in scripts[:MAX_JSON_LD_SCRIPTS]:
+        raw = script.string or script.get_text()
+        if not raw or len(raw.encode("utf-8")) > 250_000:
+            continue
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        for node in _json_ld_nodes(payload):
+            node_type = node.get("@type")
+            types = {node_type} if isinstance(node_type, str) else set(node_type or [])
+            commercial_types = types & {"Product", "SoftwareApplication", "Service"}
+            if not commercial_types:
+                continue
+            offers = node.get("offers")
+            offer_items = offers if isinstance(offers, list) else [offers]
+            for offer in offer_items:
+                if not isinstance(offer, dict):
+                    continue
+                seller = offer.get("seller")
+                seller = seller if isinstance(seller, dict) else {}
+                candidate = _prospect_url(seller.get("url")) or _prospect_url(offer.get("url"))
+                if candidate is None:
+                    continue
+                url, domain = candidate
+                name = str(seller.get("name") or "").strip()[:300]
+                currency = str(offer.get("priceCurrency") or "").strip().upper()[:3]
+                evidence_type = "schema_offer_seller" if seller.get("url") else "schema_offer_url"
+                key = (domain, evidence_type)
+                hints[key] = {
+                    "domain": domain,
+                    "name": name,
+                    "url": url,
+                    "source_url": document.url,
+                    "source_sha256": document.sha256,
+                    "evidence_type": evidence_type,
+                    "kinds": sorted(commercial_types),
+                    "currencies": [currency] if len(currency) == 3 else [],
+                    "network_access_performed": False,
+                    "outreach_authorized": False,
+                }
+                if len(hints) >= MAX_PARTNER_HINTS:
+                    return list(hints.values())
+    return list(hints.values())
 
 
 def extract_commercial_json_ld(document: CollectedDocument) -> list[dict]:

@@ -44,5 +44,26 @@ POST /admin/goia/partnership/opportunities/refresh
 GET  /admin/goia/partnership/opportunities
 ```
 
-All responses explicitly report `outreach_triggered: false`. Merchant
-discovery and permission-aware outreach are separate future stages.
+## Evidence-based merchant prospects
+
+On allowlisted comparison pages, GOIA can extract merchant domains exposed by
+Schema.org `Offer.seller.url` or `Offer.url`. The discovered domain is recorded
+as untrusted evidence only:
+
+- GOIA does not fetch or resolve the discovered domain;
+- malformed, credential-bearing, fragmented, and non-HTTP URLs are rejected;
+- repeated independent structured evidence raises a deterministic relevance
+  score;
+- qualified prospects can be linked to qualified market gaps when their
+  Schema.org kind and currency match;
+- evidence is bounded and idempotent.
+
+The audit route is:
+
+```text
+GET /admin/goia/partnership/prospects
+```
+
+All responses explicitly report `outreach_triggered: false`. Prospect rows
+also keep `outreach_authorized` and `contact_attempted` false. Permission-aware
+outreach remains a separate future stage.

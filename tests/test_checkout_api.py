@@ -97,6 +97,51 @@ def test_json_env_rejects_non_object_values(monkeypatch, encoded):
         checkout_api._json_env("IAT_CHECKOUT_ASSETS_JSON")
 
 
+def test_devnet_fixed_usdc_refreshes_only_the_expected_circle_asset(monkeypatch):
+    monkeypatch.setattr(checkout_api.time, "time", lambda: NOW)
+    monkeypatch.setenv("IAT_CHECKOUT_DEVNET_FIXED_USDC_ENABLED", "true")
+    monkeypatch.setenv(
+        "IAT_CHECKOUT_ASSETS_JSON",
+        json.dumps(
+            {
+                "USDC": {
+                    "mint": checkout_api.DEVNET_CIRCLE_USDC_MINT,
+                    "decimals": 6,
+                    "usd_price": "1",
+                    "oracle": checkout_api.DEVNET_FIXED_USDC_ORACLE,
+                    "observed_at": 1,
+                }
+            }
+        ),
+    )
+
+    snapshot = checkout_api._asset_snapshot("usdc")
+
+    assert snapshot.observed_at == NOW
+    assert snapshot.usd_price == 1
+
+
+def test_devnet_fixed_usdc_does_not_refresh_an_unexpected_oracle(monkeypatch):
+    monkeypatch.setattr(checkout_api.time, "time", lambda: NOW)
+    monkeypatch.setenv("IAT_CHECKOUT_DEVNET_FIXED_USDC_ENABLED", "true")
+    monkeypatch.setenv(
+        "IAT_CHECKOUT_ASSETS_JSON",
+        json.dumps(
+            {
+                "USDC": {
+                    "mint": checkout_api.DEVNET_CIRCLE_USDC_MINT,
+                    "decimals": 6,
+                    "usd_price": "1",
+                    "oracle": "untrusted",
+                    "observed_at": 1,
+                }
+            }
+        ),
+    )
+
+    assert checkout_api._asset_snapshot("USDC").observed_at == 1
+
+
 def test_quote_is_persisted_idempotently_and_secret_is_not_stored(checkout_database):
     first = checkout_api.create_universal_quote(
         request(), idempotency_key="checkout-idempotency-0001"

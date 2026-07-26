@@ -62,6 +62,8 @@ from iat.checkout_compensation import (
 
 router = APIRouter(prefix="/payments/v1/universal", tags=["universal-checkout"])
 ACTIVE_STATES = ("quoted", "prepared", "submitted")
+DEVNET_CIRCLE_USDC_MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
+DEVNET_FIXED_USDC_ORACLE = "circle_devnet_smoke"
 _LOCAL_RESERVATION_LOCK = threading.RLock()
 _POSTGRES_RESERVATION_LOCK_ID = 4_280_024_071
 
@@ -319,6 +321,15 @@ def _asset_snapshot(symbol: str) -> AssetSnapshot:
     value = registry.get(normalized)
     if not isinstance(value, dict):
         raise CheckoutRejected("unsupported_input_asset")
+    if (
+        normalized == "USDC"
+        and _bool_env("IAT_CHECKOUT_DEVNET_FIXED_USDC_ENABLED")
+        and str(value.get("mint") or "") == DEVNET_CIRCLE_USDC_MINT
+        and str(value.get("oracle") or "") == DEVNET_FIXED_USDC_ORACLE
+        and decimal_value(value.get("usd_price"), "asset_usd_price") == Decimal("1")
+    ):
+        value = dict(value)
+        value["observed_at"] = int(time.time())
     return AssetSnapshot.from_mapping(normalized, value)
 
 

@@ -1,9 +1,12 @@
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 from pydantic import ValidationError
 import pytest
 
-from iat.api.goia_public import router
+from iat.api.goia_public import (
+    goia_manifest,
+    goia_ranking_policy,
+    validate_search_intent,
+)
+from iat.api.public import public_openapi_schema
 from iat.goia.contracts import (
     MerchantProviderManifest,
     OfferObservation,
@@ -11,12 +14,6 @@ from iat.goia.contracts import (
 )
 from iat.goia.discovery import build_goia_manifest, build_ranking_policy
 from iat.discovery import build_capabilities_document, build_discovery_manifest
-
-
-def _client():
-    app = FastAPI()
-    app.include_router(router)
-    return TestClient(app)
 
 
 def _evidence(*, observed_at=1_785_000_000):
@@ -48,23 +45,24 @@ def _offer(**updates):
     return payload
 
 
-def test_goia_manifest_is_defensively_copied_and_contracts_only():
+def test_goia_manifest_is_defensively_copied_and_local_only():
     first = build_goia_manifest()
     first["capabilities"]["search"] = True
 
     second = build_goia_manifest()
 
-    assert second["product"]["status"] == "contracts_only"
+    assert second["product"]["status"] == "local_index_pilot"
     assert second["capabilities"] == {
-        "search": False,
+        "search": True,
         "crawl": False,
-        "persistence": False,
+        "persistence": True,
+        "index_scope": "controlled_catalogs_only",
         "contract_validation": True,
         "production_side_effects": False,
     }
 
 
-def test_iat_discovery_advertises_goia_without_claiming_search():
+def test_iat_discovery_advertises_only_controlled_local_search():
     manifest = build_discovery_manifest()
     capability = next(
         item
@@ -72,10 +70,12 @@ def test_iat_discovery_advertises_goia_without_claiming_search():
         if item["id"] == "goia_commercial_discovery_contracts"
     )
 
-    assert manifest["goia"]["status"] == "contracts_only"
-    assert manifest["goia"]["search_available"] is False
+    assert manifest["goia"]["status"] == "local_index_pilot"
+    assert manifest["goia"]["search_available"] is True
+    assert manifest["goia"]["crawl_available"] is False
     assert capability["contract_validation"] is True
-    assert capability["search_available"] is False
+    assert capability["search_available"] is True
+    assert capability["index_scope"] == "controlled_catalogs_only"
 
 
 def test_search_intent_defaults_to_france_euro_and_forbids_unknown_fields():
@@ -162,22 +162,25 @@ def test_ranking_policy_excludes_all_commercial_inputs():
 
 
 def test_public_contract_routes_validate_without_side_effects():
-    client = _client()
-
-    manifest = client.get("/.well-known/goia.json")
-    validated = client.post(
-        "/goia/v1/contracts/search-intent/validate",
-        json={
-            "query": "hébergement européen pour une API",
-            "kind": "hosting",
-            "maximum_total_price": "50",
-        },
+    manifest = goia_manifest()
+    validated = validate_search_intent(
+        SearchIntent(
+            query="hébergement européen pour une API",
+            kind="hosting",
+            maximum_total_price="50",
+        )
     )
-    policy = client.get("/goia/v1/policies/ranking")
+    policy = goia_ranking_policy()
 
-    assert manifest.status_code == 200
-    assert validated.status_code == 200
-    assert validated.json()["normalized"]["country"] == "FR"
-    assert validated.json()["production_side_effects"] is False
-    assert policy.status_code == 200
-    assert policy.json()["commission_changes_organic_rank"] is False
+    assert manifest["product"]["name"] == "GOIA"
+    assert validated["normalized"]["country"] == "FR"
+    assert validated["production_side_effects"] is False
+    assert policy["commission_changes_organic_rank"] is False
+
+
+def test_public_openapi_contains_goia_local_search():
+    public_openapi_schema.cache_clear()
+    schema = public_openapi_schema()
+
+    assert "/goia/v1/search" in schema["paths"]
+    assert "/admin/goia/catalogs/ingest" not in schema["paths"]

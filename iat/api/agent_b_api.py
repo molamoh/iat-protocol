@@ -43,6 +43,7 @@ from iat.api.growth_api import build_growth_router
 from iat.api.decision_api import build_decision_router
 from iat.api.growth_public import router as growth_public_router
 from iat.api.goia_public import router as goia_public_router
+from iat.api.goia_admin import build_goia_admin_router
 from iat.api.checkout_api import init_checkout_db, router as checkout_router
 from iat.checkout_delivery import (
     delivery_dashboard,
@@ -329,6 +330,7 @@ def require_admin(
 
 app.include_router(build_growth_router(require_admin))
 app.include_router(build_decision_router(require_admin))
+app.include_router(build_goia_admin_router(require_admin))
 
 
 def enforce_foundation_agent_authority(
@@ -11667,6 +11669,9 @@ def runtime_heartbeat_governance_loop():
 def initialize_application():
     init_db()
     init_checkout_db()
+    from iat.goia.repository import init_goia_tables
+
+    init_goia_tables()
     if start_checkout_delivery_worker():
         print("[IAT] Universal checkout delivery worker started")
     from iat.growth import init_growth_tables, start_growth_loop

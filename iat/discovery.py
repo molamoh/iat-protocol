@@ -82,9 +82,11 @@ _MANIFEST: dict[str, Any] = {
         "validate_search_intent": "/goia/v1/contracts/search-intent/validate",
         "validate_offer_observation": "/goia/v1/contracts/offer-observation/validate",
         "validate_provider": "/goia/v1/contracts/provider/validate",
-        "status": "contracts_only",
-        "search_available": False,
+        "search": "/goia/v1/search",
+        "status": "local_index_pilot",
+        "search_available": True,
         "crawl_available": False,
+        "index_scope": "controlled_catalogs_only",
         "production_side_effects": False,
     },
     "settlement": {
@@ -204,8 +206,9 @@ def build_capabilities_document() -> dict[str, Any]:
                 "stability": "experimental",
                 "autonomous": True,
                 "contract_validation": True,
-                "search_available": False,
+                "search_available": True,
                 "crawl_available": False,
+                "index_scope": "controlled_catalogs_only",
                 "production_side_effects": False,
             },
         ],
@@ -252,6 +255,7 @@ execute an order, verify a result, and settle payment under explicit policies.
 - Hybrid payment quote: `POST /payments/v1/universal/quote`
 - Authenticated invitation response: `POST /growth/v1/respond`
 - GOIA machine manifest: `/.well-known/goia.json`
+- GOIA controlled local search: `POST /goia/v1/search`
 - GOIA organic ranking policy: `/goia/v1/policies/ranking`
 
 ## Production buyer flow

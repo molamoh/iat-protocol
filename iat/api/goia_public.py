@@ -8,6 +8,7 @@ from iat.goia.contracts import (
     SearchIntent,
 )
 from iat.goia.discovery import build_goia_manifest, build_ranking_policy
+from iat.goia.search import search_local_index
 
 
 router = APIRouter(tags=["goia"])
@@ -51,3 +52,8 @@ def validate_provider_manifest(payload: MerchantProviderManifest):
 @router.get("/goia/v1/policies/ranking")
 def goia_ranking_policy():
     return build_ranking_policy()
+
+
+@router.post("/goia/v1/search")
+def goia_local_search(payload: SearchIntent):
+    return search_local_index(payload)

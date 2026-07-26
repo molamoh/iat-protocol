@@ -7,8 +7,13 @@ applicatif ni du déploiement.
 
 Mise à jour du 26 juillet 2026 : la phase 1 a commencé après l'audit. Les
 contrats GOIA v1, le manifeste machine, la politique d'impartialité et leurs
-routes de validation sans effets externes sont maintenant implémentés. La
-recherche, le crawling et la persistance GOIA restent explicitement désactivés.
+routes de validation sans effets externes ont été implémentés. À ce jalon, la
+recherche, le crawling et la persistance GOIA étaient explicitement désactivés.
+
+Mise à jour phase 2 : un index local pilote séparé, une ingestion administrative
+de catalogues contrôlés et une recherche organique locale sont implémentés. La
+recherche n'effectue aucun accès réseau, les résultats sponsorisés sont exclus
+du classement organique et le crawling reste explicitement désactivé.
 
 ## 1. Résumé exécutif
 

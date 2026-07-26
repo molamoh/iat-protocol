@@ -384,6 +384,7 @@ def sandbox_feedback(order_id: str, payload: SandboxFeedbackRequest):
 def public_openapi_schema() -> dict:
     from iat.api.growth_public import router as growth_public_router
     from iat.api.checkout_api import router as checkout_router
+    from iat.api.goia_public import router as goia_public_router
 
     return get_openapi(
         title="IAT Protocol Public API",
@@ -391,9 +392,16 @@ def public_openapi_schema() -> dict:
         description=(
             "Stable machine-discovery and isolated buyer sandbox contract. "
             "Sandbox routes never move funds or call production suppliers. "
-            "Growth responses require invitation-scoped authentication."
+            "Growth responses require invitation-scoped authentication. "
+            "GOIA search uses only the controlled local index and performs no "
+            "network access."
         ),
-        routes=[*router.routes, *growth_public_router.routes, *checkout_router.routes],
+        routes=[
+            *router.routes,
+            *growth_public_router.routes,
+            *goia_public_router.routes,
+            *checkout_router.routes,
+        ],
     )
 
 

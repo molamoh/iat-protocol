@@ -16,7 +16,7 @@ _GOIA_MANIFEST: dict[str, Any] = {
     "product": {
         "name": "GOIA",
         "positioning": "commercial discovery powered by IAT Protocol",
-        "status": "contracts_only",
+        "status": "local_index_pilot",
         "pilot": {
             "kinds": ["software", "api", "hosting", "digital_service"],
             "country": "FR",
@@ -29,11 +29,15 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "validate_offer": "/goia/v1/contracts/offer-observation/validate",
         "validate_provider": "/goia/v1/contracts/provider/validate",
         "ranking_policy": "/goia/v1/policies/ranking",
+        "search": "/goia/v1/search",
+        "catalog_ingest": "/admin/goia/catalogs/ingest",
+        "index_stats": "/admin/goia/index/stats",
     },
     "capabilities": {
-        "search": False,
+        "search": True,
         "crawl": False,
-        "persistence": False,
+        "persistence": True,
+        "index_scope": "controlled_catalogs_only",
         "contract_validation": True,
         "production_side_effects": False,
     },
@@ -43,6 +47,7 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "prices_require_timestamped_evidence",
         "external_content_is_untrusted_data",
         "validation_never_triggers_network_access",
+        "local_search_never_triggers_network_access",
         "checkout_devnet_is_unchanged",
     ],
 }

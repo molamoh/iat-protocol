@@ -47,6 +47,12 @@ Mise à jour catalogue natif : les marchands peuvent publier un catalogue
 fraîcheur, prix, devise, disponibilité et domaine, puis lie chaque observation
 au hash exact du catalogue avant publication autonome.
 
+Mise à jour intelligence partenariats : les recherches locales alimentent des
+signaux de demande agrégés sans requête brute ni identité acheteur. GOIA mesure
+le ratio de demandes non satisfaites et la rareté des offres, puis maintient
+des opportunités `monitoring` ou `qualified`. Cette étape ne déclenche aucun
+outreach.
+
 ## 1. Résumé exécutif
 
 IAT Protocol possède déjà une base substantielle pour devenir l'infrastructure

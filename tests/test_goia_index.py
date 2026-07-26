@@ -194,3 +194,79 @@ def test_unsupported_requirements_fail_explicitly_without_search(goia_db):
     assert result["status"] == "unsupported_constraints"
     assert result["search_performed"] is False
     assert result["unsupported_attributes"] == ["monthly_requests"]
+
+
+def test_search_aggregates_demand_without_raw_query_or_buyer_identity(goia_db):
+    intent = SearchIntent(
+        query="service extrêmement spécifique et confidentiel",
+        kind="digital_service",
+    )
+
+    first = search_local_index(intent, now=86_400)
+    second = search_local_index(intent, now=86_401)
+    stats = repository.demand_signal_stats(days=30, now=86_401)
+
+    assert first["anonymous_demand_aggregated"] is True
+    assert second["anonymous_demand_aggregated"] is True
+    assert stats["markets"][0]["demand_count"] == 2
+    assert stats["markets"][0]["unmet_count"] == 2
+    assert stats["privacy"] == {
+        "buyer_identity_stored": False,
+        "raw_query_stored": False,
+        "query_fingerprint_only": True,
+    }
+
+    connection = sqlite3.connect(goia_db)
+    stored = connection.execute(
+        "SELECT query_fingerprint FROM goia_demand_signals"
+    ).fetchone()[0]
+    connection.close()
+    assert len(stored) == 64
+    assert "confidentiel" not in stored
+
+
+def test_unmet_demand_creates_ranked_partnership_opportunity(goia_db):
+    fingerprint = "f" * 64
+    for offset in range(5):
+        repository.record_anonymous_demand(
+            query_fingerprint=fingerprint,
+            kind="hosting",
+            country="FR",
+            currency="EUR",
+            result_count=0,
+            now=86_400 + offset,
+        )
+
+    refreshed = repository.refresh_partnership_opportunities(
+        days=30,
+        now=86_500,
+    )
+    opportunities = repository.list_partnership_opportunities(status="qualified")
+
+    assert refreshed["qualified_count"] == 1
+    assert refreshed["outreach_triggered"] is False
+    assert opportunities["count"] == 1
+    opportunity = opportunities["items"][0]
+    assert opportunity["kind"] == "hosting"
+    assert opportunity["gap_score"] >= 60
+    assert opportunity["evidence"]["raw_queries_included"] is False
+    assert opportunity["evidence"]["buyer_identity_included"] is False
+    assert opportunities["outreach_triggered"] is False
+
+
+def test_satisfied_low_volume_demand_remains_monitoring(goia_db):
+    repository.record_anonymous_demand(
+        query_fingerprint="e" * 64,
+        kind="api",
+        country="FR",
+        currency="EUR",
+        result_count=3,
+        now=86_400,
+    )
+
+    repository.refresh_partnership_opportunities(days=30, now=86_500)
+    monitoring = repository.list_partnership_opportunities(status="monitoring")
+
+    assert monitoring["count"] == 1
+    assert monitoring["items"][0]["unmet_count"] == 0
+    assert monitoring["items"][0]["reason"] == "insufficient_gap_evidence"

@@ -207,6 +207,50 @@ def init_goia_tables() -> None:
             ON goia_collection_jobs(status, created_at)
             """
         )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS goia_demand_signals (
+                signal_key TEXT PRIMARY KEY,
+                period_day INTEGER NOT NULL,
+                query_fingerprint TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                country TEXT NOT NULL,
+                currency TEXT NOT NULL,
+                request_count INTEGER NOT NULL,
+                satisfied_count INTEGER NOT NULL,
+                unmet_count INTEGER NOT NULL,
+                matched_result_count INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_goia_demand_period_market
+            ON goia_demand_signals(period_day, kind, country, currency)
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS goia_partnership_opportunities (
+                opportunity_id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                country TEXT NOT NULL,
+                currency TEXT NOT NULL,
+                demand_count INTEGER NOT NULL,
+                unmet_count INTEGER NOT NULL,
+                current_offer_count INTEGER NOT NULL,
+                gap_score INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                evidence_json TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(kind, country, currency)
+            )
+            """
+        )
         conn.commit()
     finally:
         release_conn(conn)
@@ -1015,6 +1059,276 @@ def recover_stale_collection_jobs(
     except Exception:
         conn.rollback()
         raise
+    finally:
+        release_conn(conn)
+
+
+def record_anonymous_demand(
+    *,
+    query_fingerprint: str,
+    kind: str,
+    country: str,
+    currency: str,
+    result_count: int,
+    now: int | None = None,
+) -> dict[str, Any]:
+    timestamp = int(now or time.time())
+    period_day = timestamp // 86_400
+    satisfied = int(result_count > 0)
+    unmet = int(result_count == 0)
+    signal_key = hashlib.sha256(
+        f"{period_day}:{query_fingerprint}:{kind}:{country}:{currency}".encode()
+    ).hexdigest()
+    marker = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"""
+            INSERT INTO goia_demand_signals (
+                signal_key, period_day, query_fingerprint, kind, country,
+                currency, request_count, satisfied_count, unmet_count,
+                matched_result_count, created_at, updated_at
+            ) VALUES ({", ".join([marker] * 12)})
+            ON CONFLICT(signal_key) DO UPDATE SET
+                request_count = goia_demand_signals.request_count + 1,
+                satisfied_count = goia_demand_signals.satisfied_count + {marker},
+                unmet_count = goia_demand_signals.unmet_count + {marker},
+                matched_result_count = goia_demand_signals.matched_result_count + {marker},
+                updated_at = {marker}
+            """,
+            (
+                signal_key,
+                period_day,
+                query_fingerprint,
+                kind,
+                country,
+                currency,
+                1,
+                satisfied,
+                unmet,
+                max(0, int(result_count)),
+                timestamp,
+                timestamp,
+                satisfied,
+                unmet,
+                max(0, int(result_count)),
+                timestamp,
+            ),
+        )
+        conn.commit()
+        return {
+            "signal_key": signal_key,
+            "period_day": period_day,
+            "aggregated": True,
+            "raw_query_stored": False,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_conn(conn)
+
+
+def demand_signal_stats(*, days: int = 30, now: int | None = None) -> dict[str, Any]:
+    timestamp = int(now or time.time())
+    minimum_day = timestamp // 86_400 - max(1, min(int(days), 365)) + 1
+    marker = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"""
+            SELECT kind, country, currency,
+                   SUM(request_count) AS demand_count,
+                   SUM(satisfied_count) AS satisfied_count,
+                   SUM(unmet_count) AS unmet_count,
+                   SUM(matched_result_count) AS matched_result_count
+            FROM goia_demand_signals
+            WHERE period_day >= {marker}
+            GROUP BY kind, country, currency
+            ORDER BY unmet_count DESC, demand_count DESC, kind ASC
+            """,
+            (minimum_day,),
+        )
+        markets = [dict(item) for item in cur.fetchall()]
+        return {
+            "status": "ok",
+            "days": max(1, min(int(days), 365)),
+            "markets": markets,
+            "privacy": {
+                "buyer_identity_stored": False,
+                "raw_query_stored": False,
+                "query_fingerprint_only": True,
+            },
+        }
+    finally:
+        release_conn(conn)
+
+
+def refresh_partnership_opportunities(
+    *,
+    days: int = 30,
+    now: int | None = None,
+) -> dict[str, Any]:
+    timestamp = int(now or time.time())
+    demand = demand_signal_stats(days=days, now=timestamp)["markets"]
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        marker = qmark()
+        cur.execute(
+            f"""
+            SELECT o.kind, o.currency, o.merchant_id, o.offer_id, m.manifest_json
+            FROM goia_offer_observations o
+            JOIN goia_merchants m ON m.provider_id = o.merchant_id
+            WHERE o.expires_at > {marker}
+              AND o.availability IN ('available', 'limited')
+              AND o.sponsored = 0
+            """,
+            (timestamp,),
+        )
+        offer_rows = [dict(item) for item in cur.fetchall()]
+    finally:
+        release_conn(conn)
+
+    coverage: dict[tuple[str, str, str], set[tuple[str, str]]] = {}
+    for row in offer_rows:
+        manifest = json.loads(row["manifest_json"])
+        for country in manifest.get("countries") or []:
+            key = (row["kind"], country, row["currency"])
+            coverage.setdefault(key, set()).add((row["merchant_id"], row["offer_id"]))
+
+    refreshed = []
+    marker = qmark()
+    for market in demand:
+        key = (market["kind"], market["country"], market["currency"])
+        offer_count = len(coverage.get(key, set()))
+        demand_count = int(market["demand_count"])
+        unmet_count = int(market["unmet_count"])
+        unmet_ratio = unmet_count / max(1, demand_count)
+        scarcity = max(0, 10 - offer_count)
+        gap_score = min(
+            100,
+            round(unmet_ratio * 60 + min(demand_count, 20) + scarcity * 2),
+        )
+        status = "qualified" if gap_score >= 60 else "monitoring"
+        reason = (
+            "high_unmet_demand_and_low_offer_coverage"
+            if status == "qualified"
+            else "insufficient_gap_evidence"
+        )
+        opportunity_id = "gpo_" + hashlib.sha256(":".join(key).encode()).hexdigest()[:32]
+        evidence = {
+            "window_days": max(1, min(int(days), 365)),
+            "demand_count": demand_count,
+            "unmet_count": unmet_count,
+            "unmet_ratio": round(unmet_ratio, 6),
+            "current_offer_count": offer_count,
+            "raw_queries_included": False,
+            "buyer_identity_included": False,
+        }
+        evidence_json = _canonical_json(evidence)
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f"""
+                INSERT INTO goia_partnership_opportunities (
+                    opportunity_id, kind, country, currency, demand_count,
+                    unmet_count, current_offer_count, gap_score, status,
+                    reason, evidence_json, created_at, updated_at
+                ) VALUES ({", ".join([marker] * 13)})
+                ON CONFLICT(opportunity_id) DO UPDATE SET
+                    demand_count = {marker}, unmet_count = {marker},
+                    current_offer_count = {marker}, gap_score = {marker},
+                    status = {marker}, reason = {marker},
+                    evidence_json = {marker}, updated_at = {marker}
+                """,
+                (
+                    opportunity_id,
+                    *key,
+                    demand_count,
+                    unmet_count,
+                    offer_count,
+                    gap_score,
+                    status,
+                    reason,
+                    evidence_json,
+                    timestamp,
+                    timestamp,
+                    demand_count,
+                    unmet_count,
+                    offer_count,
+                    gap_score,
+                    status,
+                    reason,
+                    evidence_json,
+                    timestamp,
+                ),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            release_conn(conn)
+        refreshed.append(
+            {
+                "opportunity_id": opportunity_id,
+                "status": status,
+                "gap_score": gap_score,
+            }
+        )
+    return {
+        "status": "ok",
+        "refreshed_count": len(refreshed),
+        "qualified_count": sum(item["status"] == "qualified" for item in refreshed),
+        "items": refreshed,
+        "outreach_triggered": False,
+    }
+
+
+def list_partnership_opportunities(
+    *,
+    status: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    if status is not None and status not in {"monitoring", "qualified"}:
+        raise GOIARepositoryError("invalid_opportunity_status")
+    marker = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        if status is None:
+            cur.execute(
+                f"""
+                SELECT * FROM goia_partnership_opportunities
+                ORDER BY gap_score DESC, opportunity_id ASC
+                LIMIT {marker}
+                """,
+                (max(1, min(int(limit), 500)),),
+            )
+        else:
+            cur.execute(
+                f"""
+                SELECT * FROM goia_partnership_opportunities
+                WHERE status = {marker}
+                ORDER BY gap_score DESC, opportunity_id ASC
+                LIMIT {marker}
+                """,
+                (status, max(1, min(int(limit), 500))),
+            )
+        items = []
+        for row in map(dict, cur.fetchall()):
+            row["evidence"] = json.loads(row.pop("evidence_json"))
+            items.append(row)
+        return {
+            "status": "ok",
+            "count": len(items),
+            "items": items,
+            "outreach_triggered": False,
+        }
     finally:
         release_conn(conn)
 

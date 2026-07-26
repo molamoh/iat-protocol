@@ -33,6 +33,8 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "search": "/goia/v1/search",
         "catalog_ingest": "/admin/goia/catalogs/ingest",
         "index_stats": "/admin/goia/index/stats",
+        "demand_stats": "/admin/goia/demand/stats",
+        "partnership_opportunities": "/admin/goia/partnership/opportunities",
         "collection_enqueue": "/admin/goia/collection/jobs",
         "collection_stats": "/admin/goia/collection/stats",
         "review_candidates": "/admin/goia/review/candidates",
@@ -55,7 +57,10 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "persistence": True,
         "index_scope": "controlled_catalogs_only",
         "contract_validation": True,
-        "production_side_effects": False,
+        "external_side_effects": False,
+        "funds_side_effects": False,
+        "anonymous_demand_aggregation": True,
+        "autonomous_partnership_gap_detection": True,
     },
     "invariants": [
         "organic_ranking_never_uses_commission",
@@ -72,6 +77,8 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "provider_sitemaps_seed_once_per_refresh_window",
         "sitemap_expansion_is_bounded_and_same_domain",
         "checkout_devnet_is_unchanged",
+        "demand_signals_never_store_raw_queries_or_buyer_identity",
+        "partnership_gap_detection_never_triggers_outreach",
     ],
 }
 

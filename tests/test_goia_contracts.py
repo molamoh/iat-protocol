@@ -70,7 +70,10 @@ def test_goia_manifest_is_defensively_copied_and_local_only():
         "persistence": True,
         "index_scope": "controlled_catalogs_only",
         "contract_validation": True,
-        "production_side_effects": False,
+        "external_side_effects": False,
+        "funds_side_effects": False,
+        "anonymous_demand_aggregation": True,
+        "autonomous_partnership_gap_detection": True,
     }
 
 
@@ -91,6 +94,8 @@ def test_iat_discovery_advertises_only_controlled_local_search():
     assert manifest["goia"]["human_operation_required"] is False
     assert manifest["goia"]["autonomous_recovery"] is True
     assert manifest["goia"]["autonomous_provider_source_discovery"] is True
+    assert manifest["goia"]["anonymous_demand_aggregation"] is True
+    assert manifest["goia"]["outreach_triggered"] is False
     assert capability["contract_validation"] is True
     assert capability["search_available"] is True
     assert capability["collection_enabled_by_default"] is False
@@ -98,6 +103,8 @@ def test_iat_discovery_advertises_only_controlled_local_search():
     assert capability["human_operation_required"] is False
     assert capability["autonomous_recovery"] is True
     assert capability["autonomous_provider_source_discovery"] is True
+    assert capability["autonomous_partnership_gap_detection"] is True
+    assert capability["outreach_triggered"] is False
     assert capability["index_scope"] == "controlled_catalogs_only"
 
 

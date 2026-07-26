@@ -11,11 +11,14 @@ from iat.goia.contracts import MerchantProviderManifest, OfferObservation
 from iat.goia.repository import (
     GOIARepositoryError,
     collection_job_stats,
+    demand_signal_stats,
     approve_review_candidate,
     enqueue_collection_job,
     goia_index_stats,
     ingest_catalog,
     list_review_candidates,
+    list_partnership_opportunities,
+    refresh_partnership_opportunities,
     reject_review_candidate,
 )
 from iat.goia.collector import GOIACollectionError, validate_collection_url
@@ -92,6 +95,24 @@ def build_goia_admin_router(require_admin: Callable) -> APIRouter:
     @router.get("/collection/stats")
     def collection_stats():
         return collection_job_stats()
+
+    @router.get("/demand/stats")
+    def demand_stats(days: int = 30):
+        return demand_signal_stats(days=days)
+
+    @router.post("/partnership/opportunities/refresh")
+    def refresh_opportunities(days: int = 30):
+        return refresh_partnership_opportunities(days=days)
+
+    @router.get("/partnership/opportunities")
+    def partnership_opportunities(
+        status: str | None = None,
+        limit: int = 100,
+    ):
+        try:
+            return list_partnership_opportunities(status=status, limit=limit)
+        except GOIARepositoryError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.get("/review/candidates")
     def review_candidates(status: str = "pending_review", limit: int = 100):

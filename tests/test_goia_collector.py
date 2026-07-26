@@ -398,6 +398,11 @@ def test_worker_never_publishes_candidates_directly(monkeypatch):
     )
     monkeypatch.setattr(
         worker,
+        "refresh_partnership_opportunities",
+        lambda: {"status": "ok", "refreshed_count": 0},
+    )
+    monkeypatch.setattr(
+        worker,
         "claim_collection_job",
         lambda: {
             "job_id": "goj_test",
@@ -887,6 +892,11 @@ def test_worker_expands_sitemap_without_treating_it_as_product(monkeypatch):
     monkeypatch.setattr(worker, "recover_stale_collection_jobs", lambda: maintenance)
     monkeypatch.setattr(worker, "schedule_due_quarantine_retries", lambda: maintenance)
     monkeypatch.setattr(worker, "seed_due_catalog_sources", lambda: maintenance)
+    monkeypatch.setattr(
+        worker,
+        "refresh_partnership_opportunities",
+        lambda: maintenance,
+    )
     monkeypatch.setattr(
         worker,
         "claim_collection_job",

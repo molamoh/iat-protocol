@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import time
 from decimal import Decimal
 from typing import Any
 
 from iat.goia.contracts import SearchIntent
-from iat.goia.repository import list_current_observations
+from iat.goia.repository import list_current_observations, record_anonymous_demand
 
 
 _TOKEN = re.compile(r"[a-zA-ZÀ-ÿ0-9]{2,}")
@@ -26,6 +27,24 @@ def _countries(manifest_json: str) -> set[str]:
         return set()
 
 
+def _record_demand(intent: SearchIntent, *, result_count: int, now: int) -> bool:
+    normalized_query = " ".join(sorted(_tokens(intent.query)))
+    fingerprint = hashlib.sha256(normalized_query.encode()).hexdigest()
+    try:
+        record_anonymous_demand(
+            query_fingerprint=fingerprint,
+            kind=intent.kind,
+            country=intent.country,
+            currency=intent.currency,
+            result_count=result_count,
+            now=now,
+        )
+        return True
+    except Exception:
+        # Search availability is independent from anonymous market analytics.
+        return False
+
+
 def search_local_index(
     intent: SearchIntent,
     *,
@@ -33,6 +52,7 @@ def search_local_index(
 ) -> dict[str, Any]:
     timestamp = int(now or time.time())
     if intent.required or intent.preferred:
+        analytics_recorded = _record_demand(intent, result_count=0, now=timestamp)
         return {
             "status": "unsupported_constraints",
             "index": "local",
@@ -46,6 +66,7 @@ def search_local_index(
                     for requirement in [*intent.required, *intent.preferred]
                 }
             ),
+            "anonymous_demand_aggregated": analytics_recorded,
             "as_of": timestamp,
         }
     maximum = (
@@ -120,6 +141,11 @@ def search_local_index(
     results = eligible[: intent.result_limit]
     for index, result in enumerate(results, start=1):
         result["organic_rank"] = index
+    analytics_recorded = _record_demand(
+        intent,
+        result_count=len(results),
+        now=timestamp,
+    )
     return {
         "status": "ok",
         "index": "local",
@@ -127,6 +153,7 @@ def search_local_index(
         "network_access": False,
         "result_count": len(results),
         "results": results,
+        "anonymous_demand_aggregated": analytics_recorded,
         "policy": {
             "version": "goia_organic_ranking_v1",
             "commission_changes_organic_rank": False,

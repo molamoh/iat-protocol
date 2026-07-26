@@ -37,6 +37,11 @@ leases récupérables et un plafond d'essais. Les candidats en quarantaine sont
 recollectés avec un backoff exponentiel borné, puis passent en
 `quarantine_exhausted` après trois échecs sans bloquer les autres recherches.
 
+Mise à jour découverte autonome : GOIA amorce désormais les sitemaps déclarés
+par les marchands selon leur fenêtre de fraîcheur. Les sitemaps prioritaires
+produisent un nombre borné de jobs enfants, idempotents et limités aux domaines
+autorisés. Aucun moteur de recherche privé n'est utilisé.
+
 ## 1. Résumé exécutif
 
 IAT Protocol possède déjà une base substantielle pour devenir l'infrastructure

@@ -298,6 +298,11 @@ def test_worker_never_publishes_candidates_directly(monkeypatch):
     )
     monkeypatch.setattr(
         worker,
+        "seed_due_catalog_sources",
+        lambda: {"status": "ok", "seeded_count": 0},
+    )
+    monkeypatch.setattr(
+        worker,
         "claim_collection_job",
         lambda: {
             "job_id": "goj_test",
@@ -433,11 +438,21 @@ def test_phase_three_collection_jobs_are_migrated_fail_closed(tmp_path, monkeypa
 
     conn = sqlite3.connect(database)
     migrated = conn.execute(
-        "SELECT provider_id, status, error_code FROM goia_collection_jobs"
+        """
+        SELECT provider_id, job_type, parent_job_id, priority, status, error_code
+        FROM goia_collection_jobs
+        """
     ).fetchone()
     conn.close()
 
-    assert migrated == (None, "failed", "legacy_job_missing_provider")
+    assert migrated == (
+        None,
+        "page",
+        None,
+        50,
+        "failed",
+        "legacy_job_missing_provider",
+    )
 
 
 def _pending_candidate():
@@ -672,3 +687,108 @@ def test_stale_worker_leases_are_recovered_then_exhausted(goia_db):
     assert recovered_two["recovered_count"] == 1
     assert exhausted["exhausted_count"] == 1
     assert repository.collection_job_stats()["jobs"]["failed"] == 1
+
+
+def test_catalog_sources_seed_once_per_refresh_window(goia_db):
+    repository.upsert_merchant(_provider(), now=900)
+
+    first = repository.seed_due_catalog_sources(now=7_200)
+    duplicate = repository.seed_due_catalog_sources(now=7_201)
+    next_window = repository.seed_due_catalog_sources(now=10_800)
+
+    assert first["seeded_count"] == 1
+    assert duplicate["seeded_count"] == 0
+    assert next_window["seeded_count"] == 1
+    claimed = repository.claim_collection_job(now=10_801)
+    assert claimed["job_type"] == "sitemap"
+    assert claimed["priority"] == 100
+
+
+def test_sitemap_pages_are_bounded_parented_and_idempotent(goia_db):
+    repository.upsert_merchant(_provider(), now=900)
+    seeded = repository.seed_due_catalog_sources(now=7_200)
+    sitemap = repository.claim_collection_job(now=7_201)
+    assert sitemap["job_id"] == seeded["seeded"][0]["job_id"]
+    urls = [
+        f"https://merchant.example/product-{index}"
+        for index in range(150)
+    ]
+
+    first = repository.enqueue_sitemap_pages(
+        sitemap_job=sitemap,
+        urls=urls,
+        now=7_202,
+        limit=100,
+    )
+    duplicate = repository.enqueue_sitemap_pages(
+        sitemap_job=sitemap,
+        urls=urls,
+        now=7_203,
+        limit=100,
+    )
+
+    assert first["created_count"] == 100
+    assert first["truncated"] is True
+    assert duplicate["created_count"] == 0
+    assert duplicate["duplicate_count"] == 100
+    page = repository.claim_collection_job(now=7_204)
+    assert page["job_type"] == "page"
+    assert page["parent_job_id"] == sitemap["job_id"]
+    assert page["priority"] == 50
+
+
+def test_worker_expands_sitemap_without_treating_it_as_product(monkeypatch):
+    maintenance = {"status": "ok"}
+    monkeypatch.setattr(worker, "recover_stale_collection_jobs", lambda: maintenance)
+    monkeypatch.setattr(worker, "schedule_due_quarantine_retries", lambda: maintenance)
+    monkeypatch.setattr(worker, "seed_due_catalog_sources", lambda: maintenance)
+    monkeypatch.setattr(
+        worker,
+        "claim_collection_job",
+        lambda: {
+            "job_id": "goj_sitemap",
+            "provider_id": "gop_provider_001",
+            "url": "https://merchant.example/sitemap.xml",
+            "job_type": "sitemap",
+        },
+    )
+    monkeypatch.setattr(
+        worker,
+        "fetch_allowed_document",
+        lambda url: collector.CollectedDocument(
+            url=url,
+            content_type="application/xml",
+            body=b"<urlset/>",
+            sha256="f" * 64,
+        ),
+    )
+    monkeypatch.setattr(
+        worker,
+        "extract_sitemap_urls",
+        lambda document: [
+            "https://merchant.example/product-1",
+            "https://merchant.example/product-2",
+        ],
+    )
+    monkeypatch.setattr(
+        worker,
+        "enqueue_sitemap_pages",
+        lambda **kwargs: {
+            "created_count": 2,
+            "duplicate_count": 0,
+            "job_ids": ["goj_page_1", "goj_page_2"],
+        },
+    )
+    completed = {}
+    monkeypatch.setattr(
+        worker,
+        "complete_collection_job",
+        lambda job_id, result: completed.update(job_id=job_id, result=result),
+    )
+
+    result = worker.process_one_job()
+
+    assert result["job_type"] == "sitemap"
+    assert result["discovered_url_count"] == 2
+    assert result["page_jobs_created"] == 2
+    assert completed["result"]["publication_status"] == "discovery_only"

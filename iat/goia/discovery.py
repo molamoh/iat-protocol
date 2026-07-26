@@ -48,6 +48,9 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "emergency_admin_override_supported": True,
         "autonomous_stale_lease_recovery": True,
         "autonomous_quarantine_retries": 3,
+        "autonomous_provider_source_discovery": True,
+        "supported_source_types": ["sitemap"],
+        "sitemap_page_job_limit": 100,
         "persistence": True,
         "index_scope": "controlled_catalogs_only",
         "contract_validation": True,
@@ -65,6 +68,8 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "review_evidence_must_match_collected_url_and_hash",
         "abandoned_jobs_are_recovered_with_bounded_leases",
         "quarantines_retry_with_bounded_exponential_backoff",
+        "provider_sitemaps_seed_once_per_refresh_window",
+        "sitemap_expansion_is_bounded_and_same_domain",
         "checkout_devnet_is_unchanged",
     ],
 }

@@ -9,15 +9,19 @@ import time
 from iat.goia.collector import (
     GOIACollectionError,
     extract_commercial_json_ld,
+    extract_sitemap_urls,
     fetch_allowed_document,
 )
 from iat.goia.repository import (
+    GOIARepositoryError,
     claim_collection_job,
     complete_collection_job,
+    enqueue_sitemap_pages,
     fail_collection_job,
     init_goia_tables,
     recover_stale_collection_jobs,
     schedule_due_quarantine_retries,
+    seed_due_catalog_sources,
     store_review_candidates,
 )
 from iat.goia.autonomous_review import autonomously_review_candidate
@@ -30,11 +34,40 @@ def collection_enabled() -> bool:
 def process_one_job() -> dict:
     recovery = recover_stale_collection_jobs()
     retries = schedule_due_quarantine_retries()
+    source_discovery = seed_due_catalog_sources()
     job = claim_collection_job()
     if job is None:
-        return {"status": "idle", "recovery": recovery, "quarantine_retries": retries}
+        return {
+            "status": "idle",
+            "recovery": recovery,
+            "quarantine_retries": retries,
+            "source_discovery": source_discovery,
+        }
     try:
         document = fetch_allowed_document(job["url"])
+        if job.get("job_type") == "sitemap":
+            urls = extract_sitemap_urls(document)
+            pages = enqueue_sitemap_pages(sitemap_job=job, urls=urls)
+            complete_collection_job(
+                job["job_id"],
+                result={
+                    "source_url": document.url,
+                    "source_sha256": document.sha256,
+                    "discovered_url_count": len(urls),
+                    "page_jobs": pages,
+                    "publication_status": "discovery_only",
+                },
+            )
+            return {
+                "status": "completed",
+                "job_id": job["job_id"],
+                "job_type": "sitemap",
+                "discovered_url_count": len(urls),
+                "page_jobs_created": pages["created_count"],
+                "recovery": recovery,
+                "quarantine_retries": retries,
+                "source_discovery": source_discovery,
+            }
         candidates = extract_commercial_json_ld(document)
         candidate_ids = store_review_candidates(
             job_id=job["job_id"],
@@ -69,8 +102,9 @@ def process_one_job() -> dict:
             "publication_status": "autonomously_reviewed",
             "recovery": recovery,
             "quarantine_retries": retries,
+            "source_discovery": source_discovery,
         }
-    except GOIACollectionError as exc:
+    except (GOIACollectionError, GOIARepositoryError) as exc:
         fail_collection_job(job["job_id"], error_code=str(exc))
         return {
             "status": "failed",
@@ -78,6 +112,7 @@ def process_one_job() -> dict:
             "error_code": str(exc),
             "recovery": recovery,
             "quarantine_retries": retries,
+            "source_discovery": source_discovery,
         }
 
 

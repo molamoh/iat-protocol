@@ -28,6 +28,17 @@ def _row(row: Any) -> dict[str, Any] | None:
     return dict(row) if row is not None else None
 
 
+def _ensure_column(conn, cur, table: str, column: str, definition: str):
+    try:
+        cur.execute(f"SELECT {column} FROM {table} LIMIT 0")
+        return cur
+    except Exception:
+        conn.rollback()
+        migrated = conn.cursor()
+        migrated.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        return migrated
+
+
 def init_goia_tables() -> None:
     conn = get_conn()
     cur = conn.cursor()
@@ -89,6 +100,9 @@ def init_goia_tables() -> None:
                 idempotency_key TEXT NOT NULL UNIQUE,
                 provider_id TEXT NOT NULL,
                 url TEXT NOT NULL,
+                job_type TEXT NOT NULL DEFAULT 'page',
+                parent_job_id TEXT,
+                priority INTEGER NOT NULL DEFAULT 50,
                 status TEXT NOT NULL,
                 attempts INTEGER NOT NULL DEFAULT 0,
                 result_json TEXT,
@@ -100,25 +114,42 @@ def init_goia_tables() -> None:
             )
             """
         )
-        try:
-            cur.execute("SELECT provider_id FROM goia_collection_jobs LIMIT 0")
-        except Exception:
-            # Phase-3 databases predate provider-bound review. PostgreSQL marks
-            # the transaction failed after an unknown-column error, so restart
-            # the transaction before applying the additive migration.
-            conn.rollback()
-            cur = conn.cursor()
-            cur.execute(
-                "ALTER TABLE goia_collection_jobs ADD COLUMN provider_id TEXT"
-            )
-            cur.execute(
-                """
-                UPDATE goia_collection_jobs
-                SET status = 'failed',
-                    error_code = 'legacy_job_missing_provider'
-                WHERE provider_id IS NULL
-                """
-            )
+        cur = _ensure_column(
+            conn,
+            cur,
+            "goia_collection_jobs",
+            "provider_id",
+            "TEXT",
+        )
+        cur = _ensure_column(
+            conn,
+            cur,
+            "goia_collection_jobs",
+            "job_type",
+            "TEXT NOT NULL DEFAULT 'page'",
+        )
+        cur = _ensure_column(
+            conn,
+            cur,
+            "goia_collection_jobs",
+            "parent_job_id",
+            "TEXT",
+        )
+        cur = _ensure_column(
+            conn,
+            cur,
+            "goia_collection_jobs",
+            "priority",
+            "INTEGER NOT NULL DEFAULT 50",
+        )
+        cur.execute(
+            """
+            UPDATE goia_collection_jobs
+            SET status = 'failed',
+                error_code = 'legacy_job_missing_provider'
+            WHERE provider_id IS NULL
+            """
+        )
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS goia_review_candidates (
@@ -143,26 +174,27 @@ def init_goia_tables() -> None:
             )
             """
         )
-        try:
-            cur.execute(
-                """
-                SELECT retry_count, next_retry_at, last_retry_job_id
-                FROM goia_review_candidates LIMIT 0
-                """
-            )
-        except Exception:
-            conn.rollback()
-            cur = conn.cursor()
-            for statement in (
-                "ALTER TABLE goia_review_candidates ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0",
-                "ALTER TABLE goia_review_candidates ADD COLUMN next_retry_at INTEGER",
-                "ALTER TABLE goia_review_candidates ADD COLUMN last_retry_job_id TEXT",
-            ):
-                try:
-                    cur.execute(statement)
-                except Exception:
-                    conn.rollback()
-                    cur = conn.cursor()
+        cur = _ensure_column(
+            conn,
+            cur,
+            "goia_review_candidates",
+            "retry_count",
+            "INTEGER NOT NULL DEFAULT 0",
+        )
+        cur = _ensure_column(
+            conn,
+            cur,
+            "goia_review_candidates",
+            "next_retry_at",
+            "INTEGER",
+        )
+        cur = _ensure_column(
+            conn,
+            cur,
+            "goia_review_candidates",
+            "last_retry_job_id",
+            "TEXT",
+        )
         cur.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_goia_review_candidates_status
@@ -414,8 +446,14 @@ def enqueue_collection_job(
     provider_id: str,
     url: str,
     idempotency_key: str,
+    job_type: str = "page",
+    parent_job_id: str | None = None,
+    priority: int = 50,
     now: int | None = None,
 ) -> dict[str, Any]:
+    if job_type not in {"page", "sitemap"}:
+        raise GOIARepositoryError("invalid_collection_job_type")
+    bounded_priority = max(0, min(int(priority), 100))
     timestamp = int(now or time.time())
     marker = qmark()
     conn = get_conn()
@@ -427,7 +465,12 @@ def enqueue_collection_job(
         )
         existing = _row(cur.fetchone())
         if existing is not None:
-            if existing["url"] != url or existing["provider_id"] != provider_id:
+            if (
+                existing["url"] != url
+                or existing["provider_id"] != provider_id
+                or existing["job_type"] != job_type
+                or existing["parent_job_id"] != parent_job_id
+            ):
                 raise GOIARepositoryError("collection_idempotency_conflict")
             return {
                 "job_id": existing["job_id"],
@@ -444,15 +487,19 @@ def enqueue_collection_job(
         cur.execute(
             f"""
             INSERT INTO goia_collection_jobs (
-                job_id, idempotency_key, provider_id, url, status, attempts,
+                job_id, idempotency_key, provider_id, url, job_type,
+                parent_job_id, priority, status, attempts,
                 created_at, updated_at
-            ) VALUES ({", ".join([marker] * 8)})
+            ) VALUES ({", ".join([marker] * 11)})
             """,
             (
                 job_id,
                 idempotency_key,
                 provider_id,
                 url,
+                job_type,
+                parent_job_id,
+                bounded_priority,
                 "queued",
                 0,
                 timestamp,
@@ -479,7 +526,7 @@ def claim_collection_job(*, now: int | None = None) -> dict[str, Any] | None:
                 """
                 SELECT * FROM goia_collection_jobs
                 WHERE status = 'queued'
-                ORDER BY created_at ASC, job_id ASC
+                ORDER BY priority DESC, created_at ASC, job_id ASC
                 LIMIT 1
                 """
             )
@@ -870,6 +917,11 @@ def schedule_due_quarantine_retries(
             provider_id=candidate["provider_id"],
             url=candidate["url"],
             idempotency_key=f"goia-quarantine:{candidate['candidate_id']}:{next_count}",
+            job_type="page",
+            parent_job_id=candidate["last_retry_job_id"]
+            if "last_retry_job_id" in candidate
+            else None,
+            priority=75,
             now=timestamp,
         )
         delay = min(86_400, 3_600 * (2**next_count))
@@ -965,6 +1017,109 @@ def recover_stale_collection_jobs(
         raise
     finally:
         release_conn(conn)
+
+
+def seed_due_catalog_sources(
+    *,
+    now: int | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    timestamp = int(now or time.time())
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT provider_id, manifest_json
+            FROM goia_merchants
+            ORDER BY provider_id ASC
+            """
+        )
+        merchants = [dict(item) for item in cur.fetchall()]
+    finally:
+        release_conn(conn)
+
+    seeded = []
+    unsupported = []
+    for merchant in merchants:
+        manifest = json.loads(merchant["manifest_json"])
+        for source in manifest.get("catalogs") or []:
+            if len(seeded) >= max(1, min(int(limit), 500)):
+                break
+            source_type = str(source.get("source_type") or "")
+            if source_type != "sitemap":
+                unsupported.append(
+                    {
+                        "provider_id": merchant["provider_id"],
+                        "source_id": source.get("source_id"),
+                        "source_type": source_type,
+                    }
+                )
+                continue
+            interval = max(300, min(int(source["refresh_interval_seconds"]), 2_592_000))
+            window = timestamp // interval
+            result = enqueue_collection_job(
+                provider_id=merchant["provider_id"],
+                url=str(source["url"]),
+                idempotency_key=(
+                    f"goia-source:{merchant['provider_id']}:{source['source_id']}:{window}"
+                ),
+                job_type="sitemap",
+                priority=100,
+                now=timestamp,
+            )
+            if result["state"] == "created":
+                seeded.append(
+                    {
+                        "provider_id": merchant["provider_id"],
+                        "source_id": source["source_id"],
+                        "job_id": result["job_id"],
+                    }
+                )
+    return {
+        "status": "ok",
+        "seeded_count": len(seeded),
+        "unsupported_count": len(unsupported),
+        "seeded": seeded,
+        "unsupported": unsupported,
+    }
+
+
+def enqueue_sitemap_pages(
+    *,
+    sitemap_job: dict[str, Any],
+    urls: list[str],
+    now: int | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    if sitemap_job.get("job_type") != "sitemap":
+        raise GOIARepositoryError("sitemap_job_required")
+    bounded = max(1, min(int(limit), 500))
+    created = []
+    duplicates = 0
+    for url in urls[:bounded]:
+        url_hash = hashlib.sha256(url.encode()).hexdigest()[:24]
+        result = enqueue_collection_job(
+            provider_id=sitemap_job["provider_id"],
+            url=url,
+            idempotency_key=f"goia-sitemap:{sitemap_job['job_id']}:{url_hash}",
+            job_type="page",
+            parent_job_id=sitemap_job["job_id"],
+            priority=50,
+            now=now,
+        )
+        if result["state"] == "created":
+            created.append(result["job_id"])
+        else:
+            duplicates += 1
+    return {
+        "status": "ok",
+        "submitted": min(len(urls), bounded),
+        "created_count": len(created),
+        "duplicate_count": duplicates,
+        "truncated": len(urls) > bounded,
+        "job_ids": created,
+    }
 
 
 def approve_review_candidate(

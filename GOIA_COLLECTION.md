@@ -83,6 +83,29 @@ Collection jobs use a five-minute worker lease. A job abandoned by a crashed
 worker is returned to the queue automatically. After three abandoned
 attempts, it fails closed instead of looping forever.
 
+## Autonomous source discovery
+
+The worker reads catalog sources already declared in registered provider
+manifests. Supported sitemap sources are seeded once per configured refresh
+window with deterministic idempotency keys.
+
+Sitemap jobs have higher queue priority than product pages. Each allowed URL
+discovered in a sitemap becomes a parent-bound page job. Expansion is bounded
+to 100 page jobs per sitemap execution even if the parsed sitemap contains
+more URLs.
+
+```text
+provider manifest
+  -> due sitemap source
+  -> priority sitemap job
+  -> bounded same-domain URLs
+  -> idempotent page jobs
+  -> extraction and autonomous review
+```
+
+Non-sitemap source types remain visible as unsupported instead of being
+silently treated as pages.
+
 Administrator-authenticated routes remain available for audit and emergency
 override, but are not part of the normal operating path:
 
@@ -127,8 +150,8 @@ The first collector supports:
 - HTML pages allowed by `robots.txt`;
 - Schema.org JSON-LD extraction for `Product`, `SoftwareApplication`, and
   `Service`;
-- bounded sitemap XML parsing as a library primitive.
+- periodic provider sitemap seeding;
+- bounded sitemap expansion into prioritized page jobs.
 
-Sitemap scheduling, automatic normalization into `OfferObservation`,
-JavaScript rendering, redirects, and public Internet discovery are
-deliberately not enabled.
+JavaScript rendering, redirects, unaffiliated public Internet discovery, and
+non-sitemap catalog adapters are deliberately not enabled.

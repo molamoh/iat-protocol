@@ -1,4 +1,6 @@
 import json
+import hmac
+import hashlib
 
 import pytest
 from fastapi import HTTPException
@@ -87,6 +89,64 @@ def test_json_env_accepts_render_safe_object_encodings(monkeypatch, encoded):
     assert checkout_api._json_env("IAT_CHECKOUT_ASSETS_JSON") == {
         "USDC": {"mint": "mint"}
     }
+
+
+def test_quote_signer_client_uses_authenticated_canonical_request(monkeypatch):
+    secret = "q" * 32
+    monkeypatch.setenv("IAT_QUOTE_SIGNER_CLIENT_ENABLED", "true")
+    monkeypatch.setenv("IAT_QUOTE_SIGNER_URL", "https://signer.example")
+    monkeypatch.setenv("IAT_QUOTE_SIGNER_SHARED_SECRET", secret)
+    monkeypatch.setattr(checkout_api.time, "time", lambda: NOW)
+    monkeypatch.setattr(
+        checkout_api,
+        "verify_quote_authorization",
+        lambda **kwargs: "01" * 32,
+    )
+    observed = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "status": "signed",
+                "quote_id": "uq_" + "a" * 32,
+                "transaction_base64": "signed-transaction",
+                "message_hash": "01" * 32,
+                "quote_authority": "quote-authority",
+                "expires_at": NOW + 60,
+                "idempotent": False,
+            }
+
+    def post(url, **kwargs):
+        observed["url"] = url
+        observed.update(kwargs)
+        return Response()
+
+    monkeypatch.setattr(checkout_api.requests, "post", post)
+    result = checkout_api._authorize_with_quote_signer(
+        quote_id="uq_" + "a" * 32,
+        transaction_base64="unsigned-transaction",
+        instruction_plan={
+            "quote_authority": "quote-authority",
+            "protocol_authorization_signature_required": True,
+        },
+        expires_at=NOW + 60,
+    )
+
+    timestamp = observed["headers"]["X-IAT-Signer-Timestamp"]
+    expected = hmac.new(
+        secret.encode(),
+        timestamp.encode() + b"." + observed["content"],
+        hashlib.sha256,
+    ).hexdigest()
+    assert observed["url"] == "https://signer.example/v1/sign"
+    assert observed["headers"]["X-IAT-Signer-Signature"] == expected
+    assert json.loads(observed["content"])["instruction_plan"]["quote_authority"] == (
+        "quote-authority"
+    )
+    assert result["transaction_base64"] == "signed-transaction"
 
 
 @pytest.mark.parametrize("encoded", ["[]", '"[]"', "not-json"])

@@ -291,6 +291,9 @@ quote-signing service, verify both versions, and only then run a separately
 approved canary. Deploying the new API against the old program, or unpausing
 without the quote-signing service, is forbidden.
 
+The isolated signer architecture and guarded rollout are documented in
+`QUOTE_SIGNER.md`.
+
 ## Raydium fallback
 
 The live adapter uses Raydium Trade API Route V2 exact-output endpoints:

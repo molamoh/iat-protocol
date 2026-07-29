@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
 import os
 import secrets
 import threading
@@ -13,6 +15,7 @@ from dataclasses import replace
 from decimal import Decimal, ROUND_UP
 from typing import Any
 
+import requests
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, Field
 from solders.pubkey import Pubkey
@@ -44,6 +47,7 @@ from iat.checkout_verifier import (
     SolanaCheckoutVerifier,
     message_hash_from_transaction_base64,
 )
+from iat.quote_signer import QuoteSigningRejected, verify_quote_authorization
 from iat.api.db import get_conn, get_order_db, qmark, release_conn
 from iat.api import db as database
 from iat.checkout_delivery import (
@@ -82,6 +86,10 @@ class UniversalPrepareRequest(BaseModel):
 
 class UniversalSubmitRequest(UniversalPrepareRequest):
     tx_signature: str = Field(min_length=64, max_length=128)
+
+
+class UniversalAuthorizeRequest(UniversalPrepareRequest):
+    transaction_base64: str = Field(min_length=64, max_length=20_000)
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -810,6 +818,121 @@ def prepare_universal_checkout(quote_id: str, req: UniversalPrepareRequest):
     finally:
         release_conn(conn)
     return response
+
+
+def _authorize_with_quote_signer(
+    *,
+    quote_id: str,
+    transaction_base64: str,
+    instruction_plan: dict[str, Any],
+    expires_at: int,
+) -> dict[str, Any]:
+    if not _bool_env("IAT_QUOTE_SIGNER_CLIENT_ENABLED"):
+        raise HTTPException(status_code=503, detail="quote_signer_disabled")
+    url = os.getenv("IAT_QUOTE_SIGNER_URL", "").strip().rstrip("/")
+    if not url.startswith("https://") and not (
+        _bool_env("IAT_QUOTE_SIGNER_ALLOW_HTTP_PRIVATE")
+        and url.startswith("http://")
+    ):
+        raise HTTPException(status_code=503, detail="quote_signer_url_invalid")
+    secret = os.getenv("IAT_QUOTE_SIGNER_SHARED_SECRET", "").encode()
+    if len(secret) < 32:
+        raise HTTPException(status_code=503, detail="quote_signer_secret_unavailable")
+    message_hash = hashlib.sha256(transaction_base64.encode()).hexdigest()
+    payload = {
+        "request_id": f"sign_{hashlib.sha256(f'{quote_id}:{message_hash}'.encode()).hexdigest()[:40]}",
+        "quote_id": quote_id,
+        "expires_at": int(expires_at),
+        "transaction_base64": transaction_base64,
+        "instruction_plan": instruction_plan,
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    timestamp = str(int(time.time()))
+    signature = hmac.new(
+        secret,
+        timestamp.encode() + b"." + raw,
+        hashlib.sha256,
+    ).hexdigest()
+    try:
+        response = requests.post(
+            f"{url}/v1/sign",
+            content=raw,
+            headers={
+                "Content-Type": "application/json",
+                "X-IAT-Signer-Timestamp": timestamp,
+                "X-IAT-Signer-Signature": signature,
+            },
+            timeout=min(
+                max(float(os.getenv("IAT_QUOTE_SIGNER_TIMEOUT_SECONDS", "8")), 1),
+                15,
+            ),
+        )
+        response.raise_for_status()
+        result = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="quote_signer_unavailable") from exc
+    if (
+        not isinstance(result, dict)
+        or result.get("status") != "signed"
+        or result.get("quote_id") != quote_id
+        or result.get("quote_authority") != instruction_plan.get("quote_authority")
+        or int(result.get("expires_at") or 0) != int(expires_at)
+        or not isinstance(result.get("transaction_base64"), str)
+    ):
+        raise HTTPException(status_code=503, detail="quote_signer_response_invalid")
+    try:
+        verified_message_hash = verify_quote_authorization(
+            original_transaction_base64=transaction_base64,
+            authorized_transaction_base64=result["transaction_base64"],
+            quote_authority=str(instruction_plan["quote_authority"]),
+        )
+    except (QuoteSigningRejected, KeyError) as exc:
+        raise HTTPException(status_code=503, detail="quote_signer_response_invalid") from exc
+    if result.get("message_hash") != verified_message_hash:
+        raise HTTPException(status_code=503, detail="quote_signer_response_invalid")
+    return result
+
+
+@router.post("/{quote_id}/authorize")
+def authorize_universal_checkout(
+    quote_id: str,
+    req: UniversalAuthorizeRequest,
+):
+    row = _get_quote(quote_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="quote_not_found")
+    order = get_order_db(row["order_id"])
+    if not order:
+        raise HTTPException(status_code=404, detail="order_not_found")
+    _authorize_order(req, order)
+    if not secrets.compare_digest(req.buyer_wallet, row["buyer_wallet"]):
+        raise HTTPException(status_code=403, detail="invalid_order_credential")
+    if row["state"] != "prepared" or not row.get("execution_evidence"):
+        raise HTTPException(status_code=409, detail="quote_not_authorizable")
+    if int(time.time()) >= int(row["expires_at"]):
+        raise HTTPException(status_code=410, detail="quote_expired")
+    evidence = json.loads(row["execution_evidence"])
+    prepared = evidence.get("prepared_response")
+    plan = prepared.get("solana_instruction_plan") if isinstance(prepared, dict) else None
+    if not isinstance(plan, dict) or plan.get("protocol_authorization_signature_required") is not True:
+        raise HTTPException(status_code=409, detail="quote_authorization_plan_unavailable")
+    result = _authorize_with_quote_signer(
+        quote_id=quote_id,
+        transaction_base64=req.transaction_base64,
+        instruction_plan=plan,
+        expires_at=int(row["expires_at"]),
+    )
+    return {
+        "status": "authorized",
+        "quote_id": quote_id,
+        "transaction_base64": result["transaction_base64"],
+        "message_hash": result["message_hash"],
+        "quote_authority": result["quote_authority"],
+        "expires_at": result["expires_at"],
+        "buyer_signature_required": True,
+        "next_step": "buyer_wallet_must_review_simulate_sign_and_submit",
+        "idempotent": bool(result.get("idempotent")),
+    }
 
 
 @router.post("/{quote_id}/submit")

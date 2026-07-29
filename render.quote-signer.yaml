@@ -1,0 +1,20 @@
+services:
+  - type: pserv
+    name: iat-quote-signer-devnet
+    runtime: docker
+    dockerfilePath: ./Dockerfile.quote-signer
+    plan: starter
+    region: frankfurt
+    autoDeploy: false
+    healthCheckPath: /health
+    envVars:
+      - key: IAT_QUOTE_SIGNER_ENABLED
+        value: "false"
+      - key: IAT_QUOTE_SIGNER_CLUSTER
+        value: devnet
+      - key: IAT_QUOTE_SIGNER_ALLOW_LOCAL_KEYPAIR
+        value: "false"
+      - key: IAT_QUOTE_SIGNER_SHARED_SECRET
+        sync: false
+      - key: IAT_QUOTE_SIGNER_KEYPAIR_PATH
+        value: /var/run/secrets/iat-quote-authority.json

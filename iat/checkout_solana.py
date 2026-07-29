@@ -87,6 +87,69 @@ def build_set_paused_plan(
     }
 
 
+def build_update_asset_plan(
+    *,
+    program_id: str,
+    authority: str,
+    input_mint: str,
+    ratio_numerator: int,
+    ratio_denominator: int,
+    max_order_iat: int,
+    valid_until: int,
+    enabled: bool,
+) -> dict[str, Any]:
+    """Build a deterministic admin asset-policy instruction without signing."""
+    program = _pubkey(program_id, "program_id")
+    admin = _pubkey(authority, "authority")
+    mint = _pubkey(input_mint, "input_mint")
+    if min(
+        int(ratio_numerator),
+        int(ratio_denominator),
+        int(max_order_iat),
+        int(valid_until),
+    ) <= 0:
+        raise SolanaPlanError("invalid_asset_policy")
+    config = _pda(program, b"config")
+    asset = _pda(program, b"asset", bytes(config), bytes(mint))
+    data = _discriminator("update_asset") + struct.pack(
+        "<QQQq?",
+        int(ratio_numerator),
+        int(ratio_denominator),
+        int(max_order_iat),
+        int(valid_until),
+        bool(enabled),
+    )
+    return {
+        "program_id": str(program),
+        "network": "solana-devnet",
+        "fee_payer": str(admin),
+        "signature_required": True,
+        "simulation_required": True,
+        "funds_transfer": False,
+        "instruction": {
+            "program_id": str(program),
+            "accounts": [
+                _meta(config),
+                _meta(admin, signer=True),
+                _meta(asset, writable=True),
+            ],
+            "data_base64": base64.b64encode(data).decode(),
+        },
+        "display": {
+            "action": "update_asset",
+            "config": str(config),
+            "asset": str(asset),
+            "input_mint": str(mint),
+            "ratio_numerator": int(ratio_numerator),
+            "ratio_denominator": int(ratio_denominator),
+            "max_order_iat": int(max_order_iat),
+            "valid_until": int(valid_until),
+            "enabled": bool(enabled),
+            "authority": str(admin),
+        },
+    }
+
+
 def build_treasury_instruction_plan(
     *,
     quote: Mapping[str, Any],

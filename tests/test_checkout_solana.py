@@ -6,6 +6,7 @@ from solders.pubkey import Pubkey
 
 from iat.checkout_solana import (
     build_set_paused_plan,
+    build_update_asset_plan,
     SPL_TOKEN_PROGRAM_ID,
     SolanaPlanError,
     build_direct_usdc_purchase_plan,
@@ -192,3 +193,24 @@ def test_pause_plan_is_unsigned_deterministic_and_transfers_no_funds():
     data = base64.b64decode(plan["instruction"]["data_base64"])
     assert data[:8] == hashlib.sha256(b"global:set_paused").digest()[:8]
     assert data[8:] == b"\x01"
+
+
+def test_update_asset_plan_encodes_exact_governed_policy():
+    plan = build_update_asset_plan(
+        program_id=key(),
+        authority=key(),
+        input_mint=key(),
+        ratio_numerator=201,
+        ratio_denominator=20_000,
+        max_order_iat=10_000_000_000,
+        valid_until=2_000_000_600,
+        enabled=True,
+    )
+
+    assert plan["funds_transfer"] is False
+    assert plan["display"]["ratio_numerator"] == 201
+    assert plan["display"]["ratio_denominator"] == 20_000
+    assert plan["instruction"]["accounts"][2]["writable"] is True
+    data = base64.b64decode(plan["instruction"]["data_base64"])
+    assert data[:8] == hashlib.sha256(b"global:update_asset").digest()[:8]
+    assert len(data) == 41

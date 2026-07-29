@@ -1,14 +1,19 @@
+import hashlib
+import json
 import sqlite3
 
 import pytest
+from solders.keypair import Keypair
 
 from iat.goia.contracts import (
     MerchantProviderManifest,
     OfferObservation,
+    PartnershipResponse,
     SearchIntent,
 )
-import iat.goia.repository as repository
 import iat.goia.partnership_dispatcher as partnership_dispatcher
+import iat.goia.partnership_responses as partnership_responses
+import iat.goia.repository as repository
 from iat.goia.search import search_local_index
 
 
@@ -24,6 +29,13 @@ def goia_db(tmp_path, monkeypatch):
     monkeypatch.setattr(repository, "get_conn", connect)
     monkeypatch.setattr(repository, "release_conn", lambda conn: conn.close())
     monkeypatch.setattr(repository, "qmark", lambda: "?")
+    monkeypatch.setattr(partnership_responses, "get_conn", connect)
+    monkeypatch.setattr(
+        partnership_responses,
+        "release_conn",
+        lambda conn: conn.close(),
+    )
+    monkeypatch.setattr(partnership_responses, "qmark", lambda: "?")
     repository.init_goia_tables()
     return database
 
@@ -519,6 +531,7 @@ def test_self_hosted_manifest_verification_authorizes_endpoint_without_sending(g
 
 
 def test_verified_market_match_prepares_private_idempotent_proposal(goia_db):
+    merchant_signer = Keypair()
     provider = _provider(
         partnership_discovery={
             "accepts_partnership_requests": True,
@@ -526,6 +539,7 @@ def test_verified_market_match_prepares_private_idempotent_proposal(goia_db):
             "request_endpoint": "https://merchant.example/goia-partnership",
             "relationship_types": ["affiliate"],
             "verification_interval_seconds": 86_400,
+            "response_signing_public_key": str(merchant_signer.pubkey()),
         }
     )
     repository.upsert_merchant(provider, now=86_000)
@@ -621,9 +635,9 @@ def test_verified_market_match_prepares_private_idempotent_proposal(goia_db):
         receipt={
             "contract_version": "goia_partnership_ack_v1",
             "proposal_id": third_claim["proposal_id"],
-            "status": "rejected",
+            "status": "received",
             "received_at": second_claim["lease_until"],
-            "reason_code": "opt_out",
+            "reason_code": None,
         },
         now=second_claim["lease_until"],
     )
@@ -636,17 +650,108 @@ def test_verified_market_match_prepares_private_idempotent_proposal(goia_db):
     assert delivered["status"] == "delivered"
     assert repository.list_partner_proposals(status="delivered")["items"][0][
         "receipt"
-    ]["status"] == "rejected"
-    suppressions = repository.list_partner_suppressions()
-    assert suppressions["count"] == 1
-    assert suppressions["items"][0]["reason_code"] == "opt_out"
-    refreshed_permission = repository.refresh_partner_permissions(
-        now=second_claim["lease_until"] + 1
+    ]["status"] == "received"
+
+    accepted = PartnershipResponse(
+        response_id="gprs_" + "1" * 32,
+        proposal_id=third_claim["proposal_id"],
+        provider_id=provider.provider_id,
+        decision="accepted",
+        responded_at=second_claim["lease_until"] + 1,
+        terms_url="https://merchant.example/partner-terms",
     )
-    suppressed = repository.list_partner_prospects()["items"][0]
-    assert refreshed_permission["suppressed_count"] == 1
-    assert suppressed["permission_status"] == "suppressed"
-    assert suppressed["outreach_authorized"] is False
+    accepted_json = json.dumps(
+        accepted.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    accepted_hash = hashlib.sha256(accepted_json.encode()).hexdigest()
+    accepted_signature = str(
+        merchant_signer.sign_message(
+            f"{accepted.responded_at}\n{accepted.response_id}\n{accepted_hash}".encode()
+        )
+    )
+    accepted_result = partnership_responses.record_partner_response(
+        accepted,
+        signature=accepted_signature,
+        signed_at=accepted.responded_at,
+        now=accepted.responded_at,
+    )
+    duplicate_response = partnership_responses.record_partner_response(
+        accepted,
+        signature=accepted_signature,
+        signed_at=accepted.responded_at,
+        now=accepted.responded_at,
+    )
+    assert accepted_result["relationship_status"] == "accepted_pending_activation"
+    assert accepted_result["commission_activated"] is False
+    assert accepted_result["ranking_effect"] is False
+    assert duplicate_response["status"] == "duplicate"
+    assert partnership_responses.list_partner_relationships()["items"][0][
+        "status"
+    ] == "accepted_pending_activation"
+
+    invalid = PartnershipResponse(
+        response_id="gprs_" + "3" * 32,
+        proposal_id=third_claim["proposal_id"],
+        provider_id=provider.provider_id,
+        decision="declined",
+        responded_at=accepted.responded_at + 1,
+        reason_code="not_interested",
+    )
+    with pytest.raises(
+        partnership_responses.GOIAPartnershipResponseError,
+        match="invalid_response_signature",
+    ):
+        partnership_responses.record_partner_response(
+            invalid,
+            signature=str(Keypair().sign_message(b"wrong")),
+            signed_at=invalid.responded_at,
+            now=invalid.responded_at,
+        )
+    with pytest.raises(
+        partnership_responses.GOIAPartnershipResponseError,
+        match="timestamp_invalid",
+    ):
+        partnership_responses.record_partner_response(
+            invalid,
+            signature=str(merchant_signer.sign_message(b"unused")),
+            signed_at=invalid.responded_at,
+            now=invalid.responded_at + 301,
+        )
+
+    opted_out = PartnershipResponse(
+        response_id="gprs_" + "2" * 32,
+        proposal_id=third_claim["proposal_id"],
+        provider_id=provider.provider_id,
+        decision="opt_out",
+        responded_at=accepted.responded_at + 1,
+        reason_code="do_not_contact",
+    )
+    opt_out_json = json.dumps(
+        opted_out.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    opt_out_hash = hashlib.sha256(opt_out_json.encode()).hexdigest()
+    opt_out_signature = str(
+        merchant_signer.sign_message(
+            f"{opted_out.responded_at}\n{opted_out.response_id}\n{opt_out_hash}".encode()
+        )
+    )
+    opt_out_result = partnership_responses.record_partner_response(
+        opted_out,
+        signature=opt_out_signature,
+        signed_at=opted_out.responded_at,
+        now=opted_out.responded_at,
+    )
+    assert opt_out_result["relationship_status"] == "opted_out"
+    assert repository.list_partner_suppressions()["count"] == 1
+    assert repository.list_partner_prospects()["items"][0][
+        "permission_status"
+    ] == "suppressed"
     assert prospect["contact_attempted"] is True
     assert [item["event_type"] for item in events["items"]] == [
         "delivery_claimed",

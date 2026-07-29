@@ -96,6 +96,12 @@ positif et annule les propositions restantes. Le dispatcher possède désormais
 un conteneur et une boucle autonomes séparés du collecteur ; son démarrage
 reste fail-closed sans activation complète et clé Ed25519 valide.
 
+Mise à jour décision marchand : GOIA accepte désormais des réponses
+asynchrones signées par la clé publique du manifeste auto-hébergé. Il vérifie
+fraîcheur, fournisseur, proposition, domaine des conditions et idempotence.
+Une acceptation reste `accepted_pending_activation`, sans commission et sans
+effet sur le classement ; un `opt_out` applique la suppression globale.
+
 ## 1. Résumé exécutif
 
 IAT Protocol possède déjà une base substantielle pour devenir l'infrastructure

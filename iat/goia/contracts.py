@@ -117,6 +117,10 @@ class PartnershipDiscoveryPolicy(StrictGOIAModel):
     manifest_url: HttpUrl | None = None
     request_endpoint: HttpUrl | None = None
     terms_url: HttpUrl | None = None
+    response_signing_public_key: str | None = Field(
+        default=None,
+        pattern=r"^[1-9A-HJ-NP-Za-km-z]{32,44}$",
+    )
     verification_interval_seconds: int = Field(default=86_400, ge=3_600, le=604_800)
     relationship_types: list[Literal["affiliate", "direct_partner"]] = Field(
         default_factory=list,
@@ -241,4 +245,28 @@ class PartnershipAcknowledgement(StrictGOIAModel):
     def require_rejection_reason(self):
         if self.status == "rejected" and self.reason_code is None:
             raise ValueError("rejected_acknowledgement_requires_reason")
+        return self
+
+
+class PartnershipResponse(StrictGOIAModel):
+    contract_version: Literal["goia_partnership_response_v1"] = (
+        "goia_partnership_response_v1"
+    )
+    response_id: str = Field(pattern=r"^gprs_[a-f0-9]{32}$")
+    proposal_id: str = Field(pattern=r"^gpr_[a-f0-9]{32}$")
+    provider_id: str = Field(pattern=r"^gop_[a-zA-Z0-9_-]{8,100}$")
+    decision: Literal["accepted", "declined", "needs_info", "opt_out"]
+    responded_at: int = Field(gt=0)
+    terms_url: HttpUrl | None = None
+    reason_code: str | None = Field(
+        default=None,
+        pattern=r"^[a-z][a-z0-9_]{2,79}$",
+    )
+
+    @model_validator(mode="after")
+    def validate_decision_details(self):
+        if self.decision == "accepted" and self.terms_url is None:
+            raise ValueError("accepted_response_requires_terms_url")
+        if self.decision in {"declined", "needs_info", "opt_out"} and self.reason_code is None:
+            raise ValueError("non_acceptance_response_requires_reason")
         return self

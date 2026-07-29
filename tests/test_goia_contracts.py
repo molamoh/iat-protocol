@@ -84,6 +84,9 @@ def test_goia_manifest_is_defensively_copied_and_local_only():
         "partnership_transport_signature": "ed25519",
         "partnership_dispatcher_service": True,
         "merchant_opt_out_global_precedence": True,
+        "authenticated_merchant_partnership_responses": True,
+        "accepted_response_activates_commission": False,
+        "accepted_response_changes_ranking": False,
     }
 
 
@@ -110,6 +113,7 @@ def test_iat_discovery_advertises_only_controlled_local_search():
     assert manifest["goia"]["autonomous_partnership_proposal_preparation"] is True
     assert manifest["goia"]["partnership_delivery_adapter_bundled"] is True
     assert manifest["goia"]["merchant_opt_out_global_precedence"] is True
+    assert manifest["goia"]["accepted_response_activates_commission"] is False
     assert manifest["goia"]["outreach_triggered"] is False
     assert capability["contract_validation"] is True
     assert capability["search_available"] is True

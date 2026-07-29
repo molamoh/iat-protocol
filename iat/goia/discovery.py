@@ -33,6 +33,8 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "validate_partnership_acknowledgement": (
             "/goia/v1/contracts/partnership-acknowledgement/validate"
         ),
+        "validate_partnership_response": "/goia/v1/contracts/partnership-response/validate",
+        "partnership_response": "/goia/v1/partnership/responses",
         "ranking_policy": "/goia/v1/policies/ranking",
         "search": "/goia/v1/search",
         "catalog_ingest": "/admin/goia/catalogs/ingest",
@@ -45,6 +47,7 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "partnership_proposals": "/admin/goia/partnership/proposals",
         "partnership_delivery_events": "/admin/goia/partnership/delivery/events",
         "partnership_suppressions": "/admin/goia/partnership/suppressions",
+        "partnership_relationships": "/admin/goia/partnership/relationships",
         "collection_enqueue": "/admin/goia/collection/jobs",
         "collection_stats": "/admin/goia/collection/stats",
         "review_candidates": "/admin/goia/review/candidates",
@@ -81,6 +84,9 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "partnership_transport_signature": "ed25519",
         "partnership_dispatcher_service": True,
         "merchant_opt_out_global_precedence": True,
+        "authenticated_merchant_partnership_responses": True,
+        "accepted_response_activates_commission": False,
+        "accepted_response_changes_ranking": False,
     },
     "invariants": [
         "organic_ranking_never_uses_commission",
@@ -106,6 +112,7 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "delivery_claim_revalidates_current_verified_opt_in",
         "delivery_retries_are_bounded_and_lease_recoverable",
         "merchant_opt_out_cancels_all_future_partnership_delivery",
+        "merchant_responses_require_current_manifest_key_and_ed25519_signature",
     ],
 }
 

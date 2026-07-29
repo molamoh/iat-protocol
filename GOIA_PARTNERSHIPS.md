@@ -212,3 +212,42 @@ The loop interval is bounded between 5 and 300 seconds:
 ```text
 IAT_GOIA_PARTNERSHIP_DISPATCH_INTERVAL_SECONDS=30
 ```
+
+## Authenticated merchant decisions
+
+A merchant that wants asynchronous decisions adds its Ed25519 public key to
+the self-hosted policy:
+
+```json
+{
+  "response_signing_public_key": "<merchant Ed25519 public key>"
+}
+```
+
+The merchant signs the canonical `goia_partnership_response_v1` hash together
+with its response ID and timestamp, then submits:
+
+```text
+POST /goia/v1/partnership/responses
+X-GOIA-Merchant-Signature: <base58 signature>
+X-GOIA-Signed-At: <unix timestamp>
+```
+
+GOIA accepts `accepted`, `declined`, `needs_info`, and `opt_out` only when:
+
+- the proposal was delivered;
+- the provider and proposal match;
+- the self-hosted manifest proof is still current;
+- the signature matches the manifest key;
+- the timestamp is within five minutes;
+- accepted terms remain on the merchant domain.
+
+Responses are idempotent. `accepted` produces
+`accepted_pending_activation`; it does not activate commission and never
+changes organic ranking. `opt_out` immediately invokes global suppression.
+Relationships are auditable through:
+
+```text
+GET /admin/goia/partnership/relationships
+POST /goia/v1/contracts/partnership-response/validate
+```

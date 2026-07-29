@@ -29,6 +29,7 @@ from iat.goia.repository import (
     reject_review_candidate,
 )
 from iat.goia.collector import GOIACollectionError, validate_collection_url
+from iat.goia.partnership_responses import list_partner_relationships
 
 
 class CatalogIngestRequest(BaseModel):
@@ -157,6 +158,10 @@ def build_goia_admin_router(require_admin: Callable) -> APIRouter:
     @router.get("/partnership/suppressions")
     def partnership_suppressions(limit: int = 100):
         return list_partner_suppressions(limit=limit)
+
+    @router.get("/partnership/relationships")
+    def partnership_relationships(limit: int = 100):
+        return list_partner_relationships(limit=limit)
 
     @router.get("/review/candidates")
     def review_candidates(status: str = "pending_review", limit: int = 100):

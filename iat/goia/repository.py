@@ -364,6 +364,39 @@ def init_goia_tables() -> None:
             )
             """
         )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS goia_partnership_responses (
+                response_id TEXT PRIMARY KEY,
+                proposal_id TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                decision TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                payload_hash TEXT NOT NULL,
+                signature TEXT NOT NULL,
+                signing_public_key TEXT NOT NULL,
+                received_at INTEGER NOT NULL,
+                created_at INTEGER NOT NULL
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS goia_partnership_relationships (
+                provider_id TEXT NOT NULL,
+                prospect_id TEXT NOT NULL,
+                latest_proposal_id TEXT NOT NULL,
+                latest_response_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                terms_url TEXT,
+                commission_activated INTEGER NOT NULL DEFAULT 0,
+                ranking_effect INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(provider_id, prospect_id)
+            )
+            """
+        )
         for column, definition in (
             ("attempts", "INTEGER NOT NULL DEFAULT 0"),
             ("next_attempt_at", "INTEGER NOT NULL DEFAULT 0"),

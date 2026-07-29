@@ -257,6 +257,14 @@ Production must refresh price configuration through an authenticated,
 governance-controlled oracle process; changing environment variables manually
 is only suitable for controlled tests.
 
+The program was upgraded at devnet slot `479798767` with explicit CPI target
+constraints that accept only the classic SPL Token program. Token-2022 assets
+are rejected until extension-aware accounting is implemented. The verified
+executable hash is
+`3f25c7a204022e4da453b508c2f545ae2f12e2b9b31cfbbbaf883e7e3d9164eb`.
+The protocol remains paused after this upgrade; price refresh and unpause are
+separate controlled operations.
+
 ## Raydium fallback
 
 The live adapter uses Raydium Trade API Route V2 exact-output endpoints:

@@ -87,6 +87,23 @@ Before upgrading devnet:
 
 No mainnet release is approved by this document.
 
+## Devnet hardening deployment
+
+The classic-SPL-only hardening was deployed to GN2d on devnet on 2026-07-29.
+
+- program: `GN2d9tgQvwWqFaGuVomqBxcngW8c3CPWe4JRG6bP4rD`;
+- deployment slot: `479798767`;
+- upgrade signature:
+  `4DiDEgG8w9ynUxM5RJeCa4vZzGTgRQb4KeoCUwZMuSnTqaycrwovubYWJFT9zWSEKeLa2PSEp8qQ9zHN7DaMVpPh`;
+- local and on-chain executable SHA-256:
+  `3f25c7a204022e4da453b508c2f545ae2f12e2b9b31cfbbbaf883e7e3d9164eb`;
+- the remaining ProgramData capacity is zero padding;
+- the protocol remained paused after the upgrade;
+- no deployment buffers remained under the upgrade authority.
+
+The USDC asset policy was stale at verification time. Refreshing that policy
+and unpausing are separate transactions and were not part of this upgrade.
+
 ## Repeatable read-only verification
 
 Run the devnet invariant verifier before preparing any upgrade:

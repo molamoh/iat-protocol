@@ -130,3 +130,32 @@ POST /admin/goia/partnership/proposals/prepare
 GET  /admin/goia/partnership/proposals
 POST /goia/v1/contracts/partnership-proposal/validate
 ```
+
+## Fail-closed delivery lifecycle
+
+GOIA now has a separate delivery state machine, independent from collection:
+
+```text
+prepared -> delivering -> delivered
+                      \-> retryable -> delivering
+                      \-> failed
+```
+
+Every claim rechecks the current prospect permission, exact merchant manifest
+hash, and unexpired self-hosting proof. Claims use short leases so another
+worker can recover a task after a crash. Temporary failures use bounded
+exponential backoff and stop after three attempts. Permission revocation,
+proposal expiry, and manifest changes prevent a new claim.
+
+All transitions are recorded with a deterministic per-proposal event order and
+can be audited through:
+
+```text
+GET /admin/goia/partnership/delivery/events
+```
+
+The dispatcher requires both
+`IAT_GOIA_PARTNERSHIP_DELIVERY_ENABLED=true` and an explicitly configured
+delivery adapter. No network adapter is bundled in this phase, so delivery
+remains impossible by default and enabling the environment variable alone is
+insufficient.

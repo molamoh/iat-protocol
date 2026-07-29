@@ -40,6 +40,7 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "partnership_permissions_refresh": "/admin/goia/partnership/permissions/refresh",
         "partnership_verifications": "/admin/goia/partnership/verifications",
         "partnership_proposals": "/admin/goia/partnership/proposals",
+        "partnership_delivery_events": "/admin/goia/partnership/delivery/events",
         "collection_enqueue": "/admin/goia/collection/jobs",
         "collection_stats": "/admin/goia/collection/stats",
         "review_candidates": "/admin/goia/review/candidates",
@@ -71,6 +72,8 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "verified_opt_in_required_for_outreach_authorization": True,
         "autonomous_partnership_proposal_preparation": True,
         "partnership_proposal_delivery_enabled": False,
+        "partnership_delivery_lifecycle": True,
+        "partnership_delivery_adapter_bundled": False,
     },
     "invariants": [
         "organic_ranking_never_uses_commission",
@@ -93,6 +96,8 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "declared_opt_in_never_authorizes_outreach_without_self_hosting_verification",
         "self_hosting_verification_is_exact_hash_matched_and_expiring",
         "proposal_outbox_generation_never_performs_network_delivery",
+        "delivery_claim_revalidates_current_verified_opt_in",
+        "delivery_retries_are_bounded_and_lease_recoverable",
     ],
 }
 

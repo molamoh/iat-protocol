@@ -77,6 +77,12 @@ vérifié correspondent, GOIA produit un contrat
 utilise uniquement des agrégats anonymes, expire avec la permission et ne
 déclenche aucune livraison réseau à ce stade.
 
+Mise à jour cycle de livraison : l'outbox possède désormais leases, reprise
+après crash, backoff borné, plafond de tentatives et événements ordonnés.
+Chaque claim revalide la preuve et la permission. Le dispatcher est séparé du
+collecteur, désactivé par défaut et aucun adaptateur réseau n'est encore
+embarqué.
+
 ## 1. Résumé exécutif
 
 IAT Protocol possède déjà une base substantielle pour devenir l'infrastructure

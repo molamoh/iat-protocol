@@ -8,6 +8,7 @@ from iat.goia.contracts import (
     SearchIntent,
 )
 import iat.goia.repository as repository
+import iat.goia.partnership_dispatcher as partnership_dispatcher
 from iat.goia.search import search_local_index
 
 
@@ -579,3 +580,85 @@ def test_verified_market_match_prepares_private_idempotent_proposal(goia_db):
     assert payload["buyer_identity_included"] is False
     assert payload["aggregate_evidence"]["unmet_count"] == 5
     assert payload["request_endpoint"] == "https://merchant.example/goia-partnership"
+
+    connection = sqlite3.connect(goia_db)
+    connection.execute(
+        "UPDATE goia_partner_prospects SET outreach_authorized = 0"
+    )
+    connection.commit()
+    connection.close()
+    assert repository.claim_partner_proposal(now=86_016) is None
+    connection = sqlite3.connect(goia_db)
+    connection.execute(
+        """
+        UPDATE goia_partner_prospects
+        SET outreach_authorized = 1, permission_status = 'verified_opt_in'
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    first_claim = repository.claim_partner_proposal(now=86_016)
+    retry = repository.finish_partner_proposal_delivery(
+        first_claim["proposal_id"],
+        lease_token=first_claim["lease_token"],
+        delivered=False,
+        retryable=True,
+        error_code="temporary_unavailable",
+        now=86_016,
+    )
+    assert retry["status"] == "retryable"
+    assert repository.claim_partner_proposal(now=86_135) is None
+    second_claim = repository.claim_partner_proposal(now=86_136)
+    recovered = repository.recover_stale_partner_deliveries(
+        now=second_claim["lease_until"],
+    )
+    third_claim = repository.claim_partner_proposal(now=second_claim["lease_until"])
+    delivered = repository.finish_partner_proposal_delivery(
+        third_claim["proposal_id"],
+        lease_token=third_claim["lease_token"],
+        delivered=True,
+        now=second_claim["lease_until"],
+    )
+    events = repository.list_partner_delivery_events(
+        proposal_id=first_claim["proposal_id"]
+    )
+    prospect = repository.list_partner_prospects()["items"][0]
+
+    assert recovered["recovered_count"] == 1
+    assert delivered["status"] == "delivered"
+    assert prospect["contact_attempted"] is True
+    assert [item["event_type"] for item in events["items"]] == [
+        "delivery_claimed",
+        "delivery_failed",
+        "delivery_claimed",
+        "stale_lease_recovered",
+        "delivery_claimed",
+        "delivery_completed",
+    ]
+
+
+def test_partnership_dispatcher_is_fail_closed_by_default(monkeypatch):
+    monkeypatch.delenv("IAT_GOIA_PARTNERSHIP_DELIVERY_ENABLED", raising=False)
+    called = []
+
+    result = partnership_dispatcher.process_one_delivery(
+        sender=lambda proposal: called.append(proposal),
+    )
+
+    assert result == {
+        "status": "disabled",
+        "reason": "explicit_enable_required",
+        "network_access_performed": False,
+    }
+    assert called == []
+
+
+def test_enabled_dispatcher_still_requires_delivery_adapter(monkeypatch):
+    monkeypatch.setenv("IAT_GOIA_PARTNERSHIP_DELIVERY_ENABLED", "true")
+
+    result = partnership_dispatcher.process_one_delivery()
+
+    assert result["status"] == "blocked"
+    assert result["reason"] == "delivery_adapter_not_configured"
+    assert result["network_access_performed"] is False

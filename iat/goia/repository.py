@@ -336,12 +336,54 @@ def init_goia_tables() -> None:
                 payload_json TEXT NOT NULL,
                 payload_hash TEXT NOT NULL,
                 manifest_hash TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at INTEGER NOT NULL DEFAULT 0,
+                lease_token TEXT,
+                lease_until INTEGER,
+                last_error_code TEXT,
+                delivered_at INTEGER,
                 created_at INTEGER NOT NULL,
                 expires_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 UNIQUE(opportunity_id, prospect_id, manifest_hash)
             )
             """
+        )
+        for column, definition in (
+            ("attempts", "INTEGER NOT NULL DEFAULT 0"),
+            ("next_attempt_at", "INTEGER NOT NULL DEFAULT 0"),
+            ("lease_token", "TEXT"),
+            ("lease_until", "INTEGER"),
+            ("last_error_code", "TEXT"),
+            ("delivered_at", "INTEGER"),
+        ):
+            cur = _ensure_column(
+                conn,
+                cur,
+                "goia_partnership_outbox",
+                column,
+                definition,
+            )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS goia_partnership_delivery_events (
+                event_id TEXT PRIMARY KEY,
+                proposal_id TEXT NOT NULL,
+                event_order INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                from_status TEXT,
+                to_status TEXT NOT NULL,
+                reason TEXT,
+                created_at INTEGER NOT NULL
+            )
+            """
+        )
+        cur = _ensure_column(
+            conn,
+            cur,
+            "goia_partnership_delivery_events",
+            "event_order",
+            "INTEGER NOT NULL DEFAULT 0",
         )
         conn.commit()
     finally:
@@ -1978,7 +2020,7 @@ def prepare_partner_proposals(*, now: int | None = None, limit: int = 100) -> di
             f"""
             UPDATE goia_partnership_outbox
             SET status = 'expired', updated_at = {marker}
-            WHERE status = 'prepared' AND expires_at <= {marker}
+            WHERE status IN ('prepared', 'retryable') AND expires_at <= {marker}
             """,
             (timestamp, timestamp),
         )
@@ -1986,7 +2028,7 @@ def prepare_partner_proposals(*, now: int | None = None, limit: int = 100) -> di
             f"""
             UPDATE goia_partnership_outbox
             SET status = 'cancelled', updated_at = {marker}
-            WHERE status = 'prepared'
+            WHERE status IN ('prepared', 'retryable')
               AND NOT EXISTS (
                   SELECT 1
                   FROM goia_partner_prospects p
@@ -2073,8 +2115,8 @@ def prepare_partner_proposals(*, now: int | None = None, limit: int = 100) -> di
                 INSERT INTO goia_partnership_outbox (
                     proposal_id, opportunity_id, prospect_id, provider_id,
                     endpoint, status, payload_json, payload_hash, manifest_hash,
-                    created_at, expires_at, updated_at
-                ) VALUES ({", ".join([marker] * 12)})
+                    next_attempt_at, created_at, expires_at, updated_at
+                ) VALUES ({", ".join([marker] * 13)})
                 """,
                 (
                     proposal_id,
@@ -2086,6 +2128,7 @@ def prepare_partner_proposals(*, now: int | None = None, limit: int = 100) -> di
                     payload_json,
                     payload_hash,
                     row["manifest_hash"],
+                    timestamp,
                     timestamp,
                     expires_at,
                     timestamp,
@@ -2109,12 +2152,294 @@ def prepare_partner_proposals(*, now: int | None = None, limit: int = 100) -> di
         release_conn(conn)
 
 
+def claim_partner_proposal(
+    *,
+    now: int | None = None,
+    lease_seconds: int = 120,
+) -> dict[str, Any] | None:
+    timestamp = int(now or time.time())
+    lease_until = timestamp + max(30, min(int(lease_seconds), 600))
+    marker = qmark()
+    for _attempt in range(3):
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                f"""
+                SELECT o.*
+                FROM goia_partnership_outbox o
+                JOIN goia_partner_prospects p ON p.prospect_id = o.prospect_id
+                JOIN goia_merchants m ON m.provider_id = o.provider_id
+                JOIN goia_provider_verifications v ON v.provider_id = o.provider_id
+                WHERE o.status IN ('prepared', 'retryable')
+                  AND o.next_attempt_at <= {marker}
+                  AND o.expires_at > {marker}
+                  AND p.permission_status = 'verified_opt_in'
+                  AND p.outreach_authorized = 1
+                  AND m.manifest_hash = o.manifest_hash
+                  AND v.manifest_hash = o.manifest_hash
+                  AND v.expires_at > {marker}
+                ORDER BY o.created_at ASC, o.proposal_id ASC
+                LIMIT 1
+                """,
+                (timestamp, timestamp, timestamp),
+            )
+            selected = _row(cur.fetchone())
+            if selected is None:
+                return None
+            lease_token = uuid.uuid4().hex
+            cur.execute(
+                f"""
+                UPDATE goia_partnership_outbox
+                SET status = 'delivering', attempts = attempts + 1,
+                    lease_token = {marker}, lease_until = {marker},
+                    updated_at = {marker}
+                WHERE proposal_id = {marker}
+                  AND status IN ('prepared', 'retryable')
+                """,
+                (lease_token, lease_until, timestamp, selected["proposal_id"]),
+            )
+            if cur.rowcount != 1:
+                conn.rollback()
+                continue
+            _insert_partner_delivery_event(
+                cur,
+                proposal_id=selected["proposal_id"],
+                event_type="delivery_claimed",
+                from_status=selected["status"],
+                to_status="delivering",
+                reason=None,
+                now=timestamp,
+            )
+            conn.commit()
+            selected["status"] = "delivering"
+            selected["attempts"] = int(selected["attempts"]) + 1
+            selected["lease_token"] = lease_token
+            selected["lease_until"] = lease_until
+            selected["payload"] = json.loads(selected.pop("payload_json"))
+            return selected
+        finally:
+            release_conn(conn)
+    return None
+
+
+def finish_partner_proposal_delivery(
+    proposal_id: str,
+    *,
+    lease_token: str,
+    delivered: bool,
+    retryable: bool = False,
+    error_code: str | None = None,
+    now: int | None = None,
+    maximum_attempts: int = 3,
+) -> dict[str, Any]:
+    timestamp = int(now or time.time())
+    marker = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"""
+            SELECT status, attempts, prospect_id
+            FROM goia_partnership_outbox
+            WHERE proposal_id = {marker} AND lease_token = {marker}
+            """,
+            (proposal_id, lease_token),
+        )
+        current = _row(cur.fetchone())
+        if current is None or current["status"] != "delivering":
+            raise GOIARepositoryError("proposal_delivery_lease_invalid")
+        if delivered:
+            status = "delivered"
+            next_attempt_at = timestamp
+        elif retryable and int(current["attempts"]) < max(1, min(maximum_attempts, 10)):
+            status = "retryable"
+            next_attempt_at = timestamp + min(86_400, 60 * (2 ** int(current["attempts"])))
+        else:
+            status = "failed"
+            next_attempt_at = timestamp
+        cur.execute(
+            f"""
+            UPDATE goia_partnership_outbox
+            SET status = {marker}, next_attempt_at = {marker},
+                lease_token = NULL, lease_until = NULL,
+                last_error_code = {marker}, delivered_at = {marker},
+                updated_at = {marker}
+            WHERE proposal_id = {marker} AND lease_token = {marker}
+            """,
+            (
+                status,
+                next_attempt_at,
+                None if delivered else str(error_code or "delivery_failed")[:160],
+                timestamp if delivered else None,
+                timestamp,
+                proposal_id,
+                lease_token,
+            ),
+        )
+        if delivered:
+            cur.execute(
+                f"""
+                UPDATE goia_partner_prospects
+                SET contact_attempted = 1, updated_at = {marker}
+                WHERE prospect_id = {marker}
+                """,
+                (timestamp, current["prospect_id"]),
+            )
+        _insert_partner_delivery_event(
+            cur,
+            proposal_id=proposal_id,
+            event_type="delivery_completed" if delivered else "delivery_failed",
+            from_status="delivering",
+            to_status=status,
+            reason=None if delivered else str(error_code or "delivery_failed")[:160],
+            now=timestamp,
+        )
+        conn.commit()
+        return {
+            "proposal_id": proposal_id,
+            "status": status,
+            "attempts": int(current["attempts"]),
+            "next_attempt_at": next_attempt_at,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_conn(conn)
+
+
+def recover_stale_partner_deliveries(*, now: int | None = None) -> dict[str, Any]:
+    timestamp = int(now or time.time())
+    marker = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"""
+            SELECT proposal_id FROM goia_partnership_outbox
+            WHERE status = 'delivering' AND lease_until <= {marker}
+            """,
+            (timestamp,),
+        )
+        proposal_ids = [row["proposal_id"] for row in map(dict, cur.fetchall())]
+        cur.execute(
+            f"""
+            UPDATE goia_partnership_outbox
+            SET status = 'retryable', lease_token = NULL, lease_until = NULL,
+                next_attempt_at = {marker}, last_error_code = 'stale_delivery_lease',
+                updated_at = {marker}
+            WHERE status = 'delivering' AND lease_until <= {marker}
+            """,
+            (timestamp, timestamp, timestamp),
+        )
+        for proposal_id in proposal_ids:
+            _insert_partner_delivery_event(
+                cur,
+                proposal_id=proposal_id,
+                event_type="stale_lease_recovered",
+                from_status="delivering",
+                to_status="retryable",
+                reason="stale_delivery_lease",
+                now=timestamp,
+            )
+        conn.commit()
+        return {"status": "ok", "recovered_count": len(proposal_ids)}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_conn(conn)
+
+
+def _insert_partner_delivery_event(
+    cur,
+    *,
+    proposal_id: str,
+    event_type: str,
+    from_status: str | None,
+    to_status: str,
+    reason: str | None,
+    now: int,
+) -> None:
+    marker = qmark()
+    cur.execute(
+        f"""
+        SELECT COALESCE(MAX(event_order), 0) AS maximum_order
+        FROM goia_partnership_delivery_events
+        WHERE proposal_id = {marker}
+        """,
+        (proposal_id,),
+    )
+    event_order = int(_row(cur.fetchone())["maximum_order"]) + 1
+    cur.execute(
+        f"""
+        INSERT INTO goia_partnership_delivery_events (
+            event_id, proposal_id, event_order, event_type,
+            from_status, to_status, reason, created_at
+        ) VALUES ({", ".join([marker] * 8)})
+        """,
+        (
+            f"gde_{uuid.uuid4().hex}",
+            proposal_id,
+            event_order,
+            event_type,
+            from_status,
+            to_status,
+            reason,
+            now,
+        ),
+    )
+
+
+def list_partner_delivery_events(
+    *,
+    proposal_id: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    marker = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        if proposal_id:
+            cur.execute(
+                f"""
+                SELECT * FROM goia_partnership_delivery_events
+                WHERE proposal_id = {marker}
+                ORDER BY event_order ASC, event_id ASC
+                LIMIT {marker}
+                """,
+                (proposal_id, max(1, min(int(limit), 500))),
+            )
+        else:
+            cur.execute(
+                f"""
+                SELECT * FROM goia_partnership_delivery_events
+                ORDER BY created_at DESC, event_id ASC
+                LIMIT {marker}
+                """,
+                (max(1, min(int(limit), 500)),),
+            )
+        items = list(map(dict, cur.fetchall()))
+        return {"status": "ok", "count": len(items), "items": items}
+    finally:
+        release_conn(conn)
+
+
 def list_partner_proposals(
     *,
     status: str | None = None,
     limit: int = 100,
 ) -> dict[str, Any]:
-    if status is not None and status not in {"prepared", "expired", "cancelled"}:
+    if status is not None and status not in {
+        "prepared",
+        "delivering",
+        "retryable",
+        "delivered",
+        "failed",
+        "expired",
+        "cancelled",
+    }:
         raise GOIARepositoryError("invalid_proposal_status")
     marker = qmark()
     conn = get_conn()

@@ -19,6 +19,7 @@ from iat.goia.repository import (
     list_review_candidates,
     list_partnership_opportunities,
     list_partner_prospects,
+    list_provider_verifications,
     refresh_partnership_opportunities,
     refresh_partner_permissions,
     reject_review_candidate,
@@ -126,6 +127,10 @@ def build_goia_admin_router(require_admin: Callable) -> APIRouter:
     @router.post("/partnership/permissions/refresh")
     def refresh_permissions():
         return refresh_partner_permissions()
+
+    @router.get("/partnership/verifications")
+    def partnership_verifications(limit: int = 100):
+        return list_provider_verifications(limit=limit)
 
     @router.get("/review/candidates")
     def review_candidates(status: str = "pending_review", limit: int = 100):

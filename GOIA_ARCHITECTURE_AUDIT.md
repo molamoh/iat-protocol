@@ -62,8 +62,14 @@ contacté : il constitue une preuve, jamais une autorisation.
 Mise à jour permission partenariats : le manifeste marchand possède un opt-in
 explicite et fermé par défaut. GOIA rapproche automatiquement domaine,
 manifeste et prospect, puis révoque l'état dès que l'opt-in disparaît. À ce
-stade, la déclaration reste distincte d'une preuve d'auto-hébergement et
-n'autorise donc encore aucun contact.
+stade, la déclaration seule reste distincte d'une preuve d'auto-hébergement et
+n'autorise donc aucun contact.
+
+Mise à jour preuve d'auto-hébergement : le worker collecte périodiquement le
+manifeste de partenariat déclaré via l'allowlist et robots.txt, puis exige une
+égalité exacte du hash normalisé, du fournisseur, du domaine et de l'URL
+source. La preuve expire automatiquement ; seul `verified_opt_in` autorise
+l'endpoint déclaré, sans encore émettre de requête.
 
 ## 1. Résumé exécutif
 

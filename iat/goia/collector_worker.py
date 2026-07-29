@@ -11,6 +11,7 @@ from iat.goia.collector import (
     extract_commercial_json_ld,
     extract_native_catalog_candidates,
     extract_partner_hints,
+    extract_provider_manifest,
     extract_sitemap_urls,
     fetch_allowed_document,
 )
@@ -22,6 +23,7 @@ from iat.goia.repository import (
     fail_collection_job,
     init_goia_tables,
     recover_stale_collection_jobs,
+    record_provider_manifest_verification,
     refresh_partnership_opportunities,
     refresh_opportunity_prospect_links,
     refresh_partner_permissions,
@@ -79,6 +81,37 @@ def process_one_job() -> dict:
                 "source_discovery": source_discovery,
                 "partnership_intelligence": partnership_intelligence,
                 "partnership_permissions": partnership_permissions,
+            }
+        if job.get("job_type") == "provider_manifest":
+            manifest = extract_provider_manifest(
+                document,
+                provider_id=job["provider_id"],
+            )
+            verification = record_provider_manifest_verification(
+                provider_id=job["provider_id"],
+                manifest=manifest,
+                source_url=document.url,
+                source_sha256=document.sha256,
+            )
+            permissions = refresh_partner_permissions()
+            complete_collection_job(
+                job["job_id"],
+                result={
+                    "source_url": document.url,
+                    "source_sha256": document.sha256,
+                    "verification": verification,
+                    "partnership_permissions": permissions,
+                    "publication_status": "verification_only",
+                },
+            )
+            return {
+                "status": "completed",
+                "job_id": job["job_id"],
+                "job_type": "provider_manifest",
+                "verification": verification,
+                "partnership_permissions": permissions,
+                "publication_status": "verification_only",
+                "outreach_triggered": False,
             }
         if job.get("job_type") == "catalog_json":
             candidates = extract_native_catalog_candidates(

@@ -114,8 +114,10 @@ class CatalogSource(StrictGOIAModel):
 
 class PartnershipDiscoveryPolicy(StrictGOIAModel):
     accepts_partnership_requests: bool = False
+    manifest_url: HttpUrl | None = None
     request_endpoint: HttpUrl | None = None
     terms_url: HttpUrl | None = None
+    verification_interval_seconds: int = Field(default=86_400, ge=3_600, le=604_800)
     relationship_types: list[Literal["affiliate", "direct_partner"]] = Field(
         default_factory=list,
         max_length=2,
@@ -124,9 +126,15 @@ class PartnershipDiscoveryPolicy(StrictGOIAModel):
     @model_validator(mode="after")
     def validate_explicit_opt_in(self):
         if self.accepts_partnership_requests:
-            if self.request_endpoint is None or not self.relationship_types:
-                raise ValueError("partnership_opt_in_requires_endpoint_and_relationship")
-        elif self.request_endpoint is not None or self.relationship_types:
+            if (
+                self.manifest_url is None
+                or self.request_endpoint is None
+                or not self.relationship_types
+            ):
+                raise ValueError(
+                    "partnership_opt_in_requires_manifest_endpoint_and_relationship"
+                )
+        elif self.manifest_url is not None or self.request_endpoint is not None or self.relationship_types:
             raise ValueError("partnership_details_require_explicit_opt_in")
         return self
 
@@ -155,7 +163,7 @@ class MerchantProviderManifest(StrictGOIAModel):
             raise ValueError("commercial_relationship_requires_attribution")
         website_host = str(self.website.host or "").lower().rstrip(".")
         policy = self.partnership_discovery
-        for endpoint in (policy.request_endpoint, policy.terms_url):
+        for endpoint in (policy.manifest_url, policy.request_endpoint, policy.terms_url):
             if endpoint is not None and str(endpoint.host or "").lower().rstrip(".") != website_host:
                 raise ValueError("partnership_urls_must_match_provider_domain")
         return self

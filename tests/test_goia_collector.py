@@ -380,6 +380,45 @@ def test_worker_is_disabled_by_default(monkeypatch):
     assert worker.main() == 0
 
 
+def test_provider_manifest_requires_exact_self_hosted_source():
+    provider = MerchantProviderManifest(
+        provider_id="gop_provider_001",
+        name="Example Merchant",
+        website="https://merchant.example",
+        countries=["FR"],
+        currencies=["EUR"],
+        catalogs=[
+            {
+                "source_id": "catalog-main",
+                "source_type": "sitemap",
+                "url": "https://merchant.example/sitemap.xml",
+                "refresh_interval_seconds": 3_600,
+            }
+        ],
+        partnership_discovery={
+            "accepts_partnership_requests": True,
+            "manifest_url": "https://merchant.example/.well-known/goia-provider.json",
+            "request_endpoint": "https://merchant.example/goia-partnership",
+            "relationship_types": ["affiliate"],
+        },
+    )
+    document = collector.CollectedDocument(
+        url="https://merchant.example/.well-known/goia-provider.json",
+        content_type="application/json",
+        body=json.dumps(provider.model_dump(mode="json")).encode(),
+        sha256="a" * 64,
+    )
+
+    extracted = collector.extract_provider_manifest(
+        document,
+        provider_id=provider.provider_id,
+    )
+
+    assert extracted == provider
+    with pytest.raises(collector.GOIACollectionError, match="provider_mismatch"):
+        collector.extract_provider_manifest(document, provider_id="gop_other_001")
+
+
 def test_worker_never_publishes_candidates_directly(monkeypatch):
     monkeypatch.setattr(
         worker,
@@ -876,6 +915,32 @@ def test_native_catalog_source_is_seeded_below_sitemap_priority(goia_db):
     assert second["priority"] == 90
 
 
+def test_partnership_manifest_source_is_seeded_for_periodic_verification(goia_db):
+    provider = MerchantProviderManifest(
+        **{
+            **_provider().model_dump(mode="json"),
+            "partnership_discovery": {
+                "accepts_partnership_requests": True,
+                "manifest_url": "https://merchant.example/.well-known/goia-provider.json",
+                "request_endpoint": "https://merchant.example/goia-partnership",
+                "relationship_types": ["affiliate"],
+                "verification_interval_seconds": 3_600,
+            },
+        }
+    )
+    repository.upsert_merchant(provider, now=900)
+
+    seeded = repository.seed_due_catalog_sources(now=7_200)
+    first = repository.claim_collection_job(now=7_201)
+
+    assert seeded["seeded_count"] == 2
+    assert first["job_type"] == "sitemap"
+    repository.complete_collection_job(first["job_id"], result={}, now=7_202)
+    verification = repository.claim_collection_job(now=7_203)
+    assert verification["job_type"] == "provider_manifest"
+    assert verification["priority"] == 95
+
+
 def test_native_catalog_flows_through_autonomous_publication(goia_db):
     provider = _native_provider()
     repository.upsert_merchant(provider, now=900)
@@ -1004,3 +1069,79 @@ def test_worker_expands_sitemap_without_treating_it_as_product(monkeypatch):
     assert result["discovered_url_count"] == 2
     assert result["page_jobs_created"] == 2
     assert completed["result"]["publication_status"] == "discovery_only"
+
+
+def test_worker_verifies_provider_manifest_without_creating_offer(monkeypatch):
+    maintenance = {"status": "ok"}
+    provider = MerchantProviderManifest(
+        provider_id="gop_provider_001",
+        name="Example Merchant",
+        website="https://merchant.example",
+        countries=["FR"],
+        currencies=["EUR"],
+        catalogs=[
+            {
+                "source_id": "catalog-main",
+                "source_type": "sitemap",
+                "url": "https://merchant.example/sitemap.xml",
+                "refresh_interval_seconds": 3_600,
+            }
+        ],
+        partnership_discovery={
+            "accepts_partnership_requests": True,
+            "manifest_url": "https://merchant.example/.well-known/goia-provider.json",
+            "request_endpoint": "https://merchant.example/goia-partnership",
+            "relationship_types": ["affiliate"],
+        },
+    )
+    monkeypatch.setattr(worker, "recover_stale_collection_jobs", lambda: maintenance)
+    monkeypatch.setattr(worker, "schedule_due_quarantine_retries", lambda: maintenance)
+    monkeypatch.setattr(worker, "seed_due_catalog_sources", lambda: maintenance)
+    monkeypatch.setattr(worker, "refresh_partnership_opportunities", lambda: maintenance)
+    permission_results = iter([maintenance, {"verified_opt_in_count": 1}])
+    monkeypatch.setattr(
+        worker,
+        "refresh_partner_permissions",
+        lambda: next(permission_results),
+    )
+    monkeypatch.setattr(
+        worker,
+        "claim_collection_job",
+        lambda: {
+            "job_id": "goj_manifest",
+            "provider_id": provider.provider_id,
+            "url": str(provider.partnership_discovery.manifest_url),
+            "job_type": "provider_manifest",
+        },
+    )
+    document = collector.CollectedDocument(
+        url=str(provider.partnership_discovery.manifest_url),
+        content_type="application/json",
+        body=json.dumps(provider.model_dump(mode="json")).encode(),
+        sha256="b" * 64,
+    )
+    monkeypatch.setattr(worker, "fetch_allowed_document", lambda url: document)
+    monkeypatch.setattr(
+        worker,
+        "extract_provider_manifest",
+        lambda document, provider_id: provider,
+    )
+    monkeypatch.setattr(
+        worker,
+        "record_provider_manifest_verification",
+        lambda **kwargs: {"status": "verified", "outreach_triggered": False},
+    )
+    completed = {}
+    monkeypatch.setattr(
+        worker,
+        "complete_collection_job",
+        lambda job_id, result: completed.update(job_id=job_id, result=result),
+    )
+
+    result = worker.process_one_job()
+
+    assert result["job_type"] == "provider_manifest"
+    assert result["publication_status"] == "verification_only"
+    assert result["outreach_triggered"] is False
+    assert completed["result"]["publication_status"] == "verification_only"
+    assert "candidate_count" not in completed["result"]

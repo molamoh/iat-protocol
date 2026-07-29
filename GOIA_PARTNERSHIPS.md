@@ -75,22 +75,31 @@ Merchant manifests may publish a fail-closed `partnership_discovery` block:
 ```json
 {
   "accepts_partnership_requests": true,
+  "manifest_url": "https://merchant.example/.well-known/goia-provider.json",
   "request_endpoint": "https://merchant.example/.well-known/goia-partnership",
   "terms_url": "https://merchant.example/partner-terms",
   "relationship_types": ["affiliate"]
 }
 ```
 
-An endpoint and at least one relationship type are mandatory when the opt-in
-is true. Partnership URLs must use the provider website domain. A commercial
+An auto-hosted manifest URL, an endpoint, and at least one relationship type
+are mandatory when the opt-in is true. Partnership URLs must use the provider
+website domain. A commercial
 relationship declared elsewhere in the manifest is not an opt-in.
 
 GOIA reconciles these declarations autonomously and marks a domain-matched
-prospect `declared_opt_in`. Removing the block revokes that status on the next
-cycle. This declaration is not yet proof that the manifest is self-hosted by
-the domain owner, so it never changes `outreach_authorized` and never sends a
-request. The administrative refresh route exists for audit and emergency use:
+prospect `declared_opt_in`. The controlled worker periodically fetches the
+declared manifest through the existing exact-host allowlist and robots policy.
+Only an exact normalized manifest hash, provider identity, source URL, and
+domain match produce `verified_opt_in`. The verification expires after two
+bounded refresh windows.
+
+Removing the block, changing the manifest, or allowing the proof to expire
+revokes `outreach_authorized` on the next cycle. Verification only authorizes
+the declared endpoint; this stage still sends no request. Administrative
+routes exist for audit and emergency use:
 
 ```text
 POST /admin/goia/partnership/permissions/refresh
+GET  /admin/goia/partnership/verifications
 ```

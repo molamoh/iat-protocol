@@ -336,6 +336,7 @@ def test_partner_permission_requires_domain_matched_explicit_opt_in(goia_db):
     provider = _provider(
         partnership_discovery={
             "accepts_partnership_requests": True,
+            "manifest_url": "https://merchant.example/.well-known/goia-provider.json",
             "request_endpoint": "https://merchant.example/.well-known/goia-partnership",
             "terms_url": "https://merchant.example/partner-terms",
             "relationship_types": ["affiliate"],
@@ -358,13 +359,42 @@ def test_partner_permission_requires_domain_matched_explicit_opt_in(goia_db):
     prospect = repository.list_partner_prospects()["items"][0]
 
     assert refreshed["declared_opt_in_count"] == 1
-    assert refreshed["self_hosting_verified"] is False
+    assert refreshed["verified_opt_in_count"] == 0
     assert refreshed["outreach_triggered"] is False
     assert prospect["permission_status"] == "declared_opt_in"
     assert prospect["permission_provider_id"] == provider.provider_id
     assert prospect["permission_evidence"]["domain_match"] is True
     assert prospect["permission_evidence"]["self_hosting_verified"] is False
     assert prospect["outreach_authorized"] is False
+
+
+def test_manifest_verification_rejects_non_matching_registered_payload(goia_db):
+    registered = _provider(
+        partnership_discovery={
+            "accepts_partnership_requests": True,
+            "manifest_url": "https://merchant.example/.well-known/goia-provider.json",
+            "request_endpoint": "https://merchant.example/goia-partnership",
+            "relationship_types": ["affiliate"],
+        }
+    )
+    repository.upsert_merchant(registered, now=1_000)
+    changed = _provider(
+        partnership_discovery={
+            "accepts_partnership_requests": True,
+            "manifest_url": "https://merchant.example/.well-known/goia-provider.json",
+            "request_endpoint": "https://merchant.example/other-endpoint",
+            "relationship_types": ["affiliate"],
+        }
+    )
+
+    with pytest.raises(repository.GOIARepositoryError, match="hash_mismatch"):
+        repository.record_provider_manifest_verification(
+            provider_id=registered.provider_id,
+            manifest=changed,
+            source_url=str(changed.partnership_discovery.manifest_url),
+            source_sha256="c" * 64,
+            now=1_001,
+        )
 
 
 def test_affiliate_relationship_alone_is_not_partnership_permission(goia_db):
@@ -401,6 +431,7 @@ def test_withdrawn_partner_opt_in_is_revoked_autonomously(goia_db):
     provider = _provider(
         partnership_discovery={
             "accepts_partnership_requests": True,
+            "manifest_url": "https://merchant.example/.well-known/goia-provider.json",
             "request_endpoint": "https://merchant.example/goia-partnership",
             "relationship_types": ["direct_partner"],
         }
@@ -431,4 +462,56 @@ def test_withdrawn_partner_opt_in_is_revoked_autonomously(goia_db):
     assert prospect["permission_status"] == "none"
     assert prospect["permission_provider_id"] is None
     assert prospect["permission_evidence"] is None
+    assert prospect["outreach_authorized"] is False
+
+
+def test_self_hosted_manifest_verification_authorizes_endpoint_without_sending(goia_db):
+    provider = _provider(
+        partnership_discovery={
+            "accepts_partnership_requests": True,
+            "manifest_url": "https://merchant.example/.well-known/goia-provider.json",
+            "request_endpoint": "https://merchant.example/goia-partnership",
+            "relationship_types": ["affiliate"],
+            "verification_interval_seconds": 3_600,
+        }
+    )
+    repository.upsert_merchant(provider, now=1_000)
+    repository.upsert_partner_hints(
+        [
+            {
+                "domain": "merchant.example",
+                "name": "Merchant",
+                "url": "https://merchant.example/offer",
+                "source_url": "https://comparison.example/cloud",
+                "source_sha256": "a" * 64,
+                "evidence_type": "schema_offer_seller",
+                "kinds": ["Service"],
+                "currencies": ["EUR"],
+            }
+        ],
+        now=1_001,
+    )
+    verification = repository.record_provider_manifest_verification(
+        provider_id=provider.provider_id,
+        manifest=provider,
+        source_url=str(provider.partnership_discovery.manifest_url),
+        source_sha256="b" * 64,
+        now=1_002,
+    )
+
+    refreshed = repository.refresh_partner_permissions(now=1_003)
+    prospect = repository.list_partner_prospects()["items"][0]
+
+    assert verification["status"] == "verified"
+    assert refreshed["verified_opt_in_count"] == 1
+    assert refreshed["outreach_triggered"] is False
+    assert prospect["permission_status"] == "verified_opt_in"
+    assert prospect["permission_evidence"]["self_hosting_verified"] is True
+    assert prospect["outreach_authorized"] is True
+    assert prospect["contact_attempted"] is False
+
+    expired = repository.refresh_partner_permissions(now=8_203)
+    prospect = repository.list_partner_prospects()["items"][0]
+    assert expired["verified_opt_in_count"] == 0
+    assert prospect["permission_status"] == "declared_opt_in"
     assert prospect["outreach_authorized"] is False

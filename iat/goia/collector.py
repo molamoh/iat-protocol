@@ -16,7 +16,7 @@ from bs4 import BeautifulSoup
 from pydantic import ValidationError
 
 from iat.security.network import UnsafeNetworkTarget, validate_public_runtime_url
-from iat.goia.contracts import NativeCatalogDocument
+from iat.goia.contracts import MerchantProviderManifest, NativeCatalogDocument
 
 
 GOIA_USER_AGENT = "GOIABot/0.1 (+https://iat-protocol-latest.onrender.com/.well-known/goia.json)"
@@ -383,3 +383,26 @@ def extract_native_catalog_candidates(
             }
         )
     return candidates
+
+
+def extract_provider_manifest(
+    document: CollectedDocument,
+    *,
+    provider_id: str,
+) -> MerchantProviderManifest:
+    if document.content_type not in {"application/json", "application/ld+json"}:
+        raise GOIACollectionError("provider_manifest_json_required")
+    try:
+        payload = json.loads(document.body)
+        manifest = MerchantProviderManifest.model_validate(payload)
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise GOIACollectionError("invalid_provider_manifest") from exc
+    if manifest.provider_id != provider_id:
+        raise GOIACollectionError("provider_manifest_provider_mismatch")
+    source_host = str(urlparse(document.url).hostname or "").lower().rstrip(".")
+    website_host = str(manifest.website.host or "").lower().rstrip(".")
+    if source_host != website_host:
+        raise GOIACollectionError("provider_manifest_domain_mismatch")
+    if str(manifest.partnership_discovery.manifest_url) != document.url:
+        raise GOIACollectionError("provider_manifest_source_mismatch")
+    return manifest

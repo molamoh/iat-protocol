@@ -75,7 +75,8 @@ def test_goia_manifest_is_defensively_copied_and_local_only():
         "anonymous_demand_aggregation": True,
         "autonomous_partnership_gap_detection": True,
         "explicit_partnership_opt_in": True,
-        "declared_opt_in_authorizes_outreach": False,
+        "self_hosted_partnership_verification": True,
+        "verified_opt_in_required_for_outreach_authorization": True,
     }
 
 
@@ -98,7 +99,7 @@ def test_iat_discovery_advertises_only_controlled_local_search():
     assert manifest["goia"]["autonomous_provider_source_discovery"] is True
     assert manifest["goia"]["anonymous_demand_aggregation"] is True
     assert manifest["goia"]["explicit_partnership_opt_in"] is True
-    assert manifest["goia"]["declared_opt_in_authorizes_outreach"] is False
+    assert manifest["goia"]["self_hosted_partnership_verification"] is True
     assert manifest["goia"]["outreach_triggered"] is False
     assert capability["contract_validation"] is True
     assert capability["search_available"] is True
@@ -109,6 +110,7 @@ def test_iat_discovery_advertises_only_controlled_local_search():
     assert capability["autonomous_provider_source_discovery"] is True
     assert capability["autonomous_partnership_gap_detection"] is True
     assert capability["explicit_partnership_opt_in"] is True
+    assert capability["verified_opt_in_required_for_outreach_authorization"] is True
     assert capability["outreach_triggered"] is False
     assert capability["index_scope"] == "controlled_catalogs_only"
 
@@ -207,6 +209,7 @@ def test_provider_partnership_discovery_is_closed_by_default_and_explicit():
 
     payload["partnership_discovery"] = {
         "accepts_partnership_requests": True,
+        "manifest_url": "https://merchant.example/.well-known/goia-provider.json",
         "request_endpoint": "https://merchant.example/.well-known/goia-partnership",
         "terms_url": "https://merchant.example/affiliate-terms",
         "relationship_types": ["affiliate"],

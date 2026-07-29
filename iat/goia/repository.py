@@ -307,6 +307,19 @@ def init_goia_tables() -> None:
             )
             """
         )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS goia_provider_verifications (
+                provider_id TEXT PRIMARY KEY,
+                manifest_hash TEXT NOT NULL,
+                source_url TEXT NOT NULL,
+                source_sha256 TEXT NOT NULL,
+                verified_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """
+        )
         conn.commit()
     finally:
         release_conn(conn)
@@ -551,7 +564,7 @@ def enqueue_collection_job(
     priority: int = 50,
     now: int | None = None,
 ) -> dict[str, Any]:
-    if job_type not in {"page", "sitemap", "catalog_json"}:
+    if job_type not in {"page", "sitemap", "catalog_json", "provider_manifest"}:
         raise GOIARepositoryError("invalid_collection_job_type")
     bounded_priority = max(0, min(int(priority), 100))
     timestamp = int(now or time.time())
@@ -1575,7 +1588,18 @@ def refresh_partner_permissions(*, now: int | None = None) -> dict[str, Any]:
             """,
             (timestamp,),
         )
-        cur.execute("SELECT provider_id, website, manifest_json, manifest_hash FROM goia_merchants")
+        cur.execute(
+            """
+            SELECT m.provider_id, m.website, m.manifest_json, m.manifest_hash,
+                   v.manifest_hash AS verified_manifest_hash,
+                   v.source_url AS verification_source_url,
+                   v.source_sha256 AS verification_source_sha256,
+                   v.verified_at, v.expires_at AS verification_expires_at
+            FROM goia_merchants m
+            LEFT JOIN goia_provider_verifications v
+              ON v.provider_id = m.provider_id
+            """
+        )
         providers = list(map(dict, cur.fetchall()))
         cur.execute("SELECT prospect_id, domain FROM goia_partner_prospects")
         prospects = list(map(dict, cur.fetchall()))
@@ -1591,6 +1615,11 @@ def refresh_partner_permissions(*, now: int | None = None) -> dict[str, Any]:
             policy = manifest.get("partnership_discovery") or {}
             if not policy.get("accepts_partnership_requests"):
                 continue
+            verification_current = (
+                provider.get("verified_manifest_hash") == provider["manifest_hash"]
+                and int(provider.get("verification_expires_at") or 0) > timestamp
+                and provider.get("verification_source_url") == policy.get("manifest_url")
+            )
             evidence = {
                 "provider_id": provider["provider_id"],
                 "manifest_hash": provider["manifest_hash"],
@@ -1598,32 +1627,57 @@ def refresh_partner_permissions(*, now: int | None = None) -> dict[str, Any]:
                 "terms_url": policy.get("terms_url"),
                 "relationship_types": policy.get("relationship_types") or [],
                 "domain_match": True,
-                "self_hosting_verified": False,
+                "self_hosting_verified": verification_current,
+                "verification_source_sha256": (
+                    provider.get("verification_source_sha256")
+                    if verification_current
+                    else None
+                ),
+                "verified_at": provider.get("verified_at") if verification_current else None,
+                "verification_expires_at": (
+                    provider.get("verification_expires_at")
+                    if verification_current
+                    else None
+                ),
             }
+            permission_status = (
+                "verified_opt_in" if verification_current else "declared_opt_in"
+            )
             cur.execute(
                 f"""
                 UPDATE goia_partner_prospects
-                SET permission_status = 'declared_opt_in',
+                SET permission_status = {marker},
                     permission_provider_id = {marker},
                     permission_evidence_json = {marker},
-                    outreach_authorized = 0,
+                    outreach_authorized = {marker},
                     updated_at = {marker}
                 WHERE prospect_id = {marker}
                 """,
                 (
+                    permission_status,
                     provider["provider_id"],
                     _canonical_json(evidence),
+                    int(verification_current),
                     timestamp,
                     prospect["prospect_id"],
                 ),
             )
-            matched.append(prospect["prospect_id"])
+            matched.append(
+                {
+                    "prospect_id": prospect["prospect_id"],
+                    "permission_status": permission_status,
+                }
+            )
         conn.commit()
         return {
             "status": "ok",
-            "declared_opt_in_count": len(matched),
-            "prospect_ids": sorted(matched),
-            "self_hosting_verified": False,
+            "declared_opt_in_count": sum(
+                item["permission_status"] == "declared_opt_in" for item in matched
+            ),
+            "verified_opt_in_count": sum(
+                item["permission_status"] == "verified_opt_in" for item in matched
+            ),
+            "prospect_ids": sorted(item["prospect_id"] for item in matched),
             "outreach_triggered": False,
         }
     except Exception:
@@ -1699,6 +1753,31 @@ def seed_due_catalog_sources(
     unsupported = []
     for merchant in merchants:
         manifest = json.loads(merchant["manifest_json"])
+        policy = manifest.get("partnership_discovery") or {}
+        if policy.get("accepts_partnership_requests") and len(seeded) < max(
+            1, min(int(limit), 500)
+        ):
+            interval = max(
+                3_600,
+                min(int(policy.get("verification_interval_seconds") or 86_400), 604_800),
+            )
+            window = timestamp // interval
+            result = enqueue_collection_job(
+                provider_id=merchant["provider_id"],
+                url=str(policy["manifest_url"]),
+                idempotency_key=f"goia-provider-manifest:{merchant['provider_id']}:{window}",
+                job_type="provider_manifest",
+                priority=95,
+                now=timestamp,
+            )
+            if result["state"] == "created":
+                seeded.append(
+                    {
+                        "provider_id": merchant["provider_id"],
+                        "source_id": "partnership_manifest",
+                        "job_id": result["job_id"],
+                    }
+                )
         for source in manifest.get("catalogs") or []:
             if len(seeded) >= max(1, min(int(limit), 500)):
                 break
@@ -1739,6 +1818,128 @@ def seed_due_catalog_sources(
         "seeded": seeded,
         "unsupported": unsupported,
     }
+
+
+def record_provider_manifest_verification(
+    *,
+    provider_id: str,
+    manifest: MerchantProviderManifest,
+    source_url: str,
+    source_sha256: str,
+    now: int | None = None,
+) -> dict[str, Any]:
+    timestamp = int(now or time.time())
+    payload_json = _canonical_json(manifest.model_dump(mode="json"))
+    manifest_hash = _payload_hash(payload_json)
+    policy = manifest.partnership_discovery
+    if not policy.accepts_partnership_requests:
+        raise GOIARepositoryError("provider_manifest_partnership_opt_in_required")
+    if str(policy.manifest_url) != source_url:
+        raise GOIARepositoryError("provider_manifest_source_mismatch")
+    if (
+        len(source_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in source_sha256)
+    ):
+        raise GOIARepositoryError("invalid_provider_manifest_source_hash")
+    expires_at = timestamp + min(
+        int(policy.verification_interval_seconds) * 2,
+        604_800,
+    )
+    marker = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"""
+            SELECT manifest_hash FROM goia_merchants
+            WHERE provider_id = {marker}
+            """,
+            (provider_id,),
+        )
+        merchant = _row(cur.fetchone())
+        if merchant is None:
+            raise GOIARepositoryError("merchant_not_found")
+        if merchant["manifest_hash"] != manifest_hash:
+            raise GOIARepositoryError("provider_manifest_hash_mismatch")
+        cur.execute(
+            f"""
+            INSERT INTO goia_provider_verifications (
+                provider_id, manifest_hash, source_url, source_sha256,
+                verified_at, expires_at, updated_at
+            ) VALUES ({", ".join([marker] * 7)})
+            ON CONFLICT(provider_id) DO UPDATE SET
+                manifest_hash = {marker}, source_url = {marker},
+                source_sha256 = {marker}, verified_at = {marker},
+                expires_at = {marker}, updated_at = {marker}
+            """,
+            (
+                provider_id,
+                manifest_hash,
+                source_url,
+                source_sha256,
+                timestamp,
+                expires_at,
+                timestamp,
+                manifest_hash,
+                source_url,
+                source_sha256,
+                timestamp,
+                expires_at,
+                timestamp,
+            ),
+        )
+        conn.commit()
+        return {
+            "status": "verified",
+            "provider_id": provider_id,
+            "manifest_hash": manifest_hash,
+            "verified_at": timestamp,
+            "expires_at": expires_at,
+            "outreach_triggered": False,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_conn(conn)
+
+
+def list_provider_verifications(
+    *,
+    limit: int = 100,
+    now: int | None = None,
+) -> dict[str, Any]:
+    timestamp = int(now or time.time())
+    marker = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"""
+            SELECT v.*, m.manifest_hash AS current_manifest_hash
+            FROM goia_provider_verifications v
+            JOIN goia_merchants m ON m.provider_id = v.provider_id
+            ORDER BY v.verified_at DESC, v.provider_id ASC
+            LIMIT {marker}
+            """,
+            (max(1, min(int(limit), 500)),),
+        )
+        items = []
+        for row in map(dict, cur.fetchall()):
+            row["current"] = (
+                row["manifest_hash"] == row.pop("current_manifest_hash")
+                and row["expires_at"] > timestamp
+            )
+            items.append(row)
+        return {
+            "status": "ok",
+            "count": len(items),
+            "items": items,
+            "as_of": timestamp,
+            "outreach_triggered": False,
+        }
+    finally:
+        release_conn(conn)
 
 
 def enqueue_sitemap_pages(

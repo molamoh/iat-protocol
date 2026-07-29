@@ -236,3 +236,9 @@ class PartnershipAcknowledgement(StrictGOIAModel):
         default=None,
         pattern=r"^[a-z][a-z0-9_]{2,79}$",
     )
+
+    @model_validator(mode="after")
+    def require_rejection_reason(self):
+        if self.status == "rejected" and self.reason_code is None:
+            raise ValueError("rejected_acknowledgement_requires_reason")
+        return self

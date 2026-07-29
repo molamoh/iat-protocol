@@ -13,6 +13,7 @@ from iat.api.db import get_conn, qmark, release_conn
 from iat.goia.contracts import (
     MerchantProviderManifest,
     OfferObservation,
+    PartnershipAcknowledgement,
     PartnershipProposal,
 )
 
@@ -347,6 +348,19 @@ def init_goia_tables() -> None:
                 expires_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 UNIQUE(opportunity_id, prospect_id, manifest_hash)
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS goia_partnership_suppressions (
+                domain TEXT PRIMARY KEY,
+                provider_id TEXT,
+                proposal_id TEXT,
+                reason_code TEXT NOT NULL,
+                source TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
             )
             """
         )
@@ -1668,6 +1682,11 @@ def refresh_partner_permissions(*, now: int | None = None) -> dict[str, Any]:
             """
         )
         providers = list(map(dict, cur.fetchall()))
+        cur.execute("SELECT * FROM goia_partnership_suppressions")
+        suppressions = {
+            row["domain"]: dict(row)
+            for row in cur.fetchall()
+        }
         cur.execute("SELECT prospect_id, domain FROM goia_partner_prospects")
         prospects = list(map(dict, cur.fetchall()))
         by_domain = {
@@ -1675,6 +1694,38 @@ def refresh_partner_permissions(*, now: int | None = None) -> dict[str, Any]:
             for row in providers
         }
         for prospect in prospects:
+            suppression = suppressions.get(prospect["domain"])
+            if suppression is not None:
+                cur.execute(
+                    f"""
+                    UPDATE goia_partner_prospects
+                    SET permission_status = 'suppressed',
+                        permission_provider_id = {marker},
+                        permission_evidence_json = {marker},
+                        outreach_authorized = 0,
+                        updated_at = {marker}
+                    WHERE prospect_id = {marker}
+                    """,
+                    (
+                        suppression.get("provider_id"),
+                        _canonical_json(
+                            {
+                                "reason_code": suppression["reason_code"],
+                                "source": suppression["source"],
+                                "proposal_id": suppression.get("proposal_id"),
+                            }
+                        ),
+                        timestamp,
+                        prospect["prospect_id"],
+                    ),
+                )
+                matched.append(
+                    {
+                        "prospect_id": prospect["prospect_id"],
+                        "permission_status": "suppressed",
+                    }
+                )
+                continue
             provider = by_domain.get(prospect["domain"])
             if provider is None:
                 continue
@@ -1743,6 +1794,9 @@ def refresh_partner_permissions(*, now: int | None = None) -> dict[str, Any]:
             ),
             "verified_opt_in_count": sum(
                 item["permission_status"] == "verified_opt_in" for item in matched
+            ),
+            "suppressed_count": sum(
+                item["permission_status"] == "suppressed" for item in matched
             ),
             "prospect_ids": sorted(item["prospect_id"] for item in matched),
             "outreach_triggered": False,
@@ -2181,6 +2235,11 @@ def claim_partner_proposal(
                   AND m.manifest_hash = o.manifest_hash
                   AND v.manifest_hash = o.manifest_hash
                   AND v.expires_at > {marker}
+                  AND NOT EXISTS (
+                      SELECT 1 FROM goia_partnership_outbox active
+                      WHERE active.prospect_id = o.prospect_id
+                        AND active.status = 'delivering'
+                  )
                 ORDER BY o.created_at ASC, o.proposal_id ASC
                 LIMIT 1
                 """,
@@ -2237,6 +2296,14 @@ def finish_partner_proposal_delivery(
     maximum_attempts: int = 3,
 ) -> dict[str, Any]:
     timestamp = int(now or time.time())
+    if delivered:
+        try:
+            acknowledgement = PartnershipAcknowledgement.model_validate(receipt)
+        except Exception as exc:
+            raise GOIARepositoryError("valid_delivery_receipt_required") from exc
+        if acknowledgement.proposal_id != proposal_id:
+            raise GOIARepositoryError("delivery_receipt_proposal_mismatch")
+        receipt = acknowledgement.model_dump(mode="json")
     marker = qmark()
     conn = get_conn()
     cur = conn.cursor()
@@ -2291,6 +2358,67 @@ def finish_partner_proposal_delivery(
                 """,
                 (timestamp, current["prospect_id"]),
             )
+            reason_code = str((receipt or {}).get("reason_code") or "")
+            receipt_status = str((receipt or {}).get("status") or "")
+            if receipt_status == "rejected" and reason_code in {
+                "opt_out",
+                "do_not_contact",
+            }:
+                cur.execute(
+                    f"""
+                    SELECT domain, permission_provider_id
+                    FROM goia_partner_prospects
+                    WHERE prospect_id = {marker}
+                    """,
+                    (current["prospect_id"],),
+                )
+                prospect = _row(cur.fetchone())
+                cur.execute(
+                    f"""
+                    INSERT INTO goia_partnership_suppressions (
+                        domain, provider_id, proposal_id, reason_code,
+                        source, created_at, updated_at
+                    ) VALUES ({", ".join([marker] * 7)})
+                    ON CONFLICT(domain) DO UPDATE SET
+                        provider_id = {marker}, proposal_id = {marker},
+                        reason_code = {marker}, source = {marker},
+                        updated_at = {marker}
+                    """,
+                    (
+                        prospect["domain"],
+                        prospect["permission_provider_id"],
+                        proposal_id,
+                        reason_code,
+                        "merchant_acknowledgement",
+                        timestamp,
+                        timestamp,
+                        prospect["permission_provider_id"],
+                        proposal_id,
+                        reason_code,
+                        "merchant_acknowledgement",
+                        timestamp,
+                    ),
+                )
+                cur.execute(
+                    f"""
+                    UPDATE goia_partner_prospects
+                    SET permission_status = 'suppressed',
+                        outreach_authorized = 0, updated_at = {marker}
+                    WHERE prospect_id = {marker}
+                    """,
+                    (timestamp, current["prospect_id"]),
+                )
+                cur.execute(
+                    f"""
+                    UPDATE goia_partnership_outbox
+                    SET status = 'cancelled', updated_at = {marker},
+                        last_error_code = 'merchant_opt_out'
+                    WHERE prospect_id = {marker}
+                      AND proposal_id <> {marker}
+                      AND status IN ('prepared', 'retryable')
+                    """,
+                    (timestamp, current["prospect_id"], proposal_id),
+                )
         _insert_partner_delivery_event(
             cur,
             proposal_id=proposal_id,
@@ -2427,6 +2555,30 @@ def list_partner_delivery_events(
             )
         items = list(map(dict, cur.fetchall()))
         return {"status": "ok", "count": len(items), "items": items}
+    finally:
+        release_conn(conn)
+
+
+def list_partner_suppressions(*, limit: int = 100) -> dict[str, Any]:
+    marker = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"""
+            SELECT * FROM goia_partnership_suppressions
+            ORDER BY created_at DESC, domain ASC
+            LIMIT {marker}
+            """,
+            (max(1, min(int(limit), 500)),),
+        )
+        items = list(map(dict, cur.fetchall()))
+        return {
+            "status": "ok",
+            "count": len(items),
+            "items": items,
+            "global_precedence": True,
+        }
     finally:
         release_conn(conn)
 

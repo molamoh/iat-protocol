@@ -5,7 +5,9 @@ The lifecycle is implemented, but no network adapter is bundled or enabled.
 
 from __future__ import annotations
 
+import json
 import os
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -13,6 +15,7 @@ from iat.goia.repository import (
     claim_partner_proposal,
     finish_partner_proposal_delivery,
     recover_stale_partner_deliveries,
+    init_goia_tables,
 )
 
 
@@ -82,3 +85,35 @@ def process_one_delivery(
         "recovery": recovery,
         "network_access_performed": True,
     }
+
+
+def main() -> int:
+    if not delivery_enabled():
+        print(json.dumps({"status": "disabled", "reason": "explicit_enable_required"}))
+        return 0
+    if not http_adapter_enabled():
+        print(json.dumps({"status": "blocked", "reason": "http_adapter_not_enabled"}))
+        return 2
+    from iat.goia.partnership_http import (
+        GOIAPartnershipTransportError,
+        signing_public_key,
+    )
+
+    try:
+        public_key = signing_public_key()
+    except GOIAPartnershipTransportError as exc:
+        print(json.dumps({"status": "blocked", "reason": str(exc)}))
+        return 2
+    init_goia_tables()
+    interval = max(
+        5,
+        min(int(os.getenv("IAT_GOIA_PARTNERSHIP_DISPATCH_INTERVAL_SECONDS", "30")), 300),
+    )
+    print(json.dumps({"status": "started", "signing_public_key": public_key}))
+    while True:
+        print(json.dumps(process_one_delivery(), sort_keys=True))
+        time.sleep(interval)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

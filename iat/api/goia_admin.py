@@ -22,6 +22,7 @@ from iat.goia.repository import (
     list_provider_verifications,
     list_partner_proposals,
     list_partner_delivery_events,
+    list_partner_suppressions,
     prepare_partner_proposals,
     refresh_partnership_opportunities,
     refresh_partner_permissions,
@@ -152,6 +153,10 @@ def build_goia_admin_router(require_admin: Callable) -> APIRouter:
         limit: int = 100,
     ):
         return list_partner_delivery_events(proposal_id=proposal_id, limit=limit)
+
+    @router.get("/partnership/suppressions")
+    def partnership_suppressions(limit: int = 100):
+        return list_partner_suppressions(limit=limit)
 
     @router.get("/review/candidates")
     def review_candidates(status: str = "pending_review", limit: int = 100):

@@ -621,9 +621,9 @@ def test_verified_market_match_prepares_private_idempotent_proposal(goia_db):
         receipt={
             "contract_version": "goia_partnership_ack_v1",
             "proposal_id": third_claim["proposal_id"],
-            "status": "received",
+            "status": "rejected",
             "received_at": second_claim["lease_until"],
-            "reason_code": None,
+            "reason_code": "opt_out",
         },
         now=second_claim["lease_until"],
     )
@@ -636,7 +636,17 @@ def test_verified_market_match_prepares_private_idempotent_proposal(goia_db):
     assert delivered["status"] == "delivered"
     assert repository.list_partner_proposals(status="delivered")["items"][0][
         "receipt"
-    ]["status"] == "received"
+    ]["status"] == "rejected"
+    suppressions = repository.list_partner_suppressions()
+    assert suppressions["count"] == 1
+    assert suppressions["items"][0]["reason_code"] == "opt_out"
+    refreshed_permission = repository.refresh_partner_permissions(
+        now=second_claim["lease_until"] + 1
+    )
+    suppressed = repository.list_partner_prospects()["items"][0]
+    assert refreshed_permission["suppressed_count"] == 1
+    assert suppressed["permission_status"] == "suppressed"
+    assert suppressed["outreach_authorized"] is False
     assert prospect["contact_attempted"] is True
     assert [item["event_type"] for item in events["items"]] == [
         "delivery_claimed",
@@ -662,6 +672,7 @@ def test_partnership_dispatcher_is_fail_closed_by_default(monkeypatch):
         "network_access_performed": False,
     }
     assert called == []
+    assert partnership_dispatcher.main() == 0
 
 
 def test_enabled_dispatcher_still_requires_delivery_adapter(monkeypatch):

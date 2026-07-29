@@ -90,6 +90,12 @@ réellement connectée, borne la réponse et exige un accusé
 et une clé privée serveur sont nécessaires ; elles restent désactivées par
 défaut.
 
+Mise à jour retrait et exécution autonome : un accusé marchand `opt_out` ou
+`do_not_contact` crée une suppression globale prioritaire sur tout signal
+positif et annule les propositions restantes. Le dispatcher possède désormais
+un conteneur et une boucle autonomes séparés du collecteur ; son démarrage
+reste fail-closed sans activation complète et clé Ed25519 valide.
+
 ## 1. Résumé exécutif
 
 IAT Protocol possède déjà une base substantielle pour devenir l'infrastructure

@@ -184,3 +184,31 @@ validated without side effects:
 ```text
 POST /goia/v1/contracts/partnership-acknowledgement/validate
 ```
+
+## Global merchant opt-out
+
+A signed acknowledgement with `status: rejected` and `reason_code: opt_out`
+or `do_not_contact` creates a persistent domain suppression. Suppression has
+absolute precedence over a self-hosted opt-in, commercial relationship,
+qualified demand, and queued proposals.
+
+GOIA immediately sets `outreach_authorized: false`, marks the prospect
+`suppressed`, and cancels every remaining proposal for that domain. Permission
+refresh cannot remove this state. Suppressions are auditable through:
+
+```text
+GET /admin/goia/partnership/suppressions
+```
+
+## Autonomous dispatcher service
+
+`Dockerfile.goia-partnership-dispatcher` packages the dispatcher independently
+from the collection worker and API. It exits fail-closed unless delivery, the
+HTTP adapter, and a valid Ed25519 key are all configured. When active it claims
+at most one eligible proposal per cycle and uses the durable recovery policy.
+
+The loop interval is bounded between 5 and 300 seconds:
+
+```text
+IAT_GOIA_PARTNERSHIP_DISPATCH_INTERVAL_SECONDS=30
+```

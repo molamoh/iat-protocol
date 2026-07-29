@@ -171,6 +171,15 @@ class SolanaCheckoutVerifier:
         static_keys = set(transaction.message.account_keys)
         if program not in static_keys or payment_intent not in static_keys:
             raise CheckoutVerificationError("treasury_accounts_missing_from_transaction")
+        quote_authority = Pubkey.from_string(
+            str(evidence.get("quote_authority") or "")
+        )
+        signer_count = transaction.message.header.num_required_signatures
+        signer_keys = set(list(transaction.message.account_keys)[:signer_count])
+        if quote_authority not in signer_keys:
+            raise CheckoutVerificationError(
+                "treasury_accounts_missing_from_transaction"
+            )
         if evidence.get("delivery_mode") == "direct_to_buyer":
             iat_destination = Pubkey.from_string(
                 str(evidence.get("iat_destination") or "")
@@ -182,18 +191,6 @@ class SolanaCheckoutVerifier:
                 payment_intent=payment_intent,
                 iat_destination=iat_destination,
             )
-        else:
-            quote_authority = Pubkey.from_string(
-                str(evidence.get("quote_authority") or "")
-            )
-            signer_count = transaction.message.header.num_required_signatures
-            signer_keys = set(
-                list(transaction.message.account_keys)[:signer_count]
-            )
-            if quote_authority not in signer_keys:
-                raise CheckoutVerificationError(
-                    "treasury_accounts_missing_from_transaction"
-                )
         account = self._account(str(payment_intent))
         if account.get("owner") != str(program) or account.get("executable") is True:
             raise CheckoutVerificationError("payment_intent_owner_mismatch")
@@ -254,10 +251,10 @@ class SolanaCheckoutVerifier:
             ):
                 continue
             if (
-                len(instruction_keys) == 15
+                len(instruction_keys) == 16
                 and instruction_keys[0] == buyer
-                and instruction_keys[4] == payment_intent
-                and instruction_keys[10] == iat_destination
+                and instruction_keys[5] == payment_intent
+                and instruction_keys[11] == iat_destination
             ):
                 return
         raise CheckoutVerificationError("direct_purchase_instruction_missing")

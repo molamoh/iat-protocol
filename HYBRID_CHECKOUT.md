@@ -277,6 +277,20 @@ Post-canary vault inventories are 13.5175 devnet USDC and 9,996.5 test IAT.
 Read-only deployment verification retries bounded transient RPC failures, but
 transaction senders never automatically resubmit after an ambiguous result.
 
+### Pending quote-authorization hardening
+
+The next local candidate also requires the configured `quote_authority` signer
+for direct USDC-to-buyer purchases. This closes the gap where a buyer could
+construct a valid fixed-price purchase without an API-issued order and consume
+treasury inventory within the on-chain caps. The candidate binary is 420,800
+bytes with SHA-256
+`d2d8cdc0a9632333aea0d941e1f609271c984e27e7b29dc99c45bedd0b47549b`.
+It is not yet deployed. Rollout must keep GN2d paused and proceed atomically:
+deploy the program upgrade, deploy the matching API/client image plus external
+quote-signing service, verify both versions, and only then run a separately
+approved canary. Deploying the new API against the old program, or unpausing
+without the quote-signing service, is forbidden.
+
 ## Raydium fallback
 
 The live adapter uses Raydium Trade API Route V2 exact-output endpoints:

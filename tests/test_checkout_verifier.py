@@ -51,10 +51,13 @@ def transaction(
     direct=False,
 ):
     if direct:
-        if payment is None or iat_destination is None:
-            raise ValueError("direct transaction requires payment and destination")
+        if payment is None or iat_destination is None or quote_authority is None:
+            raise ValueError(
+                "direct transaction requires payment, destination and quote authority"
+            )
         addresses = [
             buyer,
+            quote_authority,
             Pubkey.new_unique(),
             Pubkey.new_unique(),
             Pubkey.new_unique(),
@@ -71,7 +74,11 @@ def transaction(
             Pubkey.new_unique(),
         ]
         accounts = [
-            AccountMeta(address, index == 0, index in {0, 1, 3, 4, 7, 8, 9, 10})
+            AccountMeta(
+                address,
+                index in {0, 1},
+                index in {0, 2, 4, 5, 8, 9, 10, 11},
+            )
             for index, address in enumerate(addresses)
         ]
         data = DIRECT_USDC_PURCHASE_DISCRIMINATOR + b"proof"
@@ -329,9 +336,10 @@ def test_treasury_tampered_payment_intent_is_rejected():
         )
 
 
-def test_direct_purchase_requires_buyer_iat_destination_but_no_server_signer():
+def test_direct_purchase_requires_buyer_destination_and_quote_authority():
     buyer = Pubkey.new_unique()
     program, payment = Pubkey.new_unique(), Pubkey.new_unique()
+    quote_authority = Pubkey.new_unique()
     iat_destination = Pubkey.new_unique()
     config, input_mint = Pubkey.new_unique(), Pubkey.new_unique()
     order_hash = hashlib.sha256(b"direct-order").digest()
@@ -350,6 +358,7 @@ def test_direct_purchase_requires_buyer_iat_destination_but_no_server_signer():
         buyer=buyer,
         program=program,
         payment=payment,
+        quote_authority=quote_authority,
         iat_destination=iat_destination,
         direct=True,
     )
@@ -373,6 +382,7 @@ def test_direct_purchase_requires_buyer_iat_destination_but_no_server_signer():
         evidence={
             "buyer_wallet": str(buyer),
             "program_id": str(program),
+            "quote_authority": str(quote_authority),
             "delivery_mode": "direct_to_buyer",
             "iat_destination": str(iat_destination),
             "payment_intent": str(payment),
@@ -406,8 +416,46 @@ def test_direct_purchase_rejects_missing_buyer_iat_destination():
             evidence={
                 "buyer_wallet": str(buyer),
                 "program_id": str(program),
+                "quote_authority": str(buyer),
                 "delivery_mode": "direct_to_buyer",
                 "iat_destination": str(Pubkey.new_unique()),
+                "payment_intent": str(payment),
+            },
+        )
+
+
+def test_direct_purchase_rejects_unapproved_quote_signer():
+    buyer = Pubkey.new_unique()
+    actual_signer = Pubkey.new_unique()
+    expected_signer = Pubkey.new_unique()
+    program, payment = Pubkey.new_unique(), Pubkey.new_unique()
+    iat_destination = Pubkey.new_unique()
+    _, encoded = transaction(
+        buyer=buyer,
+        program=program,
+        payment=payment,
+        quote_authority=actual_signer,
+        iat_destination=iat_destination,
+        direct=True,
+    )
+    verifier = SolanaCheckoutVerifier(
+        "https://rpc.example",
+        session=Session(finalized(encoded)),
+    )
+
+    with pytest.raises(
+        CheckoutVerificationError,
+        match="treasury_accounts_missing_from_transaction",
+    ):
+        verifier.verify(
+            signature=str(Signature.default()),
+            route="treasury",
+            evidence={
+                "buyer_wallet": str(buyer),
+                "program_id": str(program),
+                "quote_authority": str(expected_signer),
+                "delivery_mode": "direct_to_buyer",
+                "iat_destination": str(iat_destination),
                 "payment_intent": str(payment),
             },
         )

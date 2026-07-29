@@ -611,6 +611,10 @@ pub struct PurchaseIatWithUsdc<'info> {
     #[account(mut)]
     pub buyer: Signer<'info>,
     #[account(
+        address = config.quote_authority @ CheckoutError::UnauthorizedQuote
+    )]
+    pub quote_authority: Signer<'info>,
+    #[account(
         mut,
         seeds = [b"config"],
         bump = config.bump

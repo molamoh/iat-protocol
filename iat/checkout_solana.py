@@ -297,6 +297,7 @@ def build_direct_usdc_purchase_plan(
     quote: Mapping[str, Any],
     order_id: str,
     program_id: str,
+    quote_authority: str,
     treasury_iat_vault: str,
     treasury_input_vault: str,
     buyer_input_account: str,
@@ -304,7 +305,7 @@ def build_direct_usdc_purchase_plan(
     input_token_program: str,
     iat_token_program: str,
 ) -> dict[str, Any]:
-    """Build a buyer-only USDC → IAT purchase delivered to the buyer token account."""
+    """Build an authorized USDC → IAT purchase delivered to the buyer account."""
 
     if quote.get("route") != "treasury":
         raise SolanaPlanError("treasury_route_required")
@@ -312,6 +313,7 @@ def build_direct_usdc_purchase_plan(
         raise SolanaPlanError("usdc_input_required")
     buyer = _pubkey(quote.get("buyer_wallet"), "buyer_wallet")
     program = _pubkey(program_id, "program_id")
+    protocol_quote_authority = _pubkey(quote_authority, "quote_authority")
     input_mint = _pubkey(quote.get("input", {}).get("mint"), "input_mint")
     iat_mint = _pubkey(
         quote.get("output", {}).get("mint") or IAT_TOKEN_ADDRESS,
@@ -364,6 +366,7 @@ def build_direct_usdc_purchase_plan(
     )
     execute_accounts = [
         _meta(buyer, signer=True, writable=True),
+        _meta(protocol_quote_authority, signer=True),
         _meta(config, writable=True),
         _meta(asset),
         _meta(wallet_usage, writable=True),
@@ -390,7 +393,8 @@ def build_direct_usdc_purchase_plan(
         "network": "solana",
         "fee_payer": str(buyer),
         "buyer_signature_required": True,
-        "protocol_authorization_signature_required": False,
+        "protocol_authorization_signature_required": True,
+        "quote_authority": str(protocol_quote_authority),
         "server_holds_quote_authority_key": False,
         "simulation_required": True,
         "delivery_mode": "direct_to_buyer",

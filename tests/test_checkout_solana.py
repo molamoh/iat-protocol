@@ -119,13 +119,15 @@ def test_raydium_quote_cannot_enter_treasury_program():
         build(quote(route="raydium"))
 
 
-def test_direct_usdc_purchase_needs_only_buyer_and_delivers_to_buyer_account():
+def test_direct_usdc_purchase_requires_quote_authority_and_delivers_to_buyer():
     value = quote()
     buyer_iat = key()
+    quote_authority = key()
     plan = build_direct_usdc_purchase_plan(
         quote=value,
         order_id="ord-direct",
         program_id=key(),
+        quote_authority=quote_authority,
         treasury_iat_vault=key(),
         treasury_input_vault=key(),
         buyer_input_account=key(),
@@ -135,7 +137,8 @@ def test_direct_usdc_purchase_needs_only_buyer_and_delivers_to_buyer_account():
     )
 
     assert plan["buyer_signature_required"] is True
-    assert plan["protocol_authorization_signature_required"] is False
+    assert plan["protocol_authorization_signature_required"] is True
+    assert plan["quote_authority"] == quote_authority
     assert plan["delivery_mode"] == "direct_to_buyer"
     assert plan["display"]["iat_destination"] == buyer_iat
     assert plan["display"]["iat_recipient_owner"] == value["buyer_wallet"]
@@ -143,13 +146,18 @@ def test_direct_usdc_purchase_needs_only_buyer_and_delivers_to_buyer_account():
     assert prerequisite["query_account"] == buyer_iat
     assert prerequisite["include_only_when_account_is_missing"] is True
     assert prerequisite["data_base64"] == ""
-    assert len(plan["execute"]["accounts"]) == 15
+    assert len(plan["execute"]["accounts"]) == 16
     assert [item for item in plan["execute"]["accounts"] if item["signer"]] == [
         {
             "address": value["buyer_wallet"],
             "signer": True,
             "writable": True,
-        }
+        },
+        {
+            "address": quote_authority,
+            "signer": True,
+            "writable": False,
+        },
     ]
     assert len(base64.b64decode(plan["execute"]["data_base64"])) == 104
 
@@ -162,6 +170,7 @@ def test_direct_purchase_rejects_non_usdc_input():
             quote=value,
             order_id="ord-direct",
             program_id=key(),
+            quote_authority=key(),
             treasury_iat_vault=key(),
             treasury_input_vault=key(),
             buyer_input_account=key(),

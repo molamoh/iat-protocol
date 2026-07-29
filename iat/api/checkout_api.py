@@ -457,6 +457,7 @@ def _treasury_instruction_plan(payload: dict[str, Any], order_id: str) -> dict[s
         quote=payload,
         order_id=order_id,
         program_id=os.getenv("IAT_TREASURY_PROGRAM_ID", ""),
+        quote_authority=os.getenv("IAT_TREASURY_QUOTE_AUTHORITY", ""),
         treasury_iat_vault=os.getenv("IAT_TREASURY_IAT_VAULT", ""),
         treasury_input_vault=str(asset.get("treasury_vault") or ""),
         buyer_input_account=str(buyer_input),
@@ -755,8 +756,7 @@ def prepare_universal_checkout(quote_id: str, req: UniversalPrepareRequest):
             if plan.get("delivery_mode") == "direct_to_buyer":
                 proof["delivery_mode"] = "direct_to_buyer"
                 proof["iat_destination"] = plan["display"]["iat_destination"]
-            else:
-                proof["quote_authority"] = plan["quote_authority"]
+            proof["quote_authority"] = plan["quote_authority"]
         except (CheckoutRejected, SolanaPlanError) as exc:
             response["readiness"]["instruction_plan"] = f"configuration_error:{exc}"
     else:

@@ -515,3 +515,67 @@ def test_self_hosted_manifest_verification_authorizes_endpoint_without_sending(g
     assert expired["verified_opt_in_count"] == 0
     assert prospect["permission_status"] == "declared_opt_in"
     assert prospect["outreach_authorized"] is False
+
+
+def test_verified_market_match_prepares_private_idempotent_proposal(goia_db):
+    provider = _provider(
+        partnership_discovery={
+            "accepts_partnership_requests": True,
+            "manifest_url": "https://merchant.example/.well-known/goia-provider.json",
+            "request_endpoint": "https://merchant.example/goia-partnership",
+            "relationship_types": ["affiliate"],
+            "verification_interval_seconds": 86_400,
+        }
+    )
+    repository.upsert_merchant(provider, now=86_000)
+    hint = {
+        "domain": "merchant.example",
+        "name": "Merchant",
+        "url": "https://merchant.example/offer",
+        "source_url": "https://comparison.example/cloud-a",
+        "source_sha256": "a" * 64,
+        "evidence_type": "schema_offer_seller",
+        "kinds": ["Service"],
+        "currencies": ["EUR"],
+    }
+    repository.upsert_partner_hints([hint], now=86_001)
+    repository.upsert_partner_hints(
+        [{**hint, "source_url": "https://comparison.example/cloud-b", "source_sha256": "b" * 64}],
+        now=86_002,
+    )
+    for offset in range(5):
+        repository.record_anonymous_demand(
+            query_fingerprint="e" * 64,
+            kind="hosting",
+            country="FR",
+            currency="EUR",
+            result_count=0,
+            now=86_000 + offset,
+        )
+    repository.refresh_partnership_opportunities(days=30, now=86_010)
+    repository.record_provider_manifest_verification(
+        provider_id=provider.provider_id,
+        manifest=provider,
+        source_url=str(provider.partnership_discovery.manifest_url),
+        source_sha256="c" * 64,
+        now=86_011,
+    )
+    repository.refresh_partner_permissions(now=86_012)
+    repository.refresh_opportunity_prospect_links(now=86_013)
+
+    first = repository.prepare_partner_proposals(now=86_014)
+    duplicate = repository.prepare_partner_proposals(now=86_015)
+    outbox = repository.list_partner_proposals(status="prepared")
+
+    assert first["prepared_count"] == 1
+    assert first["delivery_enabled"] is False
+    assert first["network_access_performed"] is False
+    assert first["outreach_triggered"] is False
+    assert duplicate["prepared_count"] == 0
+    assert duplicate["duplicate_count"] == 1
+    assert outbox["count"] == 1
+    payload = outbox["items"][0]["payload"]
+    assert payload["raw_queries_included"] is False
+    assert payload["buyer_identity_included"] is False
+    assert payload["aggregate_evidence"]["unmet_count"] == 5
+    assert payload["request_endpoint"] == "https://merchant.example/goia-partnership"

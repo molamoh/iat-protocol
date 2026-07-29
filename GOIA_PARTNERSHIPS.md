@@ -103,3 +103,30 @@ routes exist for audit and emergency use:
 POST /admin/goia/partnership/permissions/refresh
 GET  /admin/goia/partnership/verifications
 ```
+
+## Autonomous proposal outbox
+
+Once a qualified market gap is linked to a qualified prospect with a current
+`verified_opt_in`, GOIA prepares a strict `goia_partnership_proposal_v1`
+document. The proposal contains:
+
+- stable opportunity, prospect, and provider identifiers;
+- the merchant-declared request endpoint and relationship type;
+- market kind, country, and currency;
+- aggregate demand, unmet demand, current coverage, and gap score;
+- explicit assertions that no raw query or buyer identity is included;
+- a bounded expiry no later than the permission proof.
+
+The identity is deterministic for the opportunity, prospect, and exact
+merchant manifest hash. Repeated maintenance cycles therefore cannot create
+duplicate proposals. Prepared proposals are cancelled when permission is
+revoked and expire automatically.
+
+This phase is preparation only. It performs no HTTP request and the outbox
+reports `delivery_enabled: false`:
+
+```text
+POST /admin/goia/partnership/proposals/prepare
+GET  /admin/goia/partnership/proposals
+POST /goia/v1/contracts/partnership-proposal/validate
+```

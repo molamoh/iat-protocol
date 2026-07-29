@@ -6,6 +6,7 @@ from iat.goia.contracts import (
     MerchantProviderManifest,
     NativeCatalogDocument,
     OfferObservation,
+    PartnershipProposal,
     SearchIntent,
 )
 from iat.goia.discovery import build_goia_manifest, build_ranking_policy
@@ -56,6 +57,16 @@ def validate_native_catalog(payload: NativeCatalogDocument):
         "status": "valid",
         "contract": "NativeCatalogDocument",
         "offer_count": len(payload.offers),
+        "normalized": payload.model_dump(mode="json"),
+        "production_side_effects": False,
+    }
+
+
+@router.post("/goia/v1/contracts/partnership-proposal/validate")
+def validate_partnership_proposal(payload: PartnershipProposal):
+    return {
+        "status": "valid",
+        "contract": "PartnershipProposal",
         "normalized": payload.model_dump(mode="json"),
         "production_side_effects": False,
     }

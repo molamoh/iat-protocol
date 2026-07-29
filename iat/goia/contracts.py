@@ -196,3 +196,32 @@ class NativeCatalogDocument(StrictGOIAModel):
         if len(offer_ids) != len(set(offer_ids)):
             raise ValueError("duplicate_catalog_offer_id")
         return self
+
+
+class PartnershipProposal(StrictGOIAModel):
+    contract_version: Literal["goia_partnership_proposal_v1"] = (
+        "goia_partnership_proposal_v1"
+    )
+    proposal_id: str = Field(pattern=r"^gpr_[a-f0-9]{32}$")
+    opportunity_id: str = Field(pattern=r"^gpo_[a-f0-9]{32}$")
+    prospect_id: str = Field(pattern=r"^gpp_[a-f0-9]{32}$")
+    provider_id: str = Field(pattern=r"^gop_[a-zA-Z0-9_-]{8,100}$")
+    request_endpoint: HttpUrl
+    relationship_type: Literal["affiliate", "direct_partner"]
+    market: dict[Literal["kind", "country", "currency"], str]
+    aggregate_evidence: dict[
+        Literal["demand_count", "unmet_count", "current_offer_count", "gap_score"],
+        int,
+    ]
+    created_at: int = Field(gt=0)
+    expires_at: int = Field(gt=0)
+    raw_queries_included: Literal[False] = False
+    buyer_identity_included: Literal[False] = False
+
+    @model_validator(mode="after")
+    def validate_proposal_lifetime(self):
+        if self.expires_at <= self.created_at:
+            raise ValueError("proposal_expires_at_must_follow_created_at")
+        if self.expires_at - self.created_at > 604_800:
+            raise ValueError("proposal_lifetime_exceeds_seven_days")
+        return self

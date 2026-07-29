@@ -20,6 +20,8 @@ from iat.goia.repository import (
     list_partnership_opportunities,
     list_partner_prospects,
     list_provider_verifications,
+    list_partner_proposals,
+    prepare_partner_proposals,
     refresh_partnership_opportunities,
     refresh_partner_permissions,
     reject_review_candidate,
@@ -131,6 +133,17 @@ def build_goia_admin_router(require_admin: Callable) -> APIRouter:
     @router.get("/partnership/verifications")
     def partnership_verifications(limit: int = 100):
         return list_provider_verifications(limit=limit)
+
+    @router.post("/partnership/proposals/prepare")
+    def prepare_proposals(limit: int = 100):
+        return prepare_partner_proposals(limit=limit)
+
+    @router.get("/partnership/proposals")
+    def partnership_proposals(status: str | None = None, limit: int = 100):
+        try:
+            return list_partner_proposals(status=status, limit=limit)
+        except GOIARepositoryError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @router.get("/review/candidates")
     def review_candidates(status: str = "pending_review", limit: int = 100):

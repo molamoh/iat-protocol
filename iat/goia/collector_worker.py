@@ -22,6 +22,7 @@ from iat.goia.repository import (
     enqueue_sitemap_pages,
     fail_collection_job,
     init_goia_tables,
+    prepare_partner_proposals,
     recover_stale_collection_jobs,
     record_provider_manifest_verification,
     refresh_partnership_opportunities,
@@ -45,6 +46,8 @@ def process_one_job() -> dict:
     source_discovery = seed_due_catalog_sources()
     partnership_intelligence = refresh_partnership_opportunities()
     partnership_permissions = refresh_partner_permissions()
+    partnership_links = refresh_opportunity_prospect_links()
+    partnership_proposals = prepare_partner_proposals()
     job = claim_collection_job()
     if job is None:
         return {
@@ -54,6 +57,8 @@ def process_one_job() -> dict:
             "source_discovery": source_discovery,
             "partnership_intelligence": partnership_intelligence,
             "partnership_permissions": partnership_permissions,
+            "partnership_links": partnership_links,
+            "partnership_proposals": partnership_proposals,
         }
     try:
         document = fetch_allowed_document(job["url"])
@@ -81,6 +86,7 @@ def process_one_job() -> dict:
                 "source_discovery": source_discovery,
                 "partnership_intelligence": partnership_intelligence,
                 "partnership_permissions": partnership_permissions,
+                "partnership_proposals": partnership_proposals,
             }
         if job.get("job_type") == "provider_manifest":
             manifest = extract_provider_manifest(
@@ -112,6 +118,7 @@ def process_one_job() -> dict:
                 "partnership_permissions": permissions,
                 "publication_status": "verification_only",
                 "outreach_triggered": False,
+                "partnership_proposals": partnership_proposals,
             }
         if job.get("job_type") == "catalog_json":
             candidates = extract_native_catalog_candidates(
@@ -164,6 +171,7 @@ def process_one_job() -> dict:
             "source_discovery": source_discovery,
             "partnership_intelligence": partnership_intelligence,
             "partnership_permissions": partnership_permissions,
+            "partnership_proposals": partnership_proposals,
         }
     except (GOIACollectionError, GOIARepositoryError) as exc:
         fail_collection_job(job["job_id"], error_code=str(exc))
@@ -176,6 +184,7 @@ def process_one_job() -> dict:
             "source_discovery": source_discovery,
             "partnership_intelligence": partnership_intelligence,
             "partnership_permissions": partnership_permissions,
+            "partnership_proposals": partnership_proposals,
         }
 
 

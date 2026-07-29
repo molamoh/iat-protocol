@@ -10,7 +10,11 @@ from typing import Any
 from urllib.parse import urlparse
 
 from iat.api.db import get_conn, qmark, release_conn
-from iat.goia.contracts import MerchantProviderManifest, OfferObservation
+from iat.goia.contracts import (
+    MerchantProviderManifest,
+    OfferObservation,
+    PartnershipProposal,
+)
 
 
 class GOIARepositoryError(ValueError):
@@ -317,6 +321,25 @@ def init_goia_tables() -> None:
                 verified_at INTEGER NOT NULL,
                 expires_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS goia_partnership_outbox (
+                proposal_id TEXT PRIMARY KEY,
+                opportunity_id TEXT NOT NULL,
+                prospect_id TEXT NOT NULL,
+                provider_id TEXT NOT NULL,
+                endpoint TEXT NOT NULL,
+                status TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                payload_hash TEXT NOT NULL,
+                manifest_hash TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(opportunity_id, prospect_id, manifest_hash)
             )
             """
         )
@@ -1936,6 +1959,186 @@ def list_provider_verifications(
             "count": len(items),
             "items": items,
             "as_of": timestamp,
+            "outreach_triggered": False,
+        }
+    finally:
+        release_conn(conn)
+
+
+def prepare_partner_proposals(*, now: int | None = None, limit: int = 100) -> dict[str, Any]:
+    timestamp = int(now or time.time())
+    bounded_limit = max(1, min(int(limit), 500))
+    marker = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+    prepared = []
+    duplicates = 0
+    try:
+        cur.execute(
+            f"""
+            UPDATE goia_partnership_outbox
+            SET status = 'expired', updated_at = {marker}
+            WHERE status = 'prepared' AND expires_at <= {marker}
+            """,
+            (timestamp, timestamp),
+        )
+        cur.execute(
+            f"""
+            UPDATE goia_partnership_outbox
+            SET status = 'cancelled', updated_at = {marker}
+            WHERE status = 'prepared'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM goia_partner_prospects p
+                  JOIN goia_provider_verifications v
+                    ON v.provider_id = p.permission_provider_id
+                  WHERE p.prospect_id = goia_partnership_outbox.prospect_id
+                    AND p.permission_status = 'verified_opt_in'
+                    AND p.outreach_authorized = 1
+                    AND v.manifest_hash = goia_partnership_outbox.manifest_hash
+                    AND v.expires_at > {marker}
+              )
+            """,
+            (timestamp, timestamp),
+        )
+        cur.execute(
+            f"""
+            SELECT l.opportunity_id, l.prospect_id, p.permission_provider_id AS provider_id,
+                   p.permission_evidence_json, p.outreach_authorized,
+                   o.kind, o.country, o.currency, o.demand_count, o.unmet_count,
+                   o.current_offer_count, o.gap_score, m.manifest_hash,
+                   v.expires_at AS verification_expires_at
+            FROM goia_opportunity_prospects l
+            JOIN goia_partnership_opportunities o
+              ON o.opportunity_id = l.opportunity_id
+            JOIN goia_partner_prospects p ON p.prospect_id = l.prospect_id
+            JOIN goia_merchants m ON m.provider_id = p.permission_provider_id
+            JOIN goia_provider_verifications v ON v.provider_id = m.provider_id
+            WHERE o.status = 'qualified'
+              AND p.permission_status = 'verified_opt_in'
+              AND p.outreach_authorized = 1
+              AND v.manifest_hash = m.manifest_hash
+              AND v.expires_at > {marker}
+            ORDER BY o.gap_score DESC, l.match_score DESC, l.opportunity_id ASC
+            LIMIT {marker}
+            """,
+            (timestamp, bounded_limit),
+        )
+        rows = list(map(dict, cur.fetchall()))
+        for row in rows:
+            permission = json.loads(row["permission_evidence_json"])
+            relationship_types = sorted(permission.get("relationship_types") or [])
+            if not relationship_types:
+                continue
+            identity = ":".join(
+                (row["opportunity_id"], row["prospect_id"], row["manifest_hash"])
+            )
+            proposal_id = "gpr_" + hashlib.sha256(identity.encode()).hexdigest()[:32]
+            expires_at = min(
+                timestamp + 86_400,
+                int(row["verification_expires_at"]),
+            )
+            proposal = PartnershipProposal(
+                proposal_id=proposal_id,
+                opportunity_id=row["opportunity_id"],
+                prospect_id=row["prospect_id"],
+                provider_id=row["provider_id"],
+                request_endpoint=permission["request_endpoint"],
+                relationship_type=relationship_types[0],
+                market={
+                    "kind": row["kind"],
+                    "country": row["country"],
+                    "currency": row["currency"],
+                },
+                aggregate_evidence={
+                    "demand_count": int(row["demand_count"]),
+                    "unmet_count": int(row["unmet_count"]),
+                    "current_offer_count": int(row["current_offer_count"]),
+                    "gap_score": int(row["gap_score"]),
+                },
+                created_at=timestamp,
+                expires_at=expires_at,
+            )
+            payload_json = _canonical_json(proposal.model_dump(mode="json"))
+            payload_hash = _payload_hash(payload_json)
+            cur.execute(
+                f"SELECT proposal_id FROM goia_partnership_outbox WHERE proposal_id = {marker}",
+                (proposal_id,),
+            )
+            if cur.fetchone() is not None:
+                duplicates += 1
+                continue
+            cur.execute(
+                f"""
+                INSERT INTO goia_partnership_outbox (
+                    proposal_id, opportunity_id, prospect_id, provider_id,
+                    endpoint, status, payload_json, payload_hash, manifest_hash,
+                    created_at, expires_at, updated_at
+                ) VALUES ({", ".join([marker] * 12)})
+                """,
+                (
+                    proposal_id,
+                    row["opportunity_id"],
+                    row["prospect_id"],
+                    row["provider_id"],
+                    permission["request_endpoint"],
+                    "prepared",
+                    payload_json,
+                    payload_hash,
+                    row["manifest_hash"],
+                    timestamp,
+                    expires_at,
+                    timestamp,
+                ),
+            )
+            prepared.append(proposal_id)
+        conn.commit()
+        return {
+            "status": "ok",
+            "prepared_count": len(prepared),
+            "duplicate_count": duplicates,
+            "proposal_ids": prepared,
+            "delivery_enabled": False,
+            "network_access_performed": False,
+            "outreach_triggered": False,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_conn(conn)
+
+
+def list_partner_proposals(
+    *,
+    status: str | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    if status is not None and status not in {"prepared", "expired", "cancelled"}:
+        raise GOIARepositoryError("invalid_proposal_status")
+    marker = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        query = "SELECT * FROM goia_partnership_outbox"
+        params: tuple[Any, ...]
+        if status:
+            query += f" WHERE status = {marker}"
+            params = (status, max(1, min(int(limit), 500)))
+        else:
+            params = (max(1, min(int(limit), 500)),)
+        query += f" ORDER BY created_at DESC, proposal_id ASC LIMIT {marker}"
+        cur.execute(query, params)
+        items = []
+        for row in map(dict, cur.fetchall()):
+            row["payload"] = json.loads(row.pop("payload_json"))
+            items.append(row)
+        return {
+            "status": "ok",
+            "count": len(items),
+            "items": items,
+            "delivery_enabled": False,
+            "network_access_performed": False,
             "outreach_triggered": False,
         }
     finally:

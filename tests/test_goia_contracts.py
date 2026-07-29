@@ -77,6 +77,8 @@ def test_goia_manifest_is_defensively_copied_and_local_only():
         "explicit_partnership_opt_in": True,
         "self_hosted_partnership_verification": True,
         "verified_opt_in_required_for_outreach_authorization": True,
+        "autonomous_partnership_proposal_preparation": True,
+        "partnership_proposal_delivery_enabled": False,
     }
 
 
@@ -100,6 +102,7 @@ def test_iat_discovery_advertises_only_controlled_local_search():
     assert manifest["goia"]["anonymous_demand_aggregation"] is True
     assert manifest["goia"]["explicit_partnership_opt_in"] is True
     assert manifest["goia"]["self_hosted_partnership_verification"] is True
+    assert manifest["goia"]["autonomous_partnership_proposal_preparation"] is True
     assert manifest["goia"]["outreach_triggered"] is False
     assert capability["contract_validation"] is True
     assert capability["search_available"] is True
@@ -111,6 +114,7 @@ def test_iat_discovery_advertises_only_controlled_local_search():
     assert capability["autonomous_partnership_gap_detection"] is True
     assert capability["explicit_partnership_opt_in"] is True
     assert capability["verified_opt_in_required_for_outreach_authorization"] is True
+    assert capability["partnership_proposal_delivery_enabled"] is False
     assert capability["outreach_triggered"] is False
     assert capability["index_scope"] == "controlled_catalogs_only"
 

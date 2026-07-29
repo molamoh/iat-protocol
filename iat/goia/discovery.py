@@ -29,6 +29,7 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "validate_offer": "/goia/v1/contracts/offer-observation/validate",
         "validate_provider": "/goia/v1/contracts/provider/validate",
         "validate_catalog": "/goia/v1/contracts/catalog/validate",
+        "validate_partnership_proposal": "/goia/v1/contracts/partnership-proposal/validate",
         "ranking_policy": "/goia/v1/policies/ranking",
         "search": "/goia/v1/search",
         "catalog_ingest": "/admin/goia/catalogs/ingest",
@@ -38,6 +39,7 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "partnership_prospects": "/admin/goia/partnership/prospects",
         "partnership_permissions_refresh": "/admin/goia/partnership/permissions/refresh",
         "partnership_verifications": "/admin/goia/partnership/verifications",
+        "partnership_proposals": "/admin/goia/partnership/proposals",
         "collection_enqueue": "/admin/goia/collection/jobs",
         "collection_stats": "/admin/goia/collection/stats",
         "review_candidates": "/admin/goia/review/candidates",
@@ -67,6 +69,8 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "explicit_partnership_opt_in": True,
         "self_hosted_partnership_verification": True,
         "verified_opt_in_required_for_outreach_authorization": True,
+        "autonomous_partnership_proposal_preparation": True,
+        "partnership_proposal_delivery_enabled": False,
     },
     "invariants": [
         "organic_ranking_never_uses_commission",
@@ -88,6 +92,7 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "partnership_permission_is_closed_by_default",
         "declared_opt_in_never_authorizes_outreach_without_self_hosting_verification",
         "self_hosting_verification_is_exact_hash_matched_and_expiring",
+        "proposal_outbox_generation_never_performs_network_delivery",
     ],
 }
 

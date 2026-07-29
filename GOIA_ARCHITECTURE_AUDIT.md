@@ -71,6 +71,12 @@ manifeste de partenariat déclaré via l'allowlist et robots.txt, puis exige une
 source. La preuve expire automatiquement ; seul `verified_opt_in` autorise
 l'endpoint déclaré, sans encore émettre de requête.
 
+Mise à jour proposition autonome : lorsqu'une opportunité et un marchand
+vérifié correspondent, GOIA produit un contrat
+`goia_partnership_proposal_v1` déterministe dans une outbox isolée. Le contenu
+utilise uniquement des agrégats anonymes, expire avec la permission et ne
+déclenche aucune livraison réseau à ce stade.
+
 ## 1. Résumé exécutif
 
 IAT Protocol possède déjà une base substantielle pour devenir l'infrastructure

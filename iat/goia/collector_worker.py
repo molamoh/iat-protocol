@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import time
 
 from iat.goia.collector import (
@@ -23,6 +24,7 @@ from iat.goia.repository import (
     fail_collection_job,
     init_goia_tables,
     prepare_partner_proposals,
+    record_worker_heartbeat,
     recover_stale_collection_jobs,
     record_provider_manifest_verification,
     refresh_partnership_opportunities,
@@ -38,6 +40,11 @@ from iat.goia.autonomous_review import autonomously_review_candidate
 
 def collection_enabled() -> bool:
     return os.getenv("IAT_GOIA_COLLECTION_ENABLED", "false").strip().lower() == "true"
+
+
+def worker_id() -> str:
+    configured = os.getenv("IAT_GOIA_WORKER_ID", "").strip()
+    return (configured or f"collector:{socket.gethostname()}")[:160]
 
 
 def process_one_job() -> dict:
@@ -194,8 +201,47 @@ def main() -> int:
         return 0
     init_goia_tables()
     interval = max(5, min(int(os.getenv("IAT_GOIA_WORKER_INTERVAL_SECONDS", "30")), 300))
+    identity = worker_id()
+    started_at = int(time.time())
+    cycle_count = 0
+    record_worker_heartbeat(
+        worker_id=identity,
+        worker_type="collector",
+        status="starting",
+        cycle_count=cycle_count,
+        started_at=started_at,
+    )
     while True:
-        result = process_one_job()
+        cycle_count += 1
+        try:
+            result = process_one_job()
+            heartbeat_status = {
+                "idle": "idle",
+                "failed": "degraded",
+            }.get(result.get("status"), "working")
+            record_worker_heartbeat(
+                worker_id=identity,
+                worker_type="collector",
+                status=heartbeat_status,
+                cycle_count=cycle_count,
+                result=result,
+                error_code=result.get("error_code"),
+                started_at=started_at,
+            )
+        except Exception as exc:
+            result = {
+                "status": "degraded",
+                "error_code": f"worker_cycle_error:{type(exc).__name__}",
+            }
+            record_worker_heartbeat(
+                worker_id=identity,
+                worker_type="collector",
+                status="degraded",
+                cycle_count=cycle_count,
+                result=result,
+                error_code=result["error_code"],
+                started_at=started_at,
+            )
         print(json.dumps(result, sort_keys=True))
         time.sleep(interval)
 

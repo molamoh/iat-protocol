@@ -13,6 +13,7 @@ from iat.goia.contracts import (
     OfferObservation,
     SearchIntent,
     NativeCatalogDocument,
+    evaluate_pilot_readiness,
 )
 from iat.goia.discovery import build_goia_manifest, build_ranking_policy
 from iat.discovery import build_capabilities_document, build_discovery_manifest
@@ -68,6 +69,8 @@ def test_goia_manifest_is_defensively_copied_and_local_only():
         "supported_source_types": ["sitemap", "goia_json"],
         "sitemap_page_job_limit": 100,
         "persistence": True,
+        "pilot_merchant_slots": 5,
+        "machine_pilot_readiness": True,
         "index_scope": "controlled_catalogs_only",
         "contract_validation": True,
         "external_side_effects": False,
@@ -202,6 +205,43 @@ def test_commercial_provider_requires_attribution():
 
     payload["attribution_supported"] = True
     assert MerchantProviderManifest(**payload).commercial_relationship == "affiliate"
+
+
+def test_pilot_readiness_is_machine_only_and_fail_closed():
+    ready = MerchantProviderManifest(
+        provider_id="gop_provider_001",
+        name="Example Merchant",
+        website="https://merchant.example",
+        countries=["FR"],
+        currencies=["EUR"],
+        catalogs=[
+            {
+                "source_id": "catalog-main",
+                "source_type": "goia_json",
+                "url": "https://merchant.example/.well-known/goia-catalog.json",
+                "refresh_interval_seconds": 3_600,
+            }
+        ],
+    )
+    result = evaluate_pilot_readiness(ready)
+    assert result["status"] == "ready"
+    assert result["registration_performed"] is False
+    assert result["network_access_performed"] is False
+
+    unsupported_payload = ready.model_dump(mode="json")
+    unsupported_payload["countries"] = ["US"]
+    unsupported_payload["currencies"] = ["USD"]
+    unsupported_payload["catalogs"][0]["url"] = (
+        "https://catalog-vendor.example/offers.json"
+    )
+    unsupported = MerchantProviderManifest.model_validate(unsupported_payload)
+    blocked = evaluate_pilot_readiness(unsupported)
+    assert blocked["status"] == "not_ready"
+    assert set(blocked["blockers"]) == {
+        "pilot_requires_france",
+        "pilot_requires_eur",
+        "catalogs_must_be_self_hosted",
+    }
 
 
 def test_provider_partnership_discovery_is_closed_by_default_and_explicit():

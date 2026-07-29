@@ -10,6 +10,7 @@ from iat.goia.contracts import (
     PartnershipAcknowledgement,
     PartnershipResponse,
     SearchIntent,
+    evaluate_pilot_readiness,
 )
 from iat.goia.discovery import build_goia_manifest, build_ranking_policy
 from iat.goia.search import search_local_index
@@ -55,6 +56,11 @@ def validate_provider_manifest(payload: MerchantProviderManifest):
         "normalized": payload.model_dump(mode="json"),
         "production_side_effects": False,
     }
+
+
+@router.post("/goia/v1/pilots/readiness")
+def validate_pilot_readiness(payload: MerchantProviderManifest):
+    return evaluate_pilot_readiness(payload)
 
 
 @router.post("/goia/v1/contracts/catalog/validate")

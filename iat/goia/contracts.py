@@ -173,6 +173,57 @@ class MerchantProviderManifest(StrictGOIAModel):
         return self
 
 
+def evaluate_pilot_readiness(manifest: MerchantProviderManifest) -> dict:
+    """Evaluate a provider without registering it or performing network access."""
+    website_host = str(manifest.website.host or "").lower().rstrip(".")
+    catalog_hosts = {
+        str(source.url.host or "").lower().rstrip(".")
+        for source in manifest.catalogs
+    }
+    source_types = {source.source_type for source in manifest.catalogs}
+    blockers: list[str] = []
+    warnings: list[str] = []
+
+    if "FR" not in manifest.countries:
+        blockers.append("pilot_requires_france")
+    if "EUR" not in manifest.currencies:
+        blockers.append("pilot_requires_eur")
+    if any(host != website_host for host in catalog_hosts):
+        blockers.append("catalogs_must_be_self_hosted")
+    if not source_types.intersection({"goia_json", "sitemap"}):
+        blockers.append("pilot_requires_supported_catalog_source")
+    if "goia_json" not in source_types:
+        warnings.append("native_goia_json_catalog_recommended")
+    if manifest.commercial_relationship != "none" and not (
+        manifest.partnership_discovery.accepts_partnership_requests
+    ):
+        warnings.append("commercial_relationship_has_no_machine_partnership_endpoint")
+
+    return {
+        "status": "ready" if not blockers else "not_ready",
+        "provider_id": manifest.provider_id,
+        "pilot_scope": {
+            "country": "FR",
+            "currency": "EUR",
+            "supported_kinds": [
+                "software",
+                "api",
+                "hosting",
+                "digital_service",
+            ],
+        },
+        "blockers": blockers,
+        "warnings": warnings,
+        "next_action": (
+            "submit_to_authenticated_catalog_ingest"
+            if not blockers
+            else "correct_manifest_and_revalidate"
+        ),
+        "registration_performed": False,
+        "network_access_performed": False,
+    }
+
+
 class NativeCatalogOffer(StrictGOIAModel):
     offer_id: str = Field(min_length=3, max_length=160)
     kind: Literal["software", "api", "hosting", "digital_service"]

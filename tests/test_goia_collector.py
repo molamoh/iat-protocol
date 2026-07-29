@@ -90,6 +90,35 @@ def _review_observation(*, source_sha256="d" * 64):
     )
 
 
+def test_worker_heartbeat_reports_healthy_then_stale(goia_db):
+    recorded = repository.record_worker_heartbeat(
+        worker_id="collector:test",
+        worker_type="collector",
+        status="idle",
+        cycle_count=3,
+        result={"status": "idle"},
+        started_at=900,
+        now=1_000,
+    )
+
+    assert recorded["last_seen_at"] == 1_000
+    healthy = repository.list_worker_health(
+        stale_after_seconds=60,
+        now=1_030,
+    )
+    assert healthy["healthy_count"] == 1
+    assert healthy["stale_count"] == 0
+    assert healthy["workers"][0]["last_result"] == {"status": "idle"}
+
+    stale = repository.list_worker_health(
+        stale_after_seconds=60,
+        now=1_061,
+    )
+    assert stale["healthy_count"] == 0
+    assert stale["stale_count"] == 1
+    assert stale["workers"][0]["operational_status"] == "stale"
+
+
 class FakeResponse:
     def __init__(
         self,

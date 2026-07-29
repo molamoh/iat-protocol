@@ -427,6 +427,21 @@ def init_goia_tables() -> None:
             )
             """
         )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS goia_worker_heartbeats (
+                worker_id TEXT PRIMARY KEY,
+                worker_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                cycle_count INTEGER NOT NULL DEFAULT 0,
+                last_result_json TEXT,
+                last_error_code TEXT,
+                started_at INTEGER NOT NULL,
+                last_seen_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """
+        )
         cur = _ensure_column(
             conn,
             cur,
@@ -435,6 +450,152 @@ def init_goia_tables() -> None:
             "INTEGER NOT NULL DEFAULT 0",
         )
         conn.commit()
+    finally:
+        release_conn(conn)
+
+
+def record_worker_heartbeat(
+    *,
+    worker_id: str,
+    worker_type: str,
+    status: str,
+    cycle_count: int,
+    result: dict[str, Any] | None = None,
+    error_code: str | None = None,
+    started_at: int | None = None,
+    now: int | None = None,
+) -> dict[str, Any]:
+    if status not in {"starting", "idle", "working", "degraded"}:
+        raise GOIARepositoryError("invalid_worker_status")
+    normalized_id = str(worker_id).strip()
+    normalized_type = str(worker_type).strip()
+    if not normalized_id or len(normalized_id) > 160:
+        raise GOIARepositoryError("invalid_worker_id")
+    if not normalized_type or len(normalized_type) > 80:
+        raise GOIARepositoryError("invalid_worker_type")
+    timestamp = int(now or time.time())
+    initial_timestamp = int(started_at or timestamp)
+    marker = qmark()
+    result_json = _canonical_json(result) if result is not None else None
+    bounded_error = str(error_code)[:160] if error_code else None
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"SELECT started_at FROM goia_worker_heartbeats WHERE worker_id = {marker}",
+            (normalized_id,),
+        )
+        existing = _row(cur.fetchone())
+        if existing is None:
+            cur.execute(
+                f"""
+                INSERT INTO goia_worker_heartbeats (
+                    worker_id, worker_type, status, cycle_count,
+                    last_result_json, last_error_code, started_at,
+                    last_seen_at, updated_at
+                ) VALUES ({", ".join([marker] * 9)})
+                """,
+                (
+                    normalized_id,
+                    normalized_type,
+                    status,
+                    max(0, int(cycle_count)),
+                    result_json,
+                    bounded_error,
+                    initial_timestamp,
+                    timestamp,
+                    timestamp,
+                ),
+            )
+        else:
+            cur.execute(
+                f"""
+                UPDATE goia_worker_heartbeats
+                SET worker_type = {marker}, status = {marker},
+                    cycle_count = {marker}, last_result_json = {marker},
+                    last_error_code = {marker}, last_seen_at = {marker},
+                    updated_at = {marker}
+                WHERE worker_id = {marker}
+                """,
+                (
+                    normalized_type,
+                    status,
+                    max(0, int(cycle_count)),
+                    result_json,
+                    bounded_error,
+                    timestamp,
+                    timestamp,
+                    normalized_id,
+                ),
+            )
+        conn.commit()
+        return {
+            "worker_id": normalized_id,
+            "worker_type": normalized_type,
+            "status": status,
+            "cycle_count": max(0, int(cycle_count)),
+            "last_seen_at": timestamp,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_conn(conn)
+
+
+def list_worker_health(
+    *,
+    stale_after_seconds: int = 180,
+    now: int | None = None,
+) -> dict[str, Any]:
+    timestamp = int(now or time.time())
+    stale_after = max(15, min(int(stale_after_seconds), 3_600))
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            SELECT worker_id, worker_type, status, cycle_count,
+                   last_result_json, last_error_code, started_at, last_seen_at
+            FROM goia_worker_heartbeats
+            ORDER BY worker_type ASC, worker_id ASC
+            """
+        )
+        workers = []
+        for raw in cur.fetchall():
+            row = dict(raw)
+            result_json = row.pop("last_result_json", None)
+            age = max(0, timestamp - int(row["last_seen_at"]))
+            reported_status = str(row["status"])
+            operational_status = (
+                "stale"
+                if age > stale_after
+                else ("degraded" if reported_status == "degraded" else "healthy")
+            )
+            workers.append(
+                {
+                    **row,
+                    "last_result": json.loads(result_json) if result_json else None,
+                    "age_seconds": age,
+                    "operational_status": operational_status,
+                }
+            )
+        return {
+            "status": "ok",
+            "as_of": timestamp,
+            "stale_after_seconds": stale_after,
+            "worker_count": len(workers),
+            "healthy_count": sum(
+                item["operational_status"] == "healthy" for item in workers
+            ),
+            "degraded_count": sum(
+                item["operational_status"] == "degraded" for item in workers
+            ),
+            "stale_count": sum(
+                item["operational_status"] == "stale" for item in workers
+            ),
+            "workers": workers,
+        }
     finally:
         release_conn(conn)
 

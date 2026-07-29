@@ -429,6 +429,10 @@ pub struct InitializeConfig<'info> {
         token::token_program = iat_token_program
     )]
     pub settlement_escrow: InterfaceAccount<'info, TokenAccount>,
+    #[account(
+        constraint = iat_token_program.key() == anchor_spl::token::ID
+            @ CheckoutError::UnsupportedTokenProgram
+    )]
     pub iat_token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
@@ -455,6 +459,10 @@ pub struct ConfigureAsset<'info> {
         token::token_program = input_token_program
     )]
     pub treasury_input_vault: InterfaceAccount<'info, TokenAccount>,
+    #[account(
+        constraint = input_token_program.key() == anchor_spl::token::ID
+            @ CheckoutError::UnsupportedTokenProgram
+    )]
     pub input_token_program: Interface<'info, TokenInterface>,
     #[account(
         init,
@@ -584,7 +592,15 @@ pub struct ExecuteTreasuryCheckout<'info> {
         bump = config.vault_authority_bump
     )]
     pub vault_authority: UncheckedAccount<'info>,
+    #[account(
+        constraint = input_token_program.key() == anchor_spl::token::ID
+            @ CheckoutError::UnsupportedTokenProgram
+    )]
     pub input_token_program: Interface<'info, TokenInterface>,
+    #[account(
+        constraint = iat_token_program.key() == anchor_spl::token::ID
+            @ CheckoutError::UnsupportedTokenProgram
+    )]
     pub iat_token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
@@ -672,7 +688,15 @@ pub struct PurchaseIatWithUsdc<'info> {
         bump = config.vault_authority_bump
     )]
     pub vault_authority: UncheckedAccount<'info>,
+    #[account(
+        constraint = input_token_program.key() == anchor_spl::token::ID
+            @ CheckoutError::UnsupportedTokenProgram
+    )]
     pub input_token_program: Interface<'info, TokenInterface>,
+    #[account(
+        constraint = iat_token_program.key() == anchor_spl::token::ID
+            @ CheckoutError::UnsupportedTokenProgram
+    )]
     pub iat_token_program: Interface<'info, TokenInterface>,
     pub system_program: Program<'info, System>,
 }
@@ -888,6 +912,8 @@ pub enum CheckoutError {
     InvalidTreasuryVault,
     #[msg("The token program is invalid")]
     InvalidTokenProgram,
+    #[msg("Only the classic SPL Token program is supported")]
+    UnsupportedTokenProgram,
     #[msg("The wallet usage account is invalid")]
     InvalidUsage,
     #[msg("Mutable accounts must be distinct")]

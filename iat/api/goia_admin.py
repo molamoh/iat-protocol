@@ -23,6 +23,7 @@ from iat.goia.repository import (
     list_partner_proposals,
     list_partner_delivery_events,
     list_partner_suppressions,
+    list_worker_health,
     prepare_partner_proposals,
     refresh_partnership_opportunities,
     refresh_partner_permissions,
@@ -103,6 +104,10 @@ def build_goia_admin_router(require_admin: Callable) -> APIRouter:
     @router.get("/collection/stats")
     def collection_stats():
         return collection_job_stats()
+
+    @router.get("/workers/health")
+    def workers_health(stale_after_seconds: int = 180):
+        return list_worker_health(stale_after_seconds=stale_after_seconds)
 
     @router.get("/demand/stats")
     def demand_stats(days: int = 30):

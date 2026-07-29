@@ -5,6 +5,7 @@ import pytest
 from solders.pubkey import Pubkey
 
 from iat.checkout_solana import (
+    build_set_paused_plan,
     SPL_TOKEN_PROGRAM_ID,
     SolanaPlanError,
     build_direct_usdc_purchase_plan,
@@ -167,3 +168,27 @@ def test_direct_purchase_rejects_non_usdc_input():
             input_token_program=str(SPL_TOKEN_PROGRAM_ID),
             iat_token_program=str(SPL_TOKEN_PROGRAM_ID),
         )
+
+
+def test_pause_plan_is_unsigned_deterministic_and_transfers_no_funds():
+    program = key()
+    authority = key()
+
+    plan = build_set_paused_plan(
+        program_id=program,
+        authority=authority,
+        paused=True,
+    )
+
+    assert plan["signature_required"] is True
+    assert plan["simulation_required"] is True
+    assert plan["funds_transfer"] is False
+    assert plan["display"]["paused"] is True
+    assert plan["instruction"]["accounts"][1] == {
+        "address": authority,
+        "signer": True,
+        "writable": False,
+    }
+    data = base64.b64decode(plan["instruction"]["data_base64"])
+    assert data[:8] == hashlib.sha256(b"global:set_paused").digest()[:8]
+    assert data[8:] == b"\x01"

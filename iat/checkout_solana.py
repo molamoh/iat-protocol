@@ -52,6 +52,41 @@ def _discriminator(name: str) -> bytes:
     return hashlib.sha256(f"global:{name}".encode()).digest()[:8]
 
 
+def build_set_paused_plan(
+    *,
+    program_id: str,
+    authority: str,
+    paused: bool,
+) -> dict[str, Any]:
+    """Build the deterministic admin pause instruction without signing it."""
+    program = _pubkey(program_id, "program_id")
+    admin = _pubkey(authority, "authority")
+    config = _pda(program, b"config")
+    data = _discriminator("set_paused") + struct.pack("<?", bool(paused))
+    return {
+        "program_id": str(program),
+        "network": "solana-devnet",
+        "fee_payer": str(admin),
+        "signature_required": True,
+        "simulation_required": True,
+        "funds_transfer": False,
+        "instruction": {
+            "program_id": str(program),
+            "accounts": [
+                _meta(config, writable=True),
+                _meta(admin, signer=True),
+            ],
+            "data_base64": base64.b64encode(data).decode(),
+        },
+        "display": {
+            "action": "set_paused",
+            "paused": bool(paused),
+            "config": str(config),
+            "authority": str(admin),
+        },
+    }
+
+
 def build_treasury_instruction_plan(
     *,
     quote: Mapping[str, Any],

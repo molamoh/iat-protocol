@@ -103,3 +103,12 @@ wallet, signs a transaction, or prints the configured RPC URL.
 The verifier reports `upgrade_ready: false` while the protocol is unpaused.
 Pausing is a separate on-chain transaction and still requires explicit
 approval, simulation, and signature before an upgrade can be attempted.
+
+An unsigned, non-mutating pause simulation is available separately:
+
+```text
+iat_env/bin/python scripts/simulate_pause_checkout_devnet.py
+```
+
+It uses a zero signature with RPC signature verification disabled. The script
+does not load a wallet and contains no send-transaction code path.

@@ -79,6 +79,8 @@ def parse_asset_config(data: bytes) -> dict:
 
 
 class Rpc:
+    _RETRYABLE_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+
     def __init__(self) -> None:
         self.url = os.getenv(
             "IAT_CHECKOUT_RPC_URL",
@@ -88,13 +90,45 @@ class Rpc:
             3,
             min(int(os.getenv("IAT_CHECKOUT_RPC_TIMEOUT_SECONDS", "15")), 30),
         )
+        self.max_attempts = max(
+            1,
+            min(int(os.getenv("IAT_CHECKOUT_RPC_MAX_ATTEMPTS", "3")), 5),
+        )
+        self.retry_delay = max(
+            0.0,
+            min(float(os.getenv("IAT_CHECKOUT_RPC_RETRY_DELAY_SECONDS", "0.5")), 5.0),
+        )
         if not self.url.startswith("https://"):
             raise VerificationError("https_rpc_required")
 
+    def _post(self, payload: dict) -> requests.Response:
+        last_error: requests.RequestException | None = None
+        for attempt in range(1, self.max_attempts + 1):
+            try:
+                response = requests.post(
+                    self.url,
+                    json=payload,
+                    timeout=self.timeout,
+                )
+                if (
+                    response.status_code not in self._RETRYABLE_STATUS_CODES
+                    or attempt == self.max_attempts
+                ):
+                    response.raise_for_status()
+                    return response
+            except (requests.ConnectionError, requests.Timeout) as exc:
+                last_error = exc
+                if attempt == self.max_attempts:
+                    raise
+            if self.retry_delay:
+                time.sleep(self.retry_delay * attempt)
+        if last_error is not None:
+            raise last_error
+        raise VerificationError("rpc_retry_exhausted")
+
     def account(self, address: Pubkey) -> dict:
-        response = requests.post(
-            self.url,
-            json={
+        response = self._post(
+            {
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "getAccountInfo",
@@ -103,9 +137,7 @@ class Rpc:
                     {"encoding": "base64", "commitment": "confirmed"},
                 ],
             },
-            timeout=self.timeout,
         )
-        response.raise_for_status()
         payload = response.json()
         value = payload.get("result", {}).get("value")
         if not isinstance(value, dict):

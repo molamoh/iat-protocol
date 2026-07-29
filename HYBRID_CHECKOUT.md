@@ -208,6 +208,8 @@ IAT_RAYDIUM_TIMEOUT_SECONDS=8
 IAT_RAYDIUM_COMPUTE_UNIT_PRICE_MICRO_LAMPORTS=50000
 IAT_CHECKOUT_SOLANA_RPC_URL=
 IAT_CHECKOUT_RPC_TIMEOUT_SECONDS=10
+IAT_CHECKOUT_RPC_MAX_ATTEMPTS=3
+IAT_CHECKOUT_RPC_RETRY_DELAY_SECONDS=0.5
 IAT_CHECKOUT_ASSETS_JSON={}
 IAT_RAYDIUM_QUOTES_JSON={}
 ```
@@ -264,6 +266,16 @@ executable hash is
 `3f25c7a204022e4da453b508c2f545ae2f12e2b9b31cfbbbaf883e7e3d9164eb`.
 The protocol remains paused after this upgrade; price refresh and unpause are
 separate controlled operations.
+
+The controlled post-upgrade canary completed on 2026-07-29. Transaction
+`3Jg3pEs9w8xVefi9eB3ePvUyZPVcYivPTmrp9Jw3mpxSXwQEWVzu565YPUCt4777cWA5rKASikVtNr7waMUdCHLX`
+atomically exchanged 1.005 devnet USDC for 1 test IAT through the hardened
+program and was independently confirmed by the checkout API. The protocol was
+then returned to `paused=true` by finalized transaction
+`3AjzQLtxUf7B2HuY3k6NAxB2sStf2UWbuA17GDTcgiNnEmboozU58Cni6iN5SN3NRiktpuirKeJ6oWBvLuRTmKLt`.
+Post-canary vault inventories are 13.5175 devnet USDC and 9,996.5 test IAT.
+Read-only deployment verification retries bounded transient RPC failures, but
+transaction senders never automatically resubmit after an ambiguous result.
 
 ## Raydium fallback
 

@@ -24,6 +24,7 @@ from iat.goia.repository import (
     recover_stale_collection_jobs,
     refresh_partnership_opportunities,
     refresh_opportunity_prospect_links,
+    refresh_partner_permissions,
     schedule_due_quarantine_retries,
     seed_due_catalog_sources,
     store_review_candidates,
@@ -41,6 +42,7 @@ def process_one_job() -> dict:
     retries = schedule_due_quarantine_retries()
     source_discovery = seed_due_catalog_sources()
     partnership_intelligence = refresh_partnership_opportunities()
+    partnership_permissions = refresh_partner_permissions()
     job = claim_collection_job()
     if job is None:
         return {
@@ -49,6 +51,7 @@ def process_one_job() -> dict:
             "quarantine_retries": retries,
             "source_discovery": source_discovery,
             "partnership_intelligence": partnership_intelligence,
+            "partnership_permissions": partnership_permissions,
         }
     try:
         document = fetch_allowed_document(job["url"])
@@ -75,6 +78,7 @@ def process_one_job() -> dict:
                 "quarantine_retries": retries,
                 "source_discovery": source_discovery,
                 "partnership_intelligence": partnership_intelligence,
+                "partnership_permissions": partnership_permissions,
             }
         if job.get("job_type") == "catalog_json":
             candidates = extract_native_catalog_candidates(
@@ -126,6 +130,7 @@ def process_one_job() -> dict:
             "quarantine_retries": retries,
             "source_discovery": source_discovery,
             "partnership_intelligence": partnership_intelligence,
+            "partnership_permissions": partnership_permissions,
         }
     except (GOIACollectionError, GOIARepositoryError) as exc:
         fail_collection_job(job["job_id"], error_code=str(exc))
@@ -137,6 +142,7 @@ def process_one_job() -> dict:
             "quarantine_retries": retries,
             "source_discovery": source_discovery,
             "partnership_intelligence": partnership_intelligence,
+            "partnership_permissions": partnership_permissions,
         }
 
 

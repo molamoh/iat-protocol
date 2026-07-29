@@ -330,3 +330,105 @@ def test_qualified_prospect_links_to_market_gap_without_outreach(goia_db):
 
     assert linked["linked_count"] == 1
     assert linked["outreach_triggered"] is False
+
+
+def test_partner_permission_requires_domain_matched_explicit_opt_in(goia_db):
+    provider = _provider(
+        partnership_discovery={
+            "accepts_partnership_requests": True,
+            "request_endpoint": "https://merchant.example/.well-known/goia-partnership",
+            "terms_url": "https://merchant.example/partner-terms",
+            "relationship_types": ["affiliate"],
+        }
+    )
+    repository.upsert_merchant(provider, now=1_000)
+    hint = {
+        "domain": "merchant.example",
+        "name": "Merchant",
+        "url": "https://merchant.example/offer",
+        "source_url": "https://comparison.example/cloud",
+        "source_sha256": "a" * 64,
+        "evidence_type": "schema_offer_seller",
+        "kinds": ["Service"],
+        "currencies": ["EUR"],
+    }
+    repository.upsert_partner_hints([hint], now=1_001)
+
+    refreshed = repository.refresh_partner_permissions(now=1_002)
+    prospect = repository.list_partner_prospects()["items"][0]
+
+    assert refreshed["declared_opt_in_count"] == 1
+    assert refreshed["self_hosting_verified"] is False
+    assert refreshed["outreach_triggered"] is False
+    assert prospect["permission_status"] == "declared_opt_in"
+    assert prospect["permission_provider_id"] == provider.provider_id
+    assert prospect["permission_evidence"]["domain_match"] is True
+    assert prospect["permission_evidence"]["self_hosting_verified"] is False
+    assert prospect["outreach_authorized"] is False
+
+
+def test_affiliate_relationship_alone_is_not_partnership_permission(goia_db):
+    provider = _provider(
+        commercial_relationship="affiliate",
+        attribution_supported=True,
+    )
+    repository.upsert_merchant(provider, now=1_000)
+    repository.upsert_partner_hints(
+        [
+            {
+                "domain": "merchant.example",
+                "name": "Merchant",
+                "url": "https://merchant.example/offer",
+                "source_url": "https://comparison.example/cloud",
+                "source_sha256": "a" * 64,
+                "evidence_type": "schema_offer_seller",
+                "kinds": ["Service"],
+                "currencies": ["EUR"],
+            }
+        ],
+        now=1_001,
+    )
+
+    refreshed = repository.refresh_partner_permissions(now=1_002)
+    prospect = repository.list_partner_prospects()["items"][0]
+
+    assert refreshed["declared_opt_in_count"] == 0
+    assert prospect["permission_status"] == "none"
+    assert prospect["outreach_authorized"] is False
+
+
+def test_withdrawn_partner_opt_in_is_revoked_autonomously(goia_db):
+    provider = _provider(
+        partnership_discovery={
+            "accepts_partnership_requests": True,
+            "request_endpoint": "https://merchant.example/goia-partnership",
+            "relationship_types": ["direct_partner"],
+        }
+    )
+    repository.upsert_merchant(provider, now=1_000)
+    repository.upsert_partner_hints(
+        [
+            {
+                "domain": "merchant.example",
+                "name": "Merchant",
+                "url": "https://merchant.example/offer",
+                "source_url": "https://comparison.example/cloud",
+                "source_sha256": "a" * 64,
+                "evidence_type": "schema_offer_seller",
+                "kinds": ["Service"],
+                "currencies": ["EUR"],
+            }
+        ],
+        now=1_001,
+    )
+    repository.refresh_partner_permissions(now=1_002)
+    repository.upsert_merchant(_provider(), now=1_003)
+
+    revoked = repository.refresh_partner_permissions(now=1_004)
+    prospect = repository.list_partner_prospects()["items"][0]
+
+    assert revoked["declared_opt_in_count"] == 0
+    assert prospect["permission_status"] == "none"
+    assert prospect["permission_provider_id"] is None
+    assert prospect["permission_evidence"] is None
+    assert prospect["outreach_authorized"] is False

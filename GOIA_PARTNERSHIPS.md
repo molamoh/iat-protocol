@@ -67,3 +67,30 @@ GET /admin/goia/partnership/prospects
 All responses explicitly report `outreach_triggered: false`. Prospect rows
 also keep `outreach_authorized` and `contact_attempted` false. Permission-aware
 outreach remains a separate future stage.
+
+## Explicit partnership permission
+
+Merchant manifests may publish a fail-closed `partnership_discovery` block:
+
+```json
+{
+  "accepts_partnership_requests": true,
+  "request_endpoint": "https://merchant.example/.well-known/goia-partnership",
+  "terms_url": "https://merchant.example/partner-terms",
+  "relationship_types": ["affiliate"]
+}
+```
+
+An endpoint and at least one relationship type are mandatory when the opt-in
+is true. Partnership URLs must use the provider website domain. A commercial
+relationship declared elsewhere in the manifest is not an opt-in.
+
+GOIA reconciles these declarations autonomously and marks a domain-matched
+prospect `declared_opt_in`. Removing the block revokes that status on the next
+cycle. This declaration is not yet proof that the manifest is self-hosted by
+the domain owner, so it never changes `outreach_authorized` and never sends a
+request. The administrative refresh route exists for audit and emergency use:
+
+```text
+POST /admin/goia/partnership/permissions/refresh
+```

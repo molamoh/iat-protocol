@@ -20,6 +20,7 @@ from iat.goia.repository import (
     list_partnership_opportunities,
     list_partner_prospects,
     refresh_partnership_opportunities,
+    refresh_partner_permissions,
     reject_review_candidate,
 )
 from iat.goia.collector import GOIACollectionError, validate_collection_url
@@ -121,6 +122,10 @@ def build_goia_admin_router(require_admin: Callable) -> APIRouter:
             return list_partner_prospects(status=status, limit=limit)
         except GOIARepositoryError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.post("/partnership/permissions/refresh")
+    def refresh_permissions():
+        return refresh_partner_permissions()
 
     @router.get("/review/candidates")
     def review_candidates(status: str = "pending_review", limit: int = 100):

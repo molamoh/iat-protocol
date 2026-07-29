@@ -7,6 +7,7 @@ import json
 import time
 import uuid
 from typing import Any
+from urllib.parse import urlparse
 
 from iat.api.db import get_conn, qmark, release_conn
 from iat.goia.contracts import MerchantProviderManifest, OfferObservation
@@ -262,12 +263,36 @@ def init_goia_tables() -> None:
                 evidence_count INTEGER NOT NULL,
                 signals_json TEXT NOT NULL,
                 evidence_json TEXT NOT NULL,
+                permission_status TEXT NOT NULL DEFAULT 'none',
+                permission_provider_id TEXT,
+                permission_evidence_json TEXT,
                 outreach_authorized INTEGER NOT NULL DEFAULT 0,
                 contact_attempted INTEGER NOT NULL DEFAULT 0,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             )
             """
+        )
+        cur = _ensure_column(
+            conn,
+            cur,
+            "goia_partner_prospects",
+            "permission_status",
+            "TEXT NOT NULL DEFAULT 'none'",
+        )
+        cur = _ensure_column(
+            conn,
+            cur,
+            "goia_partner_prospects",
+            "permission_provider_id",
+            "TEXT",
+        )
+        cur = _ensure_column(
+            conn,
+            cur,
+            "goia_partner_prospects",
+            "permission_evidence_json",
+            "TEXT",
         )
         cur.execute(
             """
@@ -1531,6 +1556,83 @@ def refresh_opportunity_prospect_links(*, now: int | None = None) -> dict[str, A
         release_conn(conn)
 
 
+def refresh_partner_permissions(*, now: int | None = None) -> dict[str, Any]:
+    """Reconcile prospects with explicit provider opt-ins; never authorize outreach."""
+    timestamp = int(now or time.time())
+    marker = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+    matched = []
+    try:
+        cur.execute(
+            f"""
+            UPDATE goia_partner_prospects
+            SET permission_status = 'none',
+                permission_provider_id = NULL,
+                permission_evidence_json = NULL,
+                outreach_authorized = 0,
+                updated_at = {marker}
+            """,
+            (timestamp,),
+        )
+        cur.execute("SELECT provider_id, website, manifest_json, manifest_hash FROM goia_merchants")
+        providers = list(map(dict, cur.fetchall()))
+        cur.execute("SELECT prospect_id, domain FROM goia_partner_prospects")
+        prospects = list(map(dict, cur.fetchall()))
+        by_domain = {
+            str(urlparse(row["website"]).hostname or "").lower().rstrip("."): row
+            for row in providers
+        }
+        for prospect in prospects:
+            provider = by_domain.get(prospect["domain"])
+            if provider is None:
+                continue
+            manifest = json.loads(provider["manifest_json"])
+            policy = manifest.get("partnership_discovery") or {}
+            if not policy.get("accepts_partnership_requests"):
+                continue
+            evidence = {
+                "provider_id": provider["provider_id"],
+                "manifest_hash": provider["manifest_hash"],
+                "request_endpoint": policy.get("request_endpoint"),
+                "terms_url": policy.get("terms_url"),
+                "relationship_types": policy.get("relationship_types") or [],
+                "domain_match": True,
+                "self_hosting_verified": False,
+            }
+            cur.execute(
+                f"""
+                UPDATE goia_partner_prospects
+                SET permission_status = 'declared_opt_in',
+                    permission_provider_id = {marker},
+                    permission_evidence_json = {marker},
+                    outreach_authorized = 0,
+                    updated_at = {marker}
+                WHERE prospect_id = {marker}
+                """,
+                (
+                    provider["provider_id"],
+                    _canonical_json(evidence),
+                    timestamp,
+                    prospect["prospect_id"],
+                ),
+            )
+            matched.append(prospect["prospect_id"])
+        conn.commit()
+        return {
+            "status": "ok",
+            "declared_opt_in_count": len(matched),
+            "prospect_ids": sorted(matched),
+            "self_hosting_verified": False,
+            "outreach_triggered": False,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_conn(conn)
+
+
 def list_partner_prospects(
     *,
     status: str | None = None,
@@ -1555,6 +1657,10 @@ def list_partner_prospects(
         for row in map(dict, cur.fetchall()):
             row["signals"] = json.loads(row.pop("signals_json"))
             row["evidence"] = json.loads(row.pop("evidence_json"))
+            raw_permission = row.pop("permission_evidence_json")
+            row["permission_evidence"] = (
+                json.loads(raw_permission) if raw_permission else None
+            )
             row["outreach_authorized"] = bool(row["outreach_authorized"])
             row["contact_attempted"] = bool(row["contact_attempted"])
             items.append(row)

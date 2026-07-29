@@ -74,6 +74,8 @@ def test_goia_manifest_is_defensively_copied_and_local_only():
         "funds_side_effects": False,
         "anonymous_demand_aggregation": True,
         "autonomous_partnership_gap_detection": True,
+        "explicit_partnership_opt_in": True,
+        "declared_opt_in_authorizes_outreach": False,
     }
 
 
@@ -95,6 +97,8 @@ def test_iat_discovery_advertises_only_controlled_local_search():
     assert manifest["goia"]["autonomous_recovery"] is True
     assert manifest["goia"]["autonomous_provider_source_discovery"] is True
     assert manifest["goia"]["anonymous_demand_aggregation"] is True
+    assert manifest["goia"]["explicit_partnership_opt_in"] is True
+    assert manifest["goia"]["declared_opt_in_authorizes_outreach"] is False
     assert manifest["goia"]["outreach_triggered"] is False
     assert capability["contract_validation"] is True
     assert capability["search_available"] is True
@@ -104,6 +108,7 @@ def test_iat_discovery_advertises_only_controlled_local_search():
     assert capability["autonomous_recovery"] is True
     assert capability["autonomous_provider_source_discovery"] is True
     assert capability["autonomous_partnership_gap_detection"] is True
+    assert capability["explicit_partnership_opt_in"] is True
     assert capability["outreach_triggered"] is False
     assert capability["index_scope"] == "controlled_catalogs_only"
 
@@ -179,6 +184,63 @@ def test_commercial_provider_requires_attribution():
 
     payload["attribution_supported"] = True
     assert MerchantProviderManifest(**payload).commercial_relationship == "affiliate"
+
+
+def test_provider_partnership_discovery_is_closed_by_default_and_explicit():
+    payload = {
+        "provider_id": "gop_provider_001",
+        "name": "Example Merchant",
+        "website": "https://merchant.example",
+        "countries": ["FR"],
+        "currencies": ["EUR"],
+        "catalogs": [
+            {
+                "source_id": "catalog-main",
+                "source_type": "goia_json",
+                "url": "https://merchant.example/.well-known/goia-catalog.json",
+                "refresh_interval_seconds": 3_600,
+            }
+        ],
+    }
+    closed = MerchantProviderManifest(**payload)
+    assert closed.partnership_discovery.accepts_partnership_requests is False
+
+    payload["partnership_discovery"] = {
+        "accepts_partnership_requests": True,
+        "request_endpoint": "https://merchant.example/.well-known/goia-partnership",
+        "terms_url": "https://merchant.example/affiliate-terms",
+        "relationship_types": ["affiliate"],
+    }
+    opened = MerchantProviderManifest(**payload)
+    assert opened.partnership_discovery.relationship_types == ["affiliate"]
+
+    payload["partnership_discovery"]["request_endpoint"] = "https://attacker.example/inbox"
+    with pytest.raises(ValidationError, match="must_match_provider_domain"):
+        MerchantProviderManifest(**payload)
+
+
+def test_provider_cannot_publish_partnership_details_without_opt_in():
+    payload = {
+        "provider_id": "gop_provider_001",
+        "name": "Example Merchant",
+        "website": "https://merchant.example",
+        "countries": ["FR"],
+        "currencies": ["EUR"],
+        "catalogs": [
+            {
+                "source_id": "catalog-main",
+                "source_type": "sitemap",
+                "url": "https://merchant.example/sitemap.xml",
+                "refresh_interval_seconds": 3_600,
+            }
+        ],
+        "partnership_discovery": {
+            "accepts_partnership_requests": False,
+            "request_endpoint": "https://merchant.example/partnership",
+        },
+    }
+    with pytest.raises(ValidationError, match="require_explicit_opt_in"):
+        MerchantProviderManifest(**payload)
 
 
 def test_ranking_policy_excludes_all_commercial_inputs():

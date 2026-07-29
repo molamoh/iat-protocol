@@ -112,6 +112,25 @@ class CatalogSource(StrictGOIAModel):
     refresh_interval_seconds: int = Field(ge=300, le=2_592_000)
 
 
+class PartnershipDiscoveryPolicy(StrictGOIAModel):
+    accepts_partnership_requests: bool = False
+    request_endpoint: HttpUrl | None = None
+    terms_url: HttpUrl | None = None
+    relationship_types: list[Literal["affiliate", "direct_partner"]] = Field(
+        default_factory=list,
+        max_length=2,
+    )
+
+    @model_validator(mode="after")
+    def validate_explicit_opt_in(self):
+        if self.accepts_partnership_requests:
+            if self.request_endpoint is None or not self.relationship_types:
+                raise ValueError("partnership_opt_in_requires_endpoint_and_relationship")
+        elif self.request_endpoint is not None or self.relationship_types:
+            raise ValueError("partnership_details_require_explicit_opt_in")
+        return self
+
+
 class MerchantProviderManifest(StrictGOIAModel):
     contract_version: Literal["goia_contracts_v1"] = GOIA_CONTRACT_VERSION
     provider_id: str = Field(pattern=r"^gop_[a-zA-Z0-9_-]{8,100}$")
@@ -126,11 +145,19 @@ class MerchantProviderManifest(StrictGOIAModel):
         "direct_partner",
     ] = "none"
     attribution_supported: bool = False
+    partnership_discovery: PartnershipDiscoveryPolicy = Field(
+        default_factory=PartnershipDiscoveryPolicy
+    )
 
     @model_validator(mode="after")
     def require_attribution_for_commercial_relationship(self):
         if self.commercial_relationship != "none" and not self.attribution_supported:
             raise ValueError("commercial_relationship_requires_attribution")
+        website_host = str(self.website.host or "").lower().rstrip(".")
+        policy = self.partnership_discovery
+        for endpoint in (policy.request_endpoint, policy.terms_url):
+            if endpoint is not None and str(endpoint.host or "").lower().rstrip(".") != website_host:
+                raise ValueError("partnership_urls_must_match_provider_domain")
         return self
 
 

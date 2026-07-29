@@ -8,7 +8,7 @@ from typing import Any
 from .contracts import GOIA_CONTRACT_VERSION
 
 
-GOIA_DISCOVERY_VERSION = "2026-07-26"
+GOIA_DISCOVERY_VERSION = "2026-07-29"
 
 _GOIA_MANIFEST: dict[str, Any] = {
     "schema_version": GOIA_DISCOVERY_VERSION,
@@ -35,6 +35,8 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "index_stats": "/admin/goia/index/stats",
         "demand_stats": "/admin/goia/demand/stats",
         "partnership_opportunities": "/admin/goia/partnership/opportunities",
+        "partnership_prospects": "/admin/goia/partnership/prospects",
+        "partnership_permissions_refresh": "/admin/goia/partnership/permissions/refresh",
         "collection_enqueue": "/admin/goia/collection/jobs",
         "collection_stats": "/admin/goia/collection/stats",
         "review_candidates": "/admin/goia/review/candidates",
@@ -61,6 +63,8 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "funds_side_effects": False,
         "anonymous_demand_aggregation": True,
         "autonomous_partnership_gap_detection": True,
+        "explicit_partnership_opt_in": True,
+        "declared_opt_in_authorizes_outreach": False,
     },
     "invariants": [
         "organic_ranking_never_uses_commission",
@@ -79,6 +83,8 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "checkout_devnet_is_unchanged",
         "demand_signals_never_store_raw_queries_or_buyer_identity",
         "partnership_gap_detection_never_triggers_outreach",
+        "partnership_permission_is_closed_by_default",
+        "declared_opt_in_never_authorizes_outreach_without_self_hosting_verification",
     ],
 }
 

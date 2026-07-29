@@ -59,6 +59,12 @@ des preuves bornées, qualifie les domaines par score déterministe et les relie
 aux lacunes de marché compatibles. Un domaine découvert n'est ni visité ni
 contacté : il constitue une preuve, jamais une autorisation.
 
+Mise à jour permission partenariats : le manifeste marchand possède un opt-in
+explicite et fermé par défaut. GOIA rapproche automatiquement domaine,
+manifeste et prospect, puis révoque l'état dès que l'opt-in disparaît. À ce
+stade, la déclaration reste distincte d'une preuve d'auto-hébergement et
+n'autorise donc encore aucun contact.
+
 ## 1. Résumé exécutif
 
 IAT Protocol possède déjà une base substantielle pour devenir l'infrastructure

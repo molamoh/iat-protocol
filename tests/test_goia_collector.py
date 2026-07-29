@@ -401,6 +401,7 @@ def test_worker_never_publishes_candidates_directly(monkeypatch):
         "refresh_partnership_opportunities",
         lambda: {"status": "ok", "refreshed_count": 0},
     )
+    monkeypatch.setattr(worker, "refresh_partner_permissions", lambda: {"status": "ok"})
     monkeypatch.setattr(
         worker,
         "claim_collection_job",
@@ -952,6 +953,7 @@ def test_worker_expands_sitemap_without_treating_it_as_product(monkeypatch):
         "refresh_partnership_opportunities",
         lambda: maintenance,
     )
+    monkeypatch.setattr(worker, "refresh_partner_permissions", lambda: maintenance)
     monkeypatch.setattr(
         worker,
         "claim_collection_job",

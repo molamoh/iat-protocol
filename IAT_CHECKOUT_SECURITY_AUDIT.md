@@ -86,3 +86,20 @@ Before upgrading devnet:
 6. keep the program paused if any invariant differs.
 
 No mainnet release is approved by this document.
+
+## Repeatable read-only verification
+
+Run the devnet invariant verifier before preparing any upgrade:
+
+```text
+iat_env/bin/python scripts/verify_checkout_devnet.py
+```
+
+It performs only `getAccountInfo` calls. It validates account existence,
+ownership, exact data length, Anchor discriminators, canonical PDA bumps, mint
+and vault relationships, and classic SPL Token ownership. It never loads a
+wallet, signs a transaction, or prints the configured RPC URL.
+
+The verifier reports `upgrade_ready: false` while the protocol is unpaused.
+Pausing is a separate on-chain transaction and still requires explicit
+approval, simulation, and signature before an upgrade can be attempted.

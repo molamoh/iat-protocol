@@ -61,3 +61,22 @@ GET /admin/goia/workers/health?stale_after_seconds=180
 
 A missing heartbeat is not considered healthy. A heartbeat older than the
 configured threshold is reported as `stale`.
+
+### Blueprint deployment
+
+`render.goia-worker.yaml` creates only the dedicated collector and does not
+manage or modify the existing API service. In Render, create a new Blueprint,
+select this repository, and set the Blueprint path to:
+
+```text
+render.goia-worker.yaml
+```
+
+Render prompts for the two values marked `sync: false`:
+
+- `DATABASE_URL`: the same PostgreSQL connection URL used by the API;
+- `IAT_GOIA_COLLECTION_HOSTS`: the exact comma-separated merchant hostnames.
+
+The Blueprint pins the immutable worker image tag for commit `a2441a9`.
+Partnership delivery and its HTTP adapter are explicitly disabled. Do not set
+either outbound variable to `true` during the merchant pilot.

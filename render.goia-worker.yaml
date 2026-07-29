@@ -1,0 +1,25 @@
+services:
+  - type: worker
+    name: iat-goia-collector
+    runtime: image
+    plan: starter
+    region: frankfurt
+    numInstances: 1
+    maxShutdownDelaySeconds: 60
+    image:
+      url: docker.io/molamoh/iat-goia-worker:a2441a9
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: IAT_GOIA_COLLECTION_HOSTS
+        sync: false
+      - key: IAT_GOIA_COLLECTION_ENABLED
+        value: "true"
+      - key: IAT_GOIA_WORKER_INTERVAL_SECONDS
+        value: "30"
+      - key: IAT_GOIA_WORKER_ID
+        value: render-goia-collector-1
+      - key: IAT_GOIA_PARTNERSHIP_DELIVERY_ENABLED
+        value: "false"
+      - key: IAT_GOIA_PARTNERSHIP_HTTP_ENABLED
+        value: "false"

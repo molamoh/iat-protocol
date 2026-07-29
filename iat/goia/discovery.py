@@ -30,6 +30,9 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "validate_provider": "/goia/v1/contracts/provider/validate",
         "validate_catalog": "/goia/v1/contracts/catalog/validate",
         "validate_partnership_proposal": "/goia/v1/contracts/partnership-proposal/validate",
+        "validate_partnership_acknowledgement": (
+            "/goia/v1/contracts/partnership-acknowledgement/validate"
+        ),
         "ranking_policy": "/goia/v1/policies/ranking",
         "search": "/goia/v1/search",
         "catalog_ingest": "/admin/goia/catalogs/ingest",
@@ -73,7 +76,8 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "autonomous_partnership_proposal_preparation": True,
         "partnership_proposal_delivery_enabled": False,
         "partnership_delivery_lifecycle": True,
-        "partnership_delivery_adapter_bundled": False,
+        "partnership_delivery_adapter_bundled": True,
+        "partnership_transport_signature": "ed25519",
     },
     "invariants": [
         "organic_ranking_never_uses_commission",
@@ -103,7 +107,25 @@ _GOIA_MANIFEST: dict[str, Any] = {
 
 
 def build_goia_manifest() -> dict[str, Any]:
-    return deepcopy(_GOIA_MANIFEST)
+    manifest = deepcopy(_GOIA_MANIFEST)
+    try:
+        from iat.goia.partnership_dispatcher import delivery_enabled, http_adapter_enabled
+        from iat.goia.partnership_http import signing_public_key
+
+        manifest["partnership_transport"] = {
+            "signature_algorithm": "ed25519",
+            "signing_public_key": signing_public_key(),
+            "http_adapter_enabled": http_adapter_enabled(),
+            "delivery_enabled": delivery_enabled(),
+        }
+    except ValueError:
+        manifest["partnership_transport"] = {
+            "signature_algorithm": "ed25519",
+            "signing_public_key": None,
+            "http_adapter_enabled": False,
+            "delivery_enabled": False,
+        }
+    return manifest
 
 
 def build_ranking_policy() -> dict[str, Any]:

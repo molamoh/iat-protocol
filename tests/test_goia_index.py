@@ -618,6 +618,13 @@ def test_verified_market_match_prepares_private_idempotent_proposal(goia_db):
         third_claim["proposal_id"],
         lease_token=third_claim["lease_token"],
         delivered=True,
+        receipt={
+            "contract_version": "goia_partnership_ack_v1",
+            "proposal_id": third_claim["proposal_id"],
+            "status": "received",
+            "received_at": second_claim["lease_until"],
+            "reason_code": None,
+        },
         now=second_claim["lease_until"],
     )
     events = repository.list_partner_delivery_events(
@@ -627,6 +634,9 @@ def test_verified_market_match_prepares_private_idempotent_proposal(goia_db):
 
     assert recovered["recovered_count"] == 1
     assert delivered["status"] == "delivered"
+    assert repository.list_partner_proposals(status="delivered")["items"][0][
+        "receipt"
+    ]["status"] == "received"
     assert prospect["contact_attempted"] is True
     assert [item["event_type"] for item in events["items"]] == [
         "delivery_claimed",

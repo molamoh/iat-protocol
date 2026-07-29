@@ -225,3 +225,14 @@ class PartnershipProposal(StrictGOIAModel):
         if self.expires_at - self.created_at > 604_800:
             raise ValueError("proposal_lifetime_exceeds_seven_days")
         return self
+
+
+class PartnershipAcknowledgement(StrictGOIAModel):
+    contract_version: Literal["goia_partnership_ack_v1"] = "goia_partnership_ack_v1"
+    proposal_id: str = Field(pattern=r"^gpr_[a-f0-9]{32}$")
+    status: Literal["received", "duplicate", "rejected"]
+    received_at: int = Field(gt=0)
+    reason_code: str | None = Field(
+        default=None,
+        pattern=r"^[a-z][a-z0-9_]{2,79}$",
+    )

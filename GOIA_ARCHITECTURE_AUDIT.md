@@ -83,6 +83,13 @@ Chaque claim revalide la preuve et la permission. Le dispatcher est séparé du
 collecteur, désactivé par défaut et aucun adaptateur réseau n'est encore
 embarqué.
 
+Mise à jour transport signé : un adaptateur HTTP optionnel signe le contenu
+canonique en Ed25519, refuse redirections et cibles privées, contrôle l'IP
+réellement connectée, borne la réponse et exige un accusé
+`goia_partnership_ack_v1` lié à la proposition. Deux activations indépendantes
+et une clé privée serveur sont nécessaires ; elles restent désactivées par
+défaut.
+
 ## 1. Résumé exécutif
 
 IAT Protocol possède déjà une base substantielle pour devenir l'infrastructure

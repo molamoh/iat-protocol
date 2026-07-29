@@ -26,6 +26,13 @@ def delivery_enabled() -> bool:
     )
 
 
+def http_adapter_enabled() -> bool:
+    return (
+        os.getenv("IAT_GOIA_PARTNERSHIP_HTTP_ADAPTER_ENABLED", "false").strip().lower()
+        == "true"
+    )
+
+
 def process_one_delivery(
     *,
     sender: DeliverySender | None = None,
@@ -37,6 +44,10 @@ def process_one_delivery(
             "reason": "explicit_enable_required",
             "network_access_performed": False,
         }
+    if sender is None and http_adapter_enabled():
+        from iat.goia.partnership_http import send_partnership_proposal
+
+        sender = send_partnership_proposal
     if sender is None:
         return {
             "status": "blocked",
@@ -61,6 +72,7 @@ def process_one_delivery(
         delivered=bool(outcome.get("delivered")),
         retryable=bool(outcome.get("retryable")),
         error_code=str(outcome.get("error_code") or "delivery_failed"),
+        receipt=outcome.get("receipt"),
         now=now,
     )
     return {

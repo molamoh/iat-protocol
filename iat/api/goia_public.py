@@ -7,6 +7,7 @@ from iat.goia.contracts import (
     NativeCatalogDocument,
     OfferObservation,
     PartnershipProposal,
+    PartnershipAcknowledgement,
     SearchIntent,
 )
 from iat.goia.discovery import build_goia_manifest, build_ranking_policy
@@ -67,6 +68,16 @@ def validate_partnership_proposal(payload: PartnershipProposal):
     return {
         "status": "valid",
         "contract": "PartnershipProposal",
+        "normalized": payload.model_dump(mode="json"),
+        "production_side_effects": False,
+    }
+
+
+@router.post("/goia/v1/contracts/partnership-acknowledgement/validate")
+def validate_partnership_acknowledgement(payload: PartnershipAcknowledgement):
+    return {
+        "status": "valid",
+        "contract": "PartnershipAcknowledgement",
         "normalized": payload.model_dump(mode="json"),
         "production_side_effects": False,
     }

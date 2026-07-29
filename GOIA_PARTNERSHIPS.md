@@ -154,8 +154,33 @@ can be audited through:
 GET /admin/goia/partnership/delivery/events
 ```
 
-The dispatcher requires both
-`IAT_GOIA_PARTNERSHIP_DELIVERY_ENABLED=true` and an explicitly configured
-delivery adapter. No network adapter is bundled in this phase, so delivery
-remains impossible by default and enabling the environment variable alone is
-insufficient.
+## Signed HTTP adapter
+
+The optional HTTP adapter sends the canonical proposal JSON with:
+
+- an `Idempotency-Key` equal to the proposal ID;
+- SHA-256 content digest;
+- timestamp and GOIA Ed25519 public key;
+- Ed25519 signature over timestamp, proposal ID, and content digest.
+
+Before sending, it resolves the exact verified endpoint to public addresses.
+After connection it checks the actual peer against those addresses, preventing
+DNS rebinding. Redirects are never followed. Responses are limited to 64 KiB
+and must be JSON matching `goia_partnership_ack_v1` and the exact proposal ID.
+Receipts are persisted with the delivery.
+
+The transport requires all three conditions:
+
+```text
+IAT_GOIA_PARTNERSHIP_DELIVERY_ENABLED=true
+IAT_GOIA_PARTNERSHIP_HTTP_ADAPTER_ENABLED=true
+IAT_GOIA_PARTNERSHIP_SIGNING_KEY=<base58 Ed25519 private key>
+```
+
+Both enable flags default to false. The public key, never the private key, is
+published in `/.well-known/goia.json`. The acknowledgement contract can be
+validated without side effects:
+
+```text
+POST /goia/v1/contracts/partnership-acknowledgement/validate
+```

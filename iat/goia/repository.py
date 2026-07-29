@@ -341,6 +341,7 @@ def init_goia_tables() -> None:
                 lease_token TEXT,
                 lease_until INTEGER,
                 last_error_code TEXT,
+                receipt_json TEXT,
                 delivered_at INTEGER,
                 created_at INTEGER NOT NULL,
                 expires_at INTEGER NOT NULL,
@@ -355,6 +356,7 @@ def init_goia_tables() -> None:
             ("lease_token", "TEXT"),
             ("lease_until", "INTEGER"),
             ("last_error_code", "TEXT"),
+            ("receipt_json", "TEXT"),
             ("delivered_at", "INTEGER"),
         ):
             cur = _ensure_column(
@@ -2230,6 +2232,7 @@ def finish_partner_proposal_delivery(
     delivered: bool,
     retryable: bool = False,
     error_code: str | None = None,
+    receipt: dict[str, Any] | None = None,
     now: int | None = None,
     maximum_attempts: int = 3,
 ) -> dict[str, Any]:
@@ -2263,7 +2266,8 @@ def finish_partner_proposal_delivery(
             UPDATE goia_partnership_outbox
             SET status = {marker}, next_attempt_at = {marker},
                 lease_token = NULL, lease_until = NULL,
-                last_error_code = {marker}, delivered_at = {marker},
+                last_error_code = {marker}, receipt_json = {marker},
+                delivered_at = {marker},
                 updated_at = {marker}
             WHERE proposal_id = {marker} AND lease_token = {marker}
             """,
@@ -2271,6 +2275,7 @@ def finish_partner_proposal_delivery(
                 status,
                 next_attempt_at,
                 None if delivered else str(error_code or "delivery_failed")[:160],
+                _canonical_json(receipt) if delivered and receipt else None,
                 timestamp if delivered else None,
                 timestamp,
                 proposal_id,
@@ -2457,6 +2462,8 @@ def list_partner_proposals(
         items = []
         for row in map(dict, cur.fetchall()):
             row["payload"] = json.loads(row.pop("payload_json"))
+            raw_receipt = row.pop("receipt_json")
+            row["receipt"] = json.loads(raw_receipt) if raw_receipt else None
             items.append(row)
         return {
             "status": "ok",

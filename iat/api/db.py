@@ -14108,58 +14108,47 @@ def record_adaptive_policy_event_db(
     """
     old_policy = old_policy or {}
     new_policy = new_policy or {}
-
-    def multipliers(policy):
-        return {
-            "min_stake_multiplier": policy.get("min_stake_multiplier"),
-            "consensus_multiplier": policy.get("consensus_multiplier"),
-            "escrow_delay_multiplier": policy.get("escrow_delay_multiplier"),
-            "exposure_multiplier": policy.get("exposure_multiplier"),
-            "decay_multiplier": policy.get("decay_multiplier"),
-        }
-
     conn = get_conn()
-    cur = conn.cursor()
-    p = qmark()
-    now = int(time.time())
-
-    cur.execute(f"""
-    INSERT INTO adaptive_policy_events (
-        policy_id,
-        scope,
-        service,
-        event_type,
-        old_risk_level,
-        new_risk_level,
-        old_confidence,
-        new_confidence,
-        old_multipliers,
-        new_multipliers,
-        reason,
-        source,
-        created_at
-    )
-    VALUES (
-        {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}
-    )
-    """, (
-        policy_id,
-        scope,
-        service,
-        event_type,
-        old_policy.get("risk_level"),
-        new_policy.get("risk_level"),
-        old_policy.get("confidence"),
-        new_policy.get("confidence"),
-        json.dumps(multipliers(old_policy)),
-        json.dumps(multipliers(new_policy)),
-        json.dumps(reason) if isinstance(reason, (dict, list)) else str(reason or ""),
-        source,
-        now,
-    ))
-
-    conn.commit()
-    release_conn(conn)
+    try:
+        cur = conn.cursor()
+        p = qmark()
+        now = int(time.time())
+        cur.execute(f"""
+        INSERT INTO adaptive_policy_events (
+            event_id,
+            policy_id,
+            scope,
+            service,
+            event_type,
+            old_policy,
+            new_policy,
+            reason,
+            source,
+            created_at
+        )
+        VALUES (
+            {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}
+        )
+        """, (
+            f"ape_{uuid.uuid4().hex}",
+            policy_id,
+            scope,
+            service,
+            event_type,
+            json.dumps(old_policy, sort_keys=True),
+            json.dumps(new_policy, sort_keys=True),
+            json.dumps(reason, sort_keys=True)
+            if isinstance(reason, (dict, list))
+            else str(reason or ""),
+            source,
+            now,
+        ))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_conn(conn)
 
     return {
         "status": "policy_event_recorded",

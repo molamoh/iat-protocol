@@ -1,12 +1,13 @@
 services:
   - type: pserv
     name: iat-quote-signer-devnet
-    runtime: docker
-    dockerfilePath: ./Dockerfile.quote-signer
+    runtime: image
     plan: starter
     region: frankfurt
     autoDeploy: false
     healthCheckPath: /health
+    image:
+      url: docker.io/molamoh/iat-quote-signer:84e1809
     envVars:
       - key: IAT_QUOTE_SIGNER_ENABLED
         value: "false"

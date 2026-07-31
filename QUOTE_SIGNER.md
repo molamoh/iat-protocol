@@ -45,7 +45,7 @@ IAT_QUOTE_SIGNER_ENABLED=false
 IAT_QUOTE_SIGNER_CLUSTER=devnet
 IAT_QUOTE_SIGNER_ALLOW_LOCAL_KEYPAIR=false
 IAT_QUOTE_SIGNER_SHARED_SECRET=
-IAT_QUOTE_SIGNER_KEYPAIR_PATH=/var/run/secrets/iat-quote-authority.json
+IAT_QUOTE_SIGNER_KEYPAIR_PATH=/etc/secrets/iat-quote-authority.json
 ```
 
 The devnet keypair must be mounted as a Render secret file. Never paste it into

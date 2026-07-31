@@ -5,7 +5,6 @@ services:
     plan: starter
     region: frankfurt
     autoDeploy: false
-    healthCheckPath: /health
     image:
       url: docker.io/molamoh/iat-quote-signer:84e1809
     envVars:
@@ -18,4 +17,4 @@ services:
       - key: IAT_QUOTE_SIGNER_SHARED_SECRET
         sync: false
       - key: IAT_QUOTE_SIGNER_KEYPAIR_PATH
-        value: /var/run/secrets/iat-quote-authority.json
+        value: /etc/secrets/iat-quote-authority.json

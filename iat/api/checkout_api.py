@@ -66,6 +66,7 @@ from iat.checkout_compensation import (
 
 router = APIRouter(prefix="/payments/v1/universal", tags=["universal-checkout"])
 ACTIVE_STATES = ("quoted", "prepared", "submitted")
+QUOTE_SIGNER_MAX_LIFETIME_SECONDS = 120
 DEVNET_CIRCLE_USDC_MINT = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
 DEVNET_FIXED_USDC_ORACLE = "circle_devnet_smoke"
 _LOCAL_RESERVATION_LOCK = threading.RLock()
@@ -94,6 +95,18 @@ class UniversalAuthorizeRequest(UniversalPrepareRequest):
 
 def _bool_env(name: str, default: bool = False) -> bool:
     return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _quote_signer_compatible_policy(policy: CheckoutPolicy) -> CheckoutPolicy:
+    if not _bool_env("IAT_QUOTE_SIGNER_CLIENT_ENABLED"):
+        return policy
+    return replace(
+        policy,
+        quote_ttl_seconds=min(
+            policy.quote_ttl_seconds,
+            QUOTE_SIGNER_MAX_LIFETIME_SECONDS,
+        ),
+    )
 
 
 def _decimal_env(name: str, default: str) -> Decimal:
@@ -579,7 +592,7 @@ def _create_universal_quote(
     provider_payload = None
     try:
         asset_snapshot = _asset_snapshot(req.input_asset)
-        checkout_policy = load_checkout_policy()
+        checkout_policy = _quote_signer_compatible_policy(load_checkout_policy())
         result = quote_hybrid_checkout(
             order=order,
             buyer_wallet=req.buyer_wallet,

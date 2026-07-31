@@ -150,6 +150,17 @@ def test_quote_signer_client_uses_authenticated_canonical_request(monkeypatch):
     assert result["transaction_base64"] == "signed-transaction"
 
 
+def test_quote_signer_client_caps_render_quote_ttl(monkeypatch):
+    monkeypatch.setenv("IAT_CHECKOUT_QUOTE_TTL_SECONDS", "300")
+    policy = checkout_api.load_checkout_policy()
+
+    monkeypatch.setenv("IAT_QUOTE_SIGNER_CLIENT_ENABLED", "true")
+    compatible = checkout_api._quote_signer_compatible_policy(policy)
+
+    assert policy.quote_ttl_seconds == 300
+    assert compatible.quote_ttl_seconds == 120
+
+
 @pytest.mark.parametrize("encoded", ["[]", '"[]"', "not-json"])
 def test_json_env_rejects_non_object_values(monkeypatch, encoded):
     monkeypatch.setenv("IAT_CHECKOUT_ASSETS_JSON", encoded)

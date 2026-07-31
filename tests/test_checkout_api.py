@@ -138,12 +138,13 @@ def test_quote_signer_client_uses_authenticated_canonical_request(monkeypatch):
     timestamp = observed["headers"]["X-IAT-Signer-Timestamp"]
     expected = hmac.new(
         secret.encode(),
-        timestamp.encode() + b"." + observed["content"],
+        timestamp.encode() + b"." + observed["data"],
         hashlib.sha256,
     ).hexdigest()
     assert observed["url"] == "https://signer.example/v1/sign"
+    assert "content" not in observed
     assert observed["headers"]["X-IAT-Signer-Signature"] == expected
-    assert json.loads(observed["content"])["instruction_plan"]["quote_authority"] == (
+    assert json.loads(observed["data"])["instruction_plan"]["quote_authority"] == (
         "quote-authority"
     )
     assert result["transaction_base64"] == "signed-transaction"

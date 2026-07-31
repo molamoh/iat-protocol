@@ -856,7 +856,7 @@ def _authorize_with_quote_signer(
     try:
         response = requests.post(
             f"{url}/v1/sign",
-            content=raw,
+            data=raw,
             headers={
                 "Content-Type": "application/json",
                 "X-IAT-Signer-Timestamp": timestamp,

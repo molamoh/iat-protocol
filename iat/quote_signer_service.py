@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import os
 import threading
 import time
@@ -12,6 +13,9 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from iat.quote_signer import LocalDevnetQuoteSigner, QuoteSigningRejected
+
+
+logger = logging.getLogger("iat.quote_signer")
 
 
 class SignRequest(BaseModel):
@@ -122,6 +126,8 @@ async def sign_quote(
             _signed_requests[payload.request_id] = (request_hash, response)
         return response
     except QuoteSigningRejected as exc:
+        logger.warning("quote_signer_rejected reason=%s", str(exc))
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
+        logger.warning("quote_signer_rejected reason=invalid_signing_request")
         raise HTTPException(status_code=422, detail="invalid_signing_request") from exc

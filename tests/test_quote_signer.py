@@ -229,6 +229,40 @@ async def test_private_service_authenticates_and_is_idempotent(
 
 
 @pytest.mark.anyio
+async def test_private_service_logs_only_sanitized_rejection_reason(
+    monkeypatch, caplog
+):
+    monkeypatch.setenv("IAT_QUOTE_SIGNER_SHARED_SECRET", "s" * 32)
+    monkeypatch.setattr("iat.quote_signer_service._now", lambda: NOW)
+    payload = {
+        "request_id": "request_1234567890",
+        "quote_id": "uq_" + "a" * 32,
+        "expires_at": NOW + 60,
+        "transaction_base64": "A" * 64,
+        "instruction_plan": {},
+    }
+    raw = json.dumps(payload, separators=(",", ":")).encode()
+
+    with caplog.at_level("WARNING", logger="iat.quote_signer"):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            response = await client.post(
+                "/v1/sign",
+                content=raw,
+                headers={
+                    "X-IAT-Signer-Timestamp": str(NOW),
+                    "X-IAT-Signer-Signature": "0" * 64,
+                },
+            )
+
+    assert response.status_code == 403
+    assert "quote_signer_rejected reason=invalid_auth_signature" in caplog.text
+    assert raw.decode() not in caplog.text
+
+
+@pytest.mark.anyio
 async def test_private_service_rejects_invalid_hmac(monkeypatch):
     monkeypatch.setenv("IAT_QUOTE_SIGNER_SHARED_SECRET", "s" * 32)
     timestamp = str(int(time.time()))

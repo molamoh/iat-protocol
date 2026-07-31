@@ -58,6 +58,11 @@ The dedicated devnet signer public key prepared for the guarded rollout is
 recorded in Git. The corresponding secret must exist exclusively in the
 private Render secret file and the operator's secure backup.
 
+The on-chain `quote_authority` was rotated to this dedicated key while GN2d
+remained paused. Finalized devnet transaction:
+`2ZYauoJPN9Znj6DoXjTQHHQ3Gg1Aj9KkBtv5zby1rx7c567j6BUQZuDtB2sZLX9ikgqsozgun1uhGVtyKNB3bjUB`.
+The administrative authority and both treasury vault balances were unchanged.
+
 The file backend is a devnet canary mechanism only. Mainnet activation requires
 a backend that delegates `sign_message` to an HSM/KMS or equivalent
 non-exportable signing system, durable replay/audit storage, independent

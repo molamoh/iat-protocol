@@ -88,6 +88,11 @@ The shared secret must be identical on both services. Internal clear-text HTTP
 is rejected unless `IAT_QUOTE_SIGNER_ALLOW_HTTP_PRIVATE=true` is explicitly set
 for a platform-encrypted private network.
 
+The Render private signer listens on port `10001`. Port `10000` is reserved by
+Render and cannot receive private-network traffic. Configure the public API
+with the exact internal hostname shown by Render's **Connect > Internal** menu,
+for example `http://iat-quote-signer-devnet-xxxx:10001`.
+
 ## Rollout order
 
 GN2d must remain paused throughout rollout:

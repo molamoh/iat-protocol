@@ -8,4 +8,6 @@ RUN pip install --no-cache-dir .
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-CMD ["uvicorn", "iat.quote_signer_service:app", "--host", "0.0.0.0", "--port", "10000"]
+# Render reserves port 10000 from private-network traffic. The signer must use
+# a different port so the public API can reach it over the internal hostname.
+CMD ["uvicorn", "iat.quote_signer_service:app", "--host", "0.0.0.0", "--port", "10001"]

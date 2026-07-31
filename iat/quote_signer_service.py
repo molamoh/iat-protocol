@@ -127,7 +127,12 @@ async def sign_quote(
         return response
     except QuoteSigningRejected as exc:
         logger.warning("quote_signer_rejected reason=%s", str(exc))
+        print(f"[IAT_QUOTE_SIGNER_REJECTED] reason={exc}", flush=True)
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         logger.warning("quote_signer_rejected reason=invalid_signing_request")
+        print(
+            "[IAT_QUOTE_SIGNER_REJECTED] reason=invalid_signing_request",
+            flush=True,
+        )
         raise HTTPException(status_code=422, detail="invalid_signing_request") from exc

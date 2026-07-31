@@ -6,7 +6,7 @@ services:
     region: frankfurt
     autoDeploy: false
     image:
-      url: docker.io/molamoh/iat-quote-signer:e04f06b
+      url: docker.io/molamoh/iat-quote-signer:b19752c
     envVars:
       - key: IAT_QUOTE_SIGNER_ENABLED
         value: "false"

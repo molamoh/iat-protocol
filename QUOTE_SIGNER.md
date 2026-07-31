@@ -53,6 +53,11 @@ chat, Git, an image, logs, or a normal environment variable. The devnet quote
 authority must be a dedicated wallet, distinct from the buyer, protocol admin,
 deployment authority, and treasury authority.
 
+The dedicated devnet signer public key prepared for the guarded rollout is
+`3eg5d45QKsWL6ZNQ7Lp7ZJdJiQ1tzDce96SAZyb3zyyq`. Only this public key is
+recorded in Git. The corresponding secret must exist exclusively in the
+private Render secret file and the operator's secure backup.
+
 The file backend is a devnet canary mechanism only. Mainnet activation requires
 a backend that delegates `sign_message` to an HSM/KMS or equivalent
 non-exportable signing system, durable replay/audit storage, independent

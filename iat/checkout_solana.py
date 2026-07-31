@@ -87,6 +87,44 @@ def build_set_paused_plan(
     }
 
 
+def build_set_quote_authority_plan(
+    *,
+    program_id: str,
+    authority: str,
+    quote_authority: str,
+) -> dict[str, Any]:
+    """Build the deterministic quote-authority rotation without signing it."""
+    program = _pubkey(program_id, "program_id")
+    admin = _pubkey(authority, "authority")
+    signer = _pubkey(quote_authority, "quote_authority")
+    if signer == Pubkey.default():
+        raise SolanaPlanError("invalid_quote_authority")
+    config = _pda(program, b"config")
+    data = _discriminator("set_quote_authority") + bytes(signer)
+    return {
+        "program_id": str(program),
+        "network": "solana-devnet",
+        "fee_payer": str(admin),
+        "signature_required": True,
+        "simulation_required": True,
+        "funds_transfer": False,
+        "instruction": {
+            "program_id": str(program),
+            "accounts": [
+                _meta(config, writable=True),
+                _meta(admin, signer=True),
+            ],
+            "data_base64": base64.b64encode(data).decode(),
+        },
+        "display": {
+            "action": "set_quote_authority",
+            "config": str(config),
+            "authority": str(admin),
+            "new_quote_authority": str(signer),
+        },
+    }
+
+
 def build_update_asset_plan(
     *,
     program_id: str,

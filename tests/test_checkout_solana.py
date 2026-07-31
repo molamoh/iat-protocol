@@ -5,6 +5,7 @@ import pytest
 from solders.pubkey import Pubkey
 
 from iat.checkout_solana import (
+    build_set_quote_authority_plan,
     build_set_paused_plan,
     build_update_asset_plan,
     SPL_TOKEN_PROGRAM_ID,
@@ -202,6 +203,31 @@ def test_pause_plan_is_unsigned_deterministic_and_transfers_no_funds():
     data = base64.b64decode(plan["instruction"]["data_base64"])
     assert data[:8] == hashlib.sha256(b"global:set_paused").digest()[:8]
     assert data[8:] == b"\x01"
+
+
+def test_quote_authority_rotation_plan_is_unsigned_and_transfers_no_funds():
+    program = key()
+    authority = key()
+    quote_authority = key()
+
+    plan = build_set_quote_authority_plan(
+        program_id=program,
+        authority=authority,
+        quote_authority=quote_authority,
+    )
+
+    assert plan["signature_required"] is True
+    assert plan["simulation_required"] is True
+    assert plan["funds_transfer"] is False
+    assert plan["display"]["new_quote_authority"] == quote_authority
+    assert plan["instruction"]["accounts"][1] == {
+        "address": authority,
+        "signer": True,
+        "writable": False,
+    }
+    data = base64.b64decode(plan["instruction"]["data_base64"])
+    assert data[:8] == hashlib.sha256(b"global:set_quote_authority").digest()[:8]
+    assert data[8:] == bytes(Pubkey.from_string(quote_authority))
 
 
 def test_update_asset_plan_encodes_exact_governed_policy():

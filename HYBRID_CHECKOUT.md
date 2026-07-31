@@ -277,19 +277,23 @@ Post-canary vault inventories are 13.5175 devnet USDC and 9,996.5 test IAT.
 Read-only deployment verification retries bounded transient RPC failures, but
 transaction senders never automatically resubmit after an ambiguous result.
 
-### Pending quote-authorization hardening
+### Quote-authorization hardening
 
-The next local candidate also requires the configured `quote_authority` signer
+The current devnet program requires the configured `quote_authority` signer
 for direct USDC-to-buyer purchases. This closes the gap where a buyer could
 construct a valid fixed-price purchase without an API-issued order and consume
 treasury inventory within the on-chain caps. The candidate binary is 420,800
 bytes with SHA-256
 `d2d8cdc0a9632333aea0d941e1f609271c984e27e7b29dc99c45bedd0b47549b`.
-It is not yet deployed. Rollout must keep GN2d paused and proceed atomically:
-deploy the program upgrade, deploy the matching API/client image plus external
+It was deployed at devnet slot `480260481` by finalized transaction
+`fBujWdJP8NCASSJrstt2jk41SH9epbeHpejNWD8hxo4tfZzdWkHeubr9bCjKnMaHNXfrbymwmjtund4fJXkRyjw`.
+The first 420,800 on-chain ProgramData bytes exactly match the candidate hash;
+the remaining 4,672 allocated bytes are zero padding. The deployment buffer was
+closed automatically and its 2.92997208 SOL returned. GN2d remained paused.
+
+Rollout must now deploy the matching API/client image plus external
 quote-signing service, verify both versions, and only then run a separately
-approved canary. Deploying the new API against the old program, or unpausing
-without the quote-signing service, is forbidden.
+approved canary. Unpausing without the quote-signing service is forbidden.
 
 The isolated signer architecture and guarded rollout are documented in
 `QUOTE_SIGNER.md`.

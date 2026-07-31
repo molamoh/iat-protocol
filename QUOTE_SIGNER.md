@@ -63,6 +63,12 @@ remained paused. Finalized devnet transaction:
 `2ZYauoJPN9Znj6DoXjTQHHQ3Gg1Aj9KkBtv5zby1rx7c567j6BUQZuDtB2sZLX9ikgqsozgun1uhGVtyKNB3bjUB`.
 The administrative authority and both treasury vault balances were unchanged.
 
+GN2d was then upgraded at devnet slot `480260481` to enforce this signer on the
+direct purchase instruction. Finalized transaction:
+`fBujWdJP8NCASSJrstt2jk41SH9epbeHpejNWD8hxo4tfZzdWkHeubr9bCjKnMaHNXfrbymwmjtund4fJXkRyjw`.
+The verified executable hash is
+`d2d8cdc0a9632333aea0d941e1f609271c984e27e7b29dc99c45bedd0b47549b`.
+
 The file backend is a devnet canary mechanism only. Mainnet activation requires
 a backend that delegates `sign_message` to an HSM/KMS or equivalent
 non-exportable signing system, durable replay/audit storage, independent

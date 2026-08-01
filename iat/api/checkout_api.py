@@ -70,6 +70,7 @@ from iat.checkout_receipt import (
     acknowledge_delivery,
     configure_delivery_receipt,
     get_delivery_receipt,
+    get_delivery_receipt_by_token,
     init_delivery_receipt_db,
     public_delivery_receipt,
     publish_delivery_payload,
@@ -111,6 +112,12 @@ class UniversalDeliveryDestinationRequest(UniversalPrepareRequest):
 
 
 class UniversalDeliveryDecisionRequest(UniversalPrepareRequest):
+    decision: str = Field(min_length=8, max_length=16)
+    dispute_code: str | None = Field(default=None, max_length=32)
+    message: str = Field(default="", max_length=2_000)
+
+
+class PublicDeliveryDecisionRequest(BaseModel):
     decision: str = Field(min_length=8, max_length=16)
     dispute_code: str | None = Field(default=None, max_length=32)
     message: str = Field(default="", max_length=2_000)
@@ -1260,6 +1267,53 @@ def decide_universal_delivery(
             status_code = 422
         raise HTTPException(status_code=status_code, detail=code) from exc
     return {"status": f"delivery_{req.decision}", "quote_id": quote_id, "final_receipt": receipt}
+
+
+@router.get("/delivery-receipts/{receipt_token}")
+def get_delivery_receipt_by_link(receipt_token: str):
+    receipt = get_delivery_receipt_by_token(receipt_token)
+    if not receipt:
+        raise HTTPException(status_code=404, detail="delivery_receipt_not_found")
+    public = public_delivery_receipt(receipt)
+    public.pop("receipt_token", None)
+    return {
+        "status": "delivery_receipt_found",
+        "quote_id": receipt["quote_id"],
+        "final_receipt": public,
+        "opening_does_not_accept_delivery": True,
+    }
+
+
+@router.post("/delivery-receipts/{receipt_token}/decision")
+def decide_delivery_by_link(
+    receipt_token: str,
+    req: PublicDeliveryDecisionRequest,
+):
+    stored = get_delivery_receipt_by_token(receipt_token)
+    if not stored:
+        raise HTTPException(status_code=404, detail="delivery_receipt_not_found")
+    try:
+        receipt = acknowledge_delivery(
+            quote_id=stored["quote_id"],
+            decision=req.decision,
+            dispute_code=req.dispute_code,
+            message=req.message,
+        )
+    except DeliveryReceiptError as exc:
+        code = str(exc)
+        status_code = 409
+        if code.startswith("valid_") or code in {
+            "dispute_explanation_required",
+            "invalid_delivery_decision",
+        }:
+            status_code = 422
+        raise HTTPException(status_code=status_code, detail=code) from exc
+    receipt.pop("receipt_token", None)
+    return {
+        "status": f"delivery_{req.decision}",
+        "quote_id": stored["quote_id"],
+        "final_receipt": receipt,
+    }
 
 
 @router.post("/{quote_id}/evidence-readiness")

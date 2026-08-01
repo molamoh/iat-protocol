@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <meta name="referrer" content="no-referrer">
+  <title>Review delivery — IAT Protocol</title>
+  <link rel="icon" href="../assets/iat-mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="../styles.css">
+  <link rel="stylesheet" href="delivery.css">
+  <script src="delivery.js" defer></script>
+</head>
+<body>
+  <header class="nav shell"><a class="brand" href="/"><img src="../assets/iat-mark.svg" width="34" height="34" alt=""><span>IAT</span></a><span class="secure-label">SECURE DELIVERY RECEIPT</span></header>
+  <main class="delivery-shell shell">
+    <section class="delivery-panel">
+      <p class="kicker">FINAL DELIVERY</p>
+      <h1>Review your service receipt.</h1>
+      <p class="intro">Opening this page does not accept the delivery. Check the receipt details, review the result received by e-mail or API, then make one explicit final decision.</p>
+      <div id="loading" class="notice">Loading the sealed receipt…</div>
+      <div id="receipt" hidden>
+        <dl class="receipt-details">
+          <div><dt>Quote</dt><dd id="quote-id"></dd></div>
+          <div><dt>Status</dt><dd id="receipt-state"></dd></div>
+          <div><dt>Channel</dt><dd id="receipt-channel"></dd></div>
+          <div><dt>Payload SHA-256</dt><dd id="payload-digest" class="digest"></dd></div>
+          <div><dt>Dispatched</dt><dd id="dispatched-at"></dd></div>
+          <div><dt>Signer</dt><dd id="dispatch-signer" class="digest"></dd></div>
+        </dl>
+        <div id="decision-area">
+          <button id="accept" class="button primary" type="button">Accept delivery</button>
+          <button id="report" class="button secondary" type="button">Report an issue</button>
+          <form id="dispute-form" hidden>
+            <label>Issue type<select name="dispute_code"><option value="not_received">Result not received</option><option value="incomplete">Incomplete result</option><option value="incorrect">Incorrect result</option><option value="unreadable">Unreadable result</option><option value="other">Other issue</option></select></label>
+            <label>What is wrong?<textarea name="message" minlength="10" maxlength="2000" required rows="5" placeholder="Describe the missing, incomplete or incorrect part so the evidence can be reviewed."></textarea></label>
+            <div class="form-actions"><button class="button danger" type="submit">Submit dispute</button><button id="cancel-dispute" class="button secondary" type="button">Cancel</button></div>
+          </form>
+        </div>
+        <p id="decision-status" class="decision-status" role="status" aria-live="polite"></p>
+      </div>
+    </section>
+    <aside><h2>Why this receipt matters</h2><p>The digest identifies the exact result sealed by IAT. Acceptance or dispute is timestamped, idempotent and cannot later be changed into the opposite decision.</p><p>If the digest in your delivery does not match this page, do not accept it.</p></aside>
+  </main>
+</body>
+</html>

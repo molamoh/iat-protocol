@@ -217,3 +217,70 @@ def test_webhook_failure_is_retried_with_same_receipt_id(receipt_db, tmp_path, m
     assert waiting["retry_wait"] is True
     assert second["dispatch_attempt_count"] == 2
     assert attempts[0] == attempts[1]
+
+
+def _ready_email(tmp_path, monkeypatch):
+    keypair = Keypair()
+    keyfile = tmp_path / "delivery-email-keypair.json"
+    keyfile.write_text(json.dumps(list(bytes(keypair))), encoding="utf-8")
+    monkeypatch.setenv("IAT_DELIVERY_SIGNING_KEYPAIR_PATH", str(keyfile))
+    monkeypatch.setenv("IAT_DELIVERY_EMAIL_FROM", "IAT Delivery <delivery@iat.example>")
+    monkeypatch.setenv("IAT_PUBLIC_SITE_URL", "https://iat.example")
+    receipt.configure_delivery_receipt(
+        quote_id="uq_email_dispatch",
+        order_id="ord_email_dispatch",
+        channel="email",
+        destination="buyer@example.com",
+        now=100,
+    )
+    payload = {"status": "success", "summary": "A sealed delivery"}
+    receipt.publish_delivery_payload(
+        quote_id="uq_email_dispatch",
+        order_id="ord_email_dispatch",
+        payload=payload,
+        now=110,
+    )
+    monkeypatch.setattr(
+        "iat.checkout_delivery.get_delivery",
+        lambda quote_id: {"result": payload},
+    )
+    return keypair, payload
+
+
+def test_signed_email_contains_stable_receipt_and_explicit_decision_link(
+    receipt_db, tmp_path, monkeypatch
+):
+    keypair, payload = _ready_email(tmp_path, monkeypatch)
+    messages = []
+
+    result = receipt.dispatch_email(
+        "uq_email_dispatch", now=120, send=messages.append
+    )
+
+    message = messages[0]
+    signature = Signature.from_string(message["X-IAT-Delivery-Signature"])
+    canonical = receipt._canonical_payload(payload).encode()
+    assert result["state"] == "delivered"
+    assert message["To"] == "buyer@example.com"
+    assert signature.verify(keypair.pubkey(), canonical)
+    assert "https://iat.example/delivery/#receipt=cdr_" in message.get_content()
+    assert "Opening this link does not accept" in message.get_content()
+    token = message["X-IAT-Receipt-ID"]
+    assert receipt.get_delivery_receipt_by_token(token)["quote_id"] == "uq_email_dispatch"
+
+
+def test_email_failure_retries_with_stable_message_id(receipt_db, tmp_path, monkeypatch):
+    _ready_email(tmp_path, monkeypatch)
+    message_ids = []
+
+    def fail(message):
+        message_ids.append(message["Message-ID"])
+        raise receipt.DeliveryReceiptError("delivery_smtp_temporary_failure")
+
+    first = receipt.dispatch_email("uq_email_dispatch", now=120, send=fail)
+    second = receipt.dispatch_email("uq_email_dispatch", now=150, send=fail)
+
+    assert first["state"] == "pending_dispatch"
+    assert first["dispatch_next_attempt_at"] == 150
+    assert second["dispatch_attempt_count"] == 2
+    assert message_ids[0] == message_ids[1]

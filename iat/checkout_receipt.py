@@ -7,7 +7,10 @@ import json
 import os
 import re
 import secrets
+import smtplib
+import ssl
 import time
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -253,6 +256,24 @@ def get_delivery_receipt(quote_id: str) -> dict[str, Any] | None:
         release_conn(conn)
 
 
+def get_delivery_receipt_by_token(receipt_token: str) -> dict[str, Any] | None:
+    if not str(receipt_token or "").startswith("cdr_") or len(receipt_token) > 128:
+        return None
+    init_delivery_receipt_db()
+    conn = get_conn()
+    try:
+        p = qmark()
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT * FROM universal_checkout_delivery_receipts WHERE receipt_token={p}",
+            (receipt_token,),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        release_conn(conn)
+
+
 def publish_delivery_payload(
     *, quote_id: str,
     order_id: str,
@@ -426,10 +447,10 @@ def list_due_receipt_dispatches(*, now: int | None = None, limit: int = 20) -> l
         cur = conn.cursor()
         cur.execute(
             f"""SELECT quote_id FROM universal_checkout_delivery_receipts
-            WHERE state={p} AND channel={p}
+            WHERE state={p} AND channel IN ({p}, {p})
               AND (dispatch_next_attempt_at IS NULL OR dispatch_next_attempt_at<={p})
             ORDER BY payload_ready_at ASC LIMIT {safe_limit}""",
-            ("pending_dispatch", "webhook", current_time),
+            ("pending_dispatch", "webhook", "email", current_time),
         )
         return [str(row["quote_id"]) for row in cur.fetchall()]
     finally:
@@ -555,12 +576,166 @@ def dispatch_webhook(
     return {**public_delivery_receipt(get_delivery_receipt(quote_id)), "idempotent": False}
 
 
+def _send_smtp(message: EmailMessage) -> None:
+    host = os.getenv("IAT_DELIVERY_SMTP_HOST", "").strip()
+    from_address = os.getenv("IAT_DELIVERY_EMAIL_FROM", "").strip()
+    if not host or not from_address:
+        raise DeliveryReceiptError("delivery_smtp_not_configured")
+    try:
+        port = int(os.getenv("IAT_DELIVERY_SMTP_PORT", "587"))
+    except ValueError as exc:
+        raise DeliveryReceiptError("delivery_smtp_port_invalid") from exc
+    username = os.getenv("IAT_DELIVERY_SMTP_USERNAME", "").strip()
+    password = os.getenv("IAT_DELIVERY_SMTP_PASSWORD", "")
+    use_ssl = os.getenv("IAT_DELIVERY_SMTP_SSL", "false").lower() == "true"
+    require_starttls = os.getenv("IAT_DELIVERY_SMTP_STARTTLS", "true").lower() != "false"
+    context = ssl.create_default_context()
+    try:
+        client = (
+            smtplib.SMTP_SSL(host, port, timeout=20, context=context)
+            if use_ssl
+            else smtplib.SMTP(host, port, timeout=20)
+        )
+        with client:
+            if not use_ssl and require_starttls:
+                client.starttls(context=context)
+            if username:
+                if not password:
+                    raise DeliveryReceiptError("delivery_smtp_password_required")
+                client.login(username, password)
+            client.send_message(message, from_addr=from_address)
+    except DeliveryReceiptError:
+        raise
+    except (OSError, smtplib.SMTPException) as exc:
+        raise DeliveryReceiptError(f"delivery_smtp_{type(exc).__name__.lower()}") from exc
+
+
+def dispatch_email(
+    quote_id: str,
+    *,
+    now: int | None = None,
+    send: Any = _send_smtp,
+) -> dict[str, Any]:
+    receipt = get_delivery_receipt(quote_id)
+    if not receipt:
+        raise DeliveryReceiptError("delivery_receipt_not_found")
+    if receipt["channel"] != "email":
+        raise DeliveryReceiptError("delivery_channel_is_not_email")
+    if receipt["state"] == "delivered":
+        return {**public_delivery_receipt(receipt), "idempotent": True}
+    if receipt["state"] != "pending_dispatch":
+        raise DeliveryReceiptError("delivery_not_ready_for_dispatch")
+    current_time = _now() if now is None else int(now)
+    if receipt.get("dispatch_next_attempt_at") and int(receipt["dispatch_next_attempt_at"]) > current_time:
+        return {**public_delivery_receipt(receipt), "retry_wait": True}
+
+    from iat.checkout_delivery import get_delivery
+
+    result = (get_delivery(quote_id) or {}).get("result")
+    if not isinstance(result, dict) or _digest(result) != receipt["payload_digest"]:
+        raise DeliveryReceiptError("sealed_delivery_payload_unavailable")
+    canonical_result = _canonical_payload(result)
+    if len(canonical_result.encode()) > 250_000:
+        raise DeliveryReceiptError("delivery_email_payload_too_large")
+    keypair = _delivery_keypair()
+    signature = str(keypair.sign_message(canonical_result.encode()))
+    public_site = os.getenv(
+        "IAT_PUBLIC_SITE_URL", "https://iat-protocol.pages.dev"
+    ).strip().rstrip("/")
+    decision_url = f"{public_site}/delivery/#receipt={receipt['receipt_token']}"
+    from_address = os.getenv("IAT_DELIVERY_EMAIL_FROM", "IAT Delivery <delivery@iat.invalid>")
+    message = EmailMessage()
+    message["From"] = from_address
+    message["To"] = receipt["destination"]
+    message["Subject"] = f"IAT delivery ready — {quote_id}"
+    message["Message-ID"] = f"<{receipt['receipt_token']}@delivery.iatprotocol>"
+    message["X-IAT-Receipt-ID"] = receipt["receipt_token"]
+    message["X-IAT-Payload-Digest"] = receipt["payload_digest"]
+    message["X-IAT-Delivery-Signature"] = signature
+    message["X-IAT-Delivery-Signer"] = str(keypair.pubkey())
+    message.set_content(
+        "Your IAT service result is ready.\n\n"
+        f"Quote: {quote_id}\n"
+        f"Receipt: {receipt['receipt_token']}\n"
+        f"Payload SHA-256: {receipt['payload_digest']}\n"
+        f"Ed25519 signer: {keypair.pubkey()}\n"
+        f"Ed25519 signature: {signature}\n\n"
+        "Result (canonical JSON):\n"
+        f"{canonical_result}\n\n"
+        "Review, accept, or report an issue here:\n"
+        f"{decision_url}\n\n"
+        "Opening this link does not accept the delivery. A separate explicit decision is required.\n"
+    )
+    error = None
+    try:
+        send(message)
+        delivered = True
+    except DeliveryReceiptError as exc:
+        delivered = False
+        error = str(exc)[:128]
+    except Exception as exc:
+        delivered = False
+        error = f"delivery_email_{type(exc).__name__.lower()}"[:128]
+
+    attempt = int(receipt.get("dispatch_attempt_count") or 0) + 1
+    try:
+        configured_max_attempts = int(os.getenv("IAT_DELIVERY_DISPATCH_MAX_ATTEMPTS", "8"))
+    except ValueError:
+        configured_max_attempts = 8
+    max_attempts = max(1, min(configured_max_attempts, 20))
+    state = "delivered" if delivered else ("dispatch_failed" if attempt >= max_attempts else "pending_dispatch")
+    next_attempt = None if delivered or state == "dispatch_failed" else current_time + _dispatch_backoff(attempt)
+    conn = get_conn()
+    try:
+        p = qmark()
+        cur = conn.cursor()
+        cur.execute(
+            f"""UPDATE universal_checkout_delivery_receipts
+            SET state={p}, dispatch_attempt_count={p}, dispatch_next_attempt_at={p},
+                dispatch_last_error={p}, dispatch_signature={p}, dispatch_signer={p},
+                dispatched_at={p}, updated_at={p}
+            WHERE quote_id={p} AND state={p}""",
+            (
+                state,
+                attempt,
+                next_attempt,
+                error,
+                signature,
+                str(keypair.pubkey()),
+                current_time if delivered else None,
+                current_time,
+                quote_id,
+                "pending_dispatch",
+            ),
+        )
+        if cur.rowcount != 1:
+            raise DeliveryReceiptError("delivery_dispatch_conflict")
+        _insert_event(
+            cur,
+            quote_id=quote_id,
+            event_type="delivery_email_dispatched" if delivered else "delivery_email_failed",
+            state=state,
+            payload_digest=receipt["payload_digest"],
+            actor="delivery_dispatcher",
+            now=current_time,
+        )
+        conn.commit()
+    finally:
+        release_conn(conn)
+    return {**public_delivery_receipt(get_delivery_receipt(quote_id)), "idempotent": False}
+
+
 def run_receipt_dispatch_sweep(*, limit: int = 20) -> dict[str, int]:
     selected = list_due_receipt_dispatches(limit=limit)
     delivered = failed = 0
     for quote_id in selected:
         try:
-            result = dispatch_webhook(quote_id)
+            receipt = get_delivery_receipt(quote_id)
+            result = (
+                dispatch_email(quote_id)
+                if receipt and receipt["channel"] == "email"
+                else dispatch_webhook(quote_id)
+            )
             delivered += int(result.get("state") == "delivered")
             failed += int(result.get("state") != "delivered")
         except DeliveryReceiptError:

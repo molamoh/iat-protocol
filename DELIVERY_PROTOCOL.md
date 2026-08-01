@@ -59,6 +59,36 @@ IAT_DELIVERY_DISPATCH_MAX_ATTEMPTS=8
 Only HTTP `2xx` changes the receipt to `delivered`. Network failures and
 non-`2xx` responses retain a safe error code and schedule another attempt.
 
+### Transactional email dispatch
+
+The e-mail adapter uses standard SMTP rather than a mandatory proprietary API.
+It requires TLS by default and can work with any compatible provider. Each
+message has a stable `Message-ID`, the sealed result, its SHA-256 digest, an
+Ed25519 signature and the public verification key.
+
+```text
+IAT_DELIVERY_SMTP_HOST=smtp.example.com
+IAT_DELIVERY_SMTP_PORT=587
+IAT_DELIVERY_SMTP_USERNAME=...
+IAT_DELIVERY_SMTP_PASSWORD=...
+IAT_DELIVERY_SMTP_STARTTLS=true
+IAT_DELIVERY_SMTP_SSL=false
+IAT_DELIVERY_EMAIL_FROM=IAT Delivery <delivery@example.com>
+IAT_PUBLIC_SITE_URL=https://iat-protocol.pages.dev
+```
+
+The review URL stores its high-entropy receipt credential in the browser URL
+fragment. Fragments are not sent to Cloudflare Pages, referrers or Web
+Analytics. Loading the page performs a read-only lookup; acceptance or dispute
+always requires a separate explicit `POST`.
+
+Public receipt routes:
+
+```text
+GET  /payments/v1/universal/delivery-receipts/{receipt_token}
+POST /payments/v1/universal/delivery-receipts/{receipt_token}/decision
+```
+
 ## Confirm or dispute
 
 After the receipt state becomes `delivered`, the buyer makes one final,

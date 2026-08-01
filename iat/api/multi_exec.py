@@ -1904,9 +1904,6 @@ def foundation_verification_engine(agent, order, profile):
         phase="verification",
     )
 
-    if groq_result:
-        return groq_result
-
     extracted_claims = extract_research_claims_for_verification(order)
     local_verification = foundation_local_claim_verification(
         order,
@@ -1917,6 +1914,15 @@ def foundation_verification_engine(agent, order, profile):
     verified_claims = local_verification.get("verified_claims", [])
     rejected_claims = local_verification.get("rejected_claims", [])
     uncertain_claims = local_verification.get("uncertain_claims", [])
+
+    # A model response with no claim-level conclusion is not verification.
+    # Prefer it only when it actually classified at least one claim; otherwise
+    # continue with the deterministic cross-source verifier below.
+    if groq_result and any(
+        groq_result.get(field)
+        for field in ("verified_claims", "rejected_claims", "uncertain_claims")
+    ):
+        return groq_result
 
     return {
         "delivery_type": "foundation_verification_fallback",
@@ -2993,6 +2999,13 @@ def compute_consensus(results):
             data = raw_data
 
         items = data.get("results", []) if isinstance(data, dict) else []
+        if not items:
+            normalized_evidence = (
+                wrapper.get("web_evidence")
+                or (wrapper.get("raw", {}) or {}).get("web_evidence")
+                or {}
+            )
+            items = normalized_evidence.get("results", []) or []
 
         links = set()
         domains = set()

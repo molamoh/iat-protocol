@@ -1,6 +1,10 @@
 import sqlite3
+import json
 
 import pytest
+from solders.keypair import Keypair
+from solders.pubkey import Pubkey
+from solders.signature import Signature
 
 import iat.checkout_receipt as receipt
 
@@ -134,3 +138,82 @@ def test_invalid_delivery_destinations_fail_closed(receipt_db, channel, destinat
             channel=channel,
             destination=destination,
         )
+
+
+def _ready_webhook(tmp_path, monkeypatch):
+    keypair = Keypair()
+    keyfile = tmp_path / "delivery-keypair.json"
+    keyfile.write_text(json.dumps(list(bytes(keypair))), encoding="utf-8")
+    monkeypatch.setenv("IAT_DELIVERY_SIGNING_KEYPAIR_PATH", str(keyfile))
+    monkeypatch.setattr(
+        receipt,
+        "validate_public_runtime_url",
+        lambda url: {"public": True, "hostname": "buyer.example"},
+    )
+    receipt.configure_delivery_receipt(
+        quote_id="uq_webhook",
+        order_id="ord_webhook",
+        channel="webhook",
+        destination="https://buyer.example/iat-delivery",
+        now=100,
+    )
+    payload = {"status": "success", "result": "verified report"}
+    receipt.publish_delivery_payload(
+        quote_id="uq_webhook",
+        order_id="ord_webhook",
+        payload=payload,
+        now=110,
+    )
+    monkeypatch.setattr(
+        "iat.checkout_delivery.get_delivery",
+        lambda quote_id: {"result": payload},
+    )
+    return keypair
+
+
+def test_signed_webhook_marks_delivery_only_after_2xx(receipt_db, tmp_path, monkeypatch):
+    keypair = _ready_webhook(tmp_path, monkeypatch)
+    observed = {}
+
+    class Response:
+        status_code = 202
+
+    def post(url, **kwargs):
+        observed["url"] = url
+        observed.update(kwargs)
+        return Response()
+
+    result = receipt.dispatch_webhook("uq_webhook", now=120, post=post)
+
+    assert result["state"] == "delivered"
+    assert result["dispatch_response_code"] == 202
+    assert result["dispatch_attempt_count"] == 1
+    assert observed["allow_redirects"] is False
+    assert observed["headers"]["Idempotency-Key"].startswith("cdr_")
+    assert Signature.from_string(
+        observed["headers"]["X-IAT-Delivery-Signature"]
+    ).verify(Pubkey.from_string(str(keypair.pubkey())), observed["data"])
+
+
+def test_webhook_failure_is_retried_with_same_receipt_id(receipt_db, tmp_path, monkeypatch):
+    _ready_webhook(tmp_path, monkeypatch)
+    attempts = []
+
+    class Response:
+        status_code = 503
+
+    def post(url, **kwargs):
+        attempts.append(
+            (kwargs["headers"]["Idempotency-Key"], kwargs["data"])
+        )
+        return Response()
+
+    first = receipt.dispatch_webhook("uq_webhook", now=120, post=post)
+    waiting = receipt.dispatch_webhook("uq_webhook", now=121, post=post)
+    second = receipt.dispatch_webhook("uq_webhook", now=150, post=post)
+
+    assert first["state"] == "pending_dispatch"
+    assert first["dispatch_next_attempt_at"] == 150
+    assert waiting["retry_wait"] is True
+    assert second["dispatch_attempt_count"] == 2
+    assert attempts[0] == attempts[1]

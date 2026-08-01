@@ -1078,6 +1078,9 @@ def _delivery_worker_loop() -> None:
         try:
             run_delivery_sweep(limit=batch)
             run_settlement_sweep(limit=batch)
+            from iat.checkout_receipt import run_receipt_dispatch_sweep
+
+            run_receipt_dispatch_sweep(limit=batch)
         except Exception:
             # The loop is self-healing; individual attempts are persisted.
             pass

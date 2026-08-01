@@ -32,9 +32,32 @@ Supported channel contracts:
 - `email`: validated destination, stored privately and returned only in masked form;
 - `webhook`: HTTPS destination without embedded credentials.
 
-Email and webhook are currently accepted as delivery contracts but remain in
+Email and webhook are accepted as delivery contracts and remain in
 `pending_dispatch` until their transport adapter records a successful send.
 They are never falsely marked delivered merely because execution completed.
+
+### Signed webhook dispatch
+
+The webhook adapter is autonomous and durable. It validates the destination as
+a public HTTPS runtime, disables redirects, uses bounded timeouts and retries
+with exponential backoff. The exact canonical JSON body remains unchanged
+across retries and uses the receipt ID as `Idempotency-Key`.
+
+Every request includes:
+
+- `X-IAT-Delivery-Signature`: Ed25519 signature of the exact request body;
+- `X-IAT-Delivery-Signer`: public key used to verify it;
+- `X-IAT-Delivery-Timestamp`: timestamp of the current transport attempt.
+
+Configure a dedicated Solana JSON keypair file, distinct from payment keys:
+
+```text
+IAT_DELIVERY_SIGNING_KEYPAIR_PATH=/etc/secrets/iat-delivery-authority.json
+IAT_DELIVERY_DISPATCH_MAX_ATTEMPTS=8
+```
+
+Only HTTP `2xx` changes the receipt to `delivered`. Network failures and
+non-`2xx` responses retain a safe error code and schedule another attempt.
 
 ## Confirm or dispute
 

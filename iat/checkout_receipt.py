@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import secrets
 import time
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import requests
+from solders.keypair import Keypair
+
 from iat.api import db as database
 from iat.api.db import get_conn, qmark, release_conn
+from iat.security.network import UnsafeNetworkTarget, validate_public_runtime_url
 
 
 CHANNELS = {"api_pull", "email", "webhook"}
@@ -92,10 +98,38 @@ def init_delivery_receipt_db() -> None:
                 disputed_at INTEGER,
                 dispute_code TEXT,
                 buyer_message TEXT,
+                dispatch_attempt_count INTEGER NOT NULL DEFAULT 0,
+                dispatch_next_attempt_at INTEGER,
+                dispatch_last_error TEXT,
+                dispatch_response_code INTEGER,
+                dispatch_signature TEXT,
+                dispatch_signer TEXT,
                 updated_at INTEGER NOT NULL
             )
             """
         )
+        columns = {
+            "dispatch_attempt_count": "INTEGER NOT NULL DEFAULT 0",
+            "dispatch_next_attempt_at": "INTEGER",
+            "dispatch_last_error": "TEXT",
+            "dispatch_response_code": "INTEGER",
+            "dispatch_signature": "TEXT",
+            "dispatch_signer": "TEXT",
+        }
+        for column, definition in columns.items():
+            try:
+                if database.USE_POSTGRES:
+                    conn.cursor().execute(
+                        f"ALTER TABLE universal_checkout_delivery_receipts "
+                        f"ADD COLUMN IF NOT EXISTS {column} {definition}"
+                    )
+                else:
+                    conn.cursor().execute(
+                        f"ALTER TABLE universal_checkout_delivery_receipts "
+                        f"ADD COLUMN {column} {definition}"
+                    )
+            except Exception:
+                pass
         conn.cursor().execute(
             """
             CREATE TABLE IF NOT EXISTS universal_checkout_delivery_receipt_events (
@@ -364,6 +398,176 @@ def delivery_receipt_events(quote_id: str, *, limit: int = 100) -> list[dict[str
         release_conn(conn)
 
 
+def _delivery_keypair() -> Keypair:
+    path = os.getenv("IAT_DELIVERY_SIGNING_KEYPAIR_PATH", "").strip()
+    if not path:
+        raise DeliveryReceiptError("delivery_signing_keypair_not_configured")
+    try:
+        values = json.loads(Path(path).read_text(encoding="utf-8"))
+        raw = bytes(values)
+        if len(raw) != 64:
+            raise ValueError("invalid_keypair_length")
+        return Keypair.from_bytes(raw)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise DeliveryReceiptError("delivery_signing_keypair_unavailable") from exc
+
+
+def _dispatch_backoff(attempt: int) -> int:
+    return min(30 * (2 ** max(0, attempt - 1)), 3_600)
+
+
+def list_due_receipt_dispatches(*, now: int | None = None, limit: int = 20) -> list[str]:
+    init_delivery_receipt_db()
+    current_time = _now() if now is None else int(now)
+    safe_limit = max(1, min(int(limit), 100))
+    conn = get_conn()
+    try:
+        p = qmark()
+        cur = conn.cursor()
+        cur.execute(
+            f"""SELECT quote_id FROM universal_checkout_delivery_receipts
+            WHERE state={p} AND channel={p}
+              AND (dispatch_next_attempt_at IS NULL OR dispatch_next_attempt_at<={p})
+            ORDER BY payload_ready_at ASC LIMIT {safe_limit}""",
+            ("pending_dispatch", "webhook", current_time),
+        )
+        return [str(row["quote_id"]) for row in cur.fetchall()]
+    finally:
+        release_conn(conn)
+
+
+def dispatch_webhook(
+    quote_id: str,
+    *,
+    now: int | None = None,
+    post: Any = requests.post,
+) -> dict[str, Any]:
+    receipt = get_delivery_receipt(quote_id)
+    if not receipt:
+        raise DeliveryReceiptError("delivery_receipt_not_found")
+    if receipt["channel"] != "webhook":
+        raise DeliveryReceiptError("delivery_channel_is_not_webhook")
+    if receipt["state"] == "delivered":
+        return {**public_delivery_receipt(receipt), "idempotent": True}
+    if receipt["state"] != "pending_dispatch":
+        raise DeliveryReceiptError("delivery_not_ready_for_dispatch")
+    current_time = _now() if now is None else int(now)
+    if receipt.get("dispatch_next_attempt_at") and int(receipt["dispatch_next_attempt_at"]) > current_time:
+        return {**public_delivery_receipt(receipt), "retry_wait": True}
+
+    from iat.checkout_delivery import get_delivery
+
+    delivery = get_delivery(quote_id)
+    result = (delivery or {}).get("result")
+    if not isinstance(result, dict) or _digest(result) != receipt["payload_digest"]:
+        raise DeliveryReceiptError("sealed_delivery_payload_unavailable")
+    try:
+        validate_public_runtime_url(receipt["destination"])
+    except UnsafeNetworkTarget as exc:
+        raise DeliveryReceiptError(str(exc)) from exc
+    keypair = _delivery_keypair()
+    body = {
+        "schema_version": "2026-08-01",
+        "event": "iat.delivery.completed",
+        "quote_id": quote_id,
+        "order_id": receipt["order_id"],
+        "receipt_id": receipt["receipt_token"],
+        "payload_digest": receipt["payload_digest"],
+        "payload_ready_at": int(receipt["payload_ready_at"]),
+        "result": result,
+    }
+    body_bytes = _canonical_payload(body).encode()
+    signature = str(keypair.sign_message(body_bytes))
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "IAT-Delivery/1.0",
+        "Idempotency-Key": receipt["receipt_token"],
+        "X-IAT-Delivery-Signature": signature,
+        "X-IAT-Delivery-Signer": str(keypair.pubkey()),
+        "X-IAT-Delivery-Timestamp": str(current_time),
+    }
+    response_code = None
+    error = None
+    try:
+        response = post(
+            receipt["destination"],
+            data=body_bytes,
+            headers=headers,
+            timeout=(3.05, 15),
+            allow_redirects=False,
+        )
+        response_code = int(response.status_code)
+        delivered = 200 <= response_code < 300
+        if not delivered:
+            error = f"webhook_http_{response_code}"
+    except requests.RequestException as exc:
+        delivered = False
+        error = f"webhook_{type(exc).__name__.lower()}"
+
+    attempt = int(receipt.get("dispatch_attempt_count") or 0) + 1
+    try:
+        configured_max_attempts = int(
+            os.getenv("IAT_DELIVERY_DISPATCH_MAX_ATTEMPTS", "8")
+        )
+    except ValueError:
+        configured_max_attempts = 8
+    max_attempts = max(1, min(configured_max_attempts, 20))
+    state = "delivered" if delivered else ("dispatch_failed" if attempt >= max_attempts else "pending_dispatch")
+    next_attempt = None if delivered or state == "dispatch_failed" else current_time + _dispatch_backoff(attempt)
+    conn = get_conn()
+    try:
+        p = qmark()
+        cur = conn.cursor()
+        cur.execute(
+            f"""UPDATE universal_checkout_delivery_receipts
+            SET state={p}, dispatch_attempt_count={p}, dispatch_next_attempt_at={p},
+                dispatch_last_error={p}, dispatch_response_code={p},
+                dispatch_signature={p}, dispatch_signer={p}, dispatched_at={p}, updated_at={p}
+            WHERE quote_id={p} AND state={p}""",
+            (
+                state,
+                attempt,
+                next_attempt,
+                error,
+                response_code,
+                signature,
+                str(keypair.pubkey()),
+                current_time if delivered else None,
+                current_time,
+                quote_id,
+                "pending_dispatch",
+            ),
+        )
+        if cur.rowcount != 1:
+            raise DeliveryReceiptError("delivery_dispatch_conflict")
+        _insert_event(
+            cur,
+            quote_id=quote_id,
+            event_type="delivery_webhook_dispatched" if delivered else "delivery_webhook_failed",
+            state=state,
+            payload_digest=receipt["payload_digest"],
+            actor="delivery_dispatcher",
+            now=current_time,
+        )
+        conn.commit()
+    finally:
+        release_conn(conn)
+    return {**public_delivery_receipt(get_delivery_receipt(quote_id)), "idempotent": False}
+
+
+def run_receipt_dispatch_sweep(*, limit: int = 20) -> dict[str, int]:
+    selected = list_due_receipt_dispatches(limit=limit)
+    delivered = failed = 0
+    for quote_id in selected:
+        try:
+            result = dispatch_webhook(quote_id)
+            delivered += int(result.get("state") == "delivered")
+            failed += int(result.get("state") != "delivered")
+        except DeliveryReceiptError:
+            failed += 1
+    return {"selected": len(selected), "delivered": delivered, "failed": failed}
+
+
 def public_delivery_receipt(receipt: dict[str, Any] | None) -> dict[str, Any]:
     if not receipt:
         return {"state": "not_configured", "available_channels": sorted(CHANNELS)}
@@ -379,6 +583,11 @@ def public_delivery_receipt(receipt: dict[str, Any] | None) -> dict[str, Any]:
         "accepted_at": receipt.get("accepted_at"),
         "disputed_at": receipt.get("disputed_at"),
         "dispute_code": receipt.get("dispute_code"),
+        "dispatch_attempt_count": int(receipt.get("dispatch_attempt_count") or 0),
+        "dispatch_next_attempt_at": receipt.get("dispatch_next_attempt_at"),
+        "dispatch_last_error": receipt.get("dispatch_last_error"),
+        "dispatch_response_code": receipt.get("dispatch_response_code"),
+        "dispatch_signer": receipt.get("dispatch_signer"),
         "buyer_confirmation_required": receipt["state"] == "delivered",
         "available_channels": sorted(CHANNELS),
     }

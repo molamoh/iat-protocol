@@ -870,7 +870,7 @@ def run_checkout_delivery(
     status = str(result.get("status") or "").strip().lower()
     if status == "foundation_review_required":
         attempts = int(claimed.get("attempt_count") or 1)
-        max_attempts = _int_env("IAT_CHECKOUT_DELIVERY_MAX_ATTEMPTS", 12, 1, 32)
+        max_attempts = _int_env("IAT_CHECKOUT_DELIVERY_MAX_ATTEMPTS", 16, 1, 32)
         if attempts >= max_attempts:
             _mark_order(claimed["order_id"], claimed["tx_signature"], "review_required", result)
             _finish(
@@ -940,7 +940,7 @@ def run_checkout_delivery(
         )
     else:
         attempts = int(claimed.get("attempt_count") or 1)
-        max_attempts = _int_env("IAT_CHECKOUT_DELIVERY_MAX_ATTEMPTS", 12, 1, 32)
+        max_attempts = _int_env("IAT_CHECKOUT_DELIVERY_MAX_ATTEMPTS", 16, 1, 32)
         error_code = str(result.get("error") or status or "delivery_failed")[:128]
         if attempts >= max_attempts:
             next_state = "exhausted"

@@ -155,3 +155,26 @@ def test_evidence_can_be_ready_when_cross_source_claims_override_weak_research_w
     assert evaluation["foundation_evidence_status"] == (
         "decision_ready_with_cross_source_verification"
     )
+
+
+def test_source_titles_are_prioritized_before_noisy_model_claims():
+    order = {
+        "foundation_research_results": [{
+            "success": True,
+            "data": {
+                "claims": [f"model claim {index}" for index in range(30)],
+                "raw": {
+                    "web_evidence": {
+                        "results": [
+                            {"title": "Source-backed Bitcoin risk evidence"},
+                        ]
+                    }
+                },
+            },
+        }]
+    }
+
+    claims = multi_exec.extract_research_claims_for_verification(order, limit=5)
+
+    assert claims[0] == "Source-backed Bitcoin risk evidence"
+    assert len(claims) == 5

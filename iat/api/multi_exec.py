@@ -1426,6 +1426,17 @@ def extract_research_claims_for_verification(order, limit=20):
         else:
             data = result
 
+        # Source-backed titles must enter the bounded claim budget before
+        # model-generated narrative fields, which may otherwise consume it.
+        web_evidence = (
+            data.get("web_evidence")
+            or (data.get("raw", {}) or {}).get("web_evidence")
+            or {}
+        )
+        for item in web_evidence.get("results", []) or []:
+            if isinstance(item, dict) and item.get("title"):
+                claims.append(str(item["title"]))
+
         for field in ["summary", "final_recommendation"]:
             value = data.get(field)
             if value:
@@ -1446,15 +1457,6 @@ def extract_research_claims_for_verification(order, limit=20):
         metrics = data.get("metrics", {}) or {}
         for key, value in metrics.items():
             claims.append(f"{key}: {value}")
-
-        web_evidence = (
-            data.get("web_evidence")
-            or (data.get("raw", {}) or {}).get("web_evidence")
-            or {}
-        )
-        for item in web_evidence.get("results", []) or []:
-            if isinstance(item, dict) and item.get("title"):
-                claims.append(str(item["title"]))
 
     cleaned = []
     seen = set()

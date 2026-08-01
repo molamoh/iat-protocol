@@ -550,3 +550,41 @@ def test_conversion_and_dashboard_metrics(growth_db):
     assert dashboard["prospects"]["converted"] == 1
     assert dashboard["conversion_value"] == 4.5
     assert dashboard["safety"]["outbound_disabled_by_default"] is True
+
+
+def test_inbound_pilot_registration_is_qualified_and_idempotent(growth_db):
+    payload = {
+        "url": "https://pilot-agent.example.com/iat",
+        "name": "Pilot buyer agent",
+        "segment": "ai_agent",
+        "use_case": "Autonomous purchasing of verified digital services via USDC.",
+        "source": "github",
+        "referral": "readme",
+        "outreach_opt_in": True,
+    }
+
+    first = growth.register_inbound_pilot(**payload)
+    second = growth.register_inbound_pilot(**payload)
+
+    assert first["status"] == "accepted"
+    assert second["status"] == "already_registered"
+    assert first["pilot_id"] == second["pilot_id"]
+    assert first["qualification"]["status"] == "qualified"
+    events = growth.list_growth_events(
+        event_type="conversion_pilot_application"
+    )
+    assert events["count"] == 1
+    stored = growth.get_prospect(first["pilot_id"])
+    assert stored["metadata"]["outreach_opt_in"] is True
+    assert stored["metadata"]["acquisition_source"] == "github"
+
+
+def test_inbound_pilot_requires_explicit_consent(growth_db):
+    with pytest.raises(growth.GrowthValidationError, match="consent_required"):
+        growth.register_inbound_pilot(
+            url="https://pilot-agent.example.com",
+            name="Pilot agent",
+            segment="ai_agent",
+            use_case="Autonomous purchasing of digital services.",
+            outreach_opt_in=False,
+        )

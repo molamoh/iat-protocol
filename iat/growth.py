@@ -406,6 +406,92 @@ def get_prospect(prospect_id: str) -> dict | None:
         release_conn(conn)
 
 
+def get_prospect_by_url(url: str) -> dict | None:
+    canonical_url = canonicalize_prospect_url(url)
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        p = qmark()
+        cur.execute(
+            f"SELECT * FROM growth_prospects WHERE canonical_url = {p}",
+            (canonical_url,),
+        )
+        found = cur.fetchone()
+        return _row(found) if found else None
+    finally:
+        release_conn(conn)
+
+
+def register_inbound_pilot(
+    *,
+    url: str,
+    name: str,
+    segment: str,
+    use_case: str,
+    source: str = "direct",
+    referral: str = "",
+    outreach_opt_in: bool,
+) -> dict:
+    """Register a voluntary pilot applicant and qualify it without outreach."""
+    if outreach_opt_in is not True:
+        raise GrowthValidationError("pilot_outreach_consent_required")
+    clean_use_case = str(use_case or "").strip()
+    if len(clean_use_case) < 10:
+        raise GrowthValidationError("pilot_use_case_required")
+    if segment not in SEGMENTS:
+        raise GrowthValidationError("unsupported_pilot_segment")
+
+    canonical_url = canonicalize_prospect_url(url)
+    existing = get_prospect_by_url(canonical_url)
+    registered_at = int(
+        (existing or {}).get("metadata", {}).get("pilot_registered_at") or _now()
+    )
+    result = upsert_prospect(
+        url=canonical_url,
+        name=name,
+        segment=segment,
+        source="inbound_pilot",
+        metadata={
+            "description": clean_use_case[:1_000],
+            "outreach_opt_in": True,
+            "pilot_registered_at": registered_at,
+            "acquisition_source": str(source or "direct")[:80],
+            "referral": str(referral or "")[:120],
+        },
+    )
+    qualification = qualify_prospect(result["prospect_id"])
+    if not existing or not existing.get("metadata", {}).get("pilot_registered_at"):
+        record_growth_event(
+            "conversion_pilot_application",
+            prospect_id=result["prospect_id"],
+            metadata={
+                "source": str(source or "direct")[:80],
+                "referral": str(referral or "")[:120],
+            },
+        )
+    return {
+        "status": "accepted" if not existing else "already_registered",
+        "pilot_id": result["prospect_id"],
+        "qualification": {
+            "status": qualification["status"],
+            "score": qualification["score"],
+        },
+        "checkout_asset": "USDC",
+        "settlement_asset": "IAT",
+        "network": "solana-devnet",
+        "next_steps": [
+            {"rel": "discover", "method": "GET", "href": "/.well-known/iat.json"},
+            {"rel": "capabilities", "method": "GET", "href": "/v1/capabilities"},
+            {"rel": "sandbox", "method": "GET", "href": "/sandbox/v1/offers"},
+            {
+                "rel": "create_checkout_quote",
+                "method": "POST",
+                "href": "/payments/v1/universal/quote",
+            },
+        ],
+    }
+
+
 def suppress_prospect(
     *,
     prospect_id: str | None = None,

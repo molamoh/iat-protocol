@@ -66,6 +66,9 @@ _MANIFEST: dict[str, Any] = {
         "production_side_effects": False,
     },
     "growth": {
+        "pilot": "/growth/v1/pilot",
+        "pilot_method": "POST",
+        "pilot_status": "open_on_solana_devnet",
         "invitation_response": "/growth/v1/respond",
         "authentication": "invitation_hmac_token",
         "response_types": [

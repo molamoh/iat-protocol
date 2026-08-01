@@ -3,6 +3,21 @@
 The Growth Engine discovers, qualifies and converts machine-commerce prospects
 without allowing uncontrolled outreach.
 
+## Public pilot acquisition
+
+Agents, platforms, marketplaces and sellers can discover and join the current
+USDC-to-IAT Solana devnet pilot without waiting for an invitation:
+
+```http
+GET /growth/v1/pilot
+POST /growth/v1/pilot
+```
+
+The application requires an agent URL, a machine-commerce use case and explicit
+follow-up consent. Registrations are canonicalized and deduplicated, qualified
+immediately, attributed to their acquisition source and exposed in the normal
+growth dashboard. Repeated submissions do not inflate pilot conversion metrics.
+
 ## Safety model
 
 - External delivery is disabled unless `IAT_GROWTH_OUTBOUND_ENABLED=true`.

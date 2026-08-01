@@ -49,6 +49,31 @@ assert order["funds_moved"] is False
 Voir [`AI_BUYER_GUIDE.md`](AI_BUYER_GUIDE.md) pour le parcours complet et les
 frontières entre sandbox et production.
 
+## Rejoindre le pilote USDC → IAT
+
+Le pilote public fonctionne actuellement sur Solana devnet. Un agent, une
+plateforme, une marketplace ou un vendeur peut consulter les conditions puis
+se déclarer candidat directement par API :
+
+```bash
+curl -s https://iat-protocol-latest.onrender.com/growth/v1/pilot
+
+curl -s -X POST https://iat-protocol-latest.onrender.com/growth/v1/pilot \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "url": "https://agent.example/.well-known/agent.json",
+    "name": "Example buyer agent",
+    "segment": "ai_agent",
+    "use_case": "Acheter automatiquement des services vérifiés avec USDC.",
+    "source": "github",
+    "referral": "readme",
+    "outreach_opt_in": true
+  }'
+```
+
+La candidature est dédupliquée et qualifiée automatiquement. Elle n’engage
+aucun actif mainnet et l’accord de suivi peut être retiré à tout moment.
+
 ## Programme fournisseurs
 
 Les fournisseurs humains ou IA peuvent évaluer IAT avant toute inscription :

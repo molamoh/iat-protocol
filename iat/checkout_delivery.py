@@ -537,6 +537,91 @@ def resume_review_required_delivery(
     }
 
 
+def accelerate_foundation_retry(
+    quote_id: str,
+    *,
+    actor: str = "authenticated_buyer",
+    now: int | None = None,
+) -> dict[str, Any]:
+    """Make a repaired Foundation delivery due without resetting attempts.
+
+    The transition is narrowly limited to the known evidence-not-ready error
+    and enforces a cooldown, preventing this buyer endpoint from becoming an
+    unbounded provider-call amplifier.
+    """
+    current_time = int(time.time()) if now is None else int(now)
+    cooldown = _int_env("IAT_CHECKOUT_DELIVERY_REPAIR_COOLDOWN_SECONDS", 30, 10, 600)
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        p = qmark()
+        cur.execute(
+            f"""
+            SELECT order_id, state, next_attempt_at, updated_at, last_error_code
+            FROM universal_checkout_deliveries WHERE quote_id = {p}
+            """,
+            (quote_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise ValueError("delivery_not_found")
+        current = dict(row)
+        eligible = (
+            current["state"] == "retryable_failure"
+            and current.get("last_error_code")
+            == "foundation_decision_not_ready_for_delivery"
+            and int(current.get("next_attempt_at") or 0) > current_time
+            and current_time - int(current.get("updated_at") or 0) >= cooldown
+        )
+        if not eligible:
+            return {
+                "status": "repair_acceleration_not_required",
+                "quote_id": quote_id,
+                "state": current["state"],
+                "next_attempt_at": current.get("next_attempt_at"),
+                "idempotent": True,
+            }
+        cur.execute(
+            f"""
+            UPDATE universal_checkout_deliveries
+            SET next_attempt_at = {p}, updated_at = {p}
+            WHERE quote_id = {p} AND state = {p}
+              AND last_error_code = {p}
+            """,
+            (
+                current_time,
+                current_time,
+                quote_id,
+                "retryable_failure",
+                "foundation_decision_not_ready_for_delivery",
+            ),
+        )
+        if cur.rowcount != 1:
+            conn.rollback()
+            raise ValueError("delivery_repair_acceleration_conflict")
+        _insert_event(
+            cur,
+            quote_id=quote_id,
+            order_id=current["order_id"],
+            event_type="foundation_retry_accelerated",
+            from_state="retryable_failure",
+            to_state="retryable_failure",
+            actor=actor[:128],
+            reason="foundation_evidence_provider_repaired",
+            now=current_time,
+        )
+        conn.commit()
+    finally:
+        release_conn(conn)
+    return {
+        "status": "foundation_retry_accelerated",
+        "quote_id": quote_id,
+        "state": "retryable_failure",
+        "next_attempt_at": current_time,
+        "idempotent": False,
+    }
+
+
 def _claim(quote_id: str, now: int) -> tuple[dict[str, Any] | None, str | None]:
     lease_seconds = _int_env("IAT_CHECKOUT_DELIVERY_LEASE_SECONDS", 90, 30, 900)
     token = secrets.token_urlsafe(24)

@@ -51,6 +51,7 @@ from iat.quote_signer import QuoteSigningRejected, verify_quote_authorization
 from iat.api.db import get_conn, get_order_db, qmark, release_conn
 from iat.api import db as database
 from iat.checkout_delivery import (
+    accelerate_foundation_retry,
     enqueue_delivery_tx,
     init_checkout_delivery_db,
     public_delivery_status,
@@ -1155,6 +1156,8 @@ def deliver_universal_checkout(quote_id: str, req: UniversalPrepareRequest):
     current_delivery = public_delivery_status(quote_id)
     if current_delivery.get("state") == "review_required":
         resume_review_required_delivery(quote_id)
+    elif current_delivery.get("state") == "retryable_failure":
+        accelerate_foundation_retry(quote_id)
     return {
         "status": "delivery_checked",
         "quote_id": quote_id,

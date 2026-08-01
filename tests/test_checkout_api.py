@@ -638,6 +638,50 @@ def test_legacy_review_can_be_resumed_without_resetting_attempts(checkout_databa
     assert stored["next_attempt_at"] == NOW + 10
 
 
+def test_foundation_retry_can_be_accelerated_after_repair_cooldown(
+    checkout_database,
+    monkeypatch,
+):
+    _enqueue_test_delivery()
+    monkeypatch.setenv("IAT_CHECKOUT_DELIVERY_RETRY_BASE_SECONDS", "300")
+    checkout_delivery.run_checkout_delivery(
+        "quote-delivery",
+        now=NOW,
+        executor=lambda order, signature: {
+            "status": "foundation_review_required",
+            "delivery_authorized": False,
+        },
+    )
+
+    accelerated = checkout_delivery.accelerate_foundation_retry(
+        "quote-delivery", now=NOW + 30
+    )
+
+    assert accelerated["status"] == "foundation_retry_accelerated"
+    stored = checkout_delivery.get_delivery("quote-delivery")
+    assert stored["attempt_count"] == 1
+    assert stored["next_attempt_at"] == NOW + 30
+
+
+def test_foundation_retry_acceleration_enforces_cooldown(checkout_database):
+    _enqueue_test_delivery()
+    checkout_delivery.run_checkout_delivery(
+        "quote-delivery",
+        now=NOW,
+        executor=lambda order, signature: {
+            "status": "foundation_review_required",
+            "delivery_authorized": False,
+        },
+    )
+
+    result = checkout_delivery.accelerate_foundation_retry(
+        "quote-delivery", now=NOW + 5
+    )
+
+    assert result["status"] == "repair_acceleration_not_required"
+    assert checkout_delivery.get_delivery("quote-delivery")["next_attempt_at"] == NOW + 30
+
+
 def test_delivery_is_idempotent_after_completion(checkout_database):
     _enqueue_test_delivery()
     calls = []

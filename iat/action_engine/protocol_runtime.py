@@ -573,6 +573,21 @@ def run_foundation_supplier_pipeline(order):
             "reason": "foundation_decision_not_ready_for_delivery",
             "foundation_verdict": foundation_verdict,
             "foundation_decision_ready": foundation_decision_ready,
+            "foundation_evidence_status": evidence_evaluation.get(
+                "foundation_evidence_status"
+            ),
+            "foundation_evidence_reason": evidence_evaluation.get("reason"),
+            "research_status": evidence_evaluation.get("research_status"),
+            "research_valid_agents": evidence_evaluation.get("research_valid_agents"),
+            "verification_status": evidence_evaluation.get("verification_status"),
+            "verification_valid_agents": evidence_evaluation.get(
+                "verification_valid_agents"
+            ),
+            "claim_validation_status": evidence_evaluation.get(
+                "claim_validation_status"
+            ),
+            "verified_claim_count": evidence_evaluation.get("verified_claim_count"),
+            "rejected_claim_count": evidence_evaluation.get("rejected_claim_count"),
             "buyer_delivery_authority": "foundation_only",
             "supplier_execution": supplier_execution,
             "supplier_verification": verification,

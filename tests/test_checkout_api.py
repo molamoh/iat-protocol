@@ -799,6 +799,8 @@ def test_public_delivery_never_exposes_internal_order_credentials():
                 "delivery_authorized": False,
                 "foundation_verdict": "foundation_evidence_not_ready",
                 "foundation_decision_ready": False,
+                "foundation_evidence_status": "verification_failed",
+                "verification_valid_agents": 2,
                 "execution_mode": "foundation_supplier_pipeline",
                 "foundation_decision": {
                     "order": {
@@ -815,6 +817,8 @@ def test_public_delivery_never_exposes_internal_order_credentials():
         "delivery_authorized": False,
         "foundation_verdict": "foundation_evidence_not_ready",
         "foundation_decision_ready": False,
+        "foundation_evidence_status": "verification_failed",
+        "verification_valid_agents": 2,
         "execution_mode": "foundation_supplier_pipeline",
     }
     assert SECRET not in json.dumps(public)

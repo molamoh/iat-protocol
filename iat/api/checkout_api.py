@@ -1178,41 +1178,22 @@ def checkout_evidence_readiness(quote_id: str, req: UniversalPrepareRequest):
     _authorize_order(req, order)
 
     from iat.api.multi_exec import (
-        extract_research_claims_for_verification,
-        foundation_local_claim_verification,
-        foundation_search_query,
-        foundation_web_evidence_search,
+        foundation_direct_evidence_readiness,
     )
 
     stored_query = str(order.get("query") or "")
-    evidence = foundation_web_evidence_search(stored_query, limit=5)
-    source_results = evidence.get("results") or []
-    research_result = {
-        "success": True,
-        "data": {
-            "raw": {"web_evidence": evidence},
-            "web_evidence": evidence,
-        },
-    }
-    verification_order = {
-        "foundation_research_results": [research_result, research_result],
-    }
-    claims = extract_research_claims_for_verification(verification_order)
-    verification = foundation_local_claim_verification(
-        verification_order,
-        claims,
-    )
+    readiness = foundation_direct_evidence_readiness(stored_query, limit=5)
     return {
-        "status": "ready" if verification.get("verified_claims") else "not_ready",
+        "status": readiness["status"],
         "quote_id": quote_id,
-        "search_query": foundation_search_query(stored_query),
-        "provider": evidence.get("provider"),
-        "source_count": len(source_results),
-        "candidate_claim_count": len(claims),
-        "verified_claim_count": len(verification.get("verified_claims") or []),
-        "rejected_claim_count": len(verification.get("rejected_claims") or []),
-        "uncertain_claim_count": len(verification.get("uncertain_claims") or []),
-        "source_quality": verification.get("source_quality"),
+        "search_query": readiness["search_query"],
+        "provider": readiness["provider"],
+        "source_count": readiness["source_count"],
+        "candidate_claim_count": readiness["candidate_claim_count"],
+        "verified_claim_count": readiness["verified_claim_count"],
+        "rejected_claim_count": readiness["rejected_claim_count"],
+        "uncertain_claim_count": readiness["uncertain_claim_count"],
+        "source_quality": readiness["source_quality"],
         "read_only": True,
     }
 

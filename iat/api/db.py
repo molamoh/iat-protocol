@@ -18866,6 +18866,51 @@ def run_foundation_decision_db(order_id):
             foundation_execution_result.get("evidence_package", {})
             .get("foundation_evidence_evaluation")
         )
+
+        if not (
+            isinstance(foundation_evidence_evaluation, dict)
+            and foundation_evidence_evaluation.get("foundation_decision_ready") is True
+        ):
+            from iat.api.multi_exec import foundation_direct_evidence_readiness
+
+            direct_readiness = foundation_direct_evidence_readiness(
+                foundation_order.get("query") or "",
+                limit=5,
+            )
+            if direct_readiness.get("ready") is True:
+                verification = direct_readiness["verification"]
+                foundation_evidence_evaluation = {
+                    **(foundation_evidence_evaluation or {}),
+                    "foundation_evidence_status": "decision_ready_with_direct_cross_source_verification",
+                    "foundation_decision_ready": True,
+                    "confidence_cap": 0.75,
+                    "reason": "direct_cross_source_claim_verification_passed",
+                    "verified_claim_count": direct_readiness["verified_claim_count"],
+                    "rejected_claim_count": direct_readiness["rejected_claim_count"],
+                    "direct_evidence_provider": direct_readiness["provider"],
+                    "direct_evidence_source_count": direct_readiness["source_count"],
+                }
+                evidence_package = foundation_execution_result.setdefault(
+                    "evidence_package", {}
+                )
+                evidence_package["foundation_evidence_evaluation"] = (
+                    foundation_evidence_evaluation
+                )
+                evidence_package["best_verification_result"] = {
+                    "success": True,
+                    "data": {
+                        **verification,
+                        "metrics": {
+                            "verified_claim_count": direct_readiness[
+                                "verified_claim_count"
+                            ],
+                            "rejected_claim_count": direct_readiness[
+                                "rejected_claim_count"
+                            ],
+                        },
+                        "raw": verification,
+                    },
+                }
     except Exception as exc:
         foundation_execution_result = {
             "status": "error",

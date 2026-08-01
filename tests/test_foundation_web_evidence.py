@@ -178,3 +178,27 @@ def test_source_titles_are_prioritized_before_noisy_model_claims():
 
     assert claims[0] == "Source-backed Bitcoin risk evidence"
     assert len(claims) == 5
+
+
+def test_direct_readiness_requires_high_quality_verified_sources(monkeypatch):
+    evidence = {
+        "provider": "test",
+        "results": [
+            {"title": "Bitcoin risk evidence", "link": "https://one.test/a", "display_link": "one.test"},
+            {"title": "Bitcoin risk evidence", "link": "https://two.test/a", "display_link": "two.test"},
+            {"title": "Bitcoin risk evidence", "link": "https://three.test/a", "display_link": "three.test"},
+            {"title": "Bitcoin risk evidence", "link": "https://four.test/a", "display_link": "four.test"},
+        ],
+    }
+    monkeypatch.setattr(
+        multi_exec,
+        "foundation_web_evidence_search",
+        lambda *args, **kwargs: evidence,
+    )
+
+    result = multi_exec.foundation_direct_evidence_readiness("Bitcoin risk")
+
+    assert result["ready"] is True
+    assert result["verified_claim_count"] == 1
+    assert result["rejected_claim_count"] == 0
+    assert result["source_quality"] == "high"

@@ -1416,6 +1416,47 @@ def foundation_web_evidence_search(query, limit=5):
     }
 
 
+def foundation_direct_evidence_readiness(query, limit=5):
+    """Deterministic Foundation evidence path, independent of model wording."""
+    evidence = foundation_web_evidence_search(query, limit=limit)
+    research_result = {
+        "success": True,
+        "data": {
+            "raw": {"web_evidence": evidence},
+            "web_evidence": evidence,
+        },
+    }
+    verification_order = {
+        "foundation_research_results": [research_result, research_result],
+    }
+    claims = extract_research_claims_for_verification(verification_order)
+    verification = foundation_local_claim_verification(
+        verification_order,
+        claims,
+    )
+    verified = verification.get("verified_claims") or []
+    rejected = verification.get("rejected_claims") or []
+    ready = bool(
+        verified
+        and not rejected
+        and verification.get("source_quality") == "high"
+    )
+    return {
+        "status": "ready" if ready else "not_ready",
+        "search_query": foundation_search_query(query),
+        "provider": evidence.get("provider"),
+        "source_count": len(evidence.get("results") or []),
+        "candidate_claim_count": len(claims),
+        "verified_claim_count": len(verified),
+        "rejected_claim_count": len(rejected),
+        "uncertain_claim_count": len(verification.get("uncertain_claims") or []),
+        "source_quality": verification.get("source_quality"),
+        "verification": verification,
+        "evidence": evidence,
+        "ready": ready,
+    }
+
+
 def extract_research_claims_for_verification(order, limit=20):
     claims = []
 

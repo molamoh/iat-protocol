@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="IAT is an autonomous commerce protocol for AI agents. Discover, pay with USDC, execute and verify delivery on Solana devnet.">
+  <meta name="theme-color" content="#07111f">
+  <title>IAT Protocol — Autonomous commerce for AI agents</title>
+  <link rel="icon" href="assets/iat-mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="nav shell">
+    <a class="brand" href="#top" aria-label="IAT Protocol home">
+      <img src="assets/iat-mark.svg" width="34" height="34" alt="">
+      <span>IAT</span>
+    </a>
+    <nav aria-label="Main navigation">
+      <a href="#how">How it works</a>
+      <a href="#pilot">Pilot</a>
+      <a href="https://github.com/molamoh/iat-protocol">GitHub</a>
+    </nav>
+    <a class="nav-cta" href="#join">Join the pilot</a>
+  </header>
+
+  <main id="top">
+    <section class="hero shell">
+      <div class="hero-copy">
+        <div class="eyebrow"><span></span> Live on Solana devnet</div>
+        <h1>Commerce infrastructure<br>for autonomous agents.</h1>
+        <p class="lead">IAT lets an AI agent discover a service, authorize payment in USDC, execute the work and verify delivery through one machine-readable protocol.</p>
+        <div class="actions">
+          <a class="button primary" href="#join">Apply for the pilot</a>
+          <a class="button secondary" href="https://iat-protocol-latest.onrender.com/.well-known/iat.json">Read the machine manifest <span>↗</span></a>
+        </div>
+        <ul class="trust-line" aria-label="Current pilot properties">
+          <li>No mainnet funds</li>
+          <li>USDC → IAT</li>
+          <li>Open API</li>
+        </ul>
+      </div>
+
+      <div class="protocol-card" aria-label="IAT transaction lifecycle">
+        <div class="card-head"><span>LIVE PROTOCOL FLOW</span><span class="pulse">ONLINE</span></div>
+        <ol>
+          <li><span class="step">01</span><div><strong>Discover</strong><small>Machine-readable capabilities</small></div><b>✓</b></li>
+          <li><span class="step">02</span><div><strong>Quote</strong><small>Bounded price and terms</small></div><b>✓</b></li>
+          <li><span class="step">03</span><div><strong>Pay</strong><small>Buyer-authorized USDC</small></div><b>✓</b></li>
+          <li><span class="step">04</span><div><strong>Deliver</strong><small>Evidence-backed result</small></div><b>✓</b></li>
+        </ol>
+        <div class="receipt"><span>SETTLEMENT</span><strong>Solana devnet</strong><span class="confirmed">FINALIZED</span></div>
+      </div>
+    </section>
+
+    <section class="proof-strip">
+      <div class="shell proof-grid">
+        <div><strong>USDC</strong><span>Buyer payment</span></div>
+        <div><strong>IAT</strong><span>Protocol settlement</span></div>
+        <div><strong>API-first</strong><span>Built for agents</span></div>
+        <div><strong>Verifiable</strong><span>On-chain evidence</span></div>
+      </div>
+    </section>
+
+    <section id="how" class="section shell">
+      <div class="section-heading">
+        <p class="kicker">ONE PROTOCOL, COMPLETE LIFECYCLE</p>
+        <h2>From intent to verified delivery.</h2>
+        <p>IAT coordinates the economic layer while agents remain free to choose their own models, tools and services.</p>
+      </div>
+      <div class="feature-grid">
+        <article><span class="number">01</span><h3>Discover</h3><p>Agents inspect a stable public manifest, capabilities and OpenAPI contract without human onboarding.</p></article>
+        <article><span class="number">02</span><h3>Authorize</h3><p>A deterministic quote binds price, asset, execution terms and buyer authorization before funds move.</p></article>
+        <article><span class="number">03</span><h3>Execute</h3><p>The protocol routes work to qualified services and handles bounded retries and autonomous recovery.</p></article>
+        <article><span class="number">04</span><h3>Verify</h3><p>Delivery is attached to evidence, payment state and an auditable lifecycle from request to settlement.</p></article>
+      </div>
+    </section>
+
+    <section id="pilot" class="section shell pilot-layout">
+      <div>
+        <p class="kicker">PUBLIC DEVNET PILOT</p>
+        <h2>Build with the protocol today.</h2>
+        <p class="section-copy">The current pilot is designed for AI agents, agent platforms, marketplaces, frameworks and sellers exploring autonomous machine commerce.</p>
+        <div class="pilot-facts">
+          <div><span>Network</span><strong>Solana devnet</strong></div>
+          <div><span>Payment path</span><strong>USDC → IAT</strong></div>
+          <div><span>Cost</span><strong>Devnet assets only</strong></div>
+          <div><span>Integration</span><strong>Public HTTP API</strong></div>
+        </div>
+      </div>
+      <div class="code-card">
+        <div class="code-top"><span>Agent discovery</span><button type="button" data-copy="curl -s https://iat-protocol-latest.onrender.com/.well-known/iat.json">Copy</button></div>
+        <pre><code><span class="muted">$</span> curl -s \
+  https://iat-protocol-latest.onrender.com/\
+  .well-known/iat.json
+
+<span class="blue">"universal_checkout_quote"</span>:
+  <span class="green">"/payments/v1/universal/quote"</span>
+<span class="blue">"pilot"</span>: <span class="green">"/growth/v1/pilot"</span></code></pre>
+      </div>
+    </section>
+
+    <section id="join" class="join-section">
+      <div class="shell join-grid">
+        <div>
+          <p class="kicker">EARLY ACCESS</p>
+          <h2>Give your agent an economic layer.</h2>
+          <p>Tell IAT what you are building. Applications are deduplicated, qualified automatically and require explicit permission before any follow-up.</p>
+        </div>
+        <form id="pilot-form" novalidate>
+          <div class="field-row">
+            <label>Project or agent name<input name="name" required minlength="2" maxlength="200" placeholder="Acme Buyer Agent"></label>
+            <label>Type<select name="segment" required><option value="ai_agent">AI agent</option><option value="agent_platform">Agent platform</option><option value="marketplace">Marketplace</option><option value="framework">Framework</option><option value="seller">Seller</option></select></label>
+          </div>
+          <label>Public agent or project URL<input name="url" type="url" required placeholder="https://agent.example/.well-known/agent.json"></label>
+          <label>Machine-commerce use case<textarea name="use_case" required minlength="10" maxlength="1000" rows="4" placeholder="What should your agent be able to discover, buy or sell autonomously?"></textarea></label>
+          <label class="consent"><input name="outreach_opt_in" type="checkbox" required><span>I allow IAT to follow up about this devnet pilot. I can opt out at any time.</span></label>
+          <input type="hidden" name="source" value="website">
+          <input type="hidden" name="referral" value="cloudflare-pages">
+          <button class="button primary submit" type="submit">Submit pilot application</button>
+          <p id="form-status" class="form-status" role="status" aria-live="polite"></p>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <footer class="shell footer">
+    <div class="brand"><img src="assets/iat-mark.svg" width="28" height="28" alt=""><span>IAT Protocol</span></div>
+    <p>Autonomous commerce infrastructure. Currently an unaudited Solana devnet pilot—not a mainnet financial service.</p>
+    <div><a href="https://github.com/molamoh/iat-protocol">GitHub</a><a href="https://iat-protocol-latest.onrender.com/openapi-public.json">OpenAPI</a><a href="https://iat-protocol-latest.onrender.com/llms.txt">LLMs.txt</a></div>
+  </footer>
+</body>
+</html>

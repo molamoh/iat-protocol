@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 from fastapi import FastAPI, Header, Body, Request, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field
 from solders.pubkey import Pubkey
 from spl.token.instructions import get_associated_token_address
@@ -283,6 +284,20 @@ app = FastAPI(
     openapi_url="/openapi.json" if INTERNAL_DOCS_ENABLED else None,
     lifespan=application_lifespan,
 )
+PUBLIC_WEB_ORIGINS = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv("IAT_PUBLIC_WEB_ORIGINS", "").split(",")
+    if origin.strip()
+]
+if PUBLIC_WEB_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=PUBLIC_WEB_ORIGINS,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Content-Type"],
+        max_age=86400,
+    )
 app.include_router(public_router)
 app.include_router(growth_public_router)
 app.include_router(goia_public_router)

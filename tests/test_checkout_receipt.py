@@ -89,6 +89,59 @@ def test_email_destination_is_masked_and_waits_for_dispatch(receipt_db):
         )
 
 
+def test_configured_receipt_rebinds_to_replacement_quote(receipt_db):
+    first = receipt.configure_delivery_receipt(
+        quote_id="uq_expired",
+        order_id="ord_requoted",
+        channel="email",
+        destination="buyer@example.com",
+        now=100,
+    )
+
+    replacement = receipt.configure_delivery_receipt(
+        quote_id="uq_replacement",
+        order_id="ord_requoted",
+        channel="email",
+        destination="delivery@example.com",
+        now=200,
+    )
+
+    assert receipt.get_delivery_receipt("uq_expired") is None
+    assert replacement["receipt_token"] == first["receipt_token"]
+    assert replacement["destination"] == "d***@example.com"
+    assert [
+        event["event_type"]
+        for event in receipt.delivery_receipt_events("uq_replacement")
+    ] == ["delivery_quote_rebound"]
+
+
+def test_sealed_receipt_cannot_rebind_to_replacement_quote(receipt_db):
+    receipt.configure_delivery_receipt(
+        quote_id="uq_paid",
+        order_id="ord_paid",
+        channel="api_pull",
+        destination=None,
+        now=100,
+    )
+    receipt.publish_delivery_payload(
+        quote_id="uq_paid",
+        order_id="ord_paid",
+        payload={"status": "success"},
+        now=110,
+    )
+
+    with pytest.raises(
+        receipt.DeliveryReceiptError, match="delivery_order_already_bound"
+    ):
+        receipt.configure_delivery_receipt(
+            quote_id="uq_impossible_replacement",
+            order_id="ord_paid",
+            channel="email",
+            destination="buyer@example.com",
+            now=200,
+        )
+
+
 def test_dispute_requires_reason_and_preserves_payload_digest(receipt_db):
     first = receipt.publish_delivery_payload(
         quote_id="uq_dispute",

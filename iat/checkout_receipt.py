@@ -198,16 +198,47 @@ def configure_delivery_receipt(
             (quote_id,),
         )
         existing = cur.fetchone()
+        rebound = False
+        if not existing:
+            cur.execute(
+                f"SELECT * FROM universal_checkout_delivery_receipts WHERE order_id={p}",
+                (order_id,),
+            )
+            order_receipt = cur.fetchone()
+            if order_receipt:
+                current = dict(order_receipt)
+                if current["state"] != "configured" or current.get("payload_digest"):
+                    raise DeliveryReceiptError("delivery_order_already_bound")
+                cur.execute(
+                    f"""UPDATE universal_checkout_delivery_receipts
+                    SET quote_id={p}, channel={p}, destination={p}, updated_at={p}
+                    WHERE order_id={p} AND quote_id={p} AND state={p}
+                      AND payload_digest IS NULL""",
+                    (
+                        quote_id,
+                        channel,
+                        clean_destination,
+                        current_time,
+                        order_id,
+                        current["quote_id"],
+                        "configured",
+                    ),
+                )
+                if cur.rowcount != 1:
+                    raise DeliveryReceiptError("delivery_quote_rebind_conflict")
+                existing = order_receipt
+                rebound = True
         if existing:
             current = dict(existing)
-            if current["state"] not in {"configured", "payload_ready"}:
+            if not rebound and current["state"] not in {"configured", "payload_ready"}:
                 raise DeliveryReceiptError("delivery_destination_locked")
-            cur.execute(
-                f"""UPDATE universal_checkout_delivery_receipts
-                SET channel={p}, destination={p}, updated_at={p}
-                WHERE quote_id={p}""",
-                (channel, clean_destination, current_time, quote_id),
-            )
+            if not rebound:
+                cur.execute(
+                    f"""UPDATE universal_checkout_delivery_receipts
+                    SET channel={p}, destination={p}, updated_at={p}
+                    WHERE quote_id={p}""",
+                    (channel, clean_destination, current_time, quote_id),
+                )
         else:
             cur.execute(
                 f"""INSERT INTO universal_checkout_delivery_receipts
@@ -228,7 +259,9 @@ def configure_delivery_receipt(
         _insert_event(
             cur,
             quote_id=quote_id,
-            event_type="delivery_destination_configured",
+            event_type=(
+                "delivery_quote_rebound" if rebound else "delivery_destination_configured"
+            ),
             state="configured" if not existing else dict(existing)["state"],
             payload_digest=(dict(existing).get("payload_digest") if existing else None),
             actor="authenticated_buyer",

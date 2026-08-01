@@ -55,6 +55,11 @@ def test_web_evidence_uses_keyless_news_before_html_fallback(monkeypatch):
     monkeypatch.setattr(multi_exec, "foundation_google_search", lambda *a, **k: [])
     monkeypatch.setattr(
         multi_exec,
+        "foundation_bing_news_rss_search",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("unexpected fallback")),
+    )
+    monkeypatch.setattr(
+        multi_exec,
         "foundation_google_news_rss_search",
         lambda *a, **k: [{"title": "evidence"}],
     )
@@ -67,6 +72,23 @@ def test_web_evidence_uses_keyless_news_before_html_fallback(monkeypatch):
     result = multi_exec.foundation_web_evidence_search("Bitcoin risk")
 
     assert result["provider"] == "google_news_rss"
+    assert result["result_count"] == 1
+
+
+def test_web_evidence_uses_bing_when_google_news_is_unavailable(monkeypatch):
+    monkeypatch.setattr(multi_exec, "foundation_serper_search", lambda *a, **k: [])
+    monkeypatch.setattr(multi_exec, "foundation_tavily_search", lambda *a, **k: [])
+    monkeypatch.setattr(multi_exec, "foundation_google_search", lambda *a, **k: [])
+    monkeypatch.setattr(multi_exec, "foundation_google_news_rss_search", lambda *a, **k: [])
+    monkeypatch.setattr(
+        multi_exec,
+        "foundation_bing_news_rss_search",
+        lambda *a, **k: [{"title": "evidence"}],
+    )
+
+    result = multi_exec.foundation_web_evidence_search("Bitcoin risk")
+
+    assert result["provider"] == "bing_news_rss"
     assert result["result_count"] == 1
 
 

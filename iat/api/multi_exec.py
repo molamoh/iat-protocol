@@ -1279,6 +1279,52 @@ def foundation_google_news_rss_search(query, limit=5):
         return []
 
 
+def foundation_bing_news_rss_search(query, limit=5):
+    """Second keyless news source used when Google News is unavailable."""
+    search_query = foundation_search_query(query)
+    if not search_query:
+        return []
+    safe_limit = max(1, min(int(limit or 5), 10))
+    try:
+        response = requests.get(
+            "https://www.bing.com/news/search",
+            params={"q": search_query, "format": "rss"},
+            headers={"User-Agent": "IATProtocol/1.0"},
+            timeout=15,
+        )
+        if response.status_code != 200 or len(response.content) > 2_000_000:
+            return []
+        root = ElementTree.fromstring(response.content)
+        results = []
+        for position, item in enumerate(root.findall("./channel/item"), start=1):
+            title = " ".join(str(item.findtext("title") or "").split())
+            link = str(item.findtext("link") or "").strip()
+            description = " ".join(str(item.findtext("description") or "").split())
+            source_name = ""
+            source_url = ""
+            for child in item:
+                if str(child.tag).lower().endswith("source"):
+                    source_name = " ".join(str(child.text or "").split())
+                    source_url = str(child.attrib.get("url") or "").strip()
+                    break
+            if not title or not link:
+                continue
+            results.append({
+                "source": "bing_news_rss",
+                "title": title,
+                "snippet": description or source_name,
+                "link": link,
+                "display_link": source_url or None,
+                "date": item.findtext("pubDate"),
+                "position": position,
+            })
+            if len(results) >= safe_limit:
+                break
+        return results
+    except (ElementTree.ParseError, requests.RequestException, ValueError, TypeError):
+        return []
+
+
 def foundation_search_query(query, max_terms=12):
     """Reduce a buyer instruction to bounded search terms without an LLM."""
     text = " ".join(str(query or "").split())
@@ -1353,6 +1399,10 @@ def foundation_web_evidence_search(query, limit=5):
     if not results:
         results = foundation_google_news_rss_search(query, limit=limit)
         provider = "google_news_rss" if results else None
+
+    if not results:
+        results = foundation_bing_news_rss_search(query, limit=limit)
+        provider = "bing_news_rss" if results else None
 
     if not results:
         results = foundation_duckduckgo_search(query, limit=limit)

@@ -2494,6 +2494,31 @@ def root():
     }
 
 
+_EVIDENCE_HEALTH_LOCK = threading.Lock()
+_EVIDENCE_HEALTH_CACHE = {"checked_at": 0, "result": None}
+
+
+@app.get("/health/evidence")
+def evidence_health():
+    """Cached, fixed-query egress probe; never accepts user-controlled URLs."""
+    now = int(time.time())
+    with _EVIDENCE_HEALTH_LOCK:
+        cached = _EVIDENCE_HEALTH_CACHE.get("result")
+        if cached and now - int(_EVIDENCE_HEALTH_CACHE.get("checked_at") or 0) < 300:
+            return {**cached, "cached": True}
+        from iat.api.multi_exec import foundation_web_evidence_search
+
+        evidence = foundation_web_evidence_search("Bitcoin market risk", limit=3)
+        result = {
+            "status": "ok" if evidence.get("results") else "degraded",
+            "provider": evidence.get("provider"),
+            "result_count": len(evidence.get("results") or []),
+            "checked_at": now,
+        }
+        _EVIDENCE_HEALTH_CACHE.update({"checked_at": now, "result": result})
+        return {**result, "cached": False}
+
+
 @app.get("/services")
 def list_services():
     return {

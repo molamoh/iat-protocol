@@ -54,6 +54,7 @@ from iat.checkout_delivery import (
     enqueue_delivery_tx,
     init_checkout_delivery_db,
     public_delivery_status,
+    resume_review_required_delivery,
     run_checkout_delivery,
 )
 from iat.checkout_compensation import (
@@ -1151,6 +1152,9 @@ def deliver_universal_checkout(quote_id: str, req: UniversalPrepareRequest):
     _authorize_order(req, order)
     if row["state"] != "confirmed":
         raise HTTPException(status_code=409, detail="payment_not_confirmed")
+    current_delivery = public_delivery_status(quote_id)
+    if current_delivery.get("state") == "review_required":
+        resume_review_required_delivery(quote_id)
     return {
         "status": "delivery_checked",
         "quote_id": quote_id,

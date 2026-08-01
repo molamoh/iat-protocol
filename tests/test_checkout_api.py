@@ -567,8 +567,12 @@ def test_delivery_retry_wait_is_enforced(checkout_database):
     assert calls == []
 
 
-def test_delivery_review_state_preserves_payment(checkout_database):
+def test_delivery_review_state_retries_autonomously_and_preserves_payment(
+    checkout_database,
+    monkeypatch,
+):
     _enqueue_test_delivery()
+    monkeypatch.setenv("IAT_CHECKOUT_DELIVERY_RETRY_BASE_SECONDS", "30")
     delivery = checkout_delivery.run_checkout_delivery(
         "quote-delivery",
         now=NOW,
@@ -578,10 +582,60 @@ def test_delivery_review_state_preserves_payment(checkout_database):
         },
     )
 
-    assert delivery["state"] == "review_required"
+    assert delivery["state"] == "retryable_failure"
+    assert delivery["next_attempt_at"] == NOW + 30
+    assert delivery["last_error_code"] == "foundation_decision_not_ready_for_delivery"
     order = db.get_order_db("ord-api")
-    assert order["status"] == "foundation_review_required"
+    assert order["status"] == "paid"
     assert order["used"] is False
+
+
+def test_delivery_review_exhaustion_requests_terminal_recovery(
+    checkout_database,
+    monkeypatch,
+):
+    _enqueue_test_delivery()
+    monkeypatch.setenv("IAT_CHECKOUT_DELIVERY_MAX_ATTEMPTS", "1")
+
+    delivery = checkout_delivery.run_checkout_delivery(
+        "quote-delivery",
+        now=NOW,
+        executor=lambda order, signature: {
+            "status": "foundation_review_required",
+            "delivery_authorized": False,
+        },
+    )
+
+    assert delivery["state"] == "exhausted"
+    assert db.get_order_db("ord-api")["status"] == "foundation_review_required"
+
+
+def test_legacy_review_can_be_resumed_without_resetting_attempts(checkout_database):
+    _enqueue_test_delivery()
+    checkout_delivery.run_checkout_delivery(
+        "quote-delivery",
+        now=NOW,
+        executor=lambda order, signature: {"status": "success"},
+    )
+    conn = db.get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE universal_checkout_deliveries SET state = ?, attempt_count = ? WHERE quote_id = ?",
+            ("review_required", 3, "quote-delivery"),
+        )
+        conn.commit()
+    finally:
+        db.release_conn(conn)
+
+    resumed = checkout_delivery.resume_review_required_delivery(
+        "quote-delivery", now=NOW + 10
+    )
+
+    assert resumed["state"] == "retryable_failure"
+    stored = checkout_delivery.get_delivery("quote-delivery")
+    assert stored["attempt_count"] == 3
+    assert stored["next_attempt_at"] == NOW + 10
 
 
 def test_delivery_is_idempotent_after_completion(checkout_database):

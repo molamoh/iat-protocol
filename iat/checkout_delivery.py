@@ -455,6 +455,77 @@ def redrive_exhausted_delivery(
     }
 
 
+def resume_review_required_delivery(
+    quote_id: str,
+    *,
+    actor: str = "authenticated_buyer",
+    now: int | None = None,
+) -> dict[str, Any]:
+    """Reopen a legacy review state without resetting its attempt budget.
+
+    New incomplete Foundation decisions use the normal automatic retry path.
+    This transition exists so deliveries created by older releases are not
+    stranded forever in the former terminal ``review_required`` state.
+    """
+    current_time = int(time.time()) if now is None else int(now)
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        p = qmark()
+        cur.execute(
+            f"""
+            SELECT order_id, state FROM universal_checkout_deliveries
+            WHERE quote_id = {p}
+            """,
+            (quote_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise ValueError("delivery_not_found")
+        current = dict(row)
+        if current["state"] != "review_required":
+            return {
+                "status": "resume_not_required",
+                "quote_id": quote_id,
+                "state": current["state"],
+                "next_attempt_at": current_time,
+                "idempotent": True,
+            }
+        cur.execute(
+            f"""
+            UPDATE universal_checkout_deliveries
+            SET state = {p}, next_attempt_at = {p}, lease_token = NULL,
+                lease_until = NULL, completed_at = NULL, updated_at = {p}
+            WHERE quote_id = {p} AND state = {p}
+            """,
+            ("retryable_failure", current_time, current_time, quote_id, "review_required"),
+        )
+        if cur.rowcount != 1:
+            conn.rollback()
+            raise ValueError("delivery_resume_conflict")
+        _insert_event(
+            cur,
+            quote_id=quote_id,
+            order_id=current["order_id"],
+            event_type="legacy_review_resumed",
+            from_state="review_required",
+            to_state="retryable_failure",
+            actor=actor[:128],
+            reason="autonomous_delivery_policy_upgrade",
+            now=current_time,
+        )
+        conn.commit()
+    finally:
+        release_conn(conn)
+    return {
+        "status": "review_resumed",
+        "quote_id": quote_id,
+        "state": "retryable_failure",
+        "next_attempt_at": current_time,
+        "idempotent": False,
+    }
+
+
 def _claim(quote_id: str, now: int) -> tuple[dict[str, Any] | None, str | None]:
     lease_seconds = _int_env("IAT_CHECKOUT_DELIVERY_LEASE_SECONDS", 90, 30, 900)
     token = secrets.token_urlsafe(24)
@@ -702,14 +773,32 @@ def run_checkout_delivery(
 
     status = str(result.get("status") or "").strip().lower()
     if status == "foundation_review_required":
-        _mark_order(claimed["order_id"], claimed["tx_signature"], "review_required", result)
-        _finish(
-            quote_id,
-            lease_token,
-            state="review_required",
-            now=current_time,
-            result=result,
-        )
+        attempts = int(claimed.get("attempt_count") or 1)
+        max_attempts = _int_env("IAT_CHECKOUT_DELIVERY_MAX_ATTEMPTS", 8, 1, 32)
+        if attempts >= max_attempts:
+            _mark_order(claimed["order_id"], claimed["tx_signature"], "review_required", result)
+            _finish(
+                quote_id,
+                lease_token,
+                state="exhausted",
+                now=current_time,
+                result=result,
+                error_code="foundation_decision_not_ready_for_delivery",
+                next_attempt_at=current_time,
+            )
+            _request_protocol_compensation(quote_id)
+        else:
+            base = _int_env("IAT_CHECKOUT_DELIVERY_RETRY_BASE_SECONDS", 30, 5, 3600)
+            delay = min(base * (2 ** (attempts - 1)), 3600)
+            _finish(
+                quote_id,
+                lease_token,
+                state="retryable_failure",
+                now=current_time,
+                result=result,
+                error_code="foundation_decision_not_ready_for_delivery",
+                next_attempt_at=current_time + delay,
+            )
     elif status == "foundation_delivery_blocked":
         _mark_order(claimed["order_id"], claimed["tx_signature"], "blocked", result)
         _finish(

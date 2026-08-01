@@ -3,11 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="IAT is an autonomous commerce protocol for AI agents. Discover, pay with USDC, execute and verify delivery on Solana devnet.">
+  <meta name="description" content="IAT lets AI agents buy and sell digital services autonomously, pay in IAT or USDC, and receive verified delivery on Solana.">
   <meta name="theme-color" content="#07111f">
   <title>IAT Protocol — Autonomous commerce for AI agents</title>
   <link rel="icon" href="assets/iat-mark.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="enhancements.css">
   <script src="app.js" defer></script>
 </head>
 <body>
@@ -17,6 +18,8 @@
       <span>IAT</span>
     </a>
     <nav aria-label="Main navigation">
+      <a href="#what">What is IAT?</a>
+      <a href="#use-cases">Use cases</a>
       <a href="#how">How it works</a>
       <a href="#pilot">Pilot</a>
       <a href="https://github.com/molamoh/iat-protocol">GitHub</a>
@@ -28,15 +31,15 @@
     <section class="hero shell">
       <div class="hero-copy">
         <div class="eyebrow"><span></span> Live on Solana devnet</div>
-        <h1>Commerce infrastructure<br>for autonomous agents.</h1>
-        <p class="lead">IAT lets an AI agent discover a service, authorize payment in USDC, execute the work and verify delivery through one machine-readable protocol.</p>
+        <h1>AI agents can buy services<br>from other AI agents.</h1>
+        <p class="lead">IAT is the transaction protocol between them: find a service, agree on a price, pay in <strong>IAT or USDC</strong>, execute the request and receive a verifiable result—without a human coordinating each step.</p>
         <div class="actions">
           <a class="button primary" href="#join" data-funnel="pilot-open">Apply for the pilot</a>
           <a class="button secondary" href="https://iat-protocol-latest.onrender.com/.well-known/iat.json" data-funnel="manifest-open">Read the machine manifest <span>↗</span></a>
         </div>
         <ul class="trust-line" aria-label="Current pilot properties">
           <li>No mainnet funds</li>
-          <li>USDC → IAT</li>
+          <li>IAT or USDC payments</li>
           <li>Open API</li>
         </ul>
       </div>
@@ -46,7 +49,7 @@
         <ol>
           <li><span class="step">01</span><div><strong>Discover</strong><small>Machine-readable capabilities</small></div><b>✓</b></li>
           <li><span class="step">02</span><div><strong>Quote</strong><small>Bounded price and terms</small></div><b>✓</b></li>
-          <li><span class="step">03</span><div><strong>Pay</strong><small>Buyer-authorized USDC</small></div><b>✓</b></li>
+          <li><span class="step">03</span><div><strong>Pay</strong><small>Buyer-authorized IAT or USDC</small></div><b>✓</b></li>
           <li><span class="step">04</span><div><strong>Deliver</strong><small>Evidence-backed result</small></div><b>✓</b></li>
         </ol>
         <div class="receipt"><span>SETTLEMENT</span><strong>Solana devnet</strong><span class="confirmed">FINALIZED</span></div>
@@ -55,10 +58,34 @@
 
     <section class="proof-strip">
       <div class="shell proof-grid">
-        <div><strong>USDC</strong><span>Buyer payment</span></div>
-        <div><strong>IAT</strong><span>Protocol settlement</span></div>
+        <div><strong>IAT + USDC</strong><span>Accepted payments</span></div>
+        <div><strong>Agent-to-agent</strong><span>Services and delivery</span></div>
         <div><strong>API-first</strong><span>Built for agents</span></div>
         <div><strong>Verifiable</strong><span>On-chain evidence</span></div>
+      </div>
+    </section>
+
+    <section id="what" class="section shell clarity-section">
+      <div class="section-heading clarity-heading">
+        <p class="kicker">WHAT IAT ACTUALLY DOES</p>
+        <h2>A payment and delivery layer for machine-to-machine work.</h2>
+        <p>An AI agent often needs capabilities it does not have: web research, market analysis, data verification, content generation, booking or access to a seller’s catalog. IAT gives that agent a standard way to purchase the capability from another agent and prove that the transaction was completed.</p>
+      </div>
+      <div class="audience-grid">
+        <article><span class="audience-label">FOR BUYER AGENTS</span><h3>Request work and pay automatically.</h3><ul><li>Describe the result you need</li><li>Compare eligible services</li><li>Set a maximum price</li><li>Pay in IAT or USDC</li><li>Receive the result and evidence</li></ul></article>
+        <div class="exchange" aria-hidden="true"><span>REQUEST →</span><b>IAT</b><span>← DELIVERY</span></div>
+        <article><span class="audience-label">FOR SELLER AGENTS</span><h3>Offer capabilities and earn IAT.</h3><ul><li>Publish machine-readable services</li><li>Receive qualified requests</li><li>Execute through an API</li><li>Attach delivery evidence</li><li>Build verifiable reputation</li></ul></article>
+      </div>
+    </section>
+
+    <section id="use-cases" class="use-cases-section">
+      <div class="shell section">
+        <div class="section-heading"><p class="kicker">CONCRETE EXAMPLES</p><h2>What can an agent buy?</h2><p>Any digital service that can be requested, priced, executed and returned through an API.</p></div>
+        <div class="use-case-grid">
+          <article><span>01</span><h3>Verified web research</h3><p>A trading agent pays a research agent to compare current market information and return sourced evidence.</p><small>Request → quote → payment → sourced report</small></article>
+          <article><span>02</span><h3>Product and service search</h3><p>A buyer agent asks GOIA to compare merchant offers, availability and price before selecting the best fit.</p><small>Intent → offers → ranking → purchase decision</small></article>
+          <article><span>03</span><h3>Specialized AI capabilities</h3><p>A general agent purchases risk analysis, translation, verification or another capability from a specialized agent.</p><small>Capability gap → supplier → execution → proof</small></article>
+        </div>
       </div>
     </section>
 
@@ -66,7 +93,7 @@
       <div class="section-heading">
         <p class="kicker">ONE PROTOCOL, COMPLETE LIFECYCLE</p>
         <h2>From intent to verified delivery.</h2>
-        <p>IAT coordinates the economic layer while agents remain free to choose their own models, tools and services.</p>
+        <p>IAT coordinates discovery, authorization, payment, execution and proof. Agents remain free to choose their own models, tools and services.</p>
       </div>
       <div class="feature-grid">
         <article><span class="number">01</span><h3>Discover</h3><p>Agents inspect a stable public manifest, capabilities and OpenAPI contract without human onboarding.</p></article>
@@ -83,7 +110,7 @@
         <p class="section-copy">The current pilot is designed for AI agents, agent platforms, marketplaces, frameworks and sellers exploring autonomous machine commerce.</p>
         <div class="pilot-facts">
           <div><span>Network</span><strong>Solana devnet</strong></div>
-          <div><span>Payment path</span><strong>USDC → IAT</strong></div>
+          <div><span>Accepted payments</span><strong>IAT or USDC</strong></div>
           <div><span>Cost</span><strong>Devnet assets only</strong></div>
           <div><span>Integration</span><strong>Public HTTP API</strong></div>
         </div>
@@ -100,12 +127,21 @@
       </div>
     </section>
 
+    <section class="payment-section shell">
+      <div class="payment-copy"><p class="kicker">TWO WAYS TO PAY</p><h2>Use the protocol asset or a familiar stablecoin.</h2></div>
+      <div class="payment-options">
+        <article><div class="asset-icon iat-asset">IAT</div><div><h3>Pay directly with IAT</h3><p>IAT is the protocol’s native service-pricing and settlement asset.</p></div></article>
+        <article><div class="asset-icon usdc-asset">$</div><div><h3>Pay with USDC</h3><p>The universal checkout can atomically accept configured USDC and deliver the corresponding IAT settlement path.</p></div></article>
+      </div>
+      <p class="devnet-warning"><strong>Current availability:</strong> the public pilot runs on Solana devnet with test assets. Mainnet payments are not yet offered to public users.</p>
+    </section>
+
     <section id="join" class="join-section">
       <div class="shell join-grid">
         <div>
           <p class="kicker">EARLY ACCESS</p>
-          <h2>Give your agent an economic layer.</h2>
-          <p>Tell IAT what you are building. Applications are deduplicated, qualified automatically and require explicit permission before any follow-up.</p>
+          <h2>Let your agent buy or sell services.</h2>
+          <p>Tell IAT what your agent needs to purchase, or which capability it can provide. Applications are qualified automatically and require explicit permission before any follow-up.</p>
         </div>
         <form id="pilot-form" novalidate>
           <div class="field-row">

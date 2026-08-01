@@ -274,6 +274,54 @@ def get_delivery_receipt_by_token(receipt_token: str) -> dict[str, Any] | None:
         release_conn(conn)
 
 
+def get_delivery_receipt_by_order(order_id: str) -> dict[str, Any] | None:
+    init_delivery_receipt_db()
+    conn = get_conn()
+    try:
+        p = qmark()
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT * FROM universal_checkout_delivery_receipts WHERE order_id={p}",
+            (order_id,),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        release_conn(conn)
+
+
+def settlement_release_receipt_gate(order_id: str) -> dict[str, Any]:
+    """Require buyer acceptance for new receipt-enabled checkout deliveries."""
+    receipt = get_delivery_receipt_by_order(order_id)
+    if not receipt:
+        return {
+            "release_allowed": True,
+            "reason": "legacy_order_without_final_receipt",
+            "legacy_compatibility": True,
+        }
+    state = str(receipt["state"])
+    if state == "accepted":
+        return {
+            "release_allowed": True,
+            "reason": "buyer_accepted_sealed_delivery",
+            "receipt_state": state,
+            "payload_digest": receipt.get("payload_digest"),
+        }
+    reason = {
+        "disputed": "buyer_delivery_dispute_open",
+        "delivered": "buyer_delivery_confirmation_pending",
+        "dispatch_failed": "final_delivery_dispatch_failed",
+        "pending_dispatch": "final_delivery_dispatch_pending",
+        "configured": "service_delivery_not_ready",
+    }.get(state, "final_delivery_not_accepted")
+    return {
+        "release_allowed": False,
+        "reason": reason,
+        "receipt_state": state,
+        "payload_digest": receipt.get("payload_digest"),
+    }
+
+
 def publish_delivery_payload(
     *, quote_id: str,
     order_id: str,
@@ -398,7 +446,20 @@ def acknowledge_delivery(
         conn.commit()
     finally:
         release_conn(conn)
-    return {**public_delivery_receipt(get_delivery_receipt(quote_id)), "idempotent": False}
+    decided = {**public_delivery_receipt(get_delivery_receipt(quote_id)), "idempotent": False}
+    if decision == "disputed":
+        try:
+            from iat.checkout_compensation import request_compensation
+
+            compensation = request_compensation(
+                quote_id,
+                requested_by="authenticated_buyer_delivery_dispute",
+                now=current_time,
+            )
+            decided["compensation_state"] = compensation.get("state")
+        except Exception:
+            decided["compensation_state"] = "review_request_pending"
+    return decided
 
 
 def delivery_receipt_events(quote_id: str, *, limit: int = 100) -> list[dict[str, Any]]:

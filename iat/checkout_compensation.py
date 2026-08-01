@@ -150,9 +150,11 @@ def request_compensation(
         p = qmark()
         cur.execute(
             f"""
-            SELECT q.*, d.state AS delivery_state
+            SELECT q.*, d.state AS delivery_state,
+                   r.state AS final_receipt_state
             FROM universal_checkout_quotes q
             JOIN universal_checkout_deliveries d ON d.quote_id = q.quote_id
+            LEFT JOIN universal_checkout_delivery_receipts r ON r.quote_id = q.quote_id
             WHERE q.quote_id = {p}
             """,
             (quote_id,),
@@ -164,15 +166,18 @@ def request_compensation(
         if str(quote.get("state")) != "confirmed":
             raise ValueError("payment_not_confirmed")
         delivery_state = str(quote["delivery_state"])
-        if delivery_state not in ELIGIBLE_DELIVERY_STATES:
+        final_receipt_state = str(quote.get("final_receipt_state") or "")
+        buyer_disputed = final_receipt_state == "disputed"
+        if delivery_state not in ELIGIBLE_DELIVERY_STATES and not buyer_disputed:
             raise ValueError("compensation_not_eligible")
         asset, mint, amount_minor = _refund_terms(quote)
         compensation_id = f"cmp_{secrets.token_hex(16)}"
-        reason = (
-            "delivery_attempts_exhausted"
-            if delivery_state == "exhausted"
-            else "foundation_delivery_blocked"
-        )
+        if buyer_disputed:
+            reason = "buyer_disputed_sealed_delivery"
+        elif delivery_state == "exhausted":
+            reason = "delivery_attempts_exhausted"
+        else:
+            reason = "foundation_delivery_blocked"
         cur.execute(
             f"""
             INSERT INTO universal_checkout_compensations (

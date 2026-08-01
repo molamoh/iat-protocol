@@ -6124,6 +6124,20 @@ def authorize_release_from_risk(
 
 
 def authorize_settlement_release(order_id):
+    from iat.checkout_receipt import settlement_release_receipt_gate
+
+    receipt_gate = settlement_release_receipt_gate(order_id)
+    if receipt_gate.get("release_allowed") is not True:
+        return {
+            "authorization_type": "foundation_settlement_authorization",
+            "release_authorized": False,
+            "authorized_by": None,
+            "authorization_reason": receipt_gate["reason"],
+            "authorization_mode": "blocked",
+            "release_block_reasons": [receipt_gate["reason"]],
+            "order_id": order_id,
+            "final_delivery_receipt": receipt_gate,
+        }
     foundation_decision_result = run_foundation_decision_db(order_id)
 
     fd = (
@@ -6262,6 +6276,7 @@ def authorize_settlement_release(order_id):
         "rejected_claim_count": rejected_count,
         "uncertain_claim_count": uncertain_count,
         "foundation_decision": foundation_decision_result,
+        "final_delivery_receipt": receipt_gate,
     }
 
 

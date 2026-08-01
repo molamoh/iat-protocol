@@ -938,6 +938,19 @@ def run_checkout_delivery(
             ),
             settlement_error=settlement_error,
         )
+        try:
+            from iat.checkout_receipt import publish_delivery_payload
+
+            publish_delivery_payload(
+                quote_id=quote_id,
+                order_id=claimed["order_id"],
+                payload=result,
+                now=current_time,
+            )
+        except Exception:
+            # The sealed receipt can be repaired independently without
+            # re-executing the paid service or altering payment finality.
+            pass
     else:
         attempts = int(claimed.get("attempt_count") or 1)
         max_attempts = _int_env("IAT_CHECKOUT_DELIVERY_MAX_ATTEMPTS", 16, 1, 32)

@@ -50,6 +50,7 @@ def test_api_pull_receipt_is_sealed_and_buyer_acceptance_is_idempotent(receipt_d
     assert delivered["state"] == "delivered"
     assert len(delivered["payload_digest"]) == 64
     assert accepted["state"] == "accepted"
+    assert receipt.settlement_release_receipt_gate("ord_accept")["release_allowed"] is True
     assert duplicate["idempotent"] is True
     assert [event["event_type"] for event in receipt.delivery_receipt_events("uq_accept")] == [
         "delivery_destination_configured",
@@ -110,6 +111,10 @@ def test_dispute_requires_reason_and_preserves_payload_digest(receipt_db):
         now=120,
     )
     assert disputed["state"] == "disputed"
+    gate = receipt.settlement_release_receipt_gate("ord_dispute")
+    assert gate["release_allowed"] is False
+    assert gate["reason"] == "buyer_delivery_dispute_open"
+    assert disputed["compensation_state"] == "review_request_pending"
     assert disputed["payload_digest"] == first["payload_digest"]
 
     with pytest.raises(receipt.DeliveryReceiptError, match="digest_conflict"):
@@ -138,6 +143,13 @@ def test_invalid_delivery_destinations_fail_closed(receipt_db, channel, destinat
             channel=channel,
             destination=destination,
         )
+
+
+def test_legacy_order_without_receipt_keeps_existing_release_governance(receipt_db):
+    gate = receipt.settlement_release_receipt_gate("legacy-order")
+
+    assert gate["release_allowed"] is True
+    assert gate["legacy_compatibility"] is True
 
 
 def _ready_webhook(tmp_path, monkeypatch):

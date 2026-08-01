@@ -6,7 +6,7 @@ import pytest
 from fastapi import HTTPException
 
 from iat.api import checkout_api, db
-from iat import checkout_compensation, checkout_delivery
+from iat import checkout_compensation, checkout_delivery, checkout_receipt
 from iat.checkout import RaydiumSnapshot
 
 
@@ -832,6 +832,33 @@ def test_compensation_is_rejected_before_terminal_non_delivery(checkout_database
             requested_by="authenticated_buyer",
             now=NOW,
         )
+
+
+def test_buyer_dispute_blocks_release_and_opens_compensation_review(checkout_database):
+    quote = _confirmed_quote_with_delivery()
+    checkout_delivery.run_checkout_delivery(
+        quote["quote_id"],
+        now=NOW,
+        executor=lambda order, signature: {
+            "status": "success",
+            "summary": "Delivered but disputed result",
+        },
+    )
+
+    receipt = checkout_receipt.acknowledge_delivery(
+        quote_id=quote["quote_id"],
+        decision="disputed",
+        dispute_code="incorrect",
+        message="The delivered result does not answer the paid request.",
+        now=NOW + 1,
+    )
+    compensation = checkout_compensation.get_compensation(quote["quote_id"])
+    gate = checkout_receipt.settlement_release_receipt_gate("ord-api")
+
+    assert receipt["state"] == "disputed"
+    assert receipt["compensation_state"] == "pending_review"
+    assert compensation["eligibility_reason"] == "buyer_disputed_sealed_delivery"
+    assert gate["release_allowed"] is False
 
 
 def test_public_delivery_never_exposes_internal_order_credentials():

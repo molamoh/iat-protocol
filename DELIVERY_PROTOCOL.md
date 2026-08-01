@@ -123,3 +123,21 @@ The public receipt exposes:
 
 The next implementation stage adds durable email and signed-webhook dispatch,
 delivery attempts, provider receipts, autonomous retries and dispute policy.
+
+## Settlement and dispute gate
+
+For receipt-enabled universal checkouts, final delivery confirmation is now an
+input to settlement release governance:
+
+- `accepted`: the Foundation release policy may continue its normal checks;
+- `delivered`: release is blocked while buyer confirmation is pending;
+- `pending_dispatch`: release is blocked because the final channel has not
+  acknowledged delivery;
+- `dispatch_failed`: release is blocked because final delivery failed;
+- `disputed`: release is blocked and a governed compensation review is opened.
+
+The receipt gate never reverses a finalized buyer payment and never approves a
+refund by itself. A dispute creates a `pending_review` compensation request so
+the sealed digest, delivery audit trail and buyer explanation can be evaluated.
+Legacy non-checkout settlements without a final receipt retain their existing
+governance behavior.

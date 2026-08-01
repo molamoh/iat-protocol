@@ -53,6 +53,7 @@ from iat.api import db as database
 from iat.checkout_delivery import (
     accelerate_foundation_retry,
     enqueue_delivery_tx,
+    get_delivery,
     init_checkout_delivery_db,
     public_delivery_status,
     resume_review_required_delivery,
@@ -63,6 +64,15 @@ from iat.checkout_compensation import (
     init_compensation_db,
     public_compensation,
     request_compensation,
+)
+from iat.checkout_receipt import (
+    DeliveryReceiptError,
+    acknowledge_delivery,
+    configure_delivery_receipt,
+    get_delivery_receipt,
+    init_delivery_receipt_db,
+    public_delivery_receipt,
+    publish_delivery_payload,
 )
 
 
@@ -93,6 +103,17 @@ class UniversalSubmitRequest(UniversalPrepareRequest):
 
 class UniversalAuthorizeRequest(UniversalPrepareRequest):
     transaction_base64: str = Field(min_length=64, max_length=20_000)
+
+
+class UniversalDeliveryDestinationRequest(UniversalPrepareRequest):
+    channel: str = Field(min_length=5, max_length=16)
+    destination: str | None = Field(default=None, max_length=2_000)
+
+
+class UniversalDeliveryDecisionRequest(UniversalPrepareRequest):
+    decision: str = Field(min_length=8, max_length=16)
+    dispute_code: str | None = Field(default=None, max_length=32)
+    message: str = Field(default="", max_length=2_000)
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -228,6 +249,7 @@ def init_checkout_db() -> None:
         release_conn(conn)
     init_checkout_delivery_db()
     init_compensation_db()
+    init_delivery_receipt_db()
 
 
 def _public_quote(row: Any) -> dict[str, Any]:
@@ -259,6 +281,19 @@ def _get_quote(quote_id: str) -> dict[str, Any] | None:
         return dict(row) if row else None
     finally:
         release_conn(conn)
+
+
+def _sync_delivery_receipt(row: dict[str, Any], delivery: dict[str, Any]) -> dict[str, Any]:
+    if delivery.get("state") == "completed":
+        stored = get_delivery(row["quote_id"])
+        payload = (stored or {}).get("result")
+        if isinstance(payload, dict):
+            publish_delivery_payload(
+                quote_id=row["quote_id"],
+                order_id=row["order_id"],
+                payload=payload,
+            )
+    return public_delivery_receipt(get_delivery_receipt(row["quote_id"]))
 
 
 def _get_by_idempotency(key: str) -> dict[str, Any] | None:
@@ -1087,11 +1122,13 @@ def confirm_universal_checkout(quote_id: str, req: UniversalPrepareRequest):
         raise HTTPException(status_code=404, detail="order_not_found")
     _authorize_order(req, order)
     if row["state"] == "confirmed":
+        delivery = run_checkout_delivery(quote_id)
         return {
             "status": "confirmed",
             "quote_id": quote_id,
             "tx_signature": row["tx_signature"],
-            "delivery": run_checkout_delivery(quote_id),
+            "delivery": delivery,
+            "final_receipt": _sync_delivery_receipt(row, delivery),
             "idempotent": True,
         }
     if row["state"] != "submitted" or not row.get("execution_evidence"):
@@ -1138,6 +1175,7 @@ def confirm_universal_checkout(quote_id: str, req: UniversalPrepareRequest):
         "order_id": row["order_id"],
         "payment_verified": True,
         "delivery": delivery,
+        "final_receipt": _sync_delivery_receipt(row, delivery),
         "idempotent": False,
     }
 
@@ -1158,12 +1196,70 @@ def deliver_universal_checkout(quote_id: str, req: UniversalPrepareRequest):
         resume_review_required_delivery(quote_id)
     elif current_delivery.get("state") == "retryable_failure":
         accelerate_foundation_retry(quote_id)
+    delivery = run_checkout_delivery(quote_id)
     return {
         "status": "delivery_checked",
         "quote_id": quote_id,
         "payment_verified": True,
-        "delivery": run_checkout_delivery(quote_id),
+        "delivery": delivery,
+        "final_receipt": _sync_delivery_receipt(row, delivery),
     }
+
+
+@router.post("/{quote_id}/delivery-destination")
+def set_universal_delivery_destination(
+    quote_id: str,
+    req: UniversalDeliveryDestinationRequest,
+):
+    row = _get_quote(quote_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="quote_not_found")
+    order = get_order_db(row["order_id"])
+    if not order:
+        raise HTTPException(status_code=404, detail="order_not_found")
+    _authorize_order(req, order)
+    if not secrets.compare_digest(req.buyer_wallet, row["buyer_wallet"]):
+        raise HTTPException(status_code=403, detail="invalid_order_credential")
+    try:
+        receipt = configure_delivery_receipt(
+            quote_id=quote_id,
+            order_id=row["order_id"],
+            channel=req.channel,
+            destination=req.destination,
+        )
+    except DeliveryReceiptError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"status": "delivery_destination_configured", "quote_id": quote_id, "final_receipt": receipt}
+
+
+@router.post("/{quote_id}/delivery/decision")
+def decide_universal_delivery(
+    quote_id: str,
+    req: UniversalDeliveryDecisionRequest,
+):
+    row = _get_quote(quote_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="quote_not_found")
+    order = get_order_db(row["order_id"])
+    if not order:
+        raise HTTPException(status_code=404, detail="order_not_found")
+    _authorize_order(req, order)
+    if row["state"] != "confirmed":
+        raise HTTPException(status_code=409, detail="payment_not_confirmed")
+    try:
+        receipt = acknowledge_delivery(
+            quote_id=quote_id,
+            decision=req.decision,
+            dispute_code=req.dispute_code,
+            message=req.message,
+        )
+    except DeliveryReceiptError as exc:
+        code = str(exc)
+        status_code = 404 if code == "delivery_receipt_not_found" else 409
+        if code.startswith("valid_") or code in {"dispute_explanation_required", "invalid_delivery_decision"}:
+            status_code = 422
+        raise HTTPException(status_code=status_code, detail=code) from exc
+    return {"status": f"delivery_{req.decision}", "quote_id": quote_id, "final_receipt": receipt}
 
 
 @router.post("/{quote_id}/evidence-readiness")
@@ -1256,5 +1352,6 @@ def get_universal_quote(
         result["state"] = "expired"
     if result["state"] == "confirmed":
         result["delivery"] = public_delivery_status(quote_id)
+        result["final_receipt"] = _sync_delivery_receipt(row, result["delivery"])
         result["compensation"] = public_compensation(get_compensation(quote_id))
     return result

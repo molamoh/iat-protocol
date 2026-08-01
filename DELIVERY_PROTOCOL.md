@@ -1,0 +1,72 @@
+# IAT Final Delivery Protocol
+
+IAT separates four facts that must never be conflated:
+
+1. the supplier produced a result;
+2. IAT sealed that exact result with a SHA-256 digest;
+3. the configured channel dispatched it;
+4. the authenticated buyer accepted or disputed it.
+
+This prevents a successful execution from being reported as an accepted final
+delivery before the buyer has actually received it.
+
+## Configure the final channel
+
+The buyer authenticates with the same wallet and order secret used by checkout:
+
+```http
+POST /payments/v1/universal/{quote_id}/delivery-destination
+Content-Type: application/json
+
+{
+  "buyer_wallet": "...",
+  "buyer_secret": "...",
+  "channel": "api_pull",
+  "destination": null
+}
+```
+
+Supported channel contracts:
+
+- `api_pull`: the authenticated checkout status response carries the result;
+- `email`: validated destination, stored privately and returned only in masked form;
+- `webhook`: HTTPS destination without embedded credentials.
+
+Email and webhook are currently accepted as delivery contracts but remain in
+`pending_dispatch` until their transport adapter records a successful send.
+They are never falsely marked delivered merely because execution completed.
+
+## Confirm or dispute
+
+After the receipt state becomes `delivered`, the buyer makes one final,
+idempotent decision:
+
+```http
+POST /payments/v1/universal/{quote_id}/delivery/decision
+Content-Type: application/json
+
+{
+  "buyer_wallet": "...",
+  "buyer_secret": "...",
+  "decision": "accepted",
+  "message": ""
+}
+```
+
+For a dispute, `decision` is `disputed`, `dispute_code` is one of
+`not_received`, `incomplete`, `incorrect`, `unreadable`, or `other`, and the
+buyer supplies a meaningful explanation. Once recorded, an acceptance cannot
+be changed into a dispute and a dispute cannot be changed into an acceptance.
+
+## Conflict evidence
+
+The public receipt exposes:
+
+- channel and masked destination;
+- immutable payload digest;
+- payload-ready and dispatch timestamps;
+- acceptance or dispute timestamp;
+- dispute classification without exposing the buyer's private explanation.
+
+The next implementation stage adds durable email and signed-webhook dispatch,
+delivery attempts, provider receipts, autonomous retries and dispute policy.

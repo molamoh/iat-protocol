@@ -34,6 +34,8 @@ _MANIFEST: dict[str, Any] = {
     "universal_checkout_submit": "/payments/v1/universal/{quote_id}/submit",
         "universal_checkout_confirm": "/payments/v1/universal/{quote_id}/confirm",
         "universal_checkout_deliver": "/payments/v1/universal/{quote_id}/deliver",
+        "universal_delivery_destination": "/payments/v1/universal/{quote_id}/delivery-destination",
+        "universal_delivery_decision": "/payments/v1/universal/{quote_id}/delivery/decision",
         "universal_checkout_compensation": "/payments/v1/universal/{quote_id}/compensation/request",
         "universal_checkout_status": "/payments/v1/universal/{quote_id}",
     },

@@ -1397,6 +1397,15 @@ def extract_research_claims_for_verification(order, limit=20):
         for key, value in metrics.items():
             claims.append(f"{key}: {value}")
 
+        web_evidence = (
+            data.get("web_evidence")
+            or (data.get("raw", {}) or {}).get("web_evidence")
+            or {}
+        )
+        for item in web_evidence.get("results", []) or []:
+            if isinstance(item, dict) and item.get("title"):
+                claims.append(str(item["title"]))
+
     cleaned = []
     seen = set()
 
@@ -1947,7 +1956,7 @@ def foundation_verification_engine(agent, order, profile):
     # continue with the deterministic cross-source verifier below.
     if groq_result and any(
         groq_result.get(field)
-        for field in ("verified_claims", "rejected_claims", "uncertain_claims")
+        for field in ("verified_claims", "rejected_claims")
     ):
         return groq_result
 

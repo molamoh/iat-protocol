@@ -15644,6 +15644,14 @@ def evaluate_foundation_evidence_package_db(evidence_package):
     if not ready:
         foundation_evidence_status = "not_ready"
         decision_ready = False
+    elif (
+        research_status == "failed"
+        and claim_validation_status == "passed"
+        and verification_valid_agents >= 1
+    ):
+        foundation_evidence_status = "decision_ready_with_cross_source_verification"
+        decision_ready = True
+        warnings.append("research_consensus_failed_but_claims_verified")
     elif research_status == "failed":
         foundation_evidence_status = "research_failed"
         decision_ready = False

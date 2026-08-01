@@ -1,4 +1,4 @@
-from iat.api import multi_exec
+from iat.api import db, multi_exec
 
 
 RSS = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -113,3 +113,23 @@ def test_consensus_reads_normalized_web_evidence_results():
     assert consensus["valid_agents"] == 2
     assert consensus["status"] == "passed"
     assert consensus["consensus_gates"]["usable_agents"] == 2
+
+
+def test_evidence_can_be_ready_when_cross_source_claims_override_weak_research_wording():
+    result = db.evaluate_foundation_evidence_package_db({
+        "foundation_ready_for_decision": True,
+        "research_consensus": {"status": "failed", "valid_agents": 2, "score": 0.05},
+        "verification_consensus": {"status": "passed", "valid_agents": 2, "score": 0.8},
+        "best_verification_result": {
+            "data": {
+                "verified_claim_count": 2,
+                "rejected_claim_count": 0,
+            }
+        },
+    })
+
+    evaluation = result["evaluation"]
+    assert evaluation["foundation_decision_ready"] is True
+    assert evaluation["foundation_evidence_status"] == (
+        "decision_ready_with_cross_source_verification"
+    )

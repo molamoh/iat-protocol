@@ -251,6 +251,8 @@ def _public_delivery(delivery: dict[str, Any] | None) -> dict[str, Any]:
             "message",
             "reason",
             "delivery_authorized",
+            "foundation_verdict",
+            "foundation_decision_ready",
             "execution_mode",
             "retryable",
         }

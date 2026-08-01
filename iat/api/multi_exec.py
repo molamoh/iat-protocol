@@ -1227,11 +1227,14 @@ def foundation_google_news_rss_search(query, limit=5):
         return []
 
     safe_limit = max(1, min(int(limit or 5), 10))
+    search_query = foundation_search_query(query)
+    if not search_query:
+        return []
     try:
         response = requests.get(
             "https://news.google.com/rss/search",
             params={
-                "q": str(query)[:500],
+                "q": search_query,
                 "hl": "en-US",
                 "gl": "US",
                 "ceid": "US:en",
@@ -1274,6 +1277,30 @@ def foundation_google_news_rss_search(query, limit=5):
         return results
     except (ElementTree.ParseError, requests.RequestException, ValueError, TypeError):
         return []
+
+
+def foundation_search_query(query, max_terms=12):
+    """Reduce a buyer instruction to bounded search terms without an LLM."""
+    text = " ".join(str(query or "").split())
+    if not text:
+        return ""
+    stopwords = {
+        "analyse", "analysis", "courte", "short", "avec", "with", "sources",
+        "source", "resume", "résumé", "summary", "structure", "structured", "structuré",
+        "structuree", "structurée", "recommandation", "recommendation", "finale",
+        "final", "donne", "provide", "please", "sur", "about", "the", "a", "an",
+        "de", "du", "des", "le", "la", "les", "et", "and",
+    }
+    terms = []
+    for raw in text.replace(",", " ").replace(";", " ").split():
+        token = raw.strip(".?!:()[]{}\"'")
+        normalized = token.lower()
+        if not token or normalized in stopwords:
+            continue
+        terms.append(token)
+        if len(terms) >= max(1, min(int(max_terms or 12), 20)):
+            break
+    return " ".join(terms)[:300]
 
 
 def foundation_duckduckgo_search(query, limit=5):

@@ -31,6 +31,7 @@ def test_google_news_rss_is_bounded_and_normalized(monkeypatch):
 
     assert observed["url"] == "https://news.google.com/rss/search"
     assert observed["timeout"] == 15
+    assert observed["params"]["q"] == "Bitcoin risk"
     assert results == [{
         "source": "google_news_rss",
         "title": "Bitcoin market risk rises - Example News",
@@ -40,6 +41,12 @@ def test_google_news_rss_is_bounded_and_normalized(monkeypatch):
         "date": "Sat, 01 Aug 2026 12:00:00 GMT",
         "position": 1,
     }]
+
+
+def test_search_query_removes_format_instructions():
+    assert multi_exec.foundation_search_query(
+        "Analyse courte du risque Bitcoin aujourd'hui, avec sources, résumé structuré et recommandation finale."
+    ) == "risque Bitcoin aujourd'hui"
 
 
 def test_web_evidence_uses_keyless_news_before_html_fallback(monkeypatch):

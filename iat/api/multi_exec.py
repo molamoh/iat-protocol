@@ -59,6 +59,7 @@ import json
 import requests
 from bs4 import BeautifulSoup
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from xml.etree import ElementTree
 
 from iat.api.groq_config import (
     GROQ_CHAT_COMPLETIONS_URL,
@@ -1215,6 +1216,66 @@ def foundation_google_search(query, limit=5):
         return []
 
 
+def foundation_google_news_rss_search(query, limit=5):
+    """Keyless, bounded news evidence fallback.
+
+    The endpoint is fixed to prevent SSRF and the XML response is never used
+    as executable input. Results remain evidence candidates and must still
+    pass the Foundation verification stage before buyer delivery.
+    """
+    if not query:
+        return []
+
+    safe_limit = max(1, min(int(limit or 5), 10))
+    try:
+        response = requests.get(
+            "https://news.google.com/rss/search",
+            params={
+                "q": str(query)[:500],
+                "hl": "en-US",
+                "gl": "US",
+                "ceid": "US:en",
+            },
+            headers={"User-Agent": "IATProtocol/1.0"},
+            timeout=15,
+        )
+        if response.status_code != 200 or len(response.content) > 2_000_000:
+            return []
+
+        root = ElementTree.fromstring(response.content)
+        results = []
+        for position, item in enumerate(root.findall("./channel/item"), start=1):
+            title = " ".join(str(item.findtext("title") or "").split())
+            link = str(item.findtext("link") or "").strip()
+            source_element = item.find("source")
+            source_name = (
+                " ".join(str(source_element.text or "").split())
+                if source_element is not None
+                else ""
+            )
+            source_url = (
+                str(source_element.attrib.get("url") or "").strip()
+                if source_element is not None
+                else ""
+            )
+            if not title or not link:
+                continue
+            results.append({
+                "source": "google_news_rss",
+                "title": title,
+                "snippet": source_name,
+                "link": link,
+                "display_link": source_url or None,
+                "date": item.findtext("pubDate"),
+                "position": position,
+            })
+            if len(results) >= safe_limit:
+                break
+        return results
+    except (ElementTree.ParseError, requests.RequestException, ValueError, TypeError):
+        return []
+
+
 def foundation_duckduckgo_search(query, limit=5):
     if not query:
         return []
@@ -1261,6 +1322,10 @@ def foundation_web_evidence_search(query, limit=5):
     if not results:
         results = foundation_google_search(query, limit=limit)
         provider = "google_custom_search" if results else None
+
+    if not results:
+        results = foundation_google_news_rss_search(query, limit=limit)
+        provider = "google_news_rss" if results else None
 
     if not results:
         results = foundation_duckduckgo_search(query, limit=limit)

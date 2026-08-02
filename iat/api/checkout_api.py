@@ -74,10 +74,18 @@ from iat.checkout_receipt import (
     get_delivery_receipt_by_token,
     init_delivery_receipt_db,
     list_buyer_delivery_receipts,
+    list_wallet_delivery_receipts,
     open_delivery_inbox,
     public_delivery_receipt,
     publish_delivery_payload,
     record_email_provider_event,
+)
+from iat.buyer_identity import (
+    WalletIdentityError,
+    authenticate_wallet_session,
+    create_wallet_challenge,
+    exchange_wallet_signature,
+    revoke_wallet_session,
 )
 
 
@@ -125,6 +133,35 @@ class PublicDeliveryDecisionRequest(BaseModel):
     decision: str = Field(min_length=8, max_length=16)
     dispute_code: str | None = Field(default=None, max_length=32)
     message: str = Field(default="", max_length=2_000)
+
+
+class WalletChallengeRequest(BaseModel):
+    wallet: str = Field(min_length=32, max_length=64)
+
+
+class WalletSessionRequest(BaseModel):
+    challenge_id: str = Field(min_length=16, max_length=128)
+    signature: str = Field(min_length=64, max_length=128)
+
+
+def _bearer_token(authorization: str | None) -> str:
+    scheme, separator, token = str(authorization or "").partition(" ")
+    if separator != " " or scheme.lower() != "bearer" or not token:
+        raise HTTPException(status_code=401, detail="invalid_wallet_session")
+    return token.strip()
+
+
+def _session_wallet(authorization: str | None) -> tuple[str, str]:
+    token = _bearer_token(authorization)
+    try:
+        return authenticate_wallet_session(token), token
+    except WalletIdentityError as exc:
+        raise HTTPException(status_code=401, detail="invalid_wallet_session") from exc
+
+
+def _private_no_store(response: Response) -> None:
+    response.headers["Cache-Control"] = "no-store, private, max-age=0"
+    response.headers["Pragma"] = "no-cache"
 
 
 def _encode_inbox_cursor(configured_at: int, quote_id: str) -> str:
@@ -1496,6 +1533,119 @@ def request_universal_checkout_compensation(
         "payment_verified": True,
         "compensation": public_compensation(compensation),
         "idempotent": compensation.get("idempotent", False),
+    }
+
+
+@router.post("/wallet-auth/challenge")
+def issue_wallet_auth_challenge(req: WalletChallengeRequest, response: Response):
+    try:
+        challenge = create_wallet_challenge(req.wallet)
+    except WalletIdentityError as exc:
+        code = str(exc)
+        status_code = 429 if code == "wallet_challenge_rate_limited" else 422
+        raise HTTPException(status_code=status_code, detail=code) from exc
+    _private_no_store(response)
+    return {"status": "wallet_challenge_issued", **challenge}
+
+
+@router.post("/wallet-auth/session")
+def create_wallet_auth_session(req: WalletSessionRequest, response: Response):
+    try:
+        session = exchange_wallet_signature(req.challenge_id, req.signature)
+    except WalletIdentityError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    _private_no_store(response)
+    return {"status": "wallet_session_created", **session}
+
+
+@router.delete("/wallet-auth/session")
+def delete_wallet_auth_session(
+    response: Response,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    _, token = _session_wallet(authorization)
+    revoke_wallet_session(token)
+    _private_no_store(response)
+    return {"status": "wallet_session_revoked"}
+
+
+@router.get("/wallet-inbox")
+def get_wallet_delivery_inbox(
+    response: Response,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    cursor: str | None = None,
+    limit: int = 20,
+):
+    buyer_wallet, _ = _session_wallet(authorization)
+    before_configured_at, before_quote_id = _decode_inbox_cursor(cursor)
+    rows = list_wallet_delivery_receipts(
+        buyer_wallet=buyer_wallet,
+        before_configured_at=before_configured_at,
+        before_quote_id=before_quote_id,
+        limit=limit,
+    )
+    safe_limit = max(1, min(int(limit), 100))
+    selected = rows[:safe_limit]
+    public_site = os.getenv(
+        "IAT_PUBLIC_SITE_URL", "https://iat-protocol.pages.dev"
+    ).strip().rstrip("/")
+    items = []
+    for row in selected:
+        public = public_delivery_receipt(row)
+        token = str(public["receipt_token"])
+        items.append(
+            {
+                "quote_id": row["quote_id"],
+                "order_id": row["order_id"],
+                "delivery_url": f"{public_site}/delivery/#receipt={token}",
+                "final_receipt": public,
+            }
+        )
+    next_cursor = None
+    if len(rows) > safe_limit and selected:
+        last = selected[-1]
+        next_cursor = _encode_inbox_cursor(last["configured_at"], last["quote_id"])
+    _private_no_store(response)
+    return {
+        "status": "wallet_inbox_found",
+        "wallet": buyer_wallet,
+        "count": len(items),
+        "items": items,
+        "next_cursor": next_cursor,
+    }
+
+
+@router.get("/wallet-inbox/{quote_id}")
+def get_wallet_inbox_item(
+    quote_id: str,
+    response: Response,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    buyer_wallet, _ = _session_wallet(authorization)
+    row = _get_quote(quote_id)
+    order = get_order_db(row["order_id"]) if row else None
+    if not row or not order or not hmac.compare_digest(
+        str(order.get("buyer_wallet") or ""), buyer_wallet
+    ):
+        raise HTTPException(status_code=404, detail="delivery_receipt_not_found")
+    stored = get_delivery_receipt(quote_id)
+    if not stored:
+        raise HTTPException(status_code=404, detail="delivery_receipt_not_found")
+    try:
+        inbox = open_delivery_inbox(str(stored["receipt_token"]))
+    except DeliveryReceiptError as exc:
+        code = str(exc)
+        status_code = 409 if code == "delivery_payload_not_ready" else 503
+        raise HTTPException(status_code=status_code, detail=code) from exc
+    inbox.pop("receipt_id", None)
+    public = public_delivery_receipt(get_delivery_receipt(quote_id))
+    public.pop("receipt_token", None)
+    _private_no_store(response)
+    return {
+        "status": "wallet_inbox_item_opened",
+        "quote_id": quote_id,
+        "final_receipt": public,
+        "inbox": inbox,
     }
 
 

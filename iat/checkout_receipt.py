@@ -383,6 +383,43 @@ def list_buyer_delivery_receipts(
         release_conn(conn)
 
 
+def list_wallet_delivery_receipts(
+    *,
+    buyer_wallet: str,
+    before_configured_at: int | None = None,
+    before_quote_id: str = "",
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """List receipts belonging to a wallet whose identity was verified separately."""
+    init_delivery_receipt_db()
+    safe_limit = max(1, min(int(limit), 100))
+    conn = get_conn()
+    try:
+        p = qmark()
+        cursor_filter = ""
+        values: list[Any] = [buyer_wallet]
+        if before_configured_at is not None:
+            cursor_filter = (
+                f" AND (r.configured_at < {p} OR "
+                f"(r.configured_at = {p} AND r.quote_id < {p}))"
+            )
+            values.extend(
+                [int(before_configured_at), int(before_configured_at), before_quote_id]
+            )
+        values.append(safe_limit + 1)
+        cur = conn.cursor()
+        cur.execute(
+            f"""SELECT r.* FROM universal_checkout_delivery_receipts r
+            JOIN orders o ON o.order_id=r.order_id
+            WHERE o.buyer_wallet={p}{cursor_filter}
+            ORDER BY r.configured_at DESC, r.quote_id DESC LIMIT {p}""",
+            tuple(values),
+        )
+        return [dict(row) for row in cur.fetchall()]
+    finally:
+        release_conn(conn)
+
+
 def settlement_release_receipt_gate(order_id: str) -> dict[str, Any]:
     """Require buyer acceptance for new receipt-enabled checkout deliveries."""
     receipt = get_delivery_receipt_by_order(order_id)

@@ -10,6 +10,31 @@ IAT separates four facts that must never be conflated:
 This prevents a successful execution from being reported as an accepted final
 delivery before the buyer has actually received it.
 
+## Permanent wallet inbox authentication
+
+Order secrets are not a durable buyer identity. The permanent inbox therefore
+uses a Solana wallet signature over a short-lived, domain-separated IAT login
+challenge. Signing the returned UTF-8 message creates no transaction, spends
+no SOL and authorizes no payment. A successful proof returns a short-lived
+Bearer session; IAT stores only its SHA-256 hash.
+
+```http
+POST /payments/v1/universal/wallet-auth/challenge
+{"wallet":"<Solana public key>"}
+
+POST /payments/v1/universal/wallet-auth/session
+{"challenge_id":"iwc_...","signature":"<base58 Ed25519 signature>"}
+
+GET /payments/v1/universal/wallet-inbox
+Authorization: Bearer ias_...
+```
+
+Challenges are one-time, expire after five minutes by default and are rate
+limited per wallet. Sessions expire after 30 minutes by default and can be
+revoked with `DELETE /payments/v1/universal/wallet-auth/session`. Wallet A
+cannot enumerate or open wallet B's receipts, and all private responses use
+`Cache-Control: no-store`.
+
 ## Configure the final channel
 
 The buyer authenticates with the same wallet and order secret used by checkout:

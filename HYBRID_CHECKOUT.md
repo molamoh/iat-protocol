@@ -139,9 +139,35 @@ GET /payments/v1/universal/delivery-receipts/{receipt_token}/inbox
 POST /payments/v1/universal/delivery-receipts/{receipt_token}/decision
 ```
 
-Un acheteur ou agent peut aussi retrouver ses livraisons sans conserver les
-liens individuels. Les identifiants restent dans les en-têtes et n'entrent pas
-dans les journaux d'URL :
+Un acheteur ou agent peut aussi retrouver toutes les livraisons rattachées à
+son wallet, même s'il n'a plus le secret d'une ancienne commande. IAT émet un
+challenge court et à usage unique ; le wallet signe exactement le message
+retourné, sans transaction Solana, frais ni autorisation de paiement :
+
+```text
+POST /payments/v1/universal/wallet-auth/challenge
+{"wallet":"..."}
+
+POST /payments/v1/universal/wallet-auth/session
+{"challenge_id":"iwc_...","signature":"<base58 Ed25519>"}
+
+GET /payments/v1/universal/wallet-inbox
+GET /payments/v1/universal/wallet-inbox/{quote_id}
+Authorization: Bearer ias_...
+
+DELETE /payments/v1/universal/wallet-auth/session
+Authorization: Bearer ias_...
+```
+
+Le challenge expire après 5 minutes, ne peut être utilisé qu'une fois et est
+limité en fréquence par wallet. La session expire après 30 minutes par défaut,
+est révocable et seul son SHA-256 est stocké. Les réponses privées interdisent
+la mise en cache. Les durées peuvent être ajustées dans leurs limites de
+sécurité avec `IAT_WALLET_CHALLENGE_TTL_SECONDS` et
+`IAT_WALLET_SESSION_TTL_SECONDS`.
+
+Les anciennes routes à secret de commande restent provisoirement disponibles
+pour compatibilité :
 
 ```text
 GET /payments/v1/universal/buyer-inbox
@@ -151,9 +177,9 @@ X-IAT-Order-Secret: ...
 ```
 
 La liste est paginée par curseur stable et la jointure SQL exige que le wallet
-et le secret correspondent à la commande propriétaire. Les reçus canaris et
-ceux d'autres buyers ne peuvent pas apparaître. La récupération authentifiée
-par `quote_id` ne retourne pas le jeton de capacité `cdr_...`; celui-ci reste
+prouvé soit celui de la commande propriétaire. Les reçus canaris et ceux
+d'autres buyers ne peuvent pas apparaître. La récupération authentifiée par
+`quote_id` ne retourne pas le jeton de capacité `cdr_...`; celui-ci reste
 réservé au lien de portail explicitement fourni dans la liste.
 
 L'ouverture de l'inbox est auditée une seule fois, utilise `Cache-Control:

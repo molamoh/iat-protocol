@@ -5,6 +5,7 @@ import hashlib
 
 import pytest
 from fastapi import HTTPException, Response
+from solders.keypair import Keypair
 
 from iat.api import checkout_api, db
 from iat import checkout_compensation, checkout_delivery, checkout_receipt
@@ -194,6 +195,96 @@ def test_buyer_inbox_rejects_invalid_cursor(checkout_database):
             cursor="not-base64!",
         )
     assert rejected.value.status_code == 422
+
+
+def test_wallet_signature_session_opens_all_wallet_receipts_without_order_secret(
+    checkout_database, monkeypatch
+):
+    keypair = Keypair()
+    wallet = str(keypair.pubkey())
+    _create_inbox_order("ord-wallet-session", wallet, "unknown-to-client-secret")
+    quote = checkout_api.create_universal_quote(
+        request(
+            order_id="ord-wallet-session",
+            buyer_wallet=wallet,
+            buyer_secret="unknown-to-client-secret",
+        ),
+        idempotency_key="wallet-session-inbox-0001",
+    )
+    checkout_receipt.configure_delivery_receipt(
+        quote_id=quote["quote_id"],
+        order_id="ord-wallet-session",
+        channel="api_pull",
+        destination=None,
+        now=100,
+    )
+    checkout_receipt.publish_delivery_payload(
+        quote_id=quote["quote_id"],
+        order_id="ord-wallet-session",
+        payload={"status": "success", "summary": "Wallet-owned result"},
+        now=101,
+    )
+
+    challenge = checkout_api.issue_wallet_auth_challenge(
+        checkout_api.WalletChallengeRequest(wallet=wallet), Response()
+    )
+    signature = str(keypair.sign_message(challenge["message"].encode()))
+    session = checkout_api.create_wallet_auth_session(
+        checkout_api.WalletSessionRequest(
+            challenge_id=challenge["challenge_id"], signature=signature
+        ),
+        Response(),
+    )
+    authorization = f"Bearer {session['access_token']}"
+    listing = checkout_api.get_wallet_delivery_inbox(
+        Response(), authorization=authorization
+    )
+    opened = checkout_api.get_wallet_inbox_item(
+        quote["quote_id"], Response(), authorization=authorization
+    )
+
+    assert listing["wallet"] == wallet
+    assert [item["order_id"] for item in listing["items"]] == ["ord-wallet-session"]
+    assert opened["inbox"]["result"]["summary"] == "Wallet-owned result"
+
+    checkout_api.delete_wallet_auth_session(Response(), authorization=authorization)
+    with pytest.raises(HTTPException) as rejected:
+        checkout_api.get_wallet_delivery_inbox(
+            Response(), authorization=authorization
+        )
+    assert rejected.value.status_code == 401
+
+
+def test_wallet_session_cannot_open_another_wallet_receipt(checkout_database):
+    keypair = Keypair()
+    challenge = checkout_api.issue_wallet_auth_challenge(
+        checkout_api.WalletChallengeRequest(wallet=str(keypair.pubkey())), Response()
+    )
+    session = checkout_api.create_wallet_auth_session(
+        checkout_api.WalletSessionRequest(
+            challenge_id=challenge["challenge_id"],
+            signature=str(keypair.sign_message(challenge["message"].encode())),
+        ),
+        Response(),
+    )
+    quote = checkout_api.create_universal_quote(
+        request(), idempotency_key="wallet-isolation-0001"
+    )
+    checkout_receipt.configure_delivery_receipt(
+        quote_id=quote["quote_id"],
+        order_id="ord-api",
+        channel="api_pull",
+        destination=None,
+        now=100,
+    )
+
+    with pytest.raises(HTTPException) as rejected:
+        checkout_api.get_wallet_inbox_item(
+            quote["quote_id"],
+            Response(),
+            authorization=f"Bearer {session['access_token']}",
+        )
+    assert rejected.value.status_code == 404
 
 
 def _basic(username: str, password: str) -> str:

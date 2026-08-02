@@ -56,6 +56,7 @@
 .inbox-status.success { color: #087849; }
 .wallet-checkout { border-top: 1px solid var(--line); padding-top: 18px; margin-bottom: 20px; }
 .wallet-checkout h3 { margin: 0 0 14px; font-size: 16px; }
+.usage-setup { margin-bottom: 18px; }
 .checkout-review { margin-top: 16px; padding: 15px; border: 1px solid #bfd2e8; background: #f7fbff; border-radius: 10px; }
 .checkout-review > div { display: grid; grid-template-columns: 125px 1fr; gap: 10px; padding: 7px 0; border-bottom: 1px solid #e3ebf4; }
 .checkout-review span { color: #68768a; font-size: 11px; }

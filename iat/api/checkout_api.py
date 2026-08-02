@@ -40,6 +40,7 @@ from iat.checkout_solana import (
     SPL_TOKEN_PROGRAM_ID,
     SolanaPlanError,
     build_direct_usdc_purchase_plan,
+    build_initialize_wallet_usage_plan,
 )
 from iat.config import IAT_DECIMALS, IAT_TOKEN_ADDRESS
 from iat.raydium import (
@@ -1646,6 +1647,77 @@ def _build_authorized_wallet_transaction(
             "units_consumed": value.get("unitsConsumed"),
         },
     }
+
+
+def _build_wallet_initialization_transaction(wallet: str) -> dict[str, Any]:
+    try:
+        plan = build_initialize_wallet_usage_plan(
+            program_id=os.getenv("IAT_TREASURY_PROGRAM_ID", ""),
+            buyer=wallet,
+        )
+        display = plan["display"]
+        account = _rpc_call(
+            "getAccountInfo",
+            [display["wallet_usage"], {"encoding": "base64", "commitment": "confirmed"}],
+        )
+        if account.get("value") is not None:
+            return {"status": "wallet_usage_already_initialized", "review": display}
+        instruction_plan = plan["instruction"]
+        instruction = Instruction(
+            Pubkey.from_string(instruction_plan["program_id"]),
+            base64.b64decode(instruction_plan["data_base64"], validate=True),
+            [
+                AccountMeta(
+                    Pubkey.from_string(item["address"]),
+                    bool(item["signer"]),
+                    bool(item["writable"]),
+                )
+                for item in instruction_plan["accounts"]
+            ],
+        )
+        latest = _rpc_call("getLatestBlockhash", [{"commitment": "finalized"}])
+        message = Message.new_with_blockhash(
+            [instruction], Pubkey.from_string(wallet),
+            Hash.from_string(latest["value"]["blockhash"]),
+        )
+        unsigned = VersionedTransaction.populate(
+            message, [Signature.default()] * int(message.header.num_required_signatures)
+        )
+        transaction_base64 = base64.b64encode(bytes(unsigned)).decode()
+    except (KeyError, TypeError, ValueError, SolanaPlanError) as exc:
+        raise HTTPException(status_code=409, detail="wallet_usage_initialization_plan_invalid") from exc
+    simulation = _rpc_call(
+        "simulateTransaction",
+        [transaction_base64, {"encoding": "base64", "commitment": "confirmed", "sigVerify": False}],
+    )
+    value = simulation.get("value") if isinstance(simulation, dict) else None
+    if not isinstance(value, dict) or value.get("err") is not None:
+        raise HTTPException(status_code=409, detail="wallet_usage_initialization_simulation_failed")
+    return {
+        "status": "wallet_usage_initialization_ready",
+        "transaction_base64": transaction_base64,
+        "review": {
+            "cluster": "solana:devnet",
+            "program_id": plan["program_id"],
+            "fee_payer": wallet,
+            "wallet_usage": display["wallet_usage"],
+            "token_transfer": False,
+            "network_fee_and_rent": "estimated_by_wallet",
+            "simulation": "succeeded",
+            "units_consumed": value.get("unitsConsumed"),
+        },
+    }
+
+
+@router.post("/wallet-checkout/initialize")
+def prepare_wallet_usage_initialization(
+    response: Response,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    wallet, _ = _session_wallet(authorization)
+    result = _build_wallet_initialization_transaction(wallet)
+    _private_no_store(response)
+    return result
 
 
 @router.post("/wallet-checkout/{order_id}/prepare")

@@ -9,8 +9,8 @@
   <link rel="icon" href="assets/iat-mark.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css?v=59d5838">
   <link rel="stylesheet" href="enhancements.css?v=59d5838">
-  <link rel="stylesheet" href="inbox.css?v=59d5838">
-  <script src="app.js?v=59d5838" defer></script>
+  <link rel="stylesheet" href="inbox.css?v=usage1">
+  <script src="app.js?v=usage1" defer></script>
 </head>
 <body>
   <header class="nav shell">
@@ -172,6 +172,18 @@
           <p id="inbox-status" class="inbox-status" role="status" aria-live="polite"></p>
           <div id="wallet-checkout" class="wallet-checkout" hidden>
             <h3>Pay an IAT order</h3>
+            <div class="usage-setup">
+              <button id="usage-prepare" class="button secondary" type="button">Check first-purchase setup</button>
+              <div id="usage-review" class="checkout-review" hidden>
+                <div><span>Network</span><strong id="usage-network"></strong></div>
+                <div><span>Program</span><strong id="usage-program"></strong></div>
+                <div><span>Fee payer</span><strong id="usage-fee-payer"></strong></div>
+                <div><span>Account created</span><strong id="usage-account"></strong></div>
+                <div><span>Token transfer</span><strong>None</strong></div>
+                <div><span>Simulation</span><strong id="usage-simulation"></strong></div>
+                <button id="usage-send" class="button primary" type="button">Initialize buyer account in Phantom</button>
+              </div>
+            </div>
             <label for="checkout-order-id">Order ID</label>
             <input id="checkout-order-id" autocomplete="off" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
             <button id="checkout-prepare" class="button secondary" type="button">Prepare and simulate USDC payment</button>

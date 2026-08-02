@@ -78,6 +78,9 @@ const checkoutOrderId = document.querySelector("#checkout-order-id");
 const checkoutPrepare = document.querySelector("#checkout-prepare");
 const checkoutReview = document.querySelector("#checkout-review");
 const checkoutSend = document.querySelector("#checkout-send");
+const usagePrepare = document.querySelector("#usage-prepare");
+const usageReview = document.querySelector("#usage-review");
+const usageSend = document.querySelector("#usage-send");
 const discoveredWallets = [];
 const registeredLegacyProviders = new WeakSet();
 let activeWallet = null;
@@ -85,6 +88,7 @@ let activeAccount = null;
 let inboxCursor = null;
 let displayedDeliveries = 0;
 let preparedCheckout = null;
+let preparedUsageInitialization = null;
 
 function sessionGet(key) {
   try { return sessionStorage.getItem(key); } catch (_) { return null; }
@@ -296,6 +300,64 @@ function setReviewText(id, value) {
   document.querySelector(id).textContent = String(value || "Not provided");
 }
 
+async function ensureActiveWalletConnection() {
+  if (activeWallet && activeAccount) return;
+  const wallet = discoveredWallets[Number(walletSelector.value)];
+  if (!wallet) throw new Error("Select Phantom and reconnect it to this page");
+  const connection = await wallet.features["standard:connect"].connect();
+  const account = connection?.accounts?.[0] || wallet.accounts?.[0];
+  if (!account?.address || account.address !== sessionGet("iat_inbox_wallet")) {
+    throw new Error("Phantom is connected to a different wallet than this inbox session");
+  }
+  activeWallet = wallet;
+  activeAccount = account;
+}
+
+async function prepareUsageInitialization() {
+  const token = sessionGet("iat_inbox_token");
+  if (!token) throw new Error("Connect your wallet again");
+  setInboxStatus("Checking the GN2d first-purchase account and simulating initialization…");
+  const result = await apiJson("/payments/v1/universal/wallet-checkout/initialize", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (result.status === "wallet_usage_already_initialized") {
+    preparedUsageInitialization = null;
+    usageReview.hidden = true;
+    setInboxStatus("GN2d buyer account is already initialized. You can prepare the USDC payment.", "success");
+    return;
+  }
+  preparedUsageInitialization = result;
+  setReviewText("#usage-network", result.review.cluster);
+  setReviewText("#usage-program", result.review.program_id);
+  setReviewText("#usage-fee-payer", result.review.fee_payer);
+  setReviewText("#usage-account", result.review.wallet_usage);
+  setReviewText("#usage-simulation", `${result.review.simulation} (${result.review.units_consumed || "unknown"} units)`);
+  usageReview.hidden = false;
+  setInboxStatus("Initialization simulation succeeded. Review the fields before opening Phantom.", "success");
+}
+
+async function sendUsageInitialization() {
+  if (!preparedUsageInitialization) throw new Error("Check the first-purchase setup again");
+  await ensureActiveWalletConnection();
+  const feature = activeWallet.features?.["solana:signAndSendTransaction"];
+  if (!feature?.signAndSendTransaction) throw new Error("Reconnect through Phantom's in-app Browser");
+  setInboxStatus("Waiting for your initialization approval in Phantom. No token transfer is included.");
+  const result = await feature.signAndSendTransaction({
+    account: activeAccount,
+    chain: "solana:devnet",
+    transaction: base64Bytes(preparedUsageInitialization.transaction_base64),
+    options: { commitment: "confirmed" },
+  });
+  const signature = result?.[0]?.signature;
+  if (!signature) throw new Error("Phantom returned no transaction signature");
+  setInboxStatus(`Initialization sent: ${shortAddress(base58Encode(signature))}. Waiting for devnet…`);
+  await new Promise((resolve) => window.setTimeout(resolve, 3500));
+  preparedUsageInitialization = null;
+  usageReview.hidden = true;
+  await prepareUsageInitialization();
+}
+
 async function prepareCheckout() {
   const orderId = checkoutOrderId.value.trim();
   const token = sessionGet("iat_inbox_token");
@@ -325,17 +387,7 @@ async function confirmCheckoutInWallet() {
     checkoutReview.hidden = true;
     throw new Error("The quote expired. Prepare and simulate a new payment.");
   }
-  if (!activeWallet || !activeAccount) {
-    const wallet = discoveredWallets[Number(walletSelector.value)];
-    if (!wallet) throw new Error("Select Phantom and reconnect it to this page");
-    const connection = await wallet.features["standard:connect"].connect();
-    const account = connection?.accounts?.[0] || wallet.accounts?.[0];
-    if (!account?.address || account.address !== sessionGet("iat_inbox_wallet")) {
-      throw new Error("Phantom is connected to a different wallet than this inbox session");
-    }
-    activeWallet = wallet;
-    activeAccount = account;
-  }
+  await ensureActiveWalletConnection();
   const feature = activeWallet.features?.["solana:signAndSendTransaction"];
   if (!feature?.signAndSendTransaction || !activeAccount) {
     throw new Error("This wallet connection cannot send Wallet Standard transactions. Reconnect using Phantom's in-app Browser.");
@@ -505,6 +557,21 @@ checkoutSend.addEventListener("click", async () => {
   try { await confirmCheckoutInWallet(); }
   catch (error) { setInboxStatus(`Payment not sent: ${error.message}`, "error"); }
   finally { checkoutSend.disabled = false; }
+});
+
+usagePrepare.addEventListener("click", async () => {
+  usagePrepare.disabled = true;
+  usageReview.hidden = true;
+  try { await prepareUsageInitialization(); }
+  catch (error) { setInboxStatus(`Unable to check buyer setup: ${error.message}`, "error"); }
+  finally { usagePrepare.disabled = false; }
+});
+
+usageSend.addEventListener("click", async () => {
+  usageSend.disabled = true;
+  try { await sendUsageInitialization(); }
+  catch (error) { setInboxStatus(`Initialization not sent: ${error.message}`, "error"); }
+  finally { usageSend.disabled = false; }
 });
 
 installWalletStandardDiscovery();

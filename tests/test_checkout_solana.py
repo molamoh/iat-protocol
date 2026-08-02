@@ -5,6 +5,7 @@ import pytest
 from solders.pubkey import Pubkey
 
 from iat.checkout_solana import (
+    build_initialize_wallet_usage_plan,
     build_set_quote_authority_plan,
     build_set_paused_plan,
     build_update_asset_plan,
@@ -249,3 +250,16 @@ def test_update_asset_plan_encodes_exact_governed_policy():
     data = base64.b64decode(plan["instruction"]["data_base64"])
     assert data[:8] == hashlib.sha256(b"global:update_asset").digest()[:8]
     assert len(data) == 41
+
+
+def test_initialize_wallet_usage_plan_is_buyer_signed_and_transfers_no_tokens():
+    program = key()
+    buyer = key()
+    plan = build_initialize_wallet_usage_plan(program_id=program, buyer=buyer)
+
+    assert plan["fee_payer"] == buyer
+    assert plan["funds_transfer"] is False
+    assert plan["display"]["token_transfer"] is False
+    assert [item["address"] for item in plan["instruction"]["accounts"] if item["signer"]] == [buyer]
+    data = base64.b64decode(plan["instruction"]["data_base64"])
+    assert data == hashlib.sha256(b"global:initialize_wallet_usage").digest()[:8]

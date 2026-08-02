@@ -52,6 +52,39 @@ def _discriminator(name: str) -> bytes:
     return hashlib.sha256(f"global:{name}".encode()).digest()[:8]
 
 
+def build_initialize_wallet_usage_plan(*, program_id: str, buyer: str) -> dict[str, Any]:
+    """Build the buyer-signed, no-token-transfer first-purchase prerequisite."""
+    program = _pubkey(program_id, "program_id")
+    buyer_key = _pubkey(buyer, "buyer")
+    config = _pda(program, b"config")
+    wallet_usage = _pda(program, b"wallet-usage", bytes(config), bytes(buyer_key))
+    return {
+        "program_id": str(program),
+        "network": "solana-devnet",
+        "fee_payer": str(buyer_key),
+        "signature_required": True,
+        "simulation_required": True,
+        "funds_transfer": False,
+        "instruction": {
+            "program_id": str(program),
+            "accounts": [
+                _meta(config),
+                _meta(buyer_key, signer=True, writable=True),
+                _meta(wallet_usage, writable=True),
+                _meta(SYSTEM_PROGRAM_ID),
+            ],
+            "data_base64": base64.b64encode(_discriminator("initialize_wallet_usage")).decode(),
+        },
+        "display": {
+            "action": "initialize_wallet_usage",
+            "buyer": str(buyer_key),
+            "config": str(config),
+            "wallet_usage": str(wallet_usage),
+            "token_transfer": False,
+        },
+    }
+
+
 def build_set_paused_plan(
     *,
     program_id: str,

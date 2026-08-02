@@ -63,6 +63,7 @@ form.addEventListener("submit", async (event) => {
 
 const walletSelector = document.querySelector("#wallet-selector");
 const walletConnect = document.querySelector("#wallet-connect");
+const walletRefresh = document.querySelector("#wallet-refresh");
 const walletDisconnect = document.querySelector("#wallet-disconnect");
 const walletConnectPanel = document.querySelector("#wallet-connect-panel");
 const walletSessionPanel = document.querySelector("#wallet-session-panel");
@@ -73,6 +74,7 @@ const inboxItems = document.querySelector("#inbox-items");
 const inboxCount = document.querySelector("#inbox-count");
 const inboxMore = document.querySelector("#inbox-more");
 const discoveredWallets = [];
+const registeredLegacyProviders = new WeakSet();
 let activeWallet = null;
 let activeAccount = null;
 let inboxCursor = null;
@@ -147,25 +149,56 @@ function installWalletStandardDiscovery() {
     if (typeof event.detail === "function") event.detail(api);
   });
   window.dispatchEvent(new CustomEvent("wallet-standard:app-ready", { detail: api }));
-  window.setTimeout(() => {
-    if (!discoveredWallets.length && window.solana?.isPhantom) {
-      registerWallets({
-        name: "Phantom (legacy connector)",
-        accounts: [],
-        features: {
-          "standard:connect": { connect: async () => {
-            const result = await window.solana.connect();
-            return { accounts: [{ address: result.publicKey.toString() }] };
-          } },
-          "standard:disconnect": { disconnect: () => window.solana.disconnect() },
-          "solana:signMessage": { signMessage: async ({ message }) => {
-            const result = await window.solana.signMessage(message, "utf8");
-            return [{ signature: result.signature }];
-          } },
-        },
-      });
-    }
-  }, 500);
+  scanInjectedWallets();
+  [250, 750, 1500, 3000, 6000].forEach((delay) => window.setTimeout(scanInjectedWallets, delay));
+  window.addEventListener("focus", scanInjectedWallets);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") scanInjectedWallets();
+  });
+}
+
+function registerLegacyProvider(provider, name) {
+  if (!provider || typeof provider !== "object" || registeredLegacyProviders.has(provider)) return;
+  if (typeof provider.connect !== "function" || typeof provider.signMessage !== "function") return;
+  if (discoveredWallets.some((wallet) => String(wallet.name || "").toLowerCase().includes(name.toLowerCase()))) return;
+  registeredLegacyProviders.add(provider);
+  registerWallets({
+    name: `${name} (browser wallet)`,
+    accounts: [],
+    features: {
+      "standard:connect": { connect: async () => {
+        const result = await provider.connect();
+        const publicKey = result?.publicKey || provider.publicKey;
+        if (!publicKey) throw new Error(`${name} returned no public key`);
+        return { accounts: [{ address: publicKey.toString() }] };
+      } },
+      "standard:disconnect": { disconnect: async () => {
+        if (typeof provider.disconnect === "function") await provider.disconnect();
+      } },
+      "solana:signMessage": { signMessage: async ({ message }) => {
+        const result = await provider.signMessage(message, "utf8");
+        const signature = result?.signature || result;
+        return [{ signature }];
+      } },
+    },
+  });
+}
+
+function scanInjectedWallets() {
+  const candidates = [
+    [window.phantom?.solana, "Phantom"],
+    [window.solflare, "Solflare"],
+    [window.backpack?.solana, "Backpack"],
+    [window.xnft?.solana, "Backpack"],
+    [window.solana, window.solana?.isPhantom ? "Phantom" : "Solana wallet"],
+  ];
+  for (const [provider, name] of candidates) registerLegacyProvider(provider, name);
+  if (!discoveredWallets.length) {
+    setInboxStatus(
+      "No wallet was injected into this page. On mobile, open iatprotocol.com inside Phantom's Browser tab—not in Chrome, Safari or WhatsApp.",
+      "error",
+    );
+  }
 }
 
 function base58Encode(value) {
@@ -318,6 +351,14 @@ walletConnect.addEventListener("click", async () => {
   } finally {
     walletConnect.disabled = !discoveredWallets.length;
   }
+});
+
+walletRefresh.addEventListener("click", () => {
+  setInboxStatus("Searching for Phantom, Solflare and Backpack…");
+  scanInjectedWallets();
+  window.dispatchEvent(new CustomEvent("wallet-standard:app-ready", {
+    detail: Object.freeze({ register: registerWallets }),
+  }));
 });
 
 walletDisconnect.addEventListener("click", async () => {

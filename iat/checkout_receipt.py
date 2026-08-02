@@ -841,6 +841,50 @@ def send_email_transport_canary(
     }
 
 
+def create_native_inbox_canary(*, now: int | None = None) -> dict[str, Any]:
+    """Create a receipt-only inbox probe without payment or external transport."""
+    current_time = _now() if now is None else int(now)
+    nonce = secrets.token_hex(16)
+    quote_id = f"inbox_canary_{nonce}"
+    order_id = f"inbox_canary_order_{nonce}"
+    configured = configure_delivery_receipt(
+        quote_id=quote_id,
+        order_id=order_id,
+        channel="api_pull",
+        destination=None,
+        now=current_time,
+    )
+    result = {
+        "status": "success",
+        "summary": "IAT native delivery inbox canary",
+        "message": "This receipt created no order, payment, settlement, e-mail, or webhook.",
+        "execution_mode": "receipt_only_canary",
+        "issued_at": current_time,
+        "nonce": nonce,
+    }
+    sealed = publish_delivery_payload(
+        quote_id=quote_id,
+        order_id=order_id,
+        payload=result,
+        now=current_time,
+    )
+    public_site = os.getenv(
+        "IAT_PUBLIC_SITE_URL", "https://iat-protocol.pages.dev"
+    ).strip().rstrip("/")
+    return {
+        "status": "native_inbox_canary_ready",
+        "quote_id": quote_id,
+        "receipt_token": configured["receipt_token"],
+        "delivery_url": f"{public_site}/delivery/#receipt={configured['receipt_token']}",
+        "payload_digest": sealed["payload_digest"],
+        "inbox_available": sealed["inbox_available"],
+        "payment_created": False,
+        "order_created": False,
+        "settlement_created": False,
+        "notification_dispatched": False,
+    }
+
+
 def dispatch_email(
     quote_id: str,
     *,

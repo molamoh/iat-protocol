@@ -118,6 +118,26 @@ def test_native_inbox_returns_exact_sealed_payload_and_audits_first_open(receipt
     ]
 
 
+def test_native_inbox_canary_creates_only_receipt_and_no_notification(
+    receipt_db, monkeypatch
+):
+    monkeypatch.setenv("IAT_PUBLIC_SITE_URL", "https://iatprotocol.com")
+
+    canary = receipt.create_native_inbox_canary(now=150)
+    opened = receipt.open_delivery_inbox(canary["receipt_token"], now=151)
+
+    assert canary["status"] == "native_inbox_canary_ready"
+    assert canary["delivery_url"].startswith(
+        "https://iatprotocol.com/delivery/#receipt=cdr_"
+    )
+    assert canary["inbox_available"] is True
+    assert canary["payment_created"] is False
+    assert canary["order_created"] is False
+    assert canary["settlement_created"] is False
+    assert canary["notification_dispatched"] is False
+    assert opened["result"]["execution_mode"] == "receipt_only_canary"
+
+
 def test_configured_receipt_rebinds_to_replacement_quote(receipt_db):
     first = receipt.configure_delivery_receipt(
         quote_id="uq_expired",

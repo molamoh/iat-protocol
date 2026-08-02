@@ -58,6 +58,7 @@ from iat.checkout_compensation import (
 )
 from iat.checkout_receipt import (
     DeliveryReceiptError,
+    create_native_inbox_canary,
     send_email_transport_canary,
 )
 from iat.config import IAT_TOKEN_ADDRESS
@@ -11779,6 +11780,16 @@ def admin_checkout_delivery_email_canary(
 ):
     try:
         return send_email_transport_canary()
+    except DeliveryReceiptError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@app.post("/admin/checkout-delivery/inbox-canary")
+def admin_checkout_delivery_inbox_canary(
+    _admin: bool = Depends(require_admin),
+):
+    try:
+        return create_native_inbox_canary()
     except DeliveryReceiptError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 

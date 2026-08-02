@@ -382,11 +382,6 @@ async function prepareCheckout() {
 
 async function confirmCheckoutInWallet() {
   if (!preparedCheckout) throw new Error("Prepare a fresh payment first");
-  if (Math.floor(Date.now() / 1000) >= Number(preparedCheckout.expires_at)) {
-    preparedCheckout = null;
-    checkoutReview.hidden = true;
-    throw new Error("The quote expired. Prepare and simulate a new payment.");
-  }
   await ensureActiveWalletConnection();
   const feature = activeWallet.features?.["solana:signAndSendTransaction"];
   if (!feature?.signAndSendTransaction || !activeAccount) {

@@ -66,6 +66,12 @@ It requires TLS by default and can work with any compatible provider. Each
 message has a stable `Message-ID`, the sealed result, its SHA-256 digest, an
 Ed25519 signature and the public verification key.
 
+SMTP acceptance changes the receipt only to `dispatched`: it proves that the
+configured relay accepted responsibility for the message, not that the buyer's
+mail server accepted it. A correlated authenticated provider event changes it
+to `delivered`. The buyer may explicitly accept or dispute from either state;
+that decision remains stronger evidence than a transport-provider event.
+
 ```text
 IAT_DELIVERY_SMTP_HOST=smtp.example.com
 IAT_DELIVERY_SMTP_PORT=587
@@ -76,6 +82,28 @@ IAT_DELIVERY_SMTP_SSL=false
 IAT_DELIVERY_EMAIL_FROM=IAT Delivery <delivery@example.com>
 IAT_PUBLIC_SITE_URL=https://iat-protocol.pages.dev
 ```
+
+Mailjet SMTP messages include `X-Mailjet-Campaign` set to the unique receipt
+token. This makes the message visible in Mailjet statistics and correlates its
+event callback without exposing the destination publicly. Configure a strong,
+independent callback secret:
+
+```text
+IAT_MAILJET_EVENT_USERNAME=iat-mailjet
+IAT_MAILJET_EVENT_SECRET=<random high-entropy secret>
+```
+
+Then configure Mailjet Event Tracking to POST events to:
+
+```text
+https://<api-host>/payments/v1/universal/delivery-events/mailjet
+```
+
+using HTTP Basic authentication with the username and secret above. The
+callback verifies the Basic credential, receipt token and exact recipient
+before recording `sent`, `delivered`, `open`, `click`, `bounce`, `blocked`, or
+`spam`. Bounce/block/spam events fail a merely dispatched receipt; they never
+reverse an explicit buyer decision.
 
 The review URL stores its high-entropy receipt credential in the browser URL
 fragment. Fragments are not sent to Cloudflare Pages, referrers or Web
@@ -91,8 +119,8 @@ POST /payments/v1/universal/delivery-receipts/{receipt_token}/decision
 
 ## Confirm or dispute
 
-After the receipt state becomes `delivered`, the buyer makes one final,
-idempotent decision:
+After the receipt state becomes `dispatched` or `delivered`, the buyer makes one
+final, idempotent decision:
 
 ```http
 POST /payments/v1/universal/{quote_id}/delivery/decision
@@ -130,6 +158,8 @@ For receipt-enabled universal checkouts, final delivery confirmation is now an
 input to settlement release governance:
 
 - `accepted`: the Foundation release policy may continue its normal checks;
+- `dispatched`: SMTP accepted the email but provider confirmation or buyer
+  confirmation remains pending;
 - `delivered`: release is blocked while buyer confirmation is pending;
 - `pending_dispatch`: release is blocked because the final channel has not
   acknowledged delivery;

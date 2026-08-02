@@ -325,13 +325,70 @@ def test_signed_email_contains_stable_receipt_and_explicit_decision_link(
     message = messages[0]
     signature = Signature.from_string(message["X-IAT-Delivery-Signature"])
     canonical = receipt._canonical_payload(payload).encode()
-    assert result["state"] == "delivered"
+    assert result["state"] == "dispatched"
     assert message["To"] == "buyer@example.com"
     assert signature.verify(keypair.pubkey(), canonical)
     assert "https://iat.example/delivery/#receipt=cdr_" in message.get_content()
     assert "Opening this link does not accept" in message.get_content()
     token = message["X-IAT-Receipt-ID"]
+    assert message["X-Mailjet-Campaign"] == token
     assert receipt.get_delivery_receipt_by_token(token)["quote_id"] == "uq_email_dispatch"
+
+
+def test_mailjet_sent_event_confirms_dispatched_email(receipt_db, tmp_path, monkeypatch):
+    _ready_email(tmp_path, monkeypatch)
+    messages = []
+    dispatched = receipt.dispatch_email(
+        "uq_email_dispatch", now=120, send=messages.append
+    )
+
+    confirmed = receipt.record_email_provider_event(
+        receipt_token=messages[0]["X-IAT-Receipt-ID"],
+        recipient="buyer@example.com",
+        event="sent",
+        event_at=130,
+        provider_message_id="mj-123",
+    )
+
+    assert dispatched["state"] == "dispatched"
+    assert confirmed["state"] == "delivered"
+    assert confirmed["provider_status"] == "sent"
+    assert receipt.get_delivery_receipt("uq_email_dispatch")["provider_message_id"] == "mj-123"
+    assert confirmed["buyer_confirmation_required"] is True
+
+
+def test_mailjet_event_rejects_recipient_mismatch(receipt_db, tmp_path, monkeypatch):
+    _ready_email(tmp_path, monkeypatch)
+    messages = []
+    receipt.dispatch_email("uq_email_dispatch", now=120, send=messages.append)
+
+    with pytest.raises(
+        receipt.DeliveryReceiptError, match="email_provider_recipient_mismatch"
+    ):
+        receipt.record_email_provider_event(
+            receipt_token=messages[0]["X-IAT-Receipt-ID"],
+            recipient="attacker@example.com",
+            event="sent",
+            event_at=130,
+        )
+
+
+def test_mailjet_bounce_fails_dispatched_email(receipt_db, tmp_path, monkeypatch):
+    _ready_email(tmp_path, monkeypatch)
+    messages = []
+    receipt.dispatch_email("uq_email_dispatch", now=120, send=messages.append)
+
+    failed = receipt.record_email_provider_event(
+        receipt_token=messages[0]["X-IAT-Receipt-ID"],
+        recipient="buyer@example.com",
+        event="bounce",
+        event_at=130,
+        reason="recipient user unknown",
+    )
+
+    assert failed["state"] == "dispatch_failed"
+    assert failed["provider_status"] == "bounce"
+    assert failed["dispatch_last_error"].startswith("email_provider_bounce")
 
 
 def test_email_failure_retries_with_stable_message_id(receipt_db, tmp_path, monkeypatch):

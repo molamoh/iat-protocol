@@ -1,3 +1,4 @@
+import base64
 import json
 import hmac
 import hashlib
@@ -73,6 +74,55 @@ def request(**overrides):
     }
     values.update(overrides)
     return checkout_api.UniversalQuoteRequest(**values)
+
+
+def _basic(username: str, password: str) -> str:
+    encoded = base64.b64encode(f"{username}:{password}".encode()).decode()
+    return f"Basic {encoded}"
+
+
+def test_mailjet_event_endpoint_requires_configured_basic_auth(monkeypatch):
+    monkeypatch.setenv("IAT_MAILJET_EVENT_USERNAME", "iat-mailjet")
+    monkeypatch.setenv("IAT_MAILJET_EVENT_SECRET", "provider-secret")
+
+    with pytest.raises(HTTPException) as rejected:
+        checkout_api.receive_mailjet_delivery_event(
+            {"event": "sent"}, authorization=_basic("iat-mailjet", "wrong")
+        )
+
+    assert rejected.value.status_code == 401
+
+
+def test_mailjet_event_endpoint_records_correlated_event(monkeypatch):
+    monkeypatch.setenv("IAT_MAILJET_EVENT_USERNAME", "iat-mailjet")
+    monkeypatch.setenv("IAT_MAILJET_EVENT_SECRET", "provider-secret")
+    observed = {}
+
+    def record(**kwargs):
+        observed.update(kwargs)
+        return {"state": "delivered"}
+
+    monkeypatch.setattr(checkout_api, "record_email_provider_event", record)
+    result = checkout_api.receive_mailjet_delivery_event(
+        {
+            "event": "sent",
+            "time": 123,
+            "email": "buyer@example.com",
+            "customcampaign": "cdr_receipt",
+            "mj_campaign_id": "456",
+        },
+        authorization=_basic("iat-mailjet", "provider-secret"),
+    )
+
+    assert result == {"status": "mailjet_events_recorded", "recorded": 1}
+    assert observed == {
+        "receipt_token": "cdr_receipt",
+        "recipient": "buyer@example.com",
+        "event": "sent",
+        "event_at": 123,
+        "provider_message_id": "456",
+        "reason": "",
+    }
 
 
 @pytest.mark.parametrize(

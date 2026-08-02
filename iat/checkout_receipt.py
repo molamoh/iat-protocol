@@ -107,6 +107,9 @@ def init_delivery_receipt_db() -> None:
                 dispatch_response_code INTEGER,
                 dispatch_signature TEXT,
                 dispatch_signer TEXT,
+                provider_status TEXT,
+                provider_event_at INTEGER,
+                provider_message_id TEXT,
                 updated_at INTEGER NOT NULL
             )
             """
@@ -118,6 +121,9 @@ def init_delivery_receipt_db() -> None:
             "dispatch_response_code": "INTEGER",
             "dispatch_signature": "TEXT",
             "dispatch_signer": "TEXT",
+            "provider_status": "TEXT",
+            "provider_event_at": "INTEGER",
+            "provider_message_id": "TEXT",
         }
         for column, definition in columns.items():
             try:
@@ -342,6 +348,7 @@ def settlement_release_receipt_gate(order_id: str) -> dict[str, Any]:
         }
     reason = {
         "disputed": "buyer_delivery_dispute_open",
+        "dispatched": "email_provider_confirmation_pending",
         "delivered": "buyer_delivery_confirmation_pending",
         "dispatch_failed": "final_delivery_dispatch_failed",
         "pending_dispatch": "final_delivery_dispatch_pending",
@@ -433,7 +440,7 @@ def acknowledge_delivery(
         if receipt["state"] == decision:
             return {**public_delivery_receipt(receipt), "idempotent": True}
         raise DeliveryReceiptError("delivery_decision_already_final")
-    if receipt["state"] != "delivered":
+    if receipt["state"] not in {"dispatched", "delivered"}:
         raise DeliveryReceiptError("delivery_not_yet_dispatched")
     clean_message = str(message or "").strip()[:2_000]
     if decision == "disputed":
@@ -453,7 +460,7 @@ def acknowledge_delivery(
             f"""UPDATE universal_checkout_delivery_receipts
             SET state={p}, accepted_at={p}, disputed_at={p}, dispute_code={p},
                 buyer_message={p}, updated_at={p}
-            WHERE quote_id={p} AND state={p}""",
+            WHERE quote_id={p} AND state IN ({p}, {p})""",
             (
                 decision,
                 current_time if decision == "accepted" else None,
@@ -462,6 +469,7 @@ def acknowledge_delivery(
                 clean_message or None,
                 current_time,
                 quote_id,
+                "dispatched",
                 "delivered",
             ),
         )
@@ -715,7 +723,7 @@ def dispatch_email(
         raise DeliveryReceiptError("delivery_receipt_not_found")
     if receipt["channel"] != "email":
         raise DeliveryReceiptError("delivery_channel_is_not_email")
-    if receipt["state"] == "delivered":
+    if receipt["state"] in {"dispatched", "delivered"}:
         return {**public_delivery_receipt(receipt), "idempotent": True}
     if receipt["state"] != "pending_dispatch":
         raise DeliveryReceiptError("delivery_not_ready_for_dispatch")
@@ -747,6 +755,7 @@ def dispatch_email(
     message["X-IAT-Payload-Digest"] = receipt["payload_digest"]
     message["X-IAT-Delivery-Signature"] = signature
     message["X-IAT-Delivery-Signer"] = str(keypair.pubkey())
+    message["X-Mailjet-Campaign"] = receipt["receipt_token"]
     message.set_content(
         "Your IAT service result is ready.\n\n"
         f"Quote: {quote_id}\n"
@@ -763,12 +772,12 @@ def dispatch_email(
     error = None
     try:
         send(message)
-        delivered = True
+        dispatched = True
     except DeliveryReceiptError as exc:
-        delivered = False
+        dispatched = False
         error = str(exc)[:128]
     except Exception as exc:
-        delivered = False
+        dispatched = False
         error = f"delivery_email_{type(exc).__name__.lower()}"[:128]
 
     attempt = int(receipt.get("dispatch_attempt_count") or 0) + 1
@@ -777,8 +786,8 @@ def dispatch_email(
     except ValueError:
         configured_max_attempts = 8
     max_attempts = max(1, min(configured_max_attempts, 20))
-    state = "delivered" if delivered else ("dispatch_failed" if attempt >= max_attempts else "pending_dispatch")
-    next_attempt = None if delivered or state == "dispatch_failed" else current_time + _dispatch_backoff(attempt)
+    state = "dispatched" if dispatched else ("dispatch_failed" if attempt >= max_attempts else "pending_dispatch")
+    next_attempt = None if dispatched or state == "dispatch_failed" else current_time + _dispatch_backoff(attempt)
     conn = get_conn()
     try:
         p = qmark()
@@ -796,7 +805,7 @@ def dispatch_email(
                 error,
                 signature,
                 str(keypair.pubkey()),
-                current_time if delivered else None,
+                current_time if dispatched else None,
                 current_time,
                 quote_id,
                 "pending_dispatch",
@@ -807,7 +816,7 @@ def dispatch_email(
         _insert_event(
             cur,
             quote_id=quote_id,
-            event_type="delivery_email_dispatched" if delivered else "delivery_email_failed",
+            event_type="delivery_email_dispatched" if dispatched else "delivery_email_failed",
             state=state,
             payload_digest=receipt["payload_digest"],
             actor="delivery_dispatcher",
@@ -817,6 +826,93 @@ def dispatch_email(
     finally:
         release_conn(conn)
     return {**public_delivery_receipt(get_delivery_receipt(quote_id)), "idempotent": False}
+
+
+def record_email_provider_event(
+    *,
+    receipt_token: str,
+    recipient: str,
+    event: str,
+    event_at: int,
+    provider_message_id: str | None = None,
+    reason: str | None = None,
+) -> dict[str, Any]:
+    """Record an authenticated provider callback without trusting SMTP acceptance."""
+    receipt = get_delivery_receipt_by_token(str(receipt_token or ""))
+    if not receipt or receipt["channel"] != "email":
+        raise DeliveryReceiptError("email_provider_receipt_not_found")
+    clean_recipient = str(recipient or "").strip().lower()
+    if not clean_recipient or not secrets.compare_digest(
+        clean_recipient, str(receipt["destination"]).strip().lower()
+    ):
+        raise DeliveryReceiptError("email_provider_recipient_mismatch")
+    clean_event = str(event or "").strip().lower()
+    success_events = {"sent", "delivered", "open", "click"}
+    failure_events = {"bounce", "blocked", "spam"}
+    if clean_event not in success_events | failure_events:
+        raise DeliveryReceiptError("unsupported_email_provider_event")
+    try:
+        clean_event_at = int(event_at)
+    except (TypeError, ValueError) as exc:
+        raise DeliveryReceiptError("valid_email_provider_event_time_required") from exc
+    if clean_event_at <= 0:
+        raise DeliveryReceiptError("valid_email_provider_event_time_required")
+    clean_message_id = str(provider_message_id or "").strip()[:128] or None
+    clean_reason = re.sub(r"\s+", " ", str(reason or "").strip())[:96]
+    if (
+        receipt.get("provider_status") == clean_event
+        and int(receipt.get("provider_event_at") or 0) == clean_event_at
+        and (receipt.get("provider_message_id") or None) == clean_message_id
+    ):
+        return {**public_delivery_receipt(receipt), "idempotent": True}
+
+    current_state = str(receipt["state"])
+    new_state = current_state
+    if current_state == "dispatched":
+        new_state = "delivered" if clean_event in success_events else "dispatch_failed"
+    provider_error = None
+    if clean_event in failure_events:
+        provider_error = f"email_provider_{clean_event}"
+        if clean_reason:
+            provider_error = f"{provider_error}:{clean_reason}"[:128]
+
+    conn = get_conn()
+    try:
+        p = qmark()
+        cur = conn.cursor()
+        cur.execute(
+            f"""UPDATE universal_checkout_delivery_receipts
+            SET state={p}, provider_status={p}, provider_event_at={p},
+                provider_message_id={p}, dispatch_last_error={p}, updated_at={p}
+            WHERE quote_id={p}""",
+            (
+                new_state,
+                clean_event,
+                clean_event_at,
+                clean_message_id,
+                provider_error,
+                clean_event_at,
+                receipt["quote_id"],
+            ),
+        )
+        if cur.rowcount != 1:
+            raise DeliveryReceiptError("email_provider_event_conflict")
+        _insert_event(
+            cur,
+            quote_id=receipt["quote_id"],
+            event_type=f"delivery_email_provider_{clean_event}",
+            state=new_state,
+            payload_digest=receipt.get("payload_digest"),
+            actor="authenticated_email_provider",
+            now=clean_event_at,
+        )
+        conn.commit()
+    finally:
+        release_conn(conn)
+    return {
+        **public_delivery_receipt(get_delivery_receipt(receipt["quote_id"])),
+        "idempotent": False,
+    }
 
 
 def run_receipt_dispatch_sweep(*, limit: int = 20) -> dict[str, int]:
@@ -830,8 +926,8 @@ def run_receipt_dispatch_sweep(*, limit: int = 20) -> dict[str, int]:
                 if receipt and receipt["channel"] == "email"
                 else dispatch_webhook(quote_id)
             )
-            delivered += int(result.get("state") == "delivered")
-            failed += int(result.get("state") != "delivered")
+            delivered += int(result.get("state") in {"dispatched", "delivered"})
+            failed += int(result.get("state") not in {"dispatched", "delivered"})
         except DeliveryReceiptError:
             failed += 1
     return {"selected": len(selected), "delivered": delivered, "failed": failed}
@@ -857,6 +953,8 @@ def public_delivery_receipt(receipt: dict[str, Any] | None) -> dict[str, Any]:
         "dispatch_last_error": receipt.get("dispatch_last_error"),
         "dispatch_response_code": receipt.get("dispatch_response_code"),
         "dispatch_signer": receipt.get("dispatch_signer"),
-        "buyer_confirmation_required": receipt["state"] == "delivered",
+        "provider_status": receipt.get("provider_status"),
+        "provider_event_at": receipt.get("provider_event_at"),
+        "buyer_confirmation_required": receipt["state"] in {"dispatched", "delivered"},
         "available_channels": sorted(CHANNELS),
     }

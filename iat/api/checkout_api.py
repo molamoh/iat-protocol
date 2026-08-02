@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import hashlib
 import hmac
@@ -74,6 +75,7 @@ from iat.checkout_receipt import (
     init_delivery_receipt_db,
     public_delivery_receipt,
     publish_delivery_payload,
+    record_email_provider_event,
 )
 
 
@@ -121,6 +123,33 @@ class PublicDeliveryDecisionRequest(BaseModel):
     decision: str = Field(min_length=8, max_length=16)
     dispute_code: str | None = Field(default=None, max_length=32)
     message: str = Field(default="", max_length=2_000)
+
+
+def _authorize_mailjet_event(authorization: str | None) -> None:
+    expected_password = os.getenv("IAT_MAILJET_EVENT_SECRET", "")
+    expected_username = os.getenv(
+        "IAT_MAILJET_EVENT_USERNAME", "iat-mailjet"
+    ).strip()
+    if not expected_password or not expected_username:
+        raise HTTPException(status_code=503, detail="mailjet_event_auth_not_configured")
+    scheme, _, encoded = str(authorization or "").partition(" ")
+    try:
+        decoded = base64.b64decode(encoded, validate=True).decode("utf-8")
+        username, separator, password = decoded.partition(":")
+    except (ValueError, UnicodeDecodeError):
+        username = password = separator = ""
+    authorized = (
+        scheme.lower() == "basic"
+        and separator == ":"
+        and hmac.compare_digest(username, expected_username)
+        and hmac.compare_digest(password, expected_password)
+    )
+    if not authorized:
+        raise HTTPException(
+            status_code=401,
+            detail="invalid_mailjet_event_credential",
+            headers={"WWW-Authenticate": 'Basic realm="iat-mailjet-events"'},
+        )
 
 
 def _bool_env(name: str, default: bool = False) -> bool:
@@ -1314,6 +1343,46 @@ def decide_delivery_by_link(
         "quote_id": stored["quote_id"],
         "final_receipt": receipt,
     }
+
+
+@router.post("/delivery-events/mailjet")
+def receive_mailjet_delivery_event(
+    payload: dict[str, Any] | list[dict[str, Any]],
+    authorization: str | None = Header(default=None),
+):
+    _authorize_mailjet_event(authorization)
+    events = payload if isinstance(payload, list) else [payload]
+    if not events or len(events) > 100:
+        raise HTTPException(status_code=422, detail="valid_mailjet_event_batch_required")
+    recorded = 0
+    for item in events:
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=422, detail="valid_mailjet_event_required")
+        try:
+            record_email_provider_event(
+                receipt_token=str(item.get("customcampaign") or ""),
+                recipient=str(item.get("email") or ""),
+                event=str(item.get("event") or ""),
+                event_at=int(item.get("time") or 0),
+                provider_message_id=str(
+                    item.get("MessageID")
+                    or item.get("message_id")
+                    or item.get("mj_campaign_id")
+                    or ""
+                ),
+                reason=" ".join(
+                    value
+                    for value in (
+                        str(item.get("error_related_to") or "").strip(),
+                        str(item.get("error") or "").strip(),
+                    )
+                    if value
+                ),
+            )
+        except (TypeError, ValueError, DeliveryReceiptError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        recorded += 1
+    return {"status": "mailjet_events_recorded", "recorded": recorded}
 
 
 @router.post("/{quote_id}/evidence-readiness")

@@ -13,7 +13,8 @@ function setFinalState(state) {
   receiptState = state;
   document.querySelector("#receipt-state").textContent = state;
   const final = state === "accepted" || state === "disputed";
-  document.querySelector("#decision-area").hidden = final || state !== "delivered";
+  const reviewable = state === "dispatched" || state === "delivered";
+  document.querySelector("#decision-area").hidden = final || !reviewable;
   if (final) {
     status.className = `decision-status ${state === "accepted" ? "success" : "error"}`;
     status.textContent = state === "accepted" ? "Delivery accepted." : "Issue recorded for review.";
@@ -36,6 +37,7 @@ async function loadReceipt() {
     document.querySelector("#payload-digest").textContent = receipt.payload_digest || "Not sealed";
     document.querySelector("#dispatched-at").textContent = displayTime(receipt.dispatched_at);
     document.querySelector("#dispatch-signer").textContent = receipt.dispatch_signer || "Not signed";
+    document.querySelector("#provider-status").textContent = receipt.provider_status || "Awaiting provider event";
     setFinalState(receipt.state);
     loading.hidden = true;
     receiptPanel.hidden = false;

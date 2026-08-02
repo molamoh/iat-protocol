@@ -73,12 +73,18 @@ const inboxResults = document.querySelector("#inbox-results");
 const inboxItems = document.querySelector("#inbox-items");
 const inboxCount = document.querySelector("#inbox-count");
 const inboxMore = document.querySelector("#inbox-more");
+const walletCheckout = document.querySelector("#wallet-checkout");
+const checkoutOrderId = document.querySelector("#checkout-order-id");
+const checkoutPrepare = document.querySelector("#checkout-prepare");
+const checkoutReview = document.querySelector("#checkout-review");
+const checkoutSend = document.querySelector("#checkout-send");
 const discoveredWallets = [];
 const registeredLegacyProviders = new WeakSet();
 let activeWallet = null;
 let activeAccount = null;
 let inboxCursor = null;
 let displayedDeliveries = 0;
+let preparedCheckout = null;
 
 function sessionGet(key) {
   try { return sessionStorage.getItem(key); } catch (_) { return null; }
@@ -274,6 +280,102 @@ function showAuthenticatedWallet(address) {
   walletSessionPanel.hidden = false;
   walletAddress.textContent = shortAddress(address);
   walletAddress.title = address;
+  walletCheckout.hidden = false;
+}
+
+function base64Bytes(value) {
+  const binary = atob(value);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+function amountLabel(asset) {
+  return `${asset?.amount || "?"} ${asset?.symbol || asset?.asset || ""}`.trim();
+}
+
+function setReviewText(id, value) {
+  document.querySelector(id).textContent = String(value || "Not provided");
+}
+
+async function prepareCheckout() {
+  const orderId = checkoutOrderId.value.trim();
+  const token = sessionGet("iat_inbox_token");
+  if (!/^[a-f0-9-]{36}$/i.test(orderId)) throw new Error("Enter a valid IAT order ID");
+  if (!token) throw new Error("Connect your wallet again");
+  setInboxStatus("Creating a fresh quote, obtaining IAT authorization and simulating on devnet…");
+  preparedCheckout = await apiJson(`/payments/v1/universal/wallet-checkout/${encodeURIComponent(orderId)}/prepare`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ input_asset: "USDC" }),
+  });
+  const review = preparedCheckout.review;
+  setReviewText("#checkout-network", review.cluster);
+  setReviewText("#checkout-input", amountLabel(review.input));
+  setReviewText("#checkout-output", amountLabel(review.minimum_iat_output));
+  setReviewText("#checkout-fee-payer", review.fee_payer);
+  setReviewText("#checkout-vault", review.treasury_vault);
+  setReviewText("#checkout-simulation", `${preparedCheckout.simulation.status} (${preparedCheckout.simulation.units_consumed || "unknown"} units)`);
+  checkoutReview.hidden = false;
+  setInboxStatus("Simulation succeeded. Review every field before confirming in Phantom.", "success");
+}
+
+async function confirmCheckoutInWallet() {
+  if (!preparedCheckout) throw new Error("Prepare a fresh payment first");
+  if (Math.floor(Date.now() / 1000) >= Number(preparedCheckout.expires_at)) {
+    preparedCheckout = null;
+    checkoutReview.hidden = true;
+    throw new Error("The quote expired. Prepare and simulate a new payment.");
+  }
+  if (!activeWallet || !activeAccount) {
+    const wallet = discoveredWallets[Number(walletSelector.value)];
+    if (!wallet) throw new Error("Select Phantom and reconnect it to this page");
+    const connection = await wallet.features["standard:connect"].connect();
+    const account = connection?.accounts?.[0] || wallet.accounts?.[0];
+    if (!account?.address || account.address !== sessionGet("iat_inbox_wallet")) {
+      throw new Error("Phantom is connected to a different wallet than this inbox session");
+    }
+    activeWallet = wallet;
+    activeAccount = account;
+  }
+  const feature = activeWallet.features?.["solana:signAndSendTransaction"];
+  if (!feature?.signAndSendTransaction || !activeAccount) {
+    throw new Error("This wallet connection cannot send Wallet Standard transactions. Reconnect using Phantom's in-app Browser.");
+  }
+  setInboxStatus("Waiting for your explicit approval in Phantom…");
+  const result = await feature.signAndSendTransaction({
+    account: activeAccount,
+    chain: "solana:devnet",
+    transaction: base64Bytes(preparedCheckout.transaction_base64),
+    options: { commitment: "confirmed" },
+  });
+  const signatureBytes = result?.[0]?.signature;
+  if (!signatureBytes) throw new Error("Phantom returned no transaction signature");
+  const txSignature = base58Encode(signatureBytes);
+  const token = sessionGet("iat_inbox_token");
+  await apiJson(`/payments/v1/universal/wallet-checkout/${preparedCheckout.quote_id}/submit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ tx_signature: txSignature }),
+  });
+  setInboxStatus(`Transaction sent: ${shortAddress(txSignature)}. Waiting for devnet confirmation…`);
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    await new Promise((resolve) => window.setTimeout(resolve, 2500));
+    try {
+      const confirmed = await apiJson(`/payments/v1/universal/wallet-checkout/${preparedCheckout.quote_id}/confirm`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (confirmed.status === "confirmed") {
+        setInboxStatus(`Payment confirmed on devnet: ${shortAddress(txSignature)}. Delivery is now processing.`, "success");
+        checkoutReview.hidden = true;
+        preparedCheckout = null;
+        await loadInbox(true);
+        return;
+      }
+    } catch (error) {
+      if (![409, 503].includes(error.status)) throw error;
+    }
+  }
+  setInboxStatus(`Transaction ${shortAddress(txSignature)} was submitted. Confirmation is still processing; refresh the inbox shortly.`, "success");
 }
 
 function safeDeliveryUrl(rawUrl) {
@@ -377,6 +479,7 @@ walletDisconnect.addEventListener("click", async () => {
   activeAccount = null;
   walletSessionPanel.hidden = true;
   walletConnectPanel.hidden = false;
+  walletCheckout.hidden = true;
   inboxResults.hidden = true;
   setInboxStatus("Disconnected. The local inbox session was removed.");
 });
@@ -386,6 +489,22 @@ inboxMore.addEventListener("click", async () => {
   try { await loadInbox(false); }
   catch (error) { setInboxStatus(`Unable to load more receipts: ${error.message}`, "error"); }
   finally { inboxMore.disabled = false; }
+});
+
+checkoutPrepare.addEventListener("click", async () => {
+  checkoutPrepare.disabled = true;
+  checkoutReview.hidden = true;
+  preparedCheckout = null;
+  try { await prepareCheckout(); }
+  catch (error) { setInboxStatus(`Unable to prepare payment: ${error.message}`, "error"); }
+  finally { checkoutPrepare.disabled = false; }
+});
+
+checkoutSend.addEventListener("click", async () => {
+  checkoutSend.disabled = true;
+  try { await confirmCheckoutInWallet(); }
+  catch (error) { setInboxStatus(`Payment not sent: ${error.message}`, "error"); }
+  finally { checkoutSend.disabled = false; }
 });
 
 installWalletStandardDiscovery();

@@ -21,6 +21,10 @@ from fastapi import APIRouter, Header, HTTPException, Response
 from pydantic import BaseModel, Field
 from solders.pubkey import Pubkey
 from solders.signature import Signature
+from solders.hash import Hash
+from solders.instruction import AccountMeta, Instruction
+from solders.message import Message
+from solders.transaction import VersionedTransaction
 from spl.token.instructions import get_associated_token_address
 
 from iat.checkout import (
@@ -142,6 +146,14 @@ class WalletChallengeRequest(BaseModel):
 class WalletSessionRequest(BaseModel):
     challenge_id: str = Field(min_length=16, max_length=128)
     signature: str = Field(min_length=64, max_length=128)
+
+
+class WalletCheckoutRequest(BaseModel):
+    input_asset: str = Field(default="USDC", pattern="^USDC$")
+
+
+class WalletCheckoutSubmitRequest(BaseModel):
+    tx_signature: str = Field(min_length=64, max_length=128)
 
 
 def _bearer_token(authorization: str | None) -> str:
@@ -1534,6 +1546,193 @@ def request_universal_checkout_compensation(
         "compensation": public_compensation(compensation),
         "idempotent": compensation.get("idempotent", False),
     }
+
+
+def _wallet_owned_order(order_id: str, wallet: str) -> dict[str, Any]:
+    order = get_order_db(order_id)
+    if not order or not hmac.compare_digest(str(order.get("buyer_wallet") or ""), wallet):
+        raise HTTPException(status_code=404, detail="order_not_found")
+    return order
+
+
+def _wallet_owned_quote(quote_id: str, wallet: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    row = _get_quote(quote_id)
+    if not row or not hmac.compare_digest(str(row.get("buyer_wallet") or ""), wallet):
+        raise HTTPException(status_code=404, detail="quote_not_found")
+    return row, _wallet_owned_order(str(row["order_id"]), wallet)
+
+
+def _rpc_call(method: str, params: list[Any]) -> Any:
+    rpc_url = os.getenv("IAT_CHECKOUT_SOLANA_RPC_URL") or os.getenv("IAT_SOLANA_RPC_URL")
+    if not rpc_url:
+        raise HTTPException(status_code=503, detail="checkout_rpc_not_configured")
+    try:
+        response = requests.post(
+            rpc_url,
+            json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+            timeout=min(max(float(os.getenv("IAT_CHECKOUT_RPC_TIMEOUT_SECONDS", "10")), 2), 20),
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (requests.RequestException, ValueError) as exc:
+        raise HTTPException(status_code=503, detail="checkout_rpc_unavailable") from exc
+    if payload.get("error") or "result" not in payload:
+        raise HTTPException(status_code=503, detail="checkout_rpc_invalid_response")
+    return payload["result"]
+
+
+def _build_authorized_wallet_transaction(
+    quote_id: str,
+    prepared: dict[str, Any],
+) -> dict[str, Any]:
+    plan = prepared.get("solana_instruction_plan")
+    if not isinstance(plan, dict):
+        raise HTTPException(status_code=409, detail="quote_instruction_plan_unavailable")
+    execute = plan.get("execute")
+    if not isinstance(execute, dict):
+        raise HTTPException(status_code=409, detail="quote_instruction_plan_unavailable")
+    try:
+        instruction = Instruction(
+            Pubkey.from_string(str(execute["program_id"])),
+            base64.b64decode(str(execute["data_base64"]), validate=True),
+            [
+                AccountMeta(
+                    Pubkey.from_string(str(item["address"])),
+                    bool(item["signer"]),
+                    bool(item["writable"]),
+                )
+                for item in execute["accounts"]
+            ],
+        )
+        latest = _rpc_call("getLatestBlockhash", [{"commitment": "finalized"}])
+        blockhash = Hash.from_string(str(latest["value"]["blockhash"]))
+        message = Message.new_with_blockhash(
+            [instruction], Pubkey.from_string(str(plan["fee_payer"])), blockhash
+        )
+        unsigned = VersionedTransaction.populate(
+            message,
+            [Signature.default()] * int(message.header.num_required_signatures),
+        )
+        unsigned_base64 = base64.b64encode(bytes(unsigned)).decode()
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail="quote_instruction_plan_invalid") from exc
+    authorized = _authorize_with_quote_signer(
+        quote_id=quote_id,
+        transaction_base64=unsigned_base64,
+        instruction_plan=plan,
+        expires_at=int(prepared["expires_at"]),
+    )
+    simulation = _rpc_call(
+        "simulateTransaction",
+        [
+            authorized["transaction_base64"],
+            {
+                "encoding": "base64",
+                "commitment": "confirmed",
+                "sigVerify": False,
+                "replaceRecentBlockhash": False,
+            },
+        ],
+    )
+    value = simulation.get("value") if isinstance(simulation, dict) else None
+    if not isinstance(value, dict) or value.get("err") is not None:
+        raise HTTPException(status_code=409, detail="transaction_simulation_failed")
+    return {
+        "transaction_base64": authorized["transaction_base64"],
+        "message_hash": authorized["message_hash"],
+        "quote_authority": authorized["quote_authority"],
+        "simulation": {
+            "status": "succeeded",
+            "units_consumed": value.get("unitsConsumed"),
+        },
+    }
+
+
+@router.post("/wallet-checkout/{order_id}/prepare")
+def prepare_wallet_checkout(
+    order_id: str,
+    req: WalletCheckoutRequest,
+    response: Response,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    wallet, _ = _session_wallet(authorization)
+    order = _wallet_owned_order(order_id, wallet)
+    secret = str(order.get("buyer_secret") or "")
+    if len(secret) < 16:
+        raise HTTPException(status_code=409, detail="order_credential_unavailable")
+    quote = create_universal_quote(
+        UniversalQuoteRequest(
+            order_id=order_id,
+            buyer_wallet=wallet,
+            buyer_secret=secret,
+            input_asset=req.input_asset,
+        ),
+        idempotency_key=f"wallet-checkout-{secrets.token_urlsafe(24)}",
+    )
+    prepared = prepare_universal_checkout(
+        str(quote["quote_id"]),
+        UniversalPrepareRequest(buyer_wallet=wallet, buyer_secret=secret),
+    )
+    authorized = _build_authorized_wallet_transaction(str(quote["quote_id"]), prepared)
+    plan = prepared["solana_instruction_plan"]
+    _private_no_store(response)
+    return {
+        "status": "wallet_checkout_ready_for_review",
+        "order_id": order_id,
+        "quote_id": quote["quote_id"],
+        "expires_at": quote["expires_at"],
+        "review": {
+            "cluster": "solana:devnet",
+            "fee_payer": wallet,
+            "input": quote["input"],
+            "minimum_iat_output": quote["output"],
+            "program_id": plan["program_id"],
+            "treasury_vault": plan.get("display", {}).get("treasury_vault"),
+            "iat_destination": plan.get("display", {}).get("iat_destination"),
+            "network_fee": "estimated_by_wallet",
+        },
+        **authorized,
+    }
+
+
+@router.post("/wallet-checkout/{quote_id}/submit")
+def submit_wallet_checkout(
+    quote_id: str,
+    req: WalletCheckoutSubmitRequest,
+    response: Response,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    wallet, _ = _session_wallet(authorization)
+    _, order = _wallet_owned_quote(quote_id, wallet)
+    result = submit_universal_checkout(
+        quote_id,
+        UniversalSubmitRequest(
+            buyer_wallet=wallet,
+            buyer_secret=str(order["buyer_secret"]),
+            tx_signature=req.tx_signature,
+        ),
+    )
+    _private_no_store(response)
+    return result
+
+
+@router.post("/wallet-checkout/{quote_id}/confirm")
+def confirm_wallet_checkout(
+    quote_id: str,
+    response: Response,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    wallet, _ = _session_wallet(authorization)
+    _, order = _wallet_owned_quote(quote_id, wallet)
+    result = confirm_universal_checkout(
+        quote_id,
+        UniversalPrepareRequest(
+            buyer_wallet=wallet,
+            buyer_secret=str(order["buyer_secret"]),
+        ),
+    )
+    _private_no_store(response)
+    return result
 
 
 @router.post("/wallet-auth/challenge")

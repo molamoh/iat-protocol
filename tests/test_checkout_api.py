@@ -6,6 +6,8 @@ import hashlib
 import pytest
 from fastapi import HTTPException, Response
 from solders.keypair import Keypair
+from solders.hash import Hash
+from solders.transaction import VersionedTransaction
 
 from iat.api import checkout_api, db
 from iat import checkout_compensation, checkout_delivery, checkout_receipt
@@ -285,6 +287,89 @@ def test_wallet_session_cannot_open_another_wallet_receipt(checkout_database):
             authorization=f"Bearer {session['access_token']}",
         )
     assert rejected.value.status_code == 404
+
+
+def test_wallet_checkout_builds_authorized_transaction_and_requires_simulation(monkeypatch):
+    fee_payer = Keypair().pubkey()
+    program = Keypair().pubkey()
+    observed = {}
+
+    def rpc(method, params):
+        if method == "getLatestBlockhash":
+            return {"value": {"blockhash": str(Hash.default())}}
+        observed["simulation"] = params
+        return {"value": {"err": None, "unitsConsumed": 4321}}
+
+    def authorize(**kwargs):
+        observed["authorized"] = kwargs
+        return {
+            "transaction_base64": kwargs["transaction_base64"],
+            "message_hash": "message-hash",
+            "quote_authority": "authority",
+        }
+
+    monkeypatch.setattr(checkout_api, "_rpc_call", rpc)
+    monkeypatch.setattr(checkout_api, "_authorize_with_quote_signer", authorize)
+    prepared = {
+        "expires_at": NOW + 120,
+        "solana_instruction_plan": {
+            "fee_payer": str(fee_payer),
+            "execute": {
+                "program_id": str(program),
+                "data_base64": base64.b64encode(b"checkout").decode(),
+                "accounts": [
+                    {"address": str(fee_payer), "signer": True, "writable": True}
+                ],
+            },
+        },
+    }
+
+    result = checkout_api._build_authorized_wallet_transaction("uq_wallet", prepared)
+
+    decoded = VersionedTransaction.from_bytes(base64.b64decode(result["transaction_base64"]))
+    assert str(decoded.message.account_keys[0]) == str(fee_payer)
+    assert result["simulation"] == {"status": "succeeded", "units_consumed": 4321}
+    assert observed["simulation"][1]["sigVerify"] is False
+
+
+def test_wallet_checkout_fails_closed_when_simulation_fails(monkeypatch):
+    fee_payer = Keypair().pubkey()
+    monkeypatch.setattr(
+        checkout_api,
+        "_rpc_call",
+        lambda method, params: (
+            {"value": {"blockhash": str(Hash.default())}}
+            if method == "getLatestBlockhash"
+            else {"value": {"err": {"InstructionError": [0, "Custom"]}}}
+        ),
+    )
+    monkeypatch.setattr(
+        checkout_api,
+        "_authorize_with_quote_signer",
+        lambda **kwargs: {
+            "transaction_base64": kwargs["transaction_base64"],
+            "message_hash": "hash",
+            "quote_authority": "authority",
+        },
+    )
+    prepared = {
+        "expires_at": NOW + 120,
+        "solana_instruction_plan": {
+            "fee_payer": str(fee_payer),
+            "execute": {
+                "program_id": str(Keypair().pubkey()),
+                "data_base64": base64.b64encode(b"checkout").decode(),
+                "accounts": [
+                    {"address": str(fee_payer), "signer": True, "writable": True}
+                ],
+            },
+        },
+    }
+
+    with pytest.raises(HTTPException) as rejected:
+        checkout_api._build_authorized_wallet_transaction("uq_wallet", prepared)
+    assert rejected.value.status_code == 409
+    assert rejected.value.detail == "transaction_simulation_failed"
 
 
 def _basic(username: str, password: str) -> str:

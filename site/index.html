@@ -170,6 +170,22 @@
             <button id="wallet-disconnect" type="button">Disconnect</button>
           </div>
           <p id="inbox-status" class="inbox-status" role="status" aria-live="polite"></p>
+          <div id="wallet-checkout" class="wallet-checkout" hidden>
+            <h3>Pay an IAT order</h3>
+            <label for="checkout-order-id">Order ID</label>
+            <input id="checkout-order-id" autocomplete="off" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+            <button id="checkout-prepare" class="button secondary" type="button">Prepare and simulate USDC payment</button>
+            <div id="checkout-review" class="checkout-review" hidden>
+              <div><span>Network</span><strong id="checkout-network"></strong></div>
+              <div><span>You pay</span><strong id="checkout-input"></strong></div>
+              <div><span>Minimum received</span><strong id="checkout-output"></strong></div>
+              <div><span>Fee payer</span><strong id="checkout-fee-payer"></strong></div>
+              <div><span>USDC vault</span><strong id="checkout-vault"></strong></div>
+              <div><span>Simulation</span><strong id="checkout-simulation"></strong></div>
+              <p>This approval sends a real Solana devnet transaction. Phantom will show the final transaction before signing.</p>
+              <button id="checkout-send" class="button primary" type="button">I confirm and pay with Phantom</button>
+            </div>
+          </div>
           <div id="inbox-results" class="inbox-results" hidden>
             <div class="inbox-results-head"><strong>Your deliveries</strong><span id="inbox-count"></span></div>
             <div id="inbox-items"></div>

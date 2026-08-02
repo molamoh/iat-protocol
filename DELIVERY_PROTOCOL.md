@@ -105,6 +105,17 @@ before recording `sent`, `delivered`, `open`, `click`, `bounce`, `blocked`, or
 `spam`. Bounce/block/spam events fail a merely dispatched receipt; they never
 reverse an explicit buyer decision.
 
+For transport-only production checks, configure one fixed external recipient:
+
+```text
+IAT_DELIVERY_CANARY_RECIPIENT=<external address distinct from the sender>
+```
+
+An authenticated administrator can then call
+`POST /admin/checkout-delivery/email-canary`. The endpoint cannot accept an
+arbitrary recipient: it sends one signed probe only to the environment address
+and creates no order, receipt, payment, or settlement.
+
 The review URL stores its high-entropy receipt credential in the browser URL
 fragment. Fragments are not sent to Cloudflare Pages, referrers or Web
 Analytics. Loading the page performs a read-only lookup; acceptance or dispute

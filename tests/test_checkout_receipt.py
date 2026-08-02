@@ -391,6 +391,30 @@ def test_mailjet_bounce_fails_dispatched_email(receipt_db, tmp_path, monkeypatch
     assert failed["dispatch_last_error"].startswith("email_provider_bounce")
 
 
+def test_transport_canary_uses_fixed_env_recipient_without_receipt(
+    receipt_db, tmp_path, monkeypatch
+):
+    keypair = Keypair()
+    keyfile = tmp_path / "delivery-canary-keypair.json"
+    keyfile.write_text(json.dumps(list(bytes(keypair))), encoding="utf-8")
+    monkeypatch.setenv("IAT_DELIVERY_SIGNING_KEYPAIR_PATH", str(keyfile))
+    monkeypatch.setenv(
+        "IAT_DELIVERY_EMAIL_FROM", "IAT Delivery <delivery@iat.example>"
+    )
+    monkeypatch.setenv("IAT_DELIVERY_CANARY_RECIPIENT", "owner@example.com")
+    messages = []
+
+    result = receipt.send_email_transport_canary(now=150, send=messages.append)
+
+    assert result["status"] == "delivery_transport_canary_dispatched"
+    assert result["destination"] == "o***@example.com"
+    assert result["payment_created"] is False
+    assert result["receipt_created"] is False
+    assert messages[0]["To"] == "owner@example.com"
+    assert messages[0]["X-Mailjet-Campaign"].startswith("iat_transport_canary_")
+    assert messages[0]["X-IAT-Delivery-Signer"] == str(keypair.pubkey())
+
+
 def test_email_failure_retries_with_stable_message_id(receipt_db, tmp_path, monkeypatch):
     _ready_email(tmp_path, monkeypatch)
     message_ids = []

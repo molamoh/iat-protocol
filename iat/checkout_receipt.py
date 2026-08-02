@@ -712,6 +712,55 @@ def _send_smtp(message: EmailMessage) -> None:
         raise DeliveryReceiptError(f"delivery_smtp_{type(exc).__name__.lower()}") from exc
 
 
+def send_email_transport_canary(
+    *, now: int | None = None, send: Any = _send_smtp
+) -> dict[str, Any]:
+    """Send one admin-triggered transport probe to a fixed environment recipient."""
+    recipient = validate_destination(
+        "email", os.getenv("IAT_DELIVERY_CANARY_RECIPIENT", "")
+    )
+    if not recipient:
+        raise DeliveryReceiptError("delivery_canary_recipient_not_configured")
+    current_time = _now() if now is None else int(now)
+    nonce = secrets.token_hex(16)
+    campaign = f"iat_transport_canary_{nonce}"
+    payload = {
+        "event": "iat.delivery.transport_canary",
+        "issued_at": current_time,
+        "nonce": nonce,
+    }
+    canonical = _canonical_payload(payload)
+    keypair = _delivery_keypair()
+    signature = str(keypair.sign_message(canonical.encode()))
+    from_address = os.getenv(
+        "IAT_DELIVERY_EMAIL_FROM", "IAT Delivery <delivery@iat.invalid>"
+    )
+    message = EmailMessage()
+    message["From"] = from_address
+    message["To"] = recipient
+    message["Subject"] = "IAT delivery transport canary"
+    message["Message-ID"] = f"<{campaign}@delivery.iatprotocol>"
+    message["X-Mailjet-Campaign"] = campaign
+    message["X-IAT-Delivery-Signature"] = signature
+    message["X-IAT-Delivery-Signer"] = str(keypair.pubkey())
+    message.set_content(
+        "IAT delivery transport canary. No order, payment, or settlement was created.\n\n"
+        f"Issued at: {current_time}\n"
+        f"Signer: {keypair.pubkey()}\n"
+        f"Signature: {signature}\n"
+        f"Payload: {canonical}\n"
+    )
+    send(message)
+    return {
+        "status": "delivery_transport_canary_dispatched",
+        "destination": _masked_destination("email", recipient),
+        "campaign": campaign,
+        "signer": str(keypair.pubkey()),
+        "payment_created": False,
+        "receipt_created": False,
+    }
+
+
 def dispatch_email(
     quote_id: str,
     *,

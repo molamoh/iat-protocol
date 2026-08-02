@@ -56,6 +56,10 @@ from iat.checkout_compensation import (
     compensation_dashboard,
     decide_compensation,
 )
+from iat.checkout_receipt import (
+    DeliveryReceiptError,
+    send_email_transport_canary,
+)
 from iat.config import IAT_TOKEN_ADDRESS
 
 from iat.api.db import (
@@ -11767,6 +11771,16 @@ def admin_checkout_delivery_dashboard(
     _admin: bool = Depends(require_admin),
 ):
     return delivery_dashboard(limit=limit)
+
+
+@app.post("/admin/checkout-delivery/email-canary")
+def admin_checkout_delivery_email_canary(
+    _admin: bool = Depends(require_admin),
+):
+    try:
+        return send_email_transport_canary()
+    except DeliveryReceiptError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/admin/checkout-delivery/{quote_id}/events")

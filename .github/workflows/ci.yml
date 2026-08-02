@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      IAT_DB_PATH: ${{ runner.temp }}/iat-test.sqlite
+      IAT_DB_PATH: /tmp/iat-test.sqlite
       IAT_ENABLE_RUNTIME_GOVERNANCE_LOOP: "false"
       PYTHONDONTWRITEBYTECODE: "1"
     steps:

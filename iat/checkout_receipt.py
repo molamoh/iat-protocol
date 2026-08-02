@@ -17,6 +17,8 @@ from urllib.parse import urlparse
 
 import requests
 from solders.keypair import Keypair
+from solders.pubkey import Pubkey
+from solders.signature import Signature
 
 from iat.api import db as database
 from iat.api.db import get_conn, qmark, release_conn
@@ -112,6 +114,8 @@ def init_delivery_receipt_db() -> None:
                 provider_message_id TEXT,
                 sealed_payload TEXT,
                 inbox_opened_at INTEGER,
+                inbox_signature TEXT,
+                inbox_signer TEXT,
                 updated_at INTEGER NOT NULL
             )
             """
@@ -128,6 +132,8 @@ def init_delivery_receipt_db() -> None:
             "provider_message_id": "TEXT",
             "sealed_payload": "TEXT",
             "inbox_opened_at": "INTEGER",
+            "inbox_signature": "TEXT",
+            "inbox_signer": "TEXT",
         }
         for column, definition in columns.items():
             try:
@@ -388,19 +394,35 @@ def publish_delivery_payload(
     if len(canonical_payload.encode()) > 250_000:
         raise DeliveryReceiptError("delivery_payload_too_large")
     payload_digest = hashlib.sha256(canonical_payload.encode()).hexdigest()
+    inbox_signature = inbox_signer = None
+    if os.getenv("IAT_DELIVERY_SIGNING_KEYPAIR_PATH", "").strip():
+        keypair = _delivery_keypair()
+        inbox_signature = str(keypair.sign_message(canonical_payload.encode()))
+        inbox_signer = str(keypair.pubkey())
     if receipt.get("payload_digest"):
         if not secrets.compare_digest(str(receipt["payload_digest"]), payload_digest):
             raise DeliveryReceiptError("delivery_payload_digest_conflict")
-        if not receipt.get("sealed_payload"):
+        if not receipt.get("sealed_payload") or (
+            inbox_signature and not receipt.get("inbox_signature")
+        ):
             conn = get_conn()
             try:
                 p = qmark()
                 cur = conn.cursor()
                 cur.execute(
                     f"""UPDATE universal_checkout_delivery_receipts
-                    SET sealed_payload={p}, state={p}, updated_at={p}
-                    WHERE quote_id={p} AND sealed_payload IS NULL""",
-                    (canonical_payload, "delivered", _now(), quote_id),
+                    SET sealed_payload=COALESCE(sealed_payload,{p}), state={p},
+                        inbox_signature=COALESCE(inbox_signature,{p}),
+                        inbox_signer=COALESCE(inbox_signer,{p}), updated_at={p}
+                    WHERE quote_id={p}""",
+                    (
+                        canonical_payload,
+                        "delivered",
+                        inbox_signature,
+                        inbox_signer,
+                        _now(),
+                        quote_id,
+                    ),
                 )
                 conn.commit()
             finally:
@@ -414,13 +436,16 @@ def publish_delivery_payload(
         cur = conn.cursor()
         cur.execute(
             f"""UPDATE universal_checkout_delivery_receipts
-            SET state={p}, payload_digest={p}, sealed_payload={p}, payload_ready_at={p},
+            SET state={p}, payload_digest={p}, sealed_payload={p},
+                inbox_signature={p}, inbox_signer={p}, payload_ready_at={p},
                 dispatched_at={p}, updated_at={p}
             WHERE quote_id={p} AND payload_digest IS NULL""",
             (
                 state,
                 payload_digest,
                 canonical_payload,
+                inbox_signature,
+                inbox_signer,
                 current_time,
                 None,
                 current_time,
@@ -461,6 +486,19 @@ def open_delivery_inbox(receipt_token: str, *, now: int | None = None) -> dict[s
         str(receipt["payload_digest"]),
     ):
         raise DeliveryReceiptError("sealed_delivery_payload_unavailable")
+    inbox_signature = receipt.get("inbox_signature")
+    inbox_signer = receipt.get("inbox_signer")
+    if bool(inbox_signature) != bool(inbox_signer):
+        raise DeliveryReceiptError("sealed_delivery_signature_unavailable")
+    if inbox_signature and inbox_signer:
+        try:
+            verified = Signature.from_string(str(inbox_signature)).verify(
+                Pubkey.from_string(str(inbox_signer)), str(raw_payload).encode()
+            )
+        except ValueError as exc:
+            raise DeliveryReceiptError("sealed_delivery_signature_invalid") from exc
+        if not verified:
+            raise DeliveryReceiptError("sealed_delivery_signature_invalid")
     current_time = _now() if now is None else int(now)
     if not receipt.get("inbox_opened_at"):
         conn = get_conn()
@@ -494,6 +532,8 @@ def open_delivery_inbox(receipt_token: str, *, now: int | None = None) -> dict[s
         "payload_ready_at": receipt["payload_ready_at"],
         "canonical_result": raw_payload,
         "result": payload,
+        "inbox_signature": inbox_signature,
+        "inbox_signer": inbox_signer,
         "opening_does_not_accept_delivery": True,
     }
 
@@ -1147,6 +1187,8 @@ def public_delivery_receipt(receipt: dict[str, Any] | None) -> dict[str, Any]:
         "provider_event_at": receipt.get("provider_event_at"),
         "inbox_available": bool(receipt.get("sealed_payload")),
         "inbox_opened_at": receipt.get("inbox_opened_at"),
+        "inbox_signature": receipt.get("inbox_signature"),
+        "inbox_signer": receipt.get("inbox_signer"),
         "notification_status": notification_status,
         "buyer_confirmation_required": receipt["state"] in {"dispatched", "delivered"},
         "available_channels": sorted(CHANNELS),

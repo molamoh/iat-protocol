@@ -138,6 +138,46 @@ def test_native_inbox_canary_creates_only_receipt_and_no_notification(
     assert opened["result"]["execution_mode"] == "receipt_only_canary"
 
 
+def test_native_inbox_signature_is_verified_and_tampering_fails(
+    receipt_db, tmp_path, monkeypatch
+):
+    keypair = Keypair()
+    keyfile = tmp_path / "inbox-authority.json"
+    keyfile.write_text(json.dumps(list(bytes(keypair))), encoding="utf-8")
+    monkeypatch.setenv("IAT_DELIVERY_SIGNING_KEYPAIR_PATH", str(keyfile))
+    configured = receipt.configure_delivery_receipt(
+        quote_id="uq_signed_inbox",
+        order_id="ord_signed_inbox",
+        channel="api_pull",
+        destination=None,
+        now=100,
+    )
+    receipt.publish_delivery_payload(
+        quote_id="uq_signed_inbox",
+        order_id="ord_signed_inbox",
+        payload={"status": "success", "summary": "Signed result"},
+        now=110,
+    )
+
+    opened = receipt.open_delivery_inbox(configured["receipt_token"], now=120)
+    assert opened["inbox_signer"] == str(keypair.pubkey())
+    assert Signature.from_string(opened["inbox_signature"]).verify(
+        keypair.pubkey(), opened["canonical_result"].encode()
+    )
+
+    conn = receipt.get_conn()
+    try:
+        conn.execute(
+            "UPDATE universal_checkout_delivery_receipts SET inbox_signature=? WHERE quote_id=?",
+            (str(Keypair().sign_message(b"wrong payload")), "uq_signed_inbox"),
+        )
+        conn.commit()
+    finally:
+        receipt.release_conn(conn)
+    with pytest.raises(receipt.DeliveryReceiptError, match="signature_invalid"):
+        receipt.open_delivery_inbox(configured["receipt_token"], now=130)
+
+
 def test_configured_receipt_rebinds_to_replacement_quote(receipt_db):
     first = receipt.configure_delivery_receipt(
         quote_id="uq_expired",

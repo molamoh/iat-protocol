@@ -124,7 +124,12 @@ worker ayant déjà appelé un système externe.
 ## IAT Delivery Inbox
 
 Le résultat destiné à l'acheteur est filtré par liste blanche, sérialisé en
-JSON canonique, scellé par SHA-256 et conservé dans l'inbox native IAT. Le
+JSON canonique, scellé par SHA-256 et conservé dans l'inbox native IAT. Quand
+`IAT_DELIVERY_SIGNING_KEYPAIR_PATH` est configuré, cette même représentation
+canonique est signée par l'autorité Ed25519 de livraison et la signature ainsi
+que sa clé publique sont persistées avec le reçu. Une clé configurée mais
+illisible fait échouer le scellement au lieu de produire silencieusement une
+preuve non signée. Le
 jeton de capacité aléatoire `cdr_...` permet de consulter le reçu puis le
 contenu sans placer le secret buyer dans l'URL :
 
@@ -136,7 +141,9 @@ POST /payments/v1/universal/delivery-receipts/{receipt_token}/decision
 
 L'ouverture de l'inbox est auditée une seule fois, utilise `Cache-Control:
 no-store` et ne vaut jamais acceptation. Le portail recalcule l'empreinte du
-JSON canonique avant d'afficher le résultat. Le règlement reste bloqué jusqu'à
+JSON canonique puis vérifie la signature Ed25519 IAT avant d'afficher le
+résultat. Les anciens reçus sans signature restent identifiés comme tels. Le
+règlement reste bloqué jusqu'à
 une décision explicite de l'acheteur.
 
 Le reçu passe à `delivered` dès que l'inbox native est disponible. L'e-mail ou

@@ -5,6 +5,12 @@ const receiptPanel = document.querySelector("#receipt");
 const status = document.querySelector("#decision-status");
 let receiptState = null;
 
+async function sha256(value) {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 function displayTime(value) {
   return value ? new Date(value * 1000).toLocaleString() : "Not recorded";
 }
@@ -32,12 +38,21 @@ async function loadReceipt() {
     const result = await response.json();
     if (!response.ok) throw new Error(result.detail || "Receipt unavailable");
     const receipt = result.final_receipt;
+    const inboxResponse = await fetch(`${API_BASE}/payments/v1/universal/delivery-receipts/${encodeURIComponent(token)}/inbox`, {cache:"no-store"});
+    const inbox = await inboxResponse.json();
+    if (!inboxResponse.ok) throw new Error(inbox.detail || "Delivery payload unavailable");
+    const actualDigest = await sha256(inbox.canonical_result);
+    if (actualDigest !== inbox.payload_digest) throw new Error("Delivery integrity verification failed");
     document.querySelector("#quote-id").textContent = result.quote_id;
     document.querySelector("#receipt-channel").textContent = receipt.channel;
     document.querySelector("#payload-digest").textContent = receipt.payload_digest || "Not sealed";
     document.querySelector("#dispatched-at").textContent = displayTime(receipt.dispatched_at);
     document.querySelector("#dispatch-signer").textContent = receipt.dispatch_signer || "Not signed";
     document.querySelector("#provider-status").textContent = receipt.provider_status || "Awaiting provider event";
+    document.querySelector("#delivery-result").textContent = JSON.stringify(inbox.result, null, 2);
+    const integrity = document.querySelector("#integrity-status");
+    integrity.textContent = "SHA-256 verified";
+    integrity.className = "verified";
     setFinalState(receipt.state);
     loading.hidden = true;
     receiptPanel.hidden = false;

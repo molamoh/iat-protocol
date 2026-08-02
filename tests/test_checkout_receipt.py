@@ -66,7 +66,7 @@ def test_api_pull_receipt_is_sealed_and_buyer_acceptance_is_idempotent(receipt_d
         )
 
 
-def test_email_destination_is_masked_and_waits_for_dispatch(receipt_db):
+def test_email_destination_uses_native_inbox_before_optional_dispatch(receipt_db):
     configured = receipt.configure_delivery_receipt(
         quote_id="uq_email",
         order_id="ord_email",
@@ -82,11 +82,40 @@ def test_email_destination_is_masked_and_waits_for_dispatch(receipt_db):
     )
 
     assert configured["destination"] == "b***@example.com"
-    assert ready["state"] == "pending_dispatch"
-    with pytest.raises(receipt.DeliveryReceiptError, match="not_yet_dispatched"):
-        receipt.acknowledge_delivery(
-            quote_id="uq_email", decision="accepted", now=120
-        )
+    assert ready["state"] == "delivered"
+    assert ready["inbox_available"] is True
+    assert ready["notification_status"] == "pending"
+    accepted = receipt.acknowledge_delivery(
+        quote_id="uq_email", decision="accepted", now=120
+    )
+    assert accepted["state"] == "accepted"
+
+
+def test_native_inbox_returns_exact_sealed_payload_and_audits_first_open(receipt_db):
+    configured = receipt.configure_delivery_receipt(
+        quote_id="uq_inbox",
+        order_id="ord_inbox",
+        channel="email",
+        destination="buyer@example.com",
+        now=100,
+    )
+    payload = {"status": "success", "summary": "Native delivery"}
+    ready = receipt.publish_delivery_payload(
+        quote_id="uq_inbox", order_id="ord_inbox", payload=payload, now=110
+    )
+
+    opened = receipt.open_delivery_inbox(configured["receipt_token"], now=120)
+    duplicate = receipt.open_delivery_inbox(configured["receipt_token"], now=130)
+
+    assert opened["result"] == payload
+    assert opened["canonical_result"] == receipt._canonical_payload(payload)
+    assert opened["payload_digest"] == ready["payload_digest"]
+    assert duplicate["result"] == payload
+    assert [event["event_type"] for event in receipt.delivery_receipt_events("uq_inbox")] == [
+        "delivery_destination_configured",
+        "delivery_payload_sealed",
+        "delivery_inbox_opened",
+    ]
 
 
 def test_configured_receipt_rebinds_to_replacement_quote(receipt_db):
@@ -277,7 +306,8 @@ def test_webhook_failure_is_retried_with_same_receipt_id(receipt_db, tmp_path, m
     waiting = receipt.dispatch_webhook("uq_webhook", now=121, post=post)
     second = receipt.dispatch_webhook("uq_webhook", now=150, post=post)
 
-    assert first["state"] == "pending_dispatch"
+    assert first["state"] == "delivered"
+    assert first["notification_status"] == "pending"
     assert first["dispatch_next_attempt_at"] == 150
     assert waiting["retry_wait"] is True
     assert second["dispatch_attempt_count"] == 2
@@ -325,7 +355,8 @@ def test_signed_email_contains_stable_receipt_and_explicit_decision_link(
     message = messages[0]
     signature = Signature.from_string(message["X-IAT-Delivery-Signature"])
     canonical = receipt._canonical_payload(payload).encode()
-    assert result["state"] == "dispatched"
+    assert result["state"] == "delivered"
+    assert result["notification_status"] == "dispatched"
     assert message["To"] == "buyer@example.com"
     assert signature.verify(keypair.pubkey(), canonical)
     assert "https://iat.example/delivery/#receipt=cdr_" in message.get_content()
@@ -350,7 +381,7 @@ def test_mailjet_sent_event_confirms_dispatched_email(receipt_db, tmp_path, monk
         provider_message_id="mj-123",
     )
 
-    assert dispatched["state"] == "dispatched"
+    assert dispatched["state"] == "delivered"
     assert confirmed["state"] == "delivered"
     assert confirmed["provider_status"] == "sent"
     assert receipt.get_delivery_receipt("uq_email_dispatch")["provider_message_id"] == "mj-123"
@@ -386,7 +417,8 @@ def test_mailjet_bounce_fails_dispatched_email(receipt_db, tmp_path, monkeypatch
         reason="recipient user unknown",
     )
 
-    assert failed["state"] == "dispatch_failed"
+    assert failed["state"] == "delivered"
+    assert failed["notification_status"] == "failed"
     assert failed["provider_status"] == "bounce"
     assert failed["dispatch_last_error"].startswith("email_provider_bounce")
 
@@ -426,7 +458,8 @@ def test_email_failure_retries_with_stable_message_id(receipt_db, tmp_path, monk
     first = receipt.dispatch_email("uq_email_dispatch", now=120, send=fail)
     second = receipt.dispatch_email("uq_email_dispatch", now=150, send=fail)
 
-    assert first["state"] == "pending_dispatch"
+    assert first["state"] == "delivered"
+    assert first["notification_status"] == "pending"
     assert first["dispatch_next_attempt_at"] == 150
     assert second["dispatch_attempt_count"] == 2
     assert message_ids[0] == message_ids[1]

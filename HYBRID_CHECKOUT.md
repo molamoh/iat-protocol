@@ -121,6 +121,31 @@ Chaque fournisseur doit traiter le couple stable `order_id` /
 concurrentes ; cette clé protège aussi la reprise après l'arrêt brutal d'un
 worker ayant déjà appelé un système externe.
 
+## IAT Delivery Inbox
+
+Le résultat destiné à l'acheteur est filtré par liste blanche, sérialisé en
+JSON canonique, scellé par SHA-256 et conservé dans l'inbox native IAT. Le
+jeton de capacité aléatoire `cdr_...` permet de consulter le reçu puis le
+contenu sans placer le secret buyer dans l'URL :
+
+```text
+GET /payments/v1/universal/delivery-receipts/{receipt_token}
+GET /payments/v1/universal/delivery-receipts/{receipt_token}/inbox
+POST /payments/v1/universal/delivery-receipts/{receipt_token}/decision
+```
+
+L'ouverture de l'inbox est auditée une seule fois, utilise `Cache-Control:
+no-store` et ne vaut jamais acceptation. Le portail recalcule l'empreinte du
+JSON canonique avant d'afficher le résultat. Le règlement reste bloqué jusqu'à
+une décision explicite de l'acheteur.
+
+Le reçu passe à `delivered` dès que l'inbox native est disponible. L'e-mail ou
+le webhook configuré devient une notification secondaire : son échec, sa
+suspension ou l'absence d'un fournisseur SMTP ne rétrograde jamais la
+livraison IAT et ne bloque jamais l'accès au résultat. Son état distinct est
+exposé par `notification_status` (`pending`, `dispatched`, `confirmed` ou
+`failed`).
+
 ## Supervision et reprise
 
 Les routes suivantes exigent `IAT_ADMIN_API_KEY` via l'en-tête `x-api-key` :

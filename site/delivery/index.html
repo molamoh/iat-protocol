@@ -17,7 +17,7 @@
     <section class="delivery-panel">
       <p class="kicker">FINAL DELIVERY</p>
       <h1>Review your service receipt.</h1>
-      <p class="intro">Opening this page does not accept the delivery. Check the receipt details, review the result received by e-mail or API, then make one explicit final decision.</p>
+      <p class="intro">Opening this page does not accept the delivery. Your sealed result is available directly from IAT; e-mail and webhooks are optional notifications only.</p>
       <div id="loading" class="notice">Loading the sealed receipt…</div>
       <div id="receipt" hidden>
         <dl class="receipt-details">
@@ -29,6 +29,10 @@
           <div><dt>Provider status</dt><dd id="provider-status"></dd></div>
           <div><dt>Signer</dt><dd id="dispatch-signer" class="digest"></dd></div>
         </dl>
+        <section class="inbox-result" aria-labelledby="result-title">
+          <div class="result-heading"><h2 id="result-title">Delivered result</h2><span id="integrity-status">Verifying integrity…</span></div>
+          <pre id="delivery-result"></pre>
+        </section>
         <div id="decision-area">
           <button id="accept" class="button primary" type="button">Accept delivery</button>
           <button id="report" class="button secondary" type="button">Report an issue</button>

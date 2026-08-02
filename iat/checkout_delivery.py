@@ -30,6 +30,14 @@ AUTHORIZED_DELIVERY_STATUSES = {
     "pipeline_completed",
     "success",
 }
+BUYER_RESULT_FIELDS = {
+    "status", "summary", "recommendations", "final_recommendation", "confidence",
+    "sources", "message", "reason", "delivery_authorized", "foundation_verdict",
+    "foundation_decision_ready", "foundation_evidence_status",
+    "foundation_evidence_reason", "research_status", "research_valid_agents",
+    "verification_status", "verification_valid_agents", "claim_validation_status",
+    "verified_claim_count", "rejected_claim_count", "execution_mode", "retryable",
+}
 
 
 def _int_env(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -221,6 +229,17 @@ def get_delivery(quote_id: str) -> dict[str, Any] | None:
         release_conn(conn)
 
 
+def buyer_delivery_result(raw_result: Any) -> dict[str, Any] | None:
+    """Keep only fields explicitly designed for disclosure to the buyer."""
+    if not isinstance(raw_result, dict):
+        return None
+    return {
+        key: raw_result[key]
+        for key in BUYER_RESULT_FIELDS
+        if key in raw_result
+    }
+
+
 def _public_delivery(delivery: dict[str, Any] | None) -> dict[str, Any]:
     if not delivery:
         return {"state": "not_enqueued"}
@@ -240,36 +259,9 @@ def _public_delivery(delivery: dict[str, Any] | None) -> dict[str, Any]:
         )
     }
     raw_result = delivery.get("result")
-    if isinstance(raw_result, dict):
-        allowed_result_fields = {
-            "status",
-            "summary",
-            "recommendations",
-            "final_recommendation",
-            "confidence",
-            "sources",
-            "message",
-            "reason",
-            "delivery_authorized",
-            "foundation_verdict",
-            "foundation_decision_ready",
-            "foundation_evidence_status",
-            "foundation_evidence_reason",
-            "research_status",
-            "research_valid_agents",
-            "verification_status",
-            "verification_valid_agents",
-            "claim_validation_status",
-            "verified_claim_count",
-            "rejected_claim_count",
-            "execution_mode",
-            "retryable",
-        }
-        result["result"] = {
-            key: raw_result[key]
-            for key in allowed_result_fields
-            if key in raw_result
-        }
+    buyer_result = buyer_delivery_result(raw_result)
+    if buyer_result is not None:
+        result["result"] = buyer_result
     result["retryable"] = delivery.get("state") == "retryable_failure"
     return result
 
@@ -944,7 +936,7 @@ def run_checkout_delivery(
             publish_delivery_payload(
                 quote_id=quote_id,
                 order_id=claimed["order_id"],
-                payload=result,
+                payload=buyer_delivery_result(result) or {"status": "unavailable_result"},
                 now=current_time,
             )
         except Exception:

@@ -17,7 +17,7 @@ from decimal import Decimal, ROUND_UP
 from typing import Any
 
 import requests
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Header, HTTPException, Response
 from pydantic import BaseModel, Field
 from solders.pubkey import Pubkey
 from solders.signature import Signature
@@ -73,6 +73,7 @@ from iat.checkout_receipt import (
     get_delivery_receipt,
     get_delivery_receipt_by_token,
     init_delivery_receipt_db,
+    open_delivery_inbox,
     public_delivery_receipt,
     publish_delivery_payload,
     record_email_provider_event,
@@ -321,8 +322,7 @@ def _get_quote(quote_id: str) -> dict[str, Any] | None:
 
 def _sync_delivery_receipt(row: dict[str, Any], delivery: dict[str, Any]) -> dict[str, Any]:
     if delivery.get("state") == "completed":
-        stored = get_delivery(row["quote_id"])
-        payload = (stored or {}).get("result")
+        payload = delivery.get("result")
         if isinstance(payload, dict):
             publish_delivery_payload(
                 quote_id=row["quote_id"],
@@ -1311,6 +1311,20 @@ def get_delivery_receipt_by_link(receipt_token: str):
         "final_receipt": public,
         "opening_does_not_accept_delivery": True,
     }
+
+
+@router.get("/delivery-receipts/{receipt_token}/inbox")
+def open_delivery_inbox_by_link(receipt_token: str, response: Response):
+    try:
+        inbox = open_delivery_inbox(receipt_token)
+    except DeliveryReceiptError as exc:
+        code = str(exc)
+        status_code = 404 if code == "delivery_receipt_not_found" else 409
+        raise HTTPException(status_code=status_code, detail=code) from exc
+    response.headers["Cache-Control"] = "no-store, private, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return {"status": "delivery_inbox_opened", **inbox}
 
 
 @router.post("/delivery-receipts/{receipt_token}/decision")

@@ -110,6 +110,8 @@ def init_delivery_receipt_db() -> None:
                 provider_status TEXT,
                 provider_event_at INTEGER,
                 provider_message_id TEXT,
+                sealed_payload TEXT,
+                inbox_opened_at INTEGER,
                 updated_at INTEGER NOT NULL
             )
             """
@@ -124,6 +126,8 @@ def init_delivery_receipt_db() -> None:
             "provider_status": "TEXT",
             "provider_event_at": "INTEGER",
             "provider_message_id": "TEXT",
+            "sealed_payload": "TEXT",
+            "inbox_opened_at": "INTEGER",
         }
         for column, definition in columns.items():
             try:
@@ -368,7 +372,7 @@ def publish_delivery_payload(
     payload: dict[str, Any],
     now: int | None = None,
 ) -> dict[str, Any]:
-    """Seal the final result; API-pull is delivered immediately, others await dispatch."""
+    """Seal the buyer-safe result in IAT's inbox independently of notifications."""
     receipt = get_delivery_receipt(quote_id)
     if not receipt:
         configure_delivery_receipt(
@@ -380,27 +384,45 @@ def publish_delivery_payload(
         )
         receipt = get_delivery_receipt(quote_id)
     assert receipt is not None
-    payload_digest = _digest(payload)
+    canonical_payload = _canonical_payload(payload)
+    if len(canonical_payload.encode()) > 250_000:
+        raise DeliveryReceiptError("delivery_payload_too_large")
+    payload_digest = hashlib.sha256(canonical_payload.encode()).hexdigest()
     if receipt.get("payload_digest"):
         if not secrets.compare_digest(str(receipt["payload_digest"]), payload_digest):
             raise DeliveryReceiptError("delivery_payload_digest_conflict")
-        return public_delivery_receipt(receipt)
+        if not receipt.get("sealed_payload"):
+            conn = get_conn()
+            try:
+                p = qmark()
+                cur = conn.cursor()
+                cur.execute(
+                    f"""UPDATE universal_checkout_delivery_receipts
+                    SET sealed_payload={p}, state={p}, updated_at={p}
+                    WHERE quote_id={p} AND sealed_payload IS NULL""",
+                    (canonical_payload, "delivered", _now(), quote_id),
+                )
+                conn.commit()
+            finally:
+                release_conn(conn)
+        return public_delivery_receipt(get_delivery_receipt(quote_id))
     current_time = _now() if now is None else int(now)
-    state = "delivered" if receipt["channel"] == "api_pull" else "pending_dispatch"
+    state = "delivered"
     conn = get_conn()
     try:
         p = qmark()
         cur = conn.cursor()
         cur.execute(
             f"""UPDATE universal_checkout_delivery_receipts
-            SET state={p}, payload_digest={p}, payload_ready_at={p},
+            SET state={p}, payload_digest={p}, sealed_payload={p}, payload_ready_at={p},
                 dispatched_at={p}, updated_at={p}
             WHERE quote_id={p} AND payload_digest IS NULL""",
             (
                 state,
                 payload_digest,
+                canonical_payload,
                 current_time,
-                current_time if state == "delivered" else None,
+                None,
                 current_time,
                 quote_id,
             ),
@@ -420,6 +442,60 @@ def publish_delivery_payload(
     finally:
         release_conn(conn)
     return public_delivery_receipt(get_delivery_receipt(quote_id))
+
+
+def open_delivery_inbox(receipt_token: str, *, now: int | None = None) -> dict[str, Any]:
+    """Return the sealed buyer payload using the high-entropy receipt capability."""
+    receipt = get_delivery_receipt_by_token(receipt_token)
+    if not receipt:
+        raise DeliveryReceiptError("delivery_receipt_not_found")
+    raw_payload = receipt.get("sealed_payload")
+    if not raw_payload or not receipt.get("payload_digest"):
+        raise DeliveryReceiptError("delivery_payload_not_ready")
+    try:
+        payload = json.loads(raw_payload)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise DeliveryReceiptError("sealed_delivery_payload_unavailable") from exc
+    if not isinstance(payload, dict) or not secrets.compare_digest(
+        hashlib.sha256(str(raw_payload).encode()).hexdigest(),
+        str(receipt["payload_digest"]),
+    ):
+        raise DeliveryReceiptError("sealed_delivery_payload_unavailable")
+    current_time = _now() if now is None else int(now)
+    if not receipt.get("inbox_opened_at"):
+        conn = get_conn()
+        try:
+            p = qmark()
+            cur = conn.cursor()
+            cur.execute(
+                f"""UPDATE universal_checkout_delivery_receipts
+                SET inbox_opened_at={p}, updated_at={p}
+                WHERE quote_id={p} AND inbox_opened_at IS NULL""",
+                (current_time, current_time, receipt["quote_id"]),
+            )
+            if cur.rowcount == 1:
+                _insert_event(
+                    cur,
+                    quote_id=receipt["quote_id"],
+                    event_type="delivery_inbox_opened",
+                    state=str(receipt["state"]),
+                    payload_digest=str(receipt["payload_digest"]),
+                    actor="receipt_capability_holder",
+                    now=current_time,
+                )
+            conn.commit()
+        finally:
+            release_conn(conn)
+    return {
+        "schema_version": "2026-08-02",
+        "quote_id": receipt["quote_id"],
+        "receipt_id": receipt["receipt_token"],
+        "payload_digest": receipt["payload_digest"],
+        "payload_ready_at": receipt["payload_ready_at"],
+        "canonical_result": raw_payload,
+        "result": payload,
+        "opening_does_not_accept_delivery": True,
+    }
 
 
 def acknowledge_delivery(
@@ -549,10 +625,12 @@ def list_due_receipt_dispatches(*, now: int | None = None, limit: int = 20) -> l
         cur = conn.cursor()
         cur.execute(
             f"""SELECT quote_id FROM universal_checkout_delivery_receipts
-            WHERE state={p} AND channel IN ({p}, {p})
+            WHERE state IN ({p}, {p}) AND channel IN ({p}, {p})
+              AND payload_digest IS NOT NULL AND dispatched_at IS NULL
+              AND (dispatch_next_attempt_at IS NOT NULL OR dispatch_attempt_count=0)
               AND (dispatch_next_attempt_at IS NULL OR dispatch_next_attempt_at<={p})
             ORDER BY payload_ready_at ASC LIMIT {safe_limit}""",
-            ("pending_dispatch", "webhook", "email", current_time),
+            ("delivered", "pending_dispatch", "webhook", "email", current_time),
         )
         return [str(row["quote_id"]) for row in cur.fetchall()]
     finally:
@@ -570,18 +648,18 @@ def dispatch_webhook(
         raise DeliveryReceiptError("delivery_receipt_not_found")
     if receipt["channel"] != "webhook":
         raise DeliveryReceiptError("delivery_channel_is_not_webhook")
-    if receipt["state"] == "delivered":
+    if receipt.get("dispatched_at") and not receipt.get("dispatch_last_error"):
         return {**public_delivery_receipt(receipt), "idempotent": True}
-    if receipt["state"] != "pending_dispatch":
+    if receipt["state"] not in {"delivered", "pending_dispatch"}:
         raise DeliveryReceiptError("delivery_not_ready_for_dispatch")
     current_time = _now() if now is None else int(now)
     if receipt.get("dispatch_next_attempt_at") and int(receipt["dispatch_next_attempt_at"]) > current_time:
         return {**public_delivery_receipt(receipt), "retry_wait": True}
 
-    from iat.checkout_delivery import get_delivery
-
-    delivery = get_delivery(quote_id)
-    result = (delivery or {}).get("result")
+    try:
+        result = json.loads(receipt.get("sealed_payload") or "")
+    except (TypeError, json.JSONDecodeError):
+        result = None
     if not isinstance(result, dict) or _digest(result) != receipt["payload_digest"]:
         raise DeliveryReceiptError("sealed_delivery_payload_unavailable")
     try:
@@ -635,8 +713,9 @@ def dispatch_webhook(
     except ValueError:
         configured_max_attempts = 8
     max_attempts = max(1, min(configured_max_attempts, 20))
-    state = "delivered" if delivered else ("dispatch_failed" if attempt >= max_attempts else "pending_dispatch")
-    next_attempt = None if delivered or state == "dispatch_failed" else current_time + _dispatch_backoff(attempt)
+    notification_failed = not delivered and attempt >= max_attempts
+    state = "delivered"
+    next_attempt = None if delivered or notification_failed else current_time + _dispatch_backoff(attempt)
     conn = get_conn()
     try:
         p = qmark()
@@ -646,7 +725,7 @@ def dispatch_webhook(
             SET state={p}, dispatch_attempt_count={p}, dispatch_next_attempt_at={p},
                 dispatch_last_error={p}, dispatch_response_code={p},
                 dispatch_signature={p}, dispatch_signer={p}, dispatched_at={p}, updated_at={p}
-            WHERE quote_id={p} AND state={p}""",
+            WHERE quote_id={p} AND state IN ({p}, {p}) AND dispatched_at IS NULL""",
             (
                 state,
                 attempt,
@@ -658,6 +737,7 @@ def dispatch_webhook(
                 current_time if delivered else None,
                 current_time,
                 quote_id,
+                "delivered",
                 "pending_dispatch",
             ),
         )
@@ -772,17 +852,18 @@ def dispatch_email(
         raise DeliveryReceiptError("delivery_receipt_not_found")
     if receipt["channel"] != "email":
         raise DeliveryReceiptError("delivery_channel_is_not_email")
-    if receipt["state"] in {"dispatched", "delivered"}:
+    if receipt.get("dispatched_at") and not receipt.get("dispatch_last_error"):
         return {**public_delivery_receipt(receipt), "idempotent": True}
-    if receipt["state"] != "pending_dispatch":
+    if receipt["state"] not in {"delivered", "pending_dispatch"}:
         raise DeliveryReceiptError("delivery_not_ready_for_dispatch")
     current_time = _now() if now is None else int(now)
     if receipt.get("dispatch_next_attempt_at") and int(receipt["dispatch_next_attempt_at"]) > current_time:
         return {**public_delivery_receipt(receipt), "retry_wait": True}
 
-    from iat.checkout_delivery import get_delivery
-
-    result = (get_delivery(quote_id) or {}).get("result")
+    try:
+        result = json.loads(receipt.get("sealed_payload") or "")
+    except (TypeError, json.JSONDecodeError):
+        result = None
     if not isinstance(result, dict) or _digest(result) != receipt["payload_digest"]:
         raise DeliveryReceiptError("sealed_delivery_payload_unavailable")
     canonical_result = _canonical_payload(result)
@@ -835,8 +916,9 @@ def dispatch_email(
     except ValueError:
         configured_max_attempts = 8
     max_attempts = max(1, min(configured_max_attempts, 20))
-    state = "dispatched" if dispatched else ("dispatch_failed" if attempt >= max_attempts else "pending_dispatch")
-    next_attempt = None if dispatched or state == "dispatch_failed" else current_time + _dispatch_backoff(attempt)
+    notification_failed = not dispatched and attempt >= max_attempts
+    state = "delivered"
+    next_attempt = None if dispatched or notification_failed else current_time + _dispatch_backoff(attempt)
     conn = get_conn()
     try:
         p = qmark()
@@ -846,7 +928,7 @@ def dispatch_email(
             SET state={p}, dispatch_attempt_count={p}, dispatch_next_attempt_at={p},
                 dispatch_last_error={p}, dispatch_signature={p}, dispatch_signer={p},
                 dispatched_at={p}, updated_at={p}
-            WHERE quote_id={p} AND state={p}""",
+            WHERE quote_id={p} AND state IN ({p}, {p}) AND dispatched_at IS NULL""",
             (
                 state,
                 attempt,
@@ -857,6 +939,7 @@ def dispatch_email(
                 current_time if dispatched else None,
                 current_time,
                 quote_id,
+                "delivered",
                 "pending_dispatch",
             ),
         )
@@ -918,7 +1001,7 @@ def record_email_provider_event(
     current_state = str(receipt["state"])
     new_state = current_state
     if current_state == "dispatched":
-        new_state = "delivered" if clean_event in success_events else "dispatch_failed"
+        new_state = "delivered"
     provider_error = None
     if clean_event in failure_events:
         provider_error = f"email_provider_{clean_event}"
@@ -975,8 +1058,8 @@ def run_receipt_dispatch_sweep(*, limit: int = 20) -> dict[str, int]:
                 if receipt and receipt["channel"] == "email"
                 else dispatch_webhook(quote_id)
             )
-            delivered += int(result.get("state") in {"dispatched", "delivered"})
-            failed += int(result.get("state") not in {"dispatched", "delivered"})
+            delivered += int(bool(result.get("dispatched_at")))
+            failed += int(not result.get("dispatched_at"))
         except DeliveryReceiptError:
             failed += 1
     return {"selected": len(selected), "delivered": delivered, "failed": failed}
@@ -985,6 +1068,20 @@ def run_receipt_dispatch_sweep(*, limit: int = 20) -> dict[str, int]:
 def public_delivery_receipt(receipt: dict[str, Any] | None) -> dict[str, Any]:
     if not receipt:
         return {"state": "not_configured", "available_channels": sorted(CHANNELS)}
+    notification_status = "not_requested"
+    if receipt["channel"] in {"email", "webhook"}:
+        if receipt.get("provider_status") in {"bounce", "blocked", "spam"}:
+            notification_status = "failed"
+        elif receipt.get("provider_status") in {"delivered", "open", "click"}:
+            notification_status = "confirmed"
+        elif receipt.get("dispatched_at"):
+            notification_status = "dispatched"
+        elif receipt.get("dispatch_next_attempt_at") is not None or int(
+            receipt.get("dispatch_attempt_count") or 0
+        ) == 0:
+            notification_status = "pending"
+        else:
+            notification_status = "failed"
     return {
         "state": receipt["state"],
         "channel": receipt["channel"],
@@ -1004,6 +1101,9 @@ def public_delivery_receipt(receipt: dict[str, Any] | None) -> dict[str, Any]:
         "dispatch_signer": receipt.get("dispatch_signer"),
         "provider_status": receipt.get("provider_status"),
         "provider_event_at": receipt.get("provider_event_at"),
+        "inbox_available": bool(receipt.get("sealed_payload")),
+        "inbox_opened_at": receipt.get("inbox_opened_at"),
+        "notification_status": notification_status,
         "buyer_confirmation_required": receipt["state"] in {"dispatched", "delivered"},
         "available_channels": sorted(CHANNELS),
     }

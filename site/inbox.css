@@ -1,0 +1,72 @@
+.inbox-section {
+  background: #eaf0f8;
+  border-block: 1px solid var(--line);
+  padding: 110px 0;
+}
+.inbox-layout {
+  display: grid;
+  grid-template-columns: .9fr 1.1fr;
+  gap: 80px;
+  align-items: start;
+}
+.inbox-copy h2 {
+  font-size: clamp(36px, 5vw, 54px);
+  line-height: 1.05;
+  letter-spacing: -.05em;
+  margin: 0;
+}
+.inbox-copy > p:not(.kicker) { color: var(--muted); font-size: 17px; }
+.inbox-copy ul {
+  padding: 0;
+  margin: 28px 0 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.inbox-copy li { font-size: 13px; font-weight: 650; color: #405068; }
+.inbox-copy li::before { content: "✓"; color: #149960; margin-right: 8px; font-weight: 900; }
+.inbox-app {
+  background: white;
+  border: 1px solid #d4deea;
+  border-radius: 18px;
+  padding: 26px;
+  box-shadow: 0 24px 60px #19355317;
+  min-height: 390px;
+}
+.inbox-app-head, .wallet-session, .inbox-results-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.inbox-app-head { padding-bottom: 20px; border-bottom: 1px solid var(--line); margin-bottom: 22px; }
+.inbox-app-head > div { display: flex; align-items: center; gap: 9px; }
+.inbox-live { width: 8px; height: 8px; border-radius: 50%; background: #23bd7a; box-shadow: 0 0 0 5px #23bd7a1c; }
+.devnet-pill { font: 800 10px ui-monospace, monospace; color: #785b10; background: #fff3ce; padding: 5px 8px; border-radius: 99px; }
+.inbox-help { font-size: 12px; color: var(--muted); margin: -7px 0 16px; }
+.inbox-app .button { width: 100%; }
+.wallet-session { background: #f4f7fb; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+.wallet-session span, .wallet-session strong { display: block; }
+.wallet-session span { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: #7a8797; }
+.wallet-session strong { font: 700 12px ui-monospace, monospace; margin-top: 3px; }
+.wallet-session button { border: 0; background: transparent; color: #b42318; font-size: 12px; font-weight: 700; cursor: pointer; }
+.inbox-status { min-height: 22px; color: #536176; font-size: 13px; margin: 18px 0; }
+.inbox-status.error { color: #b42318; }
+.inbox-status.success { color: #087849; }
+.inbox-results { border-top: 1px solid var(--line); padding-top: 17px; }
+.inbox-results-head span { font-size: 12px; color: #6f7d90; }
+.inbox-item { display: grid; grid-template-columns: 1fr auto; gap: 14px; align-items: center; border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-top: 10px; }
+.inbox-item span, .inbox-item small { display: block; }
+.inbox-item span { font: 700 12px ui-monospace, monospace; overflow: hidden; text-overflow: ellipsis; }
+.inbox-item small { color: #718095; font-size: 11px; margin-top: 4px; }
+.inbox-item a { color: var(--blue); font-size: 12px; font-weight: 750; text-decoration: none; }
+.inbox-results .secondary { margin-top: 12px; }
+.wallet-missing { color: #8a5b00; font-size: 12px; }
+@media (max-width: 850px) { .inbox-layout { grid-template-columns: 1fr; gap: 45px; } }
+@media (max-width: 650px) {
+  .inbox-section { padding: 75px 0; }
+  .inbox-copy ul { grid-template-columns: 1fr; }
+  .inbox-app { padding: 20px; }
+  .inbox-item { grid-template-columns: 1fr; }
+  .inbox-item a { justify-self: start; }
+}

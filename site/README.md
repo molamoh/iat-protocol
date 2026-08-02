@@ -39,3 +39,15 @@ the anonymous acquisition funnel to virtual routes:
 
 These paths are aggregate milestones, not user identities. `_redirects` makes
 every milestone safe to reload or share without returning a 404.
+
+## Wallet delivery inbox
+
+The landing page discovers browser wallets through Wallet Standard and uses
+`solana:signMessage` to authenticate the permanent buyer inbox. It never asks
+for a seed phrase, private key, transaction signature, RPC endpoint or SOL.
+The short-lived Bearer token is kept in `sessionStorage`, so it is scoped to
+the current browser tab and removed on disconnect.
+
+The API CORS contract must allow the production site origin, the
+`Authorization` header and the `DELETE` method used to revoke a session. No
+third-party wallet JavaScript is loaded by the page.

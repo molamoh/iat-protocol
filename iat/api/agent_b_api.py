@@ -294,13 +294,15 @@ PUBLIC_WEB_ORIGINS = [
     for origin in os.getenv("IAT_PUBLIC_WEB_ORIGINS", "").split(",")
     if origin.strip()
 ]
+PUBLIC_WEB_ALLOW_METHODS = ["GET", "POST", "DELETE", "OPTIONS"]
+PUBLIC_WEB_ALLOW_HEADERS = ["Content-Type", "Authorization"]
 if PUBLIC_WEB_ORIGINS:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=PUBLIC_WEB_ORIGINS,
         allow_credentials=False,
-        allow_methods=["GET", "POST", "OPTIONS"],
-        allow_headers=["Content-Type"],
+        allow_methods=PUBLIC_WEB_ALLOW_METHODS,
+        allow_headers=PUBLIC_WEB_ALLOW_HEADERS,
         max_age=86400,
     )
 app.include_router(public_router)

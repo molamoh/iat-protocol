@@ -9,6 +9,7 @@
   <link rel="icon" href="assets/iat-mark.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="enhancements.css">
+  <link rel="stylesheet" href="inbox.css">
   <script src="app.js" defer></script>
 </head>
 <body>
@@ -21,6 +22,7 @@
       <a href="#what">What is IAT?</a>
       <a href="#use-cases">Use cases</a>
       <a href="#how">How it works</a>
+      <a href="#inbox">Delivery inbox</a>
       <a href="#pilot">Pilot</a>
       <a href="https://github.com/molamoh/iat-protocol">GitHub</a>
     </nav>
@@ -134,6 +136,46 @@
         <article><div class="asset-icon usdc-asset">$</div><div><h3>Pay with USDC</h3><p>The universal checkout can atomically accept configured USDC and deliver the corresponding IAT settlement path.</p></div></article>
       </div>
       <p class="devnet-warning"><strong>Current availability:</strong> the public pilot runs on Solana devnet with test assets. Mainnet payments are not yet offered to public users.</p>
+    </section>
+
+    <section id="inbox" class="inbox-section">
+      <div class="shell inbox-layout">
+        <div class="inbox-copy">
+          <p class="kicker">PERMANENT DELIVERY INBOX</p>
+          <h2>Recover every delivery owned by your wallet.</h2>
+          <p>Connect the Solana wallet used for your IAT orders. You will sign a short authentication message—never a transaction—and IAT will display the verified receipts attached to that wallet.</p>
+          <ul>
+            <li>No order secret required</li>
+            <li>No SOL fee or transaction</li>
+            <li>Session expires automatically</li>
+            <li>Your private key never leaves your wallet</li>
+          </ul>
+        </div>
+        <div class="inbox-app" aria-labelledby="inbox-title">
+          <div class="inbox-app-head">
+            <div><span class="inbox-live"></span><strong id="inbox-title">Buyer delivery inbox</strong></div>
+            <span class="devnet-pill">DEVNET</span>
+          </div>
+          <div id="wallet-connect-panel">
+            <label for="wallet-selector">Detected Solana wallet</label>
+            <select id="wallet-selector" aria-describedby="wallet-help">
+              <option value="">Detecting wallets…</option>
+            </select>
+            <p id="wallet-help" class="inbox-help">Use the same public wallet that created your IAT order.</p>
+            <button id="wallet-connect" class="button primary" type="button">Connect and open inbox</button>
+          </div>
+          <div id="wallet-session-panel" class="wallet-session" hidden>
+            <div><span>Authenticated wallet</span><strong id="wallet-address"></strong></div>
+            <button id="wallet-disconnect" type="button">Disconnect</button>
+          </div>
+          <p id="inbox-status" class="inbox-status" role="status" aria-live="polite"></p>
+          <div id="inbox-results" class="inbox-results" hidden>
+            <div class="inbox-results-head"><strong>Your deliveries</strong><span id="inbox-count"></span></div>
+            <div id="inbox-items"></div>
+            <button id="inbox-more" class="button secondary" type="button" hidden>Load more</button>
+          </div>
+        </div>
+      </div>
     </section>
 
     <section id="join" class="join-section">

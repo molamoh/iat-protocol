@@ -73,6 +73,7 @@ from iat.checkout_receipt import (
     get_delivery_receipt,
     get_delivery_receipt_by_token,
     init_delivery_receipt_db,
+    list_buyer_delivery_receipts,
     open_delivery_inbox,
     public_delivery_receipt,
     publish_delivery_payload,
@@ -124,6 +125,32 @@ class PublicDeliveryDecisionRequest(BaseModel):
     decision: str = Field(min_length=8, max_length=16)
     dispute_code: str | None = Field(default=None, max_length=32)
     message: str = Field(default="", max_length=2_000)
+
+
+def _encode_inbox_cursor(configured_at: int, quote_id: str) -> str:
+    raw = json.dumps(
+        {"configured_at": int(configured_at), "quote_id": str(quote_id)},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def _decode_inbox_cursor(cursor: str | None) -> tuple[int | None, str]:
+    if not cursor:
+        return None, ""
+    if len(cursor) > 512:
+        raise HTTPException(status_code=422, detail="invalid_inbox_cursor")
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        value = json.loads(base64.b64decode(padded, altchars=b"-_", validate=True))
+        configured_at = int(value["configured_at"])
+        quote_id = str(value["quote_id"])
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=422, detail="invalid_inbox_cursor") from exc
+    if configured_at <= 0 or not quote_id or len(quote_id) > 128:
+        raise HTTPException(status_code=422, detail="invalid_inbox_cursor")
+    return configured_at, quote_id
 
 
 def _authorize_mailjet_event(authorization: str | None) -> None:
@@ -1469,6 +1496,101 @@ def request_universal_checkout_compensation(
         "payment_verified": True,
         "compensation": public_compensation(compensation),
         "idempotent": compensation.get("idempotent", False),
+    }
+
+
+@router.get("/buyer-inbox")
+def get_buyer_delivery_inbox(
+    response: Response,
+    buyer_wallet: str | None = Header(default=None, alias="X-IAT-Buyer-Wallet"),
+    buyer_secret: str | None = Header(default=None, alias="X-IAT-Order-Secret"),
+    cursor: str | None = None,
+    limit: int = 20,
+):
+    if not buyer_wallet or not buyer_secret:
+        raise HTTPException(status_code=403, detail="invalid_order_credential")
+    before_configured_at, before_quote_id = _decode_inbox_cursor(cursor)
+    authorized, rows = list_buyer_delivery_receipts(
+        buyer_wallet=buyer_wallet,
+        buyer_secret=buyer_secret,
+        before_configured_at=before_configured_at,
+        before_quote_id=before_quote_id,
+        limit=limit,
+    )
+    if not authorized:
+        raise HTTPException(status_code=403, detail="invalid_order_credential")
+    safe_limit = max(1, min(int(limit), 100))
+    selected = rows[:safe_limit]
+    public_site = os.getenv(
+        "IAT_PUBLIC_SITE_URL", "https://iat-protocol.pages.dev"
+    ).strip().rstrip("/")
+    items = []
+    for row in selected:
+        public = public_delivery_receipt(row)
+        token = str(public["receipt_token"])
+        items.append(
+            {
+                "quote_id": row["quote_id"],
+                "order_id": row["order_id"],
+                "delivery_url": f"{public_site}/delivery/#receipt={token}",
+                "final_receipt": public,
+            }
+        )
+    next_cursor = None
+    if len(rows) > safe_limit and selected:
+        last = selected[-1]
+        next_cursor = _encode_inbox_cursor(last["configured_at"], last["quote_id"])
+    response.headers["Cache-Control"] = "no-store, private, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return {
+        "status": "buyer_inbox_found",
+        "count": len(items),
+        "items": items,
+        "next_cursor": next_cursor,
+    }
+
+
+@router.get("/buyer-inbox/{quote_id}")
+def get_authenticated_buyer_inbox_item(
+    quote_id: str,
+    response: Response,
+    buyer_wallet: str | None = Header(default=None, alias="X-IAT-Buyer-Wallet"),
+    buyer_secret: str | None = Header(default=None, alias="X-IAT-Order-Secret"),
+):
+    if not buyer_wallet or not buyer_secret:
+        raise HTTPException(status_code=403, detail="invalid_order_credential")
+    row = _get_quote(quote_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="quote_not_found")
+    order = get_order_db(row["order_id"])
+    if not order:
+        raise HTTPException(status_code=404, detail="order_not_found")
+    _authorize_order(
+        UniversalPrepareRequest(
+            buyer_wallet=buyer_wallet,
+            buyer_secret=buyer_secret,
+        ),
+        order,
+    )
+    stored = get_delivery_receipt(quote_id)
+    if not stored:
+        raise HTTPException(status_code=404, detail="delivery_receipt_not_found")
+    try:
+        inbox = open_delivery_inbox(str(stored["receipt_token"]))
+    except DeliveryReceiptError as exc:
+        code = str(exc)
+        status_code = 409 if code == "delivery_payload_not_ready" else 503
+        raise HTTPException(status_code=status_code, detail=code) from exc
+    inbox.pop("receipt_id", None)
+    public = public_delivery_receipt(get_delivery_receipt(quote_id))
+    public.pop("receipt_token", None)
+    response.headers["Cache-Control"] = "no-store, private, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return {
+        "status": "buyer_inbox_item_opened",
+        "quote_id": quote_id,
+        "final_receipt": public,
+        "inbox": inbox,
     }
 
 

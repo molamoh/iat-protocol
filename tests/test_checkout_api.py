@@ -4,7 +4,7 @@ import hmac
 import hashlib
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
 from iat.api import checkout_api, db
 from iat import checkout_compensation, checkout_delivery, checkout_receipt
@@ -74,6 +74,126 @@ def request(**overrides):
     }
     values.update(overrides)
     return checkout_api.UniversalQuoteRequest(**values)
+
+
+def _create_inbox_order(order_id: str, wallet: str, secret: str):
+    db.create_order_db(
+        order_id,
+        {
+            "service": "research",
+            "price": 1,
+            "seller_id": "seller-1",
+            "seller_wallet": "seller-wallet",
+            "buyer_secret": secret,
+            "buyer_wallet": wallet,
+            "created_at": NOW - 10,
+            "updated_at": NOW - 10,
+            "status": "created",
+        },
+    )
+
+
+def test_buyer_inbox_is_isolated_paginated_and_excludes_canaries(
+    checkout_database, monkeypatch
+):
+    monkeypatch.setenv("IAT_PUBLIC_SITE_URL", "https://iatprotocol.com")
+    first_quote = checkout_api.create_universal_quote(
+        request(), idempotency_key="inbox-list-first-0001"
+    )
+    checkout_receipt.configure_delivery_receipt(
+        quote_id=first_quote["quote_id"],
+        order_id="ord-api",
+        channel="api_pull",
+        destination=None,
+        now=100,
+    )
+    _create_inbox_order("ord-inbox-second", BUYER, SECRET)
+    second_quote = checkout_api.create_universal_quote(
+        request(order_id="ord-inbox-second"),
+        idempotency_key="inbox-list-second-0001",
+    )
+    checkout_receipt.configure_delivery_receipt(
+        quote_id=second_quote["quote_id"],
+        order_id="ord-inbox-second",
+        channel="api_pull",
+        destination=None,
+        now=200,
+    )
+    checkout_receipt.publish_delivery_payload(
+        quote_id=second_quote["quote_id"],
+        order_id="ord-inbox-second",
+        payload={"status": "success", "summary": "Agent-native result"},
+        now=201,
+    )
+    other_wallet = "Other111111111111111111111111111111111"
+    other_secret = "other-secret-long-enough-456"
+    _create_inbox_order("ord-inbox-other", other_wallet, other_secret)
+    other_quote = checkout_api.create_universal_quote(
+        request(
+            order_id="ord-inbox-other",
+            buyer_wallet=other_wallet,
+            buyer_secret=other_secret,
+        ),
+        idempotency_key="inbox-list-other-0001",
+    )
+    checkout_receipt.configure_delivery_receipt(
+        quote_id=other_quote["quote_id"],
+        order_id="ord-inbox-other",
+        channel="api_pull",
+        destination=None,
+        now=300,
+    )
+    checkout_receipt.create_native_inbox_canary(now=400)
+
+    first_page = checkout_api.get_buyer_delivery_inbox(
+        Response(), buyer_wallet=BUYER, buyer_secret=SECRET, limit=1
+    )
+    second_page = checkout_api.get_buyer_delivery_inbox(
+        Response(),
+        buyer_wallet=BUYER,
+        buyer_secret=SECRET,
+        cursor=first_page["next_cursor"],
+        limit=1,
+    )
+
+    assert first_page["count"] == 1
+    assert first_page["items"][0]["order_id"] == "ord-inbox-second"
+    assert first_page["items"][0]["delivery_url"].startswith(
+        "https://iatprotocol.com/delivery/#receipt=cdr_"
+    )
+    assert first_page["next_cursor"]
+    assert second_page["count"] == 1
+    assert second_page["items"][0]["order_id"] == "ord-api"
+    assert second_page["next_cursor"] is None
+    assert all("other" not in item["order_id"] for item in first_page["items"] + second_page["items"])
+    assert all("canary" not in item["order_id"] for item in first_page["items"] + second_page["items"])
+
+    opened = checkout_api.get_authenticated_buyer_inbox_item(
+        second_quote["quote_id"],
+        Response(),
+        buyer_wallet=BUYER,
+        buyer_secret=SECRET,
+    )
+    assert opened["inbox"]["result"]["summary"] == "Agent-native result"
+    assert "receipt_id" not in opened["inbox"]
+    assert "receipt_token" not in opened["final_receipt"]
+
+    with pytest.raises(HTTPException) as rejected:
+        checkout_api.get_buyer_delivery_inbox(
+            Response(), buyer_wallet=BUYER, buyer_secret="wrong-secret-long-enough"
+        )
+    assert rejected.value.status_code == 403
+
+
+def test_buyer_inbox_rejects_invalid_cursor(checkout_database):
+    with pytest.raises(HTTPException) as rejected:
+        checkout_api.get_buyer_delivery_inbox(
+            Response(),
+            buyer_wallet=BUYER,
+            buyer_secret=SECRET,
+            cursor="not-base64!",
+        )
+    assert rejected.value.status_code == 422
 
 
 def _basic(username: str, password: str) -> str:

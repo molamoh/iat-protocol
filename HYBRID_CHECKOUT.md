@@ -139,6 +139,23 @@ GET /payments/v1/universal/delivery-receipts/{receipt_token}/inbox
 POST /payments/v1/universal/delivery-receipts/{receipt_token}/decision
 ```
 
+Un acheteur ou agent peut aussi retrouver ses livraisons sans conserver les
+liens individuels. Les identifiants restent dans les en-têtes et n'entrent pas
+dans les journaux d'URL :
+
+```text
+GET /payments/v1/universal/buyer-inbox
+GET /payments/v1/universal/buyer-inbox/{quote_id}
+X-IAT-Buyer-Wallet: ...
+X-IAT-Order-Secret: ...
+```
+
+La liste est paginée par curseur stable et la jointure SQL exige que le wallet
+et le secret correspondent à la commande propriétaire. Les reçus canaris et
+ceux d'autres buyers ne peuvent pas apparaître. La récupération authentifiée
+par `quote_id` ne retourne pas le jeton de capacité `cdr_...`; celui-ci reste
+réservé au lien de portail explicitement fourni dans la liste.
+
 L'ouverture de l'inbox est auditée une seule fois, utilise `Cache-Control:
 no-store` et ne vaut jamais acceptation. Le portail recalcule l'empreinte du
 JSON canonique puis vérifie la signature Ed25519 IAT avant d'afficher le

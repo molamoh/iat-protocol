@@ -114,7 +114,11 @@ def test_mailjet_event_endpoint_records_correlated_event(monkeypatch):
         authorization=_basic("iat-mailjet", "provider-secret"),
     )
 
-    assert result == {"status": "mailjet_events_recorded", "recorded": 1}
+    assert result == {
+        "status": "mailjet_events_processed",
+        "recorded": 1,
+        "ignored": 0,
+    }
     assert observed == {
         "receipt_token": "cdr_receipt",
         "recipient": "buyer@example.com",
@@ -122,6 +126,27 @@ def test_mailjet_event_endpoint_records_correlated_event(monkeypatch):
         "event_at": 123,
         "provider_message_id": "456",
         "reason": "",
+    }
+
+
+def test_mailjet_event_endpoint_acknowledges_transport_canary(monkeypatch):
+    monkeypatch.setenv("IAT_MAILJET_EVENT_USERNAME", "iat-mailjet")
+    monkeypatch.setenv("IAT_MAILJET_EVENT_SECRET", "provider-secret")
+
+    result = checkout_api.receive_mailjet_delivery_event(
+        {
+            "event": "sent",
+            "time": 123,
+            "email": "owner@example.com",
+            "customcampaign": "iat_transport_canary_123",
+        },
+        authorization=_basic("iat-mailjet", "provider-secret"),
+    )
+
+    assert result == {
+        "status": "mailjet_events_processed",
+        "recorded": 0,
+        "ignored": 1,
     }
 
 

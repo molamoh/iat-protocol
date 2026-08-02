@@ -1355,12 +1355,17 @@ def receive_mailjet_delivery_event(
     if not events or len(events) > 100:
         raise HTTPException(status_code=422, detail="valid_mailjet_event_batch_required")
     recorded = 0
+    ignored = 0
     for item in events:
         if not isinstance(item, dict):
             raise HTTPException(status_code=422, detail="valid_mailjet_event_required")
+        campaign = str(item.get("customcampaign") or "")
+        if not campaign.startswith("cdr_"):
+            ignored += 1
+            continue
         try:
             record_email_provider_event(
-                receipt_token=str(item.get("customcampaign") or ""),
+                receipt_token=campaign,
                 recipient=str(item.get("email") or ""),
                 event=str(item.get("event") or ""),
                 event_at=int(item.get("time") or 0),
@@ -1382,7 +1387,11 @@ def receive_mailjet_delivery_event(
         except (TypeError, ValueError, DeliveryReceiptError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         recorded += 1
-    return {"status": "mailjet_events_recorded", "recorded": recorded}
+    return {
+        "status": "mailjet_events_processed",
+        "recorded": recorded,
+        "ignored": ignored,
+    }
 
 
 @router.post("/{quote_id}/evidence-readiness")

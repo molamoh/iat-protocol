@@ -372,6 +372,105 @@ def test_wallet_checkout_fails_closed_when_simulation_fails(monkeypatch):
     assert rejected.value.detail == "transaction_simulation_failed"
 
 
+def test_wallet_checkout_reuses_matching_prepared_quote(monkeypatch):
+    active = {
+        "quote_id": "uq_existing",
+        "order_id": "ord-api",
+        "buyer_wallet": BUYER,
+        "input_asset": "USDC",
+        "state": "prepared",
+    }
+    prepared = {"solana_instruction_plan": {"program_id": "program"}}
+    authorized = {"transaction_base64": "transaction", "simulation": {"status": "succeeded"}}
+
+    monkeypatch.setattr(checkout_api, "_session_wallet", lambda authorization: (BUYER, {}))
+    monkeypatch.setattr(
+        checkout_api,
+        "_wallet_owned_order",
+        lambda order_id, wallet: {"buyer_secret": SECRET},
+    )
+    monkeypatch.setattr(
+        checkout_api,
+        "create_universal_quote",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            HTTPException(
+                status_code=409,
+                detail={
+                    "code": "order_has_active_checkout_quote",
+                    "quote_id": "uq_existing",
+                },
+            )
+        ),
+    )
+    monkeypatch.setattr(checkout_api, "_get_quote", lambda quote_id: active)
+    monkeypatch.setattr(
+        checkout_api,
+        "_public_quote",
+        lambda row: {
+            "quote_id": row["quote_id"],
+            "expires_at": NOW + 120,
+            "input": {"asset": "USDC"},
+            "output": {"asset": "IAT"},
+        },
+    )
+    monkeypatch.setattr(checkout_api, "prepare_universal_checkout", lambda *args: prepared)
+    monkeypatch.setattr(
+        checkout_api, "_build_authorized_wallet_transaction", lambda *args: authorized
+    )
+
+    result = checkout_api.prepare_wallet_checkout(
+        "ord-api",
+        checkout_api.WalletCheckoutRequest(input_asset="USDC"),
+        Response(),
+        authorization="Bearer session",
+    )
+
+    assert result["quote_id"] == "uq_existing"
+    assert result["transaction_base64"] == "transaction"
+
+
+def test_wallet_checkout_does_not_reuse_submitted_quote(monkeypatch):
+    monkeypatch.setattr(checkout_api, "_session_wallet", lambda authorization: (BUYER, {}))
+    monkeypatch.setattr(
+        checkout_api,
+        "_wallet_owned_order",
+        lambda order_id, wallet: {"buyer_secret": SECRET},
+    )
+    rejection = HTTPException(
+        status_code=409,
+        detail={
+            "code": "order_has_active_checkout_quote",
+            "quote_id": "uq_submitted",
+        },
+    )
+    monkeypatch.setattr(
+        checkout_api,
+        "create_universal_quote",
+        lambda *args, **kwargs: (_ for _ in ()).throw(rejection),
+    )
+    monkeypatch.setattr(
+        checkout_api,
+        "_get_quote",
+        lambda quote_id: {
+            "quote_id": quote_id,
+            "order_id": "ord-api",
+            "buyer_wallet": BUYER,
+            "input_asset": "USDC",
+            "state": "submitted",
+        },
+    )
+
+    with pytest.raises(HTTPException) as rejected:
+        checkout_api.prepare_wallet_checkout(
+            "ord-api",
+            checkout_api.WalletCheckoutRequest(input_asset="USDC"),
+            Response(),
+            authorization="Bearer session",
+        )
+
+    assert rejected.value is rejection
+
+
 def _basic(username: str, password: str) -> str:
     encoded = base64.b64encode(f"{username}:{password}".encode()).decode()
     return f"Basic {encoded}"

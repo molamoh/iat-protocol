@@ -1732,15 +1732,35 @@ def prepare_wallet_checkout(
     secret = str(order.get("buyer_secret") or "")
     if len(secret) < 16:
         raise HTTPException(status_code=409, detail="order_credential_unavailable")
-    quote = create_universal_quote(
-        UniversalQuoteRequest(
-            order_id=order_id,
-            buyer_wallet=wallet,
-            buyer_secret=secret,
-            input_asset=req.input_asset,
-        ),
-        idempotency_key=f"wallet-checkout-{secrets.token_urlsafe(24)}",
+    quote_request = UniversalQuoteRequest(
+        order_id=order_id,
+        buyer_wallet=wallet,
+        buyer_secret=secret,
+        input_asset=req.input_asset,
     )
+    try:
+        quote = create_universal_quote(
+            quote_request,
+            idempotency_key=f"wallet-checkout-{secrets.token_urlsafe(24)}",
+        )
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        active = (
+            _get_quote(str(detail.get("quote_id") or ""))
+            if exc.status_code == 409
+            and detail.get("code") == "order_has_active_checkout_quote"
+            else None
+        )
+        if (
+            not active
+            or active.get("state") not in {"quoted", "prepared"}
+            or active.get("order_id") != order_id
+            or active.get("buyer_wallet") != wallet
+            or str(active.get("input_asset") or "").upper()
+            != req.input_asset.upper()
+        ):
+            raise
+        quote = _public_quote(active)
     prepared = prepare_universal_checkout(
         str(quote["quote_id"]),
         UniversalPrepareRequest(buyer_wallet=wallet, buyer_secret=secret),

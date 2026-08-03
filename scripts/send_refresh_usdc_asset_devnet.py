@@ -35,7 +35,8 @@ def main() -> int:
     if before["config"]["authority"] != AUTHORITY:
         raise RuntimeError("configured_authority_mismatch")
 
-    valid_until = int(time.time()) + 600
+    # Keep a small margin below the currently deployed on-chain ceiling.
+    valid_until = int(time.time()) + 590
     plan = build_update_asset_plan(
         program_id=PROGRAM_ID,
         authority=AUTHORITY,

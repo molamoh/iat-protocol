@@ -2513,6 +2513,17 @@ def root():
     return {
         "status": "ok",
         "message": "IAT Protocol API is running",
+        "build_version": os.getenv("IAT_BUILD_VERSION", "development"),
+    }
+
+
+@app.get("/health")
+def health():
+    """Cheap liveness probe with immutable image provenance."""
+    return {
+        "status": "ok",
+        "service": "iat-protocol",
+        "build_version": os.getenv("IAT_BUILD_VERSION", "development"),
     }
 
 

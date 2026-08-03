@@ -448,6 +448,26 @@ def _active_quote_for_order(order_id: str, now: int) -> dict[str, Any] | None:
         release_conn(conn)
 
 
+def _submitted_quotes_for_wallet(wallet: str, limit: int = 3) -> list[dict[str, Any]]:
+    init_checkout_db()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        p = qmark()
+        cur.execute(
+            f"""
+            SELECT * FROM universal_checkout_quotes
+            WHERE buyer_wallet = {p} AND state = {p}
+            ORDER BY updated_at ASC
+            LIMIT {max(1, min(int(limit), 10))}
+            """,
+            (wallet, "submitted"),
+        )
+        return [dict(row) for row in cur.fetchall()]
+    finally:
+        release_conn(conn)
+
+
 def _reserved_iat(
     *,
     buyer_wallet: str | None = None,
@@ -1825,6 +1845,53 @@ def confirm_wallet_checkout(
     )
     _private_no_store(response)
     return result
+
+
+@router.post("/wallet-checkout/recover-submitted")
+def recover_submitted_wallet_checkouts(
+    response: Response,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    """Resume finalized verification for submissions owned by this wallet."""
+    wallet, _ = _session_wallet(authorization)
+    recovered = []
+    pending = []
+    rejected = []
+    for row in _submitted_quotes_for_wallet(wallet):
+        order = get_order_db(str(row["order_id"]))
+        if not order or not secrets.compare_digest(
+            str(order.get("buyer_wallet") or ""), wallet
+        ):
+            rejected.append({"quote_id": row["quote_id"], "reason": "order_unavailable"})
+            continue
+        try:
+            result = confirm_universal_checkout(
+                str(row["quote_id"]),
+                UniversalPrepareRequest(
+                    buyer_wallet=wallet,
+                    buyer_secret=str(order.get("buyer_secret") or ""),
+                ),
+            )
+            target = recovered if result.get("status") == "confirmed" else pending
+            target.append({"quote_id": row["quote_id"], "status": result.get("status")})
+        except HTTPException as exc:
+            rejected.append(
+                {
+                    "quote_id": row["quote_id"],
+                    "reason": (
+                        str(exc.detail.get("code") or "verification_rejected")
+                        if isinstance(exc.detail, dict)
+                        else str(exc.detail)
+                    ),
+                }
+            )
+    _private_no_store(response)
+    return {
+        "status": "wallet_checkout_recovery_complete",
+        "recovered": recovered,
+        "pending": pending,
+        "rejected": rejected,
+    }
 
 
 @router.post("/wallet-auth/challenge")

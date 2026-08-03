@@ -48,6 +48,12 @@ for a seed phrase, private key, transaction signature, RPC endpoint or SOL.
 The short-lived Bearer token is kept in `sessionStorage`, so it is scoped to
 the current browser tab and removed on disconnect.
 
+After Phantom submits a checkout transaction, the page keeps only its public
+wallet, order ID, quote ID and Solana signature in `localStorage`. This durable
+recovery record contains no credential or key material. Reauthenticating the
+same wallet resumes the idempotent submit/confirm flow and removes the record
+only after strict on-chain verification succeeds.
+
 The API CORS contract must allow the production site origin, the
 `Authorization` header and the `DELETE` method used to revoke a session. No
 third-party wallet JavaScript is loaded by the page.

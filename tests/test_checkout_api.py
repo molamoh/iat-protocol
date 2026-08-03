@@ -471,6 +471,84 @@ def test_wallet_checkout_does_not_reuse_submitted_quote(monkeypatch):
     assert rejected.value is rejection
 
 
+def test_wallet_recovery_confirms_only_session_wallet_submissions(monkeypatch):
+    observed = {}
+    monkeypatch.setattr(
+        checkout_api, "_session_wallet", lambda authorization: (BUYER, {})
+    )
+    monkeypatch.setattr(
+        checkout_api,
+        "_submitted_quotes_for_wallet",
+        lambda wallet: observed.setdefault("wallet", wallet) and [
+            {"quote_id": "uq_submitted", "order_id": "ord-api"}
+        ],
+    )
+    monkeypatch.setattr(
+        checkout_api,
+        "get_order_db",
+        lambda order_id: {"buyer_wallet": BUYER, "buyer_secret": SECRET},
+    )
+
+    def confirm(quote_id, request):
+        observed.update(
+            {
+                "quote_id": quote_id,
+                "buyer_wallet": request.buyer_wallet,
+                "buyer_secret": request.buyer_secret,
+            }
+        )
+        return {"status": "confirmed"}
+
+    monkeypatch.setattr(checkout_api, "confirm_universal_checkout", confirm)
+
+    result = checkout_api.recover_submitted_wallet_checkouts(
+        Response(), authorization="Bearer session"
+    )
+
+    assert observed == {
+        "wallet": BUYER,
+        "quote_id": "uq_submitted",
+        "buyer_wallet": BUYER,
+        "buyer_secret": SECRET,
+    }
+    assert result == {
+        "status": "wallet_checkout_recovery_complete",
+        "recovered": [{"quote_id": "uq_submitted", "status": "confirmed"}],
+        "pending": [],
+        "rejected": [],
+    }
+
+
+def test_wallet_recovery_never_confirms_mismatched_order_wallet(monkeypatch):
+    monkeypatch.setattr(
+        checkout_api, "_session_wallet", lambda authorization: (BUYER, {})
+    )
+    monkeypatch.setattr(
+        checkout_api,
+        "_submitted_quotes_for_wallet",
+        lambda wallet: [{"quote_id": "uq_foreign", "order_id": "ord-foreign"}],
+    )
+    monkeypatch.setattr(
+        checkout_api,
+        "get_order_db",
+        lambda order_id: {"buyer_wallet": "AnotherWallet", "buyer_secret": SECRET},
+    )
+    monkeypatch.setattr(
+        checkout_api,
+        "confirm_universal_checkout",
+        lambda *args: pytest.fail("foreign order must not be confirmed"),
+    )
+
+    result = checkout_api.recover_submitted_wallet_checkouts(
+        Response(), authorization="Bearer session"
+    )
+
+    assert result["recovered"] == []
+    assert result["rejected"] == [
+        {"quote_id": "uq_foreign", "reason": "order_unavailable"}
+    ]
+
+
 def _basic(username: str, password: str) -> str:
     encoded = base64.b64encode(f"{username}:{password}".encode()).decode()
     return f"Basic {encoded}"

@@ -89,6 +89,9 @@ let inboxCursor = null;
 let displayedDeliveries = 0;
 let preparedCheckout = null;
 let preparedUsageInitialization = null;
+const PENDING_CHECKOUT_KEY = "iat_pending_checkout_v1";
+const PENDING_CHECKOUT_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+let volatilePendingCheckout = null;
 
 function sessionGet(key) {
   try { return sessionStorage.getItem(key); } catch (_) { return null; }
@@ -96,6 +99,37 @@ function sessionGet(key) {
 
 function sessionSet(key, value) {
   try { sessionStorage.setItem(key, value); } catch (_) { /* memory-only fallback */ }
+}
+
+function readPendingCheckout() {
+  try {
+    const pending = JSON.parse(localStorage.getItem(PENDING_CHECKOUT_KEY) || "null");
+    const valid = pending
+      && /^[1-9A-HJ-NP-Za-km-z]{64,128}$/.test(pending.tx_signature || "")
+      && /^uq_[a-f0-9]{32}$/.test(pending.quote_id || "")
+      && /^[a-f0-9-]{36}$/i.test(pending.order_id || "")
+      && typeof pending.wallet === "string"
+      && Number.isFinite(pending.saved_at)
+      && Date.now() - pending.saved_at <= PENDING_CHECKOUT_MAX_AGE_MS;
+    if (valid) return pending;
+    localStorage.removeItem(PENDING_CHECKOUT_KEY);
+  } catch (_) { /* invalid or unavailable durable storage */ }
+  return volatilePendingCheckout;
+}
+
+function savePendingCheckout(pending) {
+  volatilePendingCheckout = pending;
+  try {
+    localStorage.setItem(PENDING_CHECKOUT_KEY, JSON.stringify(pending));
+    return true;
+  } catch (_) { return false; }
+}
+
+function clearPendingCheckout(quoteId) {
+  const pending = readPendingCheckout();
+  if (!pending || pending.quote_id !== quoteId) return;
+  volatilePendingCheckout = null;
+  try { localStorage.removeItem(PENDING_CHECKOUT_KEY); } catch (_) { /* confirmed server-side */ }
 }
 
 function clearInboxSession() {
@@ -276,7 +310,20 @@ async function authenticateSelectedWallet() {
   sessionSet("iat_inbox_token", session.access_token);
   sessionSet("iat_inbox_wallet", session.wallet);
   showAuthenticatedWallet(session.wallet);
+  await resumePendingCheckout();
+  try {
+    await apiJson("/payments/v1/universal/wallet-checkout/recover-submitted", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${session.access_token}` },
+    });
+  } catch (error) {
+    if (error.status === 401) throw error;
+  }
   await loadInbox(true);
+  const pending = readPendingCheckout();
+  if (pending?.wallet === session.wallet) {
+    setInboxStatus(`Authenticated. Payment ${shortAddress(pending.tx_signature)} remains saved for automatic recovery.`, "success");
+  }
 }
 
 function showAuthenticatedWallet(address) {
@@ -397,32 +444,75 @@ async function confirmCheckoutInWallet() {
   const signatureBytes = result?.[0]?.signature;
   if (!signatureBytes) throw new Error("Phantom returned no transaction signature");
   const txSignature = base58Encode(signatureBytes);
+  const pending = {
+    wallet: activeAccount.address,
+    order_id: preparedCheckout.order_id,
+    quote_id: preparedCheckout.quote_id,
+    tx_signature: txSignature,
+    saved_at: Date.now(),
+  };
+  const durableRecovery = savePendingCheckout(pending);
+  preparedCheckout = null;
+  if (!durableRecovery) {
+    setInboxStatus("Transaction sent. Keep this page open because durable browser recovery is unavailable.", "error");
+  }
+  await settlePendingCheckout(pending);
+}
+
+async function settlePendingCheckout(pending) {
   const token = sessionGet("iat_inbox_token");
-  await apiJson(`/payments/v1/universal/wallet-checkout/${preparedCheckout.quote_id}/submit`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ tx_signature: txSignature }),
-  });
-  setInboxStatus(`Transaction sent: ${shortAddress(txSignature)}. Waiting for devnet confirmation…`);
-  for (let attempt = 0; attempt < 12; attempt += 1) {
+  if (!token) throw new Error("Reconnect your wallet to resume the submitted payment");
+  if (pending.wallet !== sessionGet("iat_inbox_wallet")) {
+    throw new Error("A pending payment belongs to another wallet");
+  }
+  try {
+    await apiJson(`/payments/v1/universal/wallet-checkout/${pending.quote_id}/submit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ tx_signature: pending.tx_signature }),
+    });
+  } catch (error) {
+    // A previous tab may already have submitted or confirmed this exact quote.
+    // The confirm endpoint is idempotent and remains the source of truth.
+    if (error.status !== 409) throw error;
+  }
+  setInboxStatus(`Transaction sent: ${shortAddress(pending.tx_signature)}. Waiting for devnet confirmation…`);
+  for (let attempt = 0; attempt < 24; attempt += 1) {
     await new Promise((resolve) => window.setTimeout(resolve, 2500));
     try {
-      const confirmed = await apiJson(`/payments/v1/universal/wallet-checkout/${preparedCheckout.quote_id}/confirm`, {
+      const confirmed = await apiJson(`/payments/v1/universal/wallet-checkout/${pending.quote_id}/confirm`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
       });
       if (confirmed.status === "confirmed") {
-        setInboxStatus(`Payment confirmed on devnet: ${shortAddress(txSignature)}. Delivery is now processing.`, "success");
+        clearPendingCheckout(pending.quote_id);
+        setInboxStatus(`Payment confirmed on devnet: ${shortAddress(pending.tx_signature)}. Delivery is now processing.`, "success");
         checkoutReview.hidden = true;
-        preparedCheckout = null;
         await loadInbox(true);
-        return;
+        return true;
       }
     } catch (error) {
+      if (error.status === 422) {
+        clearPendingCheckout(pending.quote_id);
+        throw new Error("The submitted transaction failed strict on-chain verification");
+      }
       if (![409, 503].includes(error.status)) throw error;
     }
   }
-  setInboxStatus(`Transaction ${shortAddress(txSignature)} was submitted. Confirmation is still processing; refresh the inbox shortly.`, "success");
+  setInboxStatus(`Transaction ${shortAddress(pending.tx_signature)} is saved for automatic recovery. Reconnect this wallet later if confirmation is still pending.`, "success");
+  return false;
+}
+
+async function resumePendingCheckout() {
+  const pending = readPendingCheckout();
+  if (!pending || pending.wallet !== sessionGet("iat_inbox_wallet")) return false;
+  setInboxStatus(`Recovering submitted payment ${shortAddress(pending.tx_signature)}…`);
+  try {
+    await settlePendingCheckout(pending);
+  } catch (error) {
+    setInboxStatus(`Payment recovery paused: ${error.message}. Reconnect this wallet to retry.`, "error");
+  }
+  return true;
 }
 
 function safeDeliveryUrl(rawUrl) {
@@ -550,7 +640,11 @@ checkoutPrepare.addEventListener("click", async () => {
 checkoutSend.addEventListener("click", async () => {
   checkoutSend.disabled = true;
   try { await confirmCheckoutInWallet(); }
-  catch (error) { setInboxStatus(`Payment not sent: ${error.message}`, "error"); }
+  catch (error) {
+    const pending = readPendingCheckout();
+    const prefix = pending ? "Payment sent; recovery pending" : "Payment not sent";
+    setInboxStatus(`${prefix}: ${error.message}`, "error");
+  }
   finally { checkoutSend.disabled = false; }
 });
 

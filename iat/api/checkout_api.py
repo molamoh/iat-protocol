@@ -468,6 +468,125 @@ def _submitted_quotes_for_wallet(wallet: str, limit: int = 3) -> list[dict[str, 
         release_conn(conn)
 
 
+def _reconcilable_treasury_quotes(limit: int = 10) -> list[dict[str, Any]]:
+    init_checkout_db()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        p = qmark()
+        lookback = max(
+            3600,
+            min(
+                int(os.getenv("IAT_CHECKOUT_RECONCILIATION_LOOKBACK_SECONDS", "604800")),
+                2_592_000,
+            ),
+        )
+        cur.execute(
+            f"""
+            SELECT * FROM universal_checkout_quotes
+            WHERE route = {p} AND state IN ({p}, {p})
+              AND execution_evidence IS NOT NULL
+              AND (state = {p} OR created_at >= {p})
+            ORDER BY CASE WHEN state = {p} THEN 0 ELSE 1 END, updated_at ASC
+            LIMIT {max(1, min(int(limit), 50))}
+            """,
+            (
+                "treasury",
+                "prepared",
+                "submitted",
+                "submitted",
+                int(time.time()) - lookback,
+                "submitted",
+            ),
+        )
+        return [dict(row) for row in cur.fetchall()]
+    finally:
+        release_conn(conn)
+
+
+def _attach_reconciled_signature(quote_id: str, signature: str) -> bool:
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        p = qmark()
+        cur.execute(
+            f"""
+            UPDATE universal_checkout_quotes
+            SET state = {p}, tx_signature = {p}, updated_at = {p}
+            WHERE quote_id = {p} AND state = {p} AND tx_signature IS NULL
+            """,
+            ("submitted", signature, int(time.time()), quote_id, "prepared"),
+        )
+        attached = cur.rowcount == 1
+        conn.commit()
+        return attached
+    except Exception:
+        conn.rollback()
+        return False
+    finally:
+        release_conn(conn)
+
+
+def run_checkout_reconciliation_sweep(limit: int = 10) -> dict[str, int]:
+    """Recover buyer-sent treasury payments using bounded, read-only RPC discovery."""
+    verifier = _checkout_verifier()
+    selected = _reconcilable_treasury_quotes(limit)
+    recovered = pending = rejected = 0
+    for row in selected:
+        order = get_order_db(str(row["order_id"]))
+        if not order or not secrets.compare_digest(
+            str(order.get("buyer_wallet") or ""), str(row["buyer_wallet"])
+        ):
+            rejected += 1
+            continue
+        request = UniversalPrepareRequest(
+            buyer_wallet=str(row["buyer_wallet"]),
+            buyer_secret=str(order.get("buyer_secret") or ""),
+        )
+        if row["state"] == "submitted":
+            try:
+                result = confirm_universal_checkout(str(row["quote_id"]), request)
+                recovered += int(result.get("status") == "confirmed")
+                pending += int(result.get("status") != "confirmed")
+            except HTTPException:
+                rejected += 1
+            continue
+        try:
+            evidence = json.loads(row["execution_evidence"])
+            proof = evidence.get("proof") if isinstance(evidence, dict) else None
+            payment_intent = str((proof or {}).get("payment_intent") or "")
+            candidates = verifier.finalized_signatures_for_address(
+                payment_intent,
+                limit=5,
+            )
+        except (ValueError, TypeError, CheckoutVerificationError):
+            pending += 1
+            continue
+        matched = False
+        for signature in candidates:
+            try:
+                verifier.verify(signature=signature, route="treasury", evidence=proof)
+            except CheckoutVerificationError:
+                continue
+            matched = True
+            _attach_reconciled_signature(str(row["quote_id"]), signature)
+            try:
+                result = confirm_universal_checkout(str(row["quote_id"]), request)
+                recovered += int(result.get("status") == "confirmed")
+                pending += int(result.get("status") != "confirmed")
+            except HTTPException:
+                rejected += 1
+            break
+        if not matched:
+            pending += 1
+    return {
+        "selected": len(selected),
+        "recovered": recovered,
+        "pending": pending,
+        "rejected": rejected,
+    }
+
+
 def _reserved_iat(
     *,
     buyer_wallet: str | None = None,

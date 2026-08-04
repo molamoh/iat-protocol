@@ -129,6 +129,28 @@ def finalized(encoded, account=None):
     return responses
 
 
+def test_finalized_signatures_for_address_is_bounded_and_filters_failures():
+    valid = str(Signature.default())
+    session = Session(
+        [
+            {
+                "jsonrpc": "2.0",
+                "result": [
+                    {"signature": valid, "err": None},
+                    {"signature": str(Signature.new_unique()), "err": {"InstructionError": [0, "Custom"]}},
+                    {"signature": "invalid", "err": None},
+                    {"signature": valid, "err": None},
+                ],
+            }
+        ]
+    )
+    verifier = SolanaCheckoutVerifier("https://rpc.example", session=session)
+
+    assert verifier.finalized_signatures_for_address(str(Pubkey.new_unique()), limit=99) == [valid]
+    params = session.calls[0][1]["json"]["params"]
+    assert params[1] == {"commitment": "finalized", "limit": 10}
+
+
 def payment_intent_data(
     *,
     config,

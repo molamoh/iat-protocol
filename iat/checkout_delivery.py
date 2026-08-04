@@ -1079,8 +1079,27 @@ def run_settlement_sweep(*, limit: int = 20) -> dict[str, Any]:
 def _delivery_worker_loop() -> None:
     interval = _int_env("IAT_CHECKOUT_DELIVERY_POLL_SECONDS", 10, 2, 300)
     batch = _int_env("IAT_CHECKOUT_DELIVERY_BATCH_SIZE", 20, 1, 100)
+    reconciliation_interval = _int_env(
+        "IAT_CHECKOUT_RECONCILIATION_POLL_SECONDS", 30, 10, 900
+    )
+    reconciliation_batch = _int_env(
+        "IAT_CHECKOUT_RECONCILIATION_BATCH_SIZE", 5, 1, 20
+    )
+    reconciliation_enabled = os.getenv(
+        "IAT_CHECKOUT_RECONCILIATION_ENABLED", "true"
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    last_reconciliation_at = 0
     while True:
         try:
+            now = int(time.time())
+            if (
+                reconciliation_enabled
+                and now - last_reconciliation_at >= reconciliation_interval
+            ):
+                from iat.api.checkout_api import run_checkout_reconciliation_sweep
+
+                run_checkout_reconciliation_sweep(limit=reconciliation_batch)
+                last_reconciliation_at = now
             run_delivery_sweep(limit=batch)
             run_settlement_sweep(limit=batch)
             from iat.checkout_receipt import run_receipt_dispatch_sweep

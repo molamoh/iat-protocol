@@ -549,6 +549,128 @@ def test_wallet_recovery_never_confirms_mismatched_order_wallet(monkeypatch):
     ]
 
 
+def test_reconciliation_discovers_and_confirms_exact_payment_intent(monkeypatch):
+    proof = {"payment_intent": str(Keypair().pubkey())}
+    row = {
+        "quote_id": "uq_reconcile",
+        "order_id": "ord-api",
+        "buyer_wallet": BUYER,
+        "state": "prepared",
+        "execution_evidence": json.dumps({"proof": proof}),
+    }
+    observed = {}
+
+    class Verifier:
+        def finalized_signatures_for_address(self, address, limit):
+            observed.update({"address": address, "limit": limit})
+            return [str(checkout_api.Signature.default())]
+
+        def verify(self, **kwargs):
+            observed["verify"] = kwargs
+            return {"status": "confirmed"}
+
+    monkeypatch.setattr(checkout_api, "_checkout_verifier", Verifier)
+    monkeypatch.setattr(checkout_api, "_reconcilable_treasury_quotes", lambda limit: [row])
+    monkeypatch.setattr(
+        checkout_api,
+        "get_order_db",
+        lambda order_id: {"buyer_wallet": BUYER, "buyer_secret": SECRET},
+    )
+    monkeypatch.setattr(checkout_api, "_attach_reconciled_signature", lambda *args: True)
+    monkeypatch.setattr(
+        checkout_api,
+        "confirm_universal_checkout",
+        lambda quote_id, request: {"status": "confirmed"},
+    )
+
+    result = checkout_api.run_checkout_reconciliation_sweep(limit=7)
+
+    assert result == {"selected": 1, "recovered": 1, "pending": 0, "rejected": 0}
+    assert observed["address"] == proof["payment_intent"]
+    assert observed["limit"] == 5
+    assert observed["verify"]["route"] == "treasury"
+    assert observed["verify"]["evidence"] == proof
+
+
+def test_reconciliation_ignores_nonmatching_candidate(monkeypatch):
+    row = {
+        "quote_id": "uq_reconcile",
+        "order_id": "ord-api",
+        "buyer_wallet": BUYER,
+        "state": "prepared",
+        "execution_evidence": json.dumps(
+            {"proof": {"payment_intent": str(Keypair().pubkey())}}
+        ),
+    }
+
+    class Verifier:
+        def finalized_signatures_for_address(self, address, limit):
+            return [str(checkout_api.Signature.default())]
+
+        def verify(self, **kwargs):
+            raise checkout_api.CheckoutVerificationError("evidence_mismatch")
+
+    monkeypatch.setattr(checkout_api, "_checkout_verifier", Verifier)
+    monkeypatch.setattr(checkout_api, "_reconcilable_treasury_quotes", lambda limit: [row])
+    monkeypatch.setattr(
+        checkout_api,
+        "get_order_db",
+        lambda order_id: {"buyer_wallet": BUYER, "buyer_secret": SECRET},
+    )
+    monkeypatch.setattr(
+        checkout_api,
+        "_attach_reconciled_signature",
+        lambda *args: pytest.fail("unverified signature must never be attached"),
+    )
+
+    assert checkout_api.run_checkout_reconciliation_sweep() == {
+        "selected": 1,
+        "recovered": 0,
+        "pending": 1,
+        "rejected": 0,
+    }
+
+
+def test_reconciliation_confirms_after_another_worker_attaches_signature(monkeypatch):
+    row = {
+        "quote_id": "uq_reconcile_race",
+        "order_id": "ord-api",
+        "buyer_wallet": BUYER,
+        "state": "prepared",
+        "execution_evidence": json.dumps(
+            {"proof": {"payment_intent": str(Keypair().pubkey())}}
+        ),
+    }
+
+    class Verifier:
+        def finalized_signatures_for_address(self, address, limit):
+            return [str(checkout_api.Signature.default())]
+
+        def verify(self, **kwargs):
+            return {"status": "confirmed"}
+
+    monkeypatch.setattr(checkout_api, "_checkout_verifier", Verifier)
+    monkeypatch.setattr(checkout_api, "_reconcilable_treasury_quotes", lambda limit: [row])
+    monkeypatch.setattr(
+        checkout_api,
+        "get_order_db",
+        lambda order_id: {"buyer_wallet": BUYER, "buyer_secret": SECRET},
+    )
+    monkeypatch.setattr(checkout_api, "_attach_reconciled_signature", lambda *args: False)
+    monkeypatch.setattr(
+        checkout_api,
+        "confirm_universal_checkout",
+        lambda quote_id, request: {"status": "confirmed"},
+    )
+
+    assert checkout_api.run_checkout_reconciliation_sweep() == {
+        "selected": 1,
+        "recovered": 1,
+        "pending": 0,
+        "rejected": 0,
+    }
+
+
 def _basic(username: str, password: str) -> str:
     encoded = base64.b64encode(f"{username}:{password}".encode()).decode()
     return f"Basic {encoded}"

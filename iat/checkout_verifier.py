@@ -149,6 +149,44 @@ class SolanaCheckoutVerifier:
             "finalized": True,
         }
 
+    def finalized_signatures_for_address(
+        self,
+        address: str,
+        *,
+        limit: int = 5,
+    ) -> list[str]:
+        """Return bounded, successful finalized signatures for one validated address."""
+        try:
+            normalized = str(Pubkey.from_string(address))
+        except Exception as exc:
+            raise CheckoutVerificationError("invalid_reconciliation_address") from exc
+        result = self._rpc(
+            "getSignaturesForAddress",
+            [
+                normalized,
+                {
+                    "commitment": "finalized",
+                    "limit": max(1, min(int(limit), 10)),
+                },
+            ],
+        )
+        if not isinstance(result, list):
+            raise CheckoutVerificationError(
+                "invalid_signature_history",
+                retryable=True,
+            )
+        signatures = []
+        for item in result:
+            if not isinstance(item, dict) or item.get("err") is not None:
+                continue
+            try:
+                signature = str(Signature.from_string(str(item.get("signature") or "")))
+            except Exception:
+                continue
+            if signature not in signatures:
+                signatures.append(signature)
+        return signatures
+
     def _verify_raydium(
         self,
         transaction: VersionedTransaction,

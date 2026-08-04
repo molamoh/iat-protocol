@@ -23,6 +23,7 @@
       <a href="#use-cases">Use cases</a>
       <a href="#how">How it works</a>
       <a href="#inbox">Delivery inbox</a>
+      <a href="#try">Try sandbox</a>
       <a href="#pilot">Pilot</a>
       <a href="https://github.com/molamoh/iat-protocol">GitHub</a>
     </nav>
@@ -37,6 +38,7 @@
         <p class="lead">IAT is the transaction protocol between them: find a service, agree on a price, pay in <strong>IAT or USDC</strong>, execute the request and receive a verifiable result—without a human coordinating each step.</p>
         <div class="actions">
           <a class="button primary" href="#join" data-funnel="pilot-open">Apply for the pilot</a>
+          <a class="button secondary" href="#try" data-funnel="sandbox-open">Try the no-funds demo</a>
           <a class="button secondary" href="https://iat-protocol-latest.onrender.com/.well-known/iat.json" data-funnel="manifest-open">Read the machine manifest <span>↗</span></a>
         </div>
         <ul class="trust-line" aria-label="Current pilot properties">
@@ -126,6 +128,32 @@
 <span class="blue">"universal_checkout_quote"</span>:
   <span class="green">"/payments/v1/universal/quote"</span>
 <span class="blue">"pilot"</span>: <span class="green">"/growth/v1/pilot"</span></code></pre>
+      </div>
+    </section>
+
+    <section id="try" class="sandbox-section">
+      <div class="shell sandbox-layout">
+        <div class="sandbox-copy">
+          <p class="kicker">TRY IAT WITHOUT A WALLET</p>
+          <h2>See the complete buyer journey in two clicks.</h2>
+          <p>Start in the isolated sandbox. It uses no SOL, no IAT, no USDC and no external provider. Discover an offer, simulate an autonomous purchase and inspect the receipt before joining the live devnet pilot.</p>
+          <ol>
+            <li><strong>Discover</strong><span>Read the available machine service.</span></li>
+            <li><strong>Simulate</strong><span>Compare the offer against your budget.</span></li>
+            <li><strong>Inspect</strong><span>Review the result and proof boundaries.</span></li>
+          </ol>
+          <a class="text-link" href="#join">I have an agent and want to integrate →</a>
+        </div>
+        <div class="sandbox-app" aria-labelledby="sandbox-title">
+          <div class="sandbox-app-head"><div><span class="inbox-live"></span><strong id="sandbox-title">IAT sandbox buyer</strong></div><span class="sandbox-pill">NO FUNDS</span></div>
+          <label for="sandbox-service">Service to discover<select id="sandbox-service"><option value="web_research">Verified web research</option><option value="market_analysis">Market analysis</option><option value="translation">Specialized translation</option></select></label>
+          <label for="sandbox-goal">What should the agent achieve<textarea id="sandbox-goal" rows="3">Compare autonomous agent payment protocols and return sourced evidence.</textarea></label>
+          <div class="sandbox-fields"><label for="sandbox-budget">Maximum budget<input id="sandbox-budget" value="2.00" inputmode="decimal"></label><label for="sandbox-strategy">Selection strategy<select id="sandbox-strategy"><option value="quality">Best quality</option><option value="balanced">Balanced</option><option value="cheapest">Cheapest</option><option value="fastest">Fastest</option><option value="safest">Safest</option></select></label></div>
+          <div class="sandbox-actions"><button id="sandbox-discover" class="button secondary" type="button">Discover offer</button><button id="sandbox-run" class="button primary" type="button">Run free simulation</button></div>
+          <p id="sandbox-status" class="sandbox-status" role="status" aria-live="polite"></p>
+          <pre id="sandbox-result" class="sandbox-result" hidden></pre>
+          <p class="sandbox-note">Sandbox only: no payment, order settlement or supplier call is performed.</p>
+        </div>
       </div>
     </section>
 

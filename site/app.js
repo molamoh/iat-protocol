@@ -24,6 +24,81 @@ document.querySelectorAll("[data-copy]").forEach((button) => {
 const form = document.querySelector("#pilot-form");
 const status = document.querySelector("#form-status");
 
+const sandboxService = document.querySelector("#sandbox-service");
+const sandboxGoal = document.querySelector("#sandbox-goal");
+const sandboxBudget = document.querySelector("#sandbox-budget");
+const sandboxStrategy = document.querySelector("#sandbox-strategy");
+const sandboxDiscover = document.querySelector("#sandbox-discover");
+const sandboxRun = document.querySelector("#sandbox-run");
+const sandboxStatus = document.querySelector("#sandbox-status");
+const sandboxResult = document.querySelector("#sandbox-result");
+
+function setSandboxStatus(message, type = "") {
+  sandboxStatus.className = `sandbox-status${type ? ` ${type}` : ""}`;
+  sandboxStatus.textContent = message;
+}
+
+function sandboxPayload() {
+  return {
+    service: sandboxService.value,
+    goal: sandboxGoal.value.trim(),
+    max_price: sandboxBudget.value.trim(),
+    strategy: sandboxStrategy.value,
+    required_capabilities: ["source_verification"],
+  };
+}
+
+async function sandboxRequest(path, options = {}) {
+  const response = await fetch(`${API_BASE}${path}`, options);
+  const result = await response.json();
+  if (!response.ok) throw new Error(result.detail || "Sandbox request rejected");
+  return result;
+}
+
+function showSandboxResult(result) {
+  sandboxResult.hidden = false;
+  sandboxResult.textContent = JSON.stringify(result, null, 2);
+}
+
+sandboxDiscover.addEventListener("click", async () => {
+  sandboxDiscover.disabled = true;
+  setSandboxStatus("Discovering a machine-readable offer…");
+  try {
+    const result = await sandboxRequest(`/sandbox/v1/offers?service=${encodeURIComponent(sandboxService.value)}`);
+    showSandboxResult(result);
+    setSandboxStatus(`${result.offers?.length || 0} eligible offer(s) discovered. You can now run the free simulation.`, "success");
+    trackFunnel("sandbox-discovered");
+  } catch (error) {
+    setSandboxStatus(`Unable to discover: ${error.message}`, "error");
+  } finally {
+    sandboxDiscover.disabled = false;
+  }
+});
+
+sandboxRun.addEventListener("click", async () => {
+  const payload = sandboxPayload();
+  if (!sandboxGoal.value.trim() || !/^\d{1,7}(\.\d{1,6})?$/.test(payload.max_price)) {
+    setSandboxStatus("Enter a goal and a valid maximum budget, for example 2.00.", "error");
+    return;
+  }
+  sandboxRun.disabled = true;
+  setSandboxStatus("Running an isolated simulation…");
+  try {
+    const result = await sandboxRequest("/sandbox/v1/purchase", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Idempotency-Key": `site-demo-${crypto.randomUUID()}` },
+      body: JSON.stringify(payload),
+    });
+    showSandboxResult(result);
+    setSandboxStatus("Simulation complete. No funds moved and no supplier was contacted.", "success");
+    trackFunnel("sandbox-completed");
+  } catch (error) {
+    setSandboxStatus(`Unable to simulate: ${error.message}`, "error");
+  } finally {
+    sandboxRun.disabled = false;
+  }
+});
+
 form.addEventListener("focusin", () => trackFunnel("form-started"), { once: true });
 
 form.addEventListener("submit", async (event) => {

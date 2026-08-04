@@ -1,0 +1,4 @@
+Contact: mailto:admin@iatprotocol.com
+Canonical: https://iatprotocol.com/.well-known/security.txt
+Policy: https://iatprotocol.com/#security
+Expires: 2027-08-04T00:00:00.000Z

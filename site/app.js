@@ -430,6 +430,10 @@ function scanInjectedWallets() {
     [window.solflare, "Solflare"],
     [window.backpack?.solana, "Backpack"],
     [window.xnft?.solana, "Backpack"],
+    [window.coinbaseSolana, "Coinbase Wallet"],
+    [window.okxwallet?.solana, "OKX Wallet"],
+    [window.trustwallet?.solana, "Trust Wallet"],
+    [window.exodus?.solana, "Exodus"],
     [window.solana, window.solana?.isPhantom ? "Phantom" : "Solana wallet"],
   ];
   for (const [provider, name] of candidates) registerLegacyProvider(provider, name);

@@ -295,7 +295,12 @@ PUBLIC_WEB_ORIGINS = [
     if origin.strip()
 ]
 PUBLIC_WEB_ALLOW_METHODS = ["GET", "POST", "DELETE", "OPTIONS"]
-PUBLIC_WEB_ALLOW_HEADERS = ["Content-Type", "Authorization", "Idempotency-Key"]
+PUBLIC_WEB_ALLOW_HEADERS = [
+    "Content-Type",
+    "Authorization",
+    "Idempotency-Key",
+    "X-Seller-API-Key",
+]
 if PUBLIC_WEB_ORIGINS:
     app.add_middleware(
         CORSMiddleware,

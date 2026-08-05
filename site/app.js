@@ -138,6 +138,44 @@ sellerEstimate.addEventListener("click", async () => {
   }
 });
 
+const sellerApiKey = document.querySelector("#seller-api-key");
+const sellerConsoleOpen = document.querySelector("#seller-console-open");
+const sellerConsoleStatus = document.querySelector("#seller-console-status");
+const sellerConsoleResult = document.querySelector("#seller-console-result");
+
+sellerConsoleOpen.addEventListener("click", async () => {
+  const key = sellerApiKey.value.trim();
+  if (key.length < 16) {
+    sellerConsoleStatus.className = "seller-status error";
+    sellerConsoleStatus.textContent = "Enter the seller API key returned during registration.";
+    return;
+  }
+  sellerConsoleOpen.disabled = true;
+  sellerConsoleStatus.className = "seller-status";
+  sellerConsoleStatus.textContent = "Authenticating seller console…";
+  const headers = { "X-Seller-API-Key": key };
+  try {
+    const [dashboard, analytics, payouts] = await Promise.all([
+      sandboxRequest("/seller/dashboard", { headers }),
+      sandboxRequest("/seller/analytics", { headers }),
+      sandboxRequest("/seller/payouts", { headers }),
+    ]);
+    sessionStorage.setItem("iat_seller_api_key", key);
+    document.querySelector("#seller-console-seller").textContent = dashboard.seller_status || dashboard.status || "authenticated";
+    document.querySelector("#seller-console-analytics").textContent = analytics.status || "available";
+    document.querySelector("#seller-console-payouts").textContent = payouts.status || "available";
+    sellerConsoleResult.hidden = false;
+    sellerConsoleStatus.className = "seller-status success";
+    sellerConsoleStatus.textContent = "Seller console ready for this browser session.";
+    trackFunnel("seller-console-opened");
+  } catch (error) {
+    sellerConsoleStatus.className = "seller-status error";
+    sellerConsoleStatus.textContent = `Unable to open console: ${error.message}`;
+  } finally {
+    sellerConsoleOpen.disabled = false;
+  }
+});
+
 form.addEventListener("focusin", () => trackFunnel("form-started"), { once: true });
 
 form.addEventListener("submit", async (event) => {

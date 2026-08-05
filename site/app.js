@@ -139,9 +139,53 @@ sellerEstimate.addEventListener("click", async () => {
 });
 
 const sellerApiKey = document.querySelector("#seller-api-key");
+const sellerRegisterName = document.querySelector("#seller-register-name");
+const sellerRegisterWallet = document.querySelector("#seller-register-wallet");
+const sellerRegisterEmail = document.querySelector("#seller-register-email");
+const sellerRegisterWebsite = document.querySelector("#seller-register-website");
+const sellerRegisterSubmit = document.querySelector("#seller-register-submit");
+const sellerRegisterStatus = document.querySelector("#seller-register-status");
+const sellerRegisterKey = document.querySelector("#seller-register-key");
+const sellerRegisterKeyValue = document.querySelector("#seller-register-key-value");
 const sellerConsoleOpen = document.querySelector("#seller-console-open");
 const sellerConsoleStatus = document.querySelector("#seller-console-status");
 const sellerConsoleResult = document.querySelector("#seller-console-result");
+
+sellerRegisterSubmit.addEventListener("click", async () => {
+  const payload = {
+    seller_name: sellerRegisterName.value.trim(),
+    wallet: sellerRegisterWallet.value.trim(),
+    email: sellerRegisterEmail.value.trim(),
+    website: sellerRegisterWebsite.value.trim() || null,
+  };
+  if (!payload.seller_name || payload.wallet.length < 8 || !payload.email) {
+    sellerRegisterStatus.className = "seller-status error";
+    sellerRegisterStatus.textContent = "Enter a seller name, public wallet and business email.";
+    return;
+  }
+  sellerRegisterSubmit.disabled = true;
+  sellerRegisterStatus.className = "seller-status";
+  sellerRegisterStatus.textContent = "Creating seller account…";
+  try {
+    const result = await sandboxRequest("/seller/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!result.api_key) throw new Error(result.message || "Registration did not return a key");
+    sellerRegisterKeyValue.textContent = result.api_key;
+    sellerRegisterKey.hidden = false;
+    sellerApiKey.value = result.api_key;
+    sellerRegisterStatus.className = "seller-status success";
+    sellerRegisterStatus.textContent = "Account created pending protocol review. Save the key, then open the seller console.";
+    trackFunnel("seller-registered");
+  } catch (error) {
+    sellerRegisterStatus.className = "seller-status error";
+    sellerRegisterStatus.textContent = `Unable to register: ${error.message}`;
+  } finally {
+    sellerRegisterSubmit.disabled = false;
+  }
+});
 
 sellerConsoleOpen.addEventListener("click", async () => {
   const key = sellerApiKey.value.trim();

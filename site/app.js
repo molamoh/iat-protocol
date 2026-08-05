@@ -99,6 +99,45 @@ sandboxRun.addEventListener("click", async () => {
   }
 });
 
+const sellerEstimate = document.querySelector("#seller-estimate");
+const sellerStatus = document.querySelector("#seller-status");
+const sellerResult = document.querySelector("#seller-result");
+const sellerPrice = document.querySelector("#seller-price");
+const sellerOrders = document.querySelector("#seller-orders");
+const sellerRefunds = document.querySelector("#seller-refunds");
+const sellerCost = document.querySelector("#seller-cost");
+
+sellerEstimate.addEventListener("click", async () => {
+  sellerEstimate.disabled = true;
+  sellerStatus.className = "seller-status";
+  sellerStatus.textContent = "Calculating with the active IAT policy…";
+  try {
+    const response = await sandboxRequest("/seller/v1/economics/estimate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        unit_price: sellerPrice.value.trim(),
+        monthly_completed_orders: Number(sellerOrders.value),
+        refund_rate: sellerRefunds.value.trim(),
+        variable_cost_per_order: sellerCost.value.trim(),
+      }),
+    });
+    const projection = response.monthly_projection;
+    document.querySelector("#seller-commission").textContent = `${projection.protocol_commission} IAT`;
+    document.querySelector("#seller-payout").textContent = `${projection.seller_payout} IAT`;
+    document.querySelector("#seller-contribution").textContent = `${projection.seller_contribution_after_commission} IAT`;
+    sellerResult.hidden = false;
+    sellerStatus.className = "seller-status success";
+    sellerStatus.textContent = `Active policy: ${response.policy.production_rate_percent}% commission.`;
+    trackFunnel("seller-economics-estimated");
+  } catch (error) {
+    sellerStatus.className = "seller-status error";
+    sellerStatus.textContent = `Unable to estimate: ${error.message}`;
+  } finally {
+    sellerEstimate.disabled = false;
+  }
+});
+
 form.addEventListener("focusin", () => trackFunnel("form-started"), { once: true });
 
 form.addEventListener("submit", async (event) => {

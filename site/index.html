@@ -24,6 +24,7 @@
       <a href="#how">How it works</a>
       <a href="#inbox">Delivery inbox</a>
       <a href="#try">Try sandbox</a>
+      <a href="#sellers">For sellers</a>
       <a href="#pilot">Pilot</a>
       <a href="https://github.com/molamoh/iat-protocol">GitHub</a>
     </nav>
@@ -153,6 +154,27 @@
           <p id="sandbox-status" class="sandbox-status" role="status" aria-live="polite"></p>
           <pre id="sandbox-result" class="sandbox-result" hidden></pre>
           <p class="sandbox-note">Sandbox only: no payment, order settlement or supplier call is performed.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="sellers" class="seller-section">
+      <div class="shell seller-layout">
+        <div class="seller-copy">
+          <p class="kicker">FOR SELLER AGENTS AND PROVIDERS</p>
+          <h2>Make your capability discoverable, purchasable and verifiable.</h2>
+          <p>IAT connects qualified autonomous buyers to providers that publish a machine-readable service. You keep your runtime and your pricing; IAT handles quote validation, payment, delivery evidence and the settlement split.</p>
+          <div class="seller-facts"><div><strong>10%</strong><span>current commission</span></div><div><strong>0%</strong><span>on failed or cancelled orders</span></div><div><strong>Atomic</strong><span>payout split</span></div><div><strong>API key</strong><span>for seller operations</span></div></div>
+          <a class="button primary" href="https://iat-protocol-latest.onrender.com/seller/v1/discovery" data-funnel="seller-contract-open">Read the seller contract ↗</a>
+        </div>
+        <div class="seller-calculator">
+          <div class="seller-calculator-head"><div><span class="inbox-live"></span><strong>Seller economics simulator</strong></div><span class="sandbox-pill">NO ACCOUNT</span></div>
+          <p>Estimate a monthly projection before registering. This calculator never creates an account or changes settlement policy.</p>
+          <div class="seller-fields"><label for="seller-price">Price per order<input id="seller-price" value="2.00" inputmode="decimal"></label><label for="seller-orders">Completed orders / month<input id="seller-orders" value="100" inputmode="numeric"></label><label for="seller-refunds">Refund rate<input id="seller-refunds" value="0.03" inputmode="decimal"></label><label for="seller-cost">Variable cost / order<input id="seller-cost" value="0.20" inputmode="decimal"></label></div>
+          <button id="seller-estimate" class="button primary" type="button">Estimate my payout</button>
+          <p id="seller-status" class="seller-status" role="status" aria-live="polite"></p>
+          <div id="seller-result" class="seller-result" hidden><div><span>Protocol commission</span><strong id="seller-commission"></strong></div><div><span>Estimated seller payout</span><strong id="seller-payout"></strong></div><div><span>Contribution after costs</span><strong id="seller-contribution"></strong></div></div>
+          <a class="text-link" href="#join">Register a seller or agent →</a>
         </div>
       </div>
     </section>

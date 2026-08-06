@@ -1,6 +1,24 @@
 const API_BASE = "https://iat-protocol-latest.onrender.com";
 const tracked = new Set();
 
+// The site is split into focused pages. Keep one shared bundle, but make
+// every feature optional so a page only needs to render the controls it uses.
+function optionalElement(selector) {
+  return document.querySelector(selector) || {
+    value: "",
+    hidden: true,
+    disabled: false,
+    className: "",
+    textContent: "",
+    addEventListener() {},
+    replaceChildren() {},
+    append() {},
+    querySelector() { return optionalElement("__missing__"); },
+    reportValidity() { return true; },
+    reset() {},
+  };
+}
+
 function trackFunnel(eventName) {
   if (tracked.has(eventName)) return;
   tracked.add(eventName);
@@ -21,17 +39,17 @@ document.querySelectorAll("[data-copy]").forEach((button) => {
   });
 });
 
-const form = document.querySelector("#pilot-form");
-const status = document.querySelector("#form-status");
+const form = optionalElement("#pilot-form");
+const status = optionalElement("#form-status");
 
-const sandboxService = document.querySelector("#sandbox-service");
-const sandboxGoal = document.querySelector("#sandbox-goal");
-const sandboxBudget = document.querySelector("#sandbox-budget");
-const sandboxStrategy = document.querySelector("#sandbox-strategy");
-const sandboxDiscover = document.querySelector("#sandbox-discover");
-const sandboxRun = document.querySelector("#sandbox-run");
-const sandboxStatus = document.querySelector("#sandbox-status");
-const sandboxResult = document.querySelector("#sandbox-result");
+const sandboxService = optionalElement("#sandbox-service");
+const sandboxGoal = optionalElement("#sandbox-goal");
+const sandboxBudget = optionalElement("#sandbox-budget");
+const sandboxStrategy = optionalElement("#sandbox-strategy");
+const sandboxDiscover = optionalElement("#sandbox-discover");
+const sandboxRun = optionalElement("#sandbox-run");
+const sandboxStatus = optionalElement("#sandbox-status");
+const sandboxResult = optionalElement("#sandbox-result");
 
 function setSandboxStatus(message, type = "") {
   sandboxStatus.className = `sandbox-status${type ? ` ${type}` : ""}`;
@@ -99,13 +117,13 @@ sandboxRun.addEventListener("click", async () => {
   }
 });
 
-const sellerEstimate = document.querySelector("#seller-estimate");
-const sellerStatus = document.querySelector("#seller-status");
-const sellerResult = document.querySelector("#seller-result");
-const sellerPrice = document.querySelector("#seller-price");
-const sellerOrders = document.querySelector("#seller-orders");
-const sellerRefunds = document.querySelector("#seller-refunds");
-const sellerCost = document.querySelector("#seller-cost");
+const sellerEstimate = optionalElement("#seller-estimate");
+const sellerStatus = optionalElement("#seller-status");
+const sellerResult = optionalElement("#seller-result");
+const sellerPrice = optionalElement("#seller-price");
+const sellerOrders = optionalElement("#seller-orders");
+const sellerRefunds = optionalElement("#seller-refunds");
+const sellerCost = optionalElement("#seller-cost");
 
 sellerEstimate.addEventListener("click", async () => {
   sellerEstimate.disabled = true;
@@ -138,18 +156,18 @@ sellerEstimate.addEventListener("click", async () => {
   }
 });
 
-const sellerApiKey = document.querySelector("#seller-api-key");
-const sellerRegisterName = document.querySelector("#seller-register-name");
-const sellerRegisterWallet = document.querySelector("#seller-register-wallet");
-const sellerRegisterEmail = document.querySelector("#seller-register-email");
-const sellerRegisterWebsite = document.querySelector("#seller-register-website");
-const sellerRegisterSubmit = document.querySelector("#seller-register-submit");
-const sellerRegisterStatus = document.querySelector("#seller-register-status");
-const sellerRegisterKey = document.querySelector("#seller-register-key");
-const sellerRegisterKeyValue = document.querySelector("#seller-register-key-value");
-const sellerConsoleOpen = document.querySelector("#seller-console-open");
-const sellerConsoleStatus = document.querySelector("#seller-console-status");
-const sellerConsoleResult = document.querySelector("#seller-console-result");
+const sellerApiKey = optionalElement("#seller-api-key");
+const sellerRegisterName = optionalElement("#seller-register-name");
+const sellerRegisterWallet = optionalElement("#seller-register-wallet");
+const sellerRegisterEmail = optionalElement("#seller-register-email");
+const sellerRegisterWebsite = optionalElement("#seller-register-website");
+const sellerRegisterSubmit = optionalElement("#seller-register-submit");
+const sellerRegisterStatus = optionalElement("#seller-register-status");
+const sellerRegisterKey = optionalElement("#seller-register-key");
+const sellerRegisterKeyValue = optionalElement("#seller-register-key-value");
+const sellerConsoleOpen = optionalElement("#seller-console-open");
+const sellerConsoleStatus = optionalElement("#seller-console-status");
+const sellerConsoleResult = optionalElement("#seller-console-result");
 
 async function authenticateSellerWallet() {
   const selected = Number(walletSelector.value);
@@ -282,26 +300,26 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
-const walletSelector = document.querySelector("#wallet-selector");
-const walletConnect = document.querySelector("#wallet-connect");
-const walletRefresh = document.querySelector("#wallet-refresh");
-const walletDisconnect = document.querySelector("#wallet-disconnect");
-const walletConnectPanel = document.querySelector("#wallet-connect-panel");
-const walletSessionPanel = document.querySelector("#wallet-session-panel");
-const walletAddress = document.querySelector("#wallet-address");
-const inboxStatus = document.querySelector("#inbox-status");
-const inboxResults = document.querySelector("#inbox-results");
-const inboxItems = document.querySelector("#inbox-items");
-const inboxCount = document.querySelector("#inbox-count");
-const inboxMore = document.querySelector("#inbox-more");
-const walletCheckout = document.querySelector("#wallet-checkout");
-const checkoutOrderId = document.querySelector("#checkout-order-id");
-const checkoutPrepare = document.querySelector("#checkout-prepare");
-const checkoutReview = document.querySelector("#checkout-review");
-const checkoutSend = document.querySelector("#checkout-send");
-const usagePrepare = document.querySelector("#usage-prepare");
-const usageReview = document.querySelector("#usage-review");
-const usageSend = document.querySelector("#usage-send");
+const walletSelector = optionalElement("#wallet-selector");
+const walletConnect = optionalElement("#wallet-connect");
+const walletRefresh = optionalElement("#wallet-refresh");
+const walletDisconnect = optionalElement("#wallet-disconnect");
+const walletConnectPanel = optionalElement("#wallet-connect-panel");
+const walletSessionPanel = optionalElement("#wallet-session-panel");
+const walletAddress = optionalElement("#wallet-address");
+const inboxStatus = optionalElement("#inbox-status");
+const inboxResults = optionalElement("#inbox-results");
+const inboxItems = optionalElement("#inbox-items");
+const inboxCount = optionalElement("#inbox-count");
+const inboxMore = optionalElement("#inbox-more");
+const walletCheckout = optionalElement("#wallet-checkout");
+const checkoutOrderId = optionalElement("#checkout-order-id");
+const checkoutPrepare = optionalElement("#checkout-prepare");
+const checkoutReview = optionalElement("#checkout-review");
+const checkoutSend = optionalElement("#checkout-send");
+const usagePrepare = optionalElement("#usage-prepare");
+const usageReview = optionalElement("#usage-review");
+const usageSend = optionalElement("#usage-send");
 const discoveredWallets = [];
 const registeredLegacyProviders = new WeakSet();
 let activeWallet = null;

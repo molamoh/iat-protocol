@@ -8194,15 +8194,17 @@ class SellerRegisterAgentRequest(BaseModel):
 def seller_register_agent(
     req: SellerRegisterAgentRequest,
     x_seller_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None, alias="Authorization"),
 ):
     init_db()
 
-    auth = authenticate_seller_api_key_db(x_seller_api_key or req.api_key)
+    if x_seller_api_key or req.api_key:
+        seller = get_seller_by_api_key_db(x_seller_api_key or req.api_key)
+    else:
+        seller = get_authenticated_seller_from_credentials(authorization=authorization)
 
-    if auth.get("status") != "ok":
-        return auth
-
-    seller = auth["seller"]
+    if not seller:
+        return {"status": "error", "message": "seller_auth_required"}
 
     seller_id = seller["seller_id"]
     seller_agent_id = "seller_agent_" + str(uuid.uuid4())

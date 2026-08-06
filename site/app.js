@@ -168,6 +168,61 @@ const sellerRegisterKeyValue = optionalElement("#seller-register-key-value");
 const sellerConsoleOpen = optionalElement("#seller-console-open");
 const sellerConsoleStatus = optionalElement("#seller-console-status");
 const sellerConsoleResult = optionalElement("#seller-console-result");
+let sellerSessionHeaders = null;
+
+function installSellerCapabilityForm() {
+  const card = document.querySelector(".seller-console-card");
+  if (!card || document.querySelector("#seller-agent-register")) return;
+  const details = document.createElement("details");
+  details.className = "seller-capability-form";
+  details.innerHTML = `
+    <summary>Register a service capability</summary>
+    <p class="inbox-help">Add the agent endpoint that IAT may validate and expose to buyers.</p>
+    <label>Agent identifier<input id="seller-agent-id" placeholder="research-agent-01"></label>
+    <label>Service name<input id="seller-service" placeholder="Verified web research"></label>
+    <label>HTTP runtime URL<input id="seller-runtime-url" type="url" placeholder="https://agent.example/run"></label>
+    <label>Price in IAT<input id="seller-agent-price" value="1.00" inputmode="decimal"></label>
+    <label>Capabilities (comma separated)<input id="seller-agent-capabilities" placeholder="web_research,source_verification"></label>
+    <button id="seller-agent-register" class="button primary" type="button">Register capability</button>
+    <p id="seller-agent-status" class="seller-status" role="status" aria-live="polite"></p>`;
+  card.append(details);
+  const submit = details.querySelector("#seller-agent-register");
+  submit.addEventListener("click", async () => {
+    const headers = sellerSessionHeaders;
+    const statusNode = details.querySelector("#seller-agent-status");
+    if (!headers) {
+      statusNode.className = "seller-status error";
+      statusNode.textContent = "Open the private console first.";
+      return;
+    }
+    const payload = {
+      agent_id: details.querySelector("#seller-agent-id").value.trim(),
+      service: details.querySelector("#seller-service").value.trim(),
+      url: details.querySelector("#seller-runtime-url").value.trim(),
+      runtime_adapter: "http",
+      price: Number(details.querySelector("#seller-agent-price").value.trim()),
+      capabilities: details.querySelector("#seller-agent-capabilities").value.split(",").map((item) => item.trim()).filter(Boolean),
+    };
+    if (payload.agent_id.length < 3 || payload.service.length < 3 || !/^https?:\/\//i.test(payload.url) || !Number.isFinite(payload.price) || payload.price < 0) {
+      statusNode.className = "seller-status error";
+      statusNode.textContent = "Enter an agent ID, service, valid HTTPS/HTTP URL and non-negative price.";
+      return;
+    }
+    submit.disabled = true;
+    statusNode.className = "seller-status";
+    statusNode.textContent = "Validating runtime and registering capability…";
+    try {
+      const result = await sandboxRequest("/seller/register-agent", { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(payload) });
+      if (result.status !== "ok") throw new Error(result.message || "Registration rejected");
+      statusNode.className = "seller-status success";
+      statusNode.textContent = `Capability registered: ${result.seller_agent_id || result.agent_id}. It remains subject to protocol verification.`;
+      trackFunnel("seller-capability-registered");
+    } catch (error) {
+      statusNode.className = "seller-status error";
+      statusNode.textContent = `Unable to register capability: ${error.message}`;
+    } finally { submit.disabled = false; }
+  });
+}
 
 async function authenticateSellerWallet() {
   const selected = Number(walletSelector.value);
@@ -242,6 +297,7 @@ sellerConsoleOpen.addEventListener("click", async () => {
     const headers = session
       ? { Authorization: `Bearer ${session.access_token}` }
       : { "X-Seller-API-Key": key };
+    sellerSessionHeaders = headers;
     const [dashboard, analytics, payouts] = await Promise.all([
       sandboxRequest("/seller/dashboard", { headers }),
       sandboxRequest("/seller/analytics", { headers }),
@@ -337,6 +393,7 @@ if (!document.querySelector("#wallet-selector")) {
     walletSelector = select;
   }
 }
+installSellerCapabilityForm();
 const discoveredWallets = [];
 const registeredLegacyProviders = new WeakSet();
 let activeWallet = null;

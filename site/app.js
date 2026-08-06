@@ -175,6 +175,7 @@ function installSellerCapabilityForm() {
   if (!card || document.querySelector("#seller-agent-register")) return;
   const details = document.createElement("details");
   details.className = "seller-capability-form";
+  details.open = true;
   details.innerHTML = `
     <summary>Register a service capability</summary>
     <p class="inbox-help">Add the agent endpoint that IAT may validate and expose to buyers.</p>
@@ -185,7 +186,8 @@ function installSellerCapabilityForm() {
     <label>Capabilities (comma separated)<input id="seller-agent-capabilities" placeholder="web_research,source_verification"></label>
     <button id="seller-agent-register" class="button primary" type="button">Register capability</button>
     <p id="seller-agent-status" class="seller-status" role="status" aria-live="polite"></p>`;
-  card.append(details);
+  const resultPanel = card.querySelector("#seller-console-result");
+  if (resultPanel) card.insertBefore(details, resultPanel); else card.append(details);
   const submit = details.querySelector("#seller-agent-register");
   submit.addEventListener("click", async () => {
     const headers = sellerSessionHeaders;

@@ -300,7 +300,7 @@ form.addEventListener("submit", async (event) => {
   }
 });
 
-const walletSelector = optionalElement("#wallet-selector");
+let walletSelector = optionalElement("#wallet-selector");
 const walletConnect = optionalElement("#wallet-connect");
 const walletRefresh = optionalElement("#wallet-refresh");
 const walletDisconnect = optionalElement("#wallet-disconnect");
@@ -320,6 +320,23 @@ const checkoutSend = optionalElement("#checkout-send");
 const usagePrepare = optionalElement("#usage-prepare");
 const usageReview = optionalElement("#usage-review");
 const usageSend = optionalElement("#usage-send");
+
+// Seller pages do not need the buyer inbox markup, but wallet sign-in still
+// needs a visible choice when several browser wallets are installed.
+if (!document.querySelector("#wallet-selector")) {
+  const sellerCard = document.querySelector(".seller-console-card");
+  if (sellerCard) {
+    const label = document.createElement("label");
+    label.htmlFor = "wallet-selector";
+    label.textContent = "Detected Solana wallet";
+    const select = document.createElement("select");
+    select.id = "wallet-selector";
+    select.innerHTML = '<option value="">Detecting wallets…</option>';
+    label.append(select);
+    sellerCard.insertBefore(label, sellerCard.firstChild);
+    walletSelector = select;
+  }
+}
 const discoveredWallets = [];
 const registeredLegacyProviders = new WeakSet();
 let activeWallet = null;

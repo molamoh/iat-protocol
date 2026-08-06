@@ -170,6 +170,13 @@ const sellerConsoleStatus = optionalElement("#seller-console-status");
 const sellerConsoleResult = optionalElement("#seller-console-result");
 let sellerSessionHeaders = null;
 
+try {
+  const savedSellerKey = sessionStorage.getItem("iat_seller_api_key");
+  const savedSellerToken = sessionStorage.getItem("iat_seller_access_token");
+  if (savedSellerKey) sellerSessionHeaders = { "X-Seller-API-Key": savedSellerKey };
+  else if (savedSellerToken) sellerSessionHeaders = { Authorization: `Bearer ${savedSellerToken}` };
+} catch (_) { /* private browsing may disable session storage */ }
+
 function installSellerCapabilityForm() {
   const card = document.querySelector(".seller-console-card");
   if (!card || document.querySelector("#seller-agent-register")) return;
@@ -300,12 +307,15 @@ sellerConsoleOpen.addEventListener("click", async () => {
       ? { Authorization: `Bearer ${session.access_token}` }
       : { "X-Seller-API-Key": key };
     sellerSessionHeaders = headers;
+    try {
+      if (session?.access_token) sessionStorage.setItem("iat_seller_access_token", session.access_token);
+      if (key) sessionStorage.setItem("iat_seller_api_key", key);
+    } catch (_) { /* memory-only fallback */ }
     const [dashboard, analytics, payouts] = await Promise.all([
       sandboxRequest("/seller/dashboard", { headers }),
       sandboxRequest("/seller/analytics", { headers }),
       sandboxRequest("/seller/payouts", { headers }),
     ]);
-    if (key) sessionStorage.setItem("iat_seller_api_key", key);
     document.querySelector("#seller-console-seller").textContent = dashboard.seller_status || dashboard.status || "authenticated";
     document.querySelector("#seller-console-analytics").textContent = analytics.status || "available";
     document.querySelector("#seller-console-payouts").textContent = payouts.status || "available";

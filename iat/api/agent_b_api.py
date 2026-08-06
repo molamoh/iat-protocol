@@ -62,6 +62,12 @@ from iat.checkout_receipt import (
     send_email_transport_canary,
 )
 from iat.config import IAT_TOKEN_ADDRESS
+from iat.buyer_identity import (
+    WalletIdentityError,
+    authenticate_wallet_session,
+    create_wallet_challenge,
+    exchange_wallet_signature,
+)
 
 from iat.api.db import (
     update_agent_call_stats_db,
@@ -7891,6 +7897,53 @@ class SellerRegisterRequest(BaseModel):
     metadata: dict | None = None
 
 
+class SellerWalletChallengeRequest(BaseModel):
+    wallet: str = Field(min_length=32, max_length=64)
+
+
+class SellerWalletSessionRequest(BaseModel):
+    challenge_id: str = Field(min_length=16, max_length=128)
+    signature: str = Field(min_length=64, max_length=128)
+
+
+@app.post("/seller/wallet-auth/challenge")
+def seller_wallet_auth_challenge(req: SellerWalletChallengeRequest):
+    try:
+        challenge = create_wallet_challenge(
+            req.wallet,
+            statement="Sign in to your IAT seller console. This does not authorize a transaction or payment.",
+        )
+    except WalletIdentityError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"status": "seller_wallet_challenge_issued", **challenge}
+
+
+@app.post("/seller/wallet-auth/session")
+def seller_wallet_auth_session(req: SellerWalletSessionRequest):
+    try:
+        session = exchange_wallet_signature(req.challenge_id, req.signature)
+        wallet = authenticate_wallet_session(session["access_token"])
+    except WalletIdentityError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    seller = get_seller_by_wallet_db(wallet)
+    if not seller:
+        raise HTTPException(status_code=404, detail="seller_wallet_not_registered")
+    if str(seller.get("seller_status") or "").lower() == "banned":
+        raise HTTPException(status_code=403, detail="seller_banned")
+    return {
+        "status": "seller_wallet_session_created",
+        "access_token": session["access_token"],
+        "token_type": "Bearer",
+        "expires_at": session["expires_at"],
+        "seller": {
+            "seller_id": seller.get("seller_id"),
+            "seller_name": seller.get("seller_name"),
+            "seller_status": seller.get("seller_status"),
+            "verification_status": seller.get("verification_status"),
+        },
+    }
+
+
 @app.post("/seller/register")
 def seller_register(req: SellerRegisterRequest):
     init_db()
@@ -8256,10 +8309,24 @@ class SellerApprovalRequest(BaseModel):
 
 
 
-def get_authenticated_seller_from_header(x_seller_api_key):
-    if not x_seller_api_key:
+def get_authenticated_seller_from_credentials(
+    x_seller_api_key: str | None = None,
+    authorization: str | None = None,
+):
+    if x_seller_api_key:
+        return get_seller_by_api_key_db(x_seller_api_key)
+    scheme, separator, token = str(authorization or "").partition(" ")
+    if separator != " " or scheme.lower() != "bearer" or not token:
         return None
-    return get_seller_by_api_key_db(x_seller_api_key)
+    try:
+        wallet = authenticate_wallet_session(token.strip())
+    except WalletIdentityError:
+        return None
+    return get_seller_by_wallet_db(wallet)
+
+
+def get_authenticated_seller_from_header(x_seller_api_key):
+    return get_authenticated_seller_from_credentials(x_seller_api_key)
 
 
 @app.post("/seller/catalog/items")
@@ -8311,8 +8378,9 @@ def seller_create_catalog_item(
 @app.get("/seller/dashboard")
 def seller_dashboard(
     x_seller_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None, alias="Authorization"),
 ):
-    seller = get_authenticated_seller_from_header(x_seller_api_key)
+    seller = get_authenticated_seller_from_credentials(x_seller_api_key, authorization)
     if not seller:
         return {
             "status": "error",
@@ -12228,15 +12296,16 @@ def seller_order_detail(
 def seller_analytics(
     api_key: str | None = None,
     x_seller_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None, alias="Authorization"),
 ):
     effective_api_key = x_seller_api_key or api_key
 
-    auth = authenticate_seller_api_key_db(effective_api_key)
-
-    if auth.get("status") != "ok":
-        return auth
-
-    seller = auth["seller"]
+    seller = get_authenticated_seller_from_credentials(
+        effective_api_key,
+        authorization,
+    )
+    if not seller:
+        return {"status": "error", "message": "seller_auth_required"}
     seller_id = seller["seller_id"]
 
     all_orders = list_orders_db()
@@ -12316,15 +12385,16 @@ def seller_analytics(
 def seller_payouts(
     api_key: str | None = None,
     x_seller_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None, alias="Authorization"),
 ):
     effective_api_key = x_seller_api_key or api_key
 
-    auth = authenticate_seller_api_key_db(effective_api_key)
-
-    if auth.get("status") != "ok":
-        return auth
-
-    seller = auth["seller"]
+    seller = get_authenticated_seller_from_credentials(
+        effective_api_key,
+        authorization,
+    )
+    if not seller:
+        return {"status": "error", "message": "seller_auth_required"}
     seller_id = seller["seller_id"]
 
     all_orders = list_orders_db()

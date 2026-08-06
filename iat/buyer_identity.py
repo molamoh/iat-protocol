@@ -91,7 +91,12 @@ def init_wallet_identity_db() -> None:
         release_conn(conn)
 
 
-def create_wallet_challenge(wallet: str, *, now: int | None = None) -> dict[str, Any]:
+def create_wallet_challenge(
+    wallet: str,
+    *,
+    now: int | None = None,
+    statement: str = "Sign in to access your IAT delivery inbox. This does not authorize a transaction or payment.",
+) -> dict[str, Any]:
     wallet = validate_wallet(wallet)
     issued_at = int(time.time()) if now is None else int(now)
     expires_at = issued_at + _challenge_ttl()
@@ -108,7 +113,7 @@ def create_wallet_challenge(wallet: str, *, now: int | None = None) -> dict[str,
             f"Challenge: {nonce}",
             f"Issued At: {issued_at}",
             f"Expires At: {expires_at}",
-            "Statement: Sign in to access your IAT delivery inbox. This does not authorize a transaction or payment.",
+            f"Statement: {str(statement).strip()[:240]}",
         )
     )
     init_wallet_identity_db()

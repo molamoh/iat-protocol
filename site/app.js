@@ -151,6 +151,31 @@ const sellerConsoleOpen = document.querySelector("#seller-console-open");
 const sellerConsoleStatus = document.querySelector("#seller-console-status");
 const sellerConsoleResult = document.querySelector("#seller-console-result");
 
+async function authenticateSellerWallet() {
+  const selected = Number(walletSelector.value);
+  const wallet = discoveredWallets[selected];
+  if (!wallet) throw new Error("Select a detected Wallet Standard-compatible Solana wallet first");
+  const connection = await wallet.features["standard:connect"].connect();
+  const account = connection?.accounts?.[0] || wallet.accounts?.[0];
+  if (!account?.address) throw new Error("The wallet returned no Solana account");
+  const challenge = await apiJson("/seller/wallet-auth/challenge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ wallet: account.address }),
+  });
+  const signed = await wallet.features["solana:signMessage"].signMessage({
+    account,
+    message: new TextEncoder().encode(challenge.message),
+  });
+  const signature = signed?.[0]?.signature;
+  if (!signature) throw new Error("The wallet returned no message signature");
+  return apiJson("/seller/wallet-auth/session", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ challenge_id: challenge.challenge_id, signature: base58Encode(signature) }),
+  });
+}
+
 sellerRegisterSubmit.addEventListener("click", async () => {
   const payload = {
     seller_name: sellerRegisterName.value.trim(),
@@ -189,22 +214,22 @@ sellerRegisterSubmit.addEventListener("click", async () => {
 
 sellerConsoleOpen.addEventListener("click", async () => {
   const key = sellerApiKey.value.trim();
-  if (key.length < 16) {
-    sellerConsoleStatus.className = "seller-status error";
-    sellerConsoleStatus.textContent = "Enter the seller API key returned during registration.";
-    return;
-  }
   sellerConsoleOpen.disabled = true;
   sellerConsoleStatus.className = "seller-status";
-  sellerConsoleStatus.textContent = "Authenticating seller console…";
-  const headers = { "X-Seller-API-Key": key };
+  sellerConsoleStatus.textContent = key.length >= 16
+    ? "Authenticating seller console with API key…"
+    : "Review the wallet message: authentication only, no transaction or payment.";
   try {
+    const session = key.length >= 16 ? null : await authenticateSellerWallet();
+    const headers = session
+      ? { Authorization: `Bearer ${session.access_token}` }
+      : { "X-Seller-API-Key": key };
     const [dashboard, analytics, payouts] = await Promise.all([
       sandboxRequest("/seller/dashboard", { headers }),
       sandboxRequest("/seller/analytics", { headers }),
       sandboxRequest("/seller/payouts", { headers }),
     ]);
-    sessionStorage.setItem("iat_seller_api_key", key);
+    if (key) sessionStorage.setItem("iat_seller_api_key", key);
     document.querySelector("#seller-console-seller").textContent = dashboard.seller_status || dashboard.status || "authenticated";
     document.querySelector("#seller-console-analytics").textContent = analytics.status || "available";
     document.querySelector("#seller-console-payouts").textContent = payouts.status || "available";

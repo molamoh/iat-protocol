@@ -26,6 +26,22 @@ function trackFunnel(eventName) {
   history.pushState({ iatFunnel: safeName }, "", `/funnel/${safeName}`);
 }
 
+function bindDraft(key, fields) {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(`iat_draft_${key}`) || "{}"); } catch (_) { saved = {}; }
+  fields.forEach((field) => {
+    if (!field) return;
+    if (saved[field.id] !== undefined) field.value = saved[field.id];
+    field.addEventListener("input", () => {
+      try {
+        const draft = JSON.parse(localStorage.getItem(`iat_draft_${key}`) || "{}");
+        draft[field.id] = field.value;
+        localStorage.setItem(`iat_draft_${key}`, JSON.stringify(draft));
+      } catch (_) { /* storage is optional */ }
+    });
+  });
+}
+
 document.querySelectorAll("[data-funnel]").forEach((element) => {
   element.addEventListener("click", () => trackFunnel(element.dataset.funnel));
 });
@@ -50,6 +66,7 @@ const sandboxDiscover = optionalElement("#sandbox-discover");
 const sandboxRun = optionalElement("#sandbox-run");
 const sandboxStatus = optionalElement("#sandbox-status");
 const sandboxResult = optionalElement("#sandbox-result");
+bindDraft("buyer", [sandboxService, sandboxGoal, sandboxBudget, sandboxStrategy]);
 
 function setSandboxStatus(message, type = "") {
   sandboxStatus.className = `sandbox-status${type ? ` ${type}` : ""}`;
@@ -169,6 +186,8 @@ const sellerConsoleOpen = optionalElement("#seller-console-open");
 const sellerConsoleStatus = optionalElement("#seller-console-status");
 const sellerConsoleResult = optionalElement("#seller-console-result");
 let sellerSessionHeaders = null;
+bindDraft("seller-registration", [sellerRegisterName, sellerRegisterWallet, sellerRegisterEmail, sellerRegisterWebsite]);
+bindDraft("seller-economics", [sellerPrice, sellerOrders, sellerRefunds, sellerCost]);
 
 try {
   const savedSellerKey = sessionStorage.getItem("iat_seller_api_key");
@@ -193,6 +212,7 @@ function installSellerCapabilityForm() {
     <label>Capabilities (comma separated)<input id="seller-agent-capabilities" placeholder="web_research,source_verification"></label>
     <button id="seller-agent-register" class="button primary" type="button">Register capability</button>
     <p id="seller-agent-status" class="seller-status" role="status" aria-live="polite"></p>`;
+  bindDraft("seller-capability", [details.querySelector("#seller-agent-id"), details.querySelector("#seller-service"), details.querySelector("#seller-runtime-url"), details.querySelector("#seller-agent-price"), details.querySelector("#seller-agent-capabilities")]);
   const resultPanel = card.querySelector("#seller-console-result");
   if (resultPanel) card.insertBefore(details, resultPanel); else card.append(details);
   const submit = details.querySelector("#seller-agent-register");
@@ -276,6 +296,7 @@ function installSellerCatalogForm() {
   const details = document.createElement("details");
   details.className = "seller-capability-form";
   details.innerHTML = `<summary>Create catalog listing and request agent review</summary><p class="inbox-help">This creates the commercial record required by governance. It does not approve or expose the seller.</p><label>Listing title<input id="seller-catalog-title" placeholder="Verified web research"></label><label>Category<input id="seller-catalog-category" value="ai_service"></label><label>Description<textarea id="seller-catalog-description" rows="3" placeholder="Describe the result delivered to the buyer."></textarea></label><label>Service type<input id="seller-catalog-service" value="web_research"></label><label>Unit price in IAT<input id="seller-catalog-price" value="1.00" inputmode="decimal"></label><button id="seller-catalog-create" class="button primary" type="button">Create catalog listing</button><p id="seller-catalog-status" class="seller-status" role="status" aria-live="polite"></p><div id="seller-factory-followup" hidden><label>Agent review prompt<textarea id="seller-factory-prompt" rows="3">Validate this seller capability against the declared runtime and delivery terms.</textarea></label><button id="seller-factory-request" class="button secondary" type="button">Request protocol agent review</button></div>`;
+  bindDraft("seller-catalog", [details.querySelector("#seller-catalog-title"), details.querySelector("#seller-catalog-category"), details.querySelector("#seller-catalog-description"), details.querySelector("#seller-catalog-service"), details.querySelector("#seller-catalog-price"), details.querySelector("#seller-factory-prompt")]);
   card.append(details);
   const status = details.querySelector("#seller-catalog-status");
   details.querySelector("#seller-catalog-create").addEventListener("click", async () => {
@@ -440,6 +461,7 @@ const inboxCount = optionalElement("#inbox-count");
 const inboxMore = optionalElement("#inbox-more");
 const walletCheckout = optionalElement("#wallet-checkout");
 const checkoutOrderId = optionalElement("#checkout-order-id");
+bindDraft("buyer-checkout", [checkoutOrderId]);
 const checkoutPrepare = optionalElement("#checkout-prepare");
 const checkoutReview = optionalElement("#checkout-review");
 const checkoutSend = optionalElement("#checkout-send");
@@ -1052,6 +1074,9 @@ usageSend.addEventListener("click", async () => {
 });
 
 installWalletStandardDiscovery();
+if (sellerSessionHeaders && document.querySelector(".seller-console-card")) {
+  refreshSellerConsole().catch(() => {});
+}
 const restoredToken = sessionGet("iat_inbox_token");
 const restoredWallet = sessionGet("iat_inbox_wallet");
 if (restoredToken && restoredWallet) {

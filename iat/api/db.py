@@ -8867,7 +8867,7 @@ def get_seller_catalog_item_db(catalog_item_id):
     return dict(row) if row else None
 
 
-def list_seller_catalog_items_db(seller_id):
+def list_seller_catalog_items_db(seller_id, limit=100):
     conn = get_conn()
     cur = conn.cursor()
     p = qmark()
@@ -8877,7 +8877,8 @@ def list_seller_catalog_items_db(seller_id):
     FROM seller_catalog_items
     WHERE seller_id = {p}
     ORDER BY created_at DESC
-    """, (seller_id,))
+    LIMIT {qmark()}
+    """, (seller_id, max(1, min(int(limit), 1000))))
 
     rows = cur.fetchall()
     release_conn(conn)
@@ -8988,7 +8989,7 @@ def get_seller_agent_factory_request_db(factory_request_id):
     return dict(row) if row else None
 
 
-def list_seller_agent_factory_requests_db(seller_id):
+def list_seller_agent_factory_requests_db(seller_id, limit=100):
     conn = get_conn()
     cur = conn.cursor()
     p = qmark()
@@ -8998,7 +8999,8 @@ def list_seller_agent_factory_requests_db(seller_id):
     FROM seller_agent_factory_requests
     WHERE seller_id = {p}
     ORDER BY created_at DESC
-    """, (seller_id,))
+    LIMIT {qmark()}
+    """, (seller_id, max(1, min(int(limit), 1000))))
 
     rows = cur.fetchall()
     release_conn(conn)

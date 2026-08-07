@@ -64,6 +64,23 @@ def init_goia_tables() -> None:
         )
         cur.execute(
             """
+            CREATE TABLE IF NOT EXISTS goia_external_prospects (
+                prospect_id TEXT PRIMARY KEY,
+                source_id TEXT NOT NULL,
+                source_url TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                payload_hash TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'discovered',
+                observed_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(source_id, source_url)
+            )
+            """
+        )
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS goia_offer_observations (
                 observation_id TEXT PRIMARY KEY,
                 offer_id TEXT NOT NULL,
@@ -452,6 +469,47 @@ def init_goia_tables() -> None:
         conn.commit()
     finally:
         release_conn(conn)
+
+
+def upsert_external_prospect(prospect: dict[str, Any], *, now: int | None = None) -> dict[str, Any]:
+    timestamp = int(now or time.time())
+    payload_json = _canonical_json(prospect)
+    payload_hash = _payload_hash(payload_json)
+    source_id = str(prospect["source_id"])
+    source_url = str(prospect["source_url"])
+    prospect_id = f"gxp_{hashlib.sha256(f'{source_id}:{source_url}'.encode()).hexdigest()[:32]}"
+    marker = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            f"""
+            INSERT INTO goia_external_prospects
+                (prospect_id, source_id, source_url, name, description,
+                 payload_json, payload_hash, status, observed_at, updated_at)
+            VALUES ({', '.join([marker] * 10)})
+            ON CONFLICT(source_id, source_url) DO UPDATE SET
+                name = excluded.name, description = excluded.description,
+                payload_json = excluded.payload_json, payload_hash = excluded.payload_hash,
+                observed_at = excluded.observed_at, updated_at = excluded.updated_at
+            """,
+            (prospect_id, source_id, source_url, str(prospect.get("name") or "")[:240],
+             str(prospect.get("description") or "")[:2000], payload_json, payload_hash,
+             "discovered", timestamp, timestamp),
+        )
+        conn.commit()
+        return {"prospect_id": prospect_id, "state": "stored", "source_id": source_id}
+    finally:
+        release_conn(conn)
+
+
+def external_prospect_stats() -> dict[str, Any]:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) AS count FROM goia_external_prospects")
+    count = int(cur.fetchone()["count"])
+    release_conn(conn)
+    return {"count": count}
 
 
 def record_worker_heartbeat(

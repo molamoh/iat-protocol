@@ -17,6 +17,10 @@ services:
         value: "true"
       - key: IAT_GOIA_WORKER_INTERVAL_SECONDS
         value: "30"
+      - key: IAT_GOIA_PUBLIC_DISCOVERY_ENABLED
+        value: "true"
+      - key: IAT_GOIA_PUBLIC_DISCOVERY_INTERVAL_SECONDS
+        value: "900"
       - key: IAT_GOIA_WORKER_ID
         value: render-goia-collector-1
       - key: IAT_GOIA_PARTNERSHIP_DELIVERY_ENABLED

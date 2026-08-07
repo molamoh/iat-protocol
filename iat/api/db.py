@@ -12683,10 +12683,19 @@ def get_order_db(order_id):
     return order
 
 
-def list_orders_db():
+def list_orders_db(seller_id=None, limit=None):
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT order_id FROM orders ORDER BY created_at DESC")
+    params = []
+    query = "SELECT order_id FROM orders"
+    if seller_id:
+        query += f" WHERE seller_id = {qmark()}"
+        params.append(seller_id)
+    query += " ORDER BY created_at DESC"
+    if limit is not None:
+        query += f" LIMIT {qmark()}"
+        params.append(max(1, min(int(limit), 10000)))
+    cur.execute(query, tuple(params))
     rows = cur.fetchall()
     release_conn(locals().get("conn"))
 

@@ -8443,11 +8443,7 @@ def seller_dashboard(
     governance_list = governance_events.get("events", []) if isinstance(governance_events, dict) else governance_events
     runtime_risk_list = runtime_risk_events.get("events", [])
 
-    all_orders = list_orders_db()
-    seller_orders_list = [
-        order for order in (all_orders or {}).values()
-        if order.get("seller_id") == seller_id
-    ]
+    seller_orders_list = list((list_orders_db(seller_id=seller_id) or {}).values())
 
     total_orders = len(seller_orders_list)
     delivered_orders = 0

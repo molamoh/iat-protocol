@@ -316,8 +316,11 @@ sellerConsoleOpen.addEventListener("click", async () => {
       sandboxRequest("/seller/analytics", { headers }),
       sandboxRequest("/seller/payouts", { headers }),
     ]);
-    document.querySelector("#seller-console-seller").textContent = dashboard.seller_status || dashboard.status || "authenticated";
-    document.querySelector("#seller-console-analytics").textContent = analytics.status || "available";
+    const sellerState = dashboard.seller || {};
+    const agentCounts = dashboard.summary?.agent_status_counts || {};
+    const capabilityCount = Object.values(agentCounts).reduce((total, count) => total + Number(count || 0), 0);
+    document.querySelector("#seller-console-seller").textContent = `${sellerState.seller_status || "unknown"} / ${sellerState.verification_status || "unverified"}`;
+    document.querySelector("#seller-console-analytics").textContent = `${analytics.status || "available"} · ${capabilityCount} capability(ies)`;
     document.querySelector("#seller-console-payouts").textContent = payouts.status || "available";
     sellerConsoleResult.hidden = false;
     sellerConsoleStatus.className = "seller-status success";

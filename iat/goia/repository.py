@@ -512,6 +512,36 @@ def external_prospect_stats() -> dict[str, Any]:
     return {"count": count}
 
 
+def qualify_external_prospects(limit: int = 50) -> dict[str, Any]:
+    """Apply a conservative metadata-only qualification; never activates a provider."""
+    marker = qmark()
+    conn = get_conn()
+    cur = conn.cursor()
+    safe_limit = max(1, min(int(limit), 200))
+    try:
+        cur.execute(
+            f"""
+            SELECT prospect_id FROM goia_external_prospects
+            WHERE status = 'discovered'
+              AND length(trim(name)) >= 3
+              AND length(trim(source_url)) >= 12
+            ORDER BY observed_at ASC
+            LIMIT {marker}
+            """,
+            (safe_limit,),
+        )
+        ids = [row["prospect_id"] for row in cur.fetchall()]
+        for prospect_id in ids:
+            cur.execute(
+                f"UPDATE goia_external_prospects SET status = 'candidate_qualified', updated_at = {marker} WHERE prospect_id = {marker}",
+                (int(time.time()), prospect_id),
+            )
+        conn.commit()
+        return {"status": "ok", "qualified_count": len(ids), "provider_activation": False}
+    finally:
+        release_conn(conn)
+
+
 def record_worker_heartbeat(
     *,
     worker_id: str,

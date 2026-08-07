@@ -33,6 +33,7 @@ from iat.goia.repository import (
     schedule_due_quarantine_retries,
     seed_due_catalog_sources,
     store_review_candidates,
+    qualify_external_prospects,
     upsert_partner_hints,
 )
 from iat.goia.autonomous_review import autonomously_review_candidate
@@ -57,6 +58,7 @@ def process_one_job() -> dict:
     partnership_links = refresh_opportunity_prospect_links()
     partnership_proposals = prepare_partner_proposals()
     public_prospects = refresh_public_prospects()
+    qualification = qualify_external_prospects()
     job = claim_collection_job()
     if job is None:
         return {
@@ -69,6 +71,7 @@ def process_one_job() -> dict:
             "partnership_links": partnership_links,
             "partnership_proposals": partnership_proposals,
             "public_prospects": public_prospects,
+            "qualification": qualification,
         }
     try:
         document = fetch_allowed_document(job["url"])
@@ -98,6 +101,7 @@ def process_one_job() -> dict:
                 "partnership_permissions": partnership_permissions,
                 "partnership_proposals": partnership_proposals,
                 "public_prospects": public_prospects,
+                "qualification": qualification,
             }
         if job.get("job_type") == "provider_manifest":
             manifest = extract_provider_manifest(
@@ -131,6 +135,7 @@ def process_one_job() -> dict:
                 "outreach_triggered": False,
                 "partnership_proposals": partnership_proposals,
                 "public_prospects": public_prospects,
+                "qualification": qualification,
             }
         if job.get("job_type") == "catalog_json":
             candidates = extract_native_catalog_candidates(
@@ -185,6 +190,7 @@ def process_one_job() -> dict:
             "partnership_permissions": partnership_permissions,
             "partnership_proposals": partnership_proposals,
             "public_prospects": public_prospects,
+            "qualification": qualification,
         }
     except (GOIACollectionError, GOIARepositoryError) as exc:
         fail_collection_job(job["job_id"], error_code=str(exc))
@@ -198,6 +204,8 @@ def process_one_job() -> dict:
             "partnership_intelligence": partnership_intelligence,
             "partnership_permissions": partnership_permissions,
             "partnership_proposals": partnership_proposals,
+            "public_prospects": public_prospects,
+            "qualification": qualification,
         }
 
 

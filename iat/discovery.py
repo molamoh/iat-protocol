@@ -25,6 +25,7 @@ _MANIFEST: dict[str, Any] = {
         "llms": "/llms.txt",
     },
     "buyer": {
+        "dashboard": "/buyer/dashboard",
         "services": "/services",
         "create_order": "/create-order",
         "verify_payment": "/buyer/verify-payment",

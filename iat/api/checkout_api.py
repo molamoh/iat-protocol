@@ -2126,6 +2126,53 @@ def get_wallet_inbox_item(
     }
 
 
+@router.get("/buyer/dashboard")
+def get_buyer_dashboard(
+    response: Response,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    limit: int = 100,
+):
+    """Machine-first buyer workspace summary for agents and client UIs.
+
+    Authentication is a wallet session. The response is read-only and contains
+    only the authenticated wallet's delivery metadata; private keys, prompts,
+    and provider internals never leave the protocol boundary.
+    """
+    buyer_wallet, _ = _session_wallet(authorization)
+    safe_limit = max(1, min(int(limit), 100))
+    rows = list_wallet_delivery_receipts(buyer_wallet=buyer_wallet, limit=safe_limit)
+    status_counts: dict[str, int] = {}
+    items = []
+    public_site = os.getenv("IAT_PUBLIC_SITE_URL", "https://iatprotocol.com").strip().rstrip("/")
+    for row in rows:
+        public = public_delivery_receipt(row)
+        delivery_status = str(public.get("status") or row.get("delivery_status") or "unknown")
+        status_counts[delivery_status] = status_counts.get(delivery_status, 0) + 1
+        items.append({
+            "quote_id": row["quote_id"],
+            "order_id": row["order_id"],
+            "delivery_url": f"{public_site}/delivery/#receipt={public['receipt_token']}",
+            "status": delivery_status,
+            "payload_digest": public.get("payload_digest"),
+        })
+    _private_no_store(response)
+    return {
+        "status": "buyer_dashboard_ready",
+        "schema_version": "2026-08-07",
+        "wallet": buyer_wallet,
+        "read_only": True,
+        "summary": {
+            "delivery_count": len(items),
+            "delivery_status_counts": status_counts,
+        },
+        "next_actions": [
+            "open_delivery_receipt",
+            "accept_or_report_delivery",
+        ],
+        "deliveries": items,
+    }
+
+
 @router.get("/buyer-inbox")
 def get_buyer_delivery_inbox(
     response: Response,

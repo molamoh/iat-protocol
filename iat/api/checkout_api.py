@@ -2131,6 +2131,7 @@ def get_buyer_dashboard(
     response: Response,
     authorization: str | None = Header(default=None, alias="Authorization"),
     limit: int = 100,
+    cursor: str | None = None,
 ):
     """Machine-first buyer workspace summary for agents and client UIs.
 
@@ -2140,11 +2141,18 @@ def get_buyer_dashboard(
     """
     buyer_wallet, _ = _session_wallet(authorization)
     safe_limit = max(1, min(int(limit), 100))
-    rows = list_wallet_delivery_receipts(buyer_wallet=buyer_wallet, limit=safe_limit)
+    before_configured_at, before_quote_id = _decode_inbox_cursor(cursor)
+    rows = list_wallet_delivery_receipts(
+        buyer_wallet=buyer_wallet,
+        before_configured_at=before_configured_at,
+        before_quote_id=before_quote_id,
+        limit=safe_limit,
+    )
     status_counts: dict[str, int] = {}
     items = []
     public_site = os.getenv("IAT_PUBLIC_SITE_URL", "https://iatprotocol.com").strip().rstrip("/")
-    for row in rows:
+    selected_rows = rows[:safe_limit]
+    for row in selected_rows:
         public = public_delivery_receipt(row)
         delivery_status = str(public.get("status") or row.get("delivery_status") or "unknown")
         status_counts[delivery_status] = status_counts.get(delivery_status, 0) + 1
@@ -2155,6 +2163,10 @@ def get_buyer_dashboard(
             "status": delivery_status,
             "payload_digest": public.get("payload_digest"),
         })
+    next_cursor = None
+    if len(rows) > safe_limit and items:
+        last = selected_rows[-1]
+        next_cursor = _encode_inbox_cursor(last["configured_at"], last["quote_id"])
     _private_no_store(response)
     return {
         "status": "buyer_dashboard_ready",
@@ -2164,6 +2176,10 @@ def get_buyer_dashboard(
         "summary": {
             "delivery_count": len(items),
             "delivery_status_counts": status_counts,
+        },
+        "pagination": {
+            "limit": safe_limit,
+            "next_cursor": next_cursor,
         },
         "next_actions": [
             "open_delivery_receipt",

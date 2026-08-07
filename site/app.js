@@ -253,6 +253,23 @@ function renderSellerGovernanceState(dashboard) {
   panel.innerHTML = `<h3>Governance review</h3><p>Protocol approval remains independent from seller self-management.</p><div class="seller-governance-runtime"><span>Runtime state</span><strong>${escapeHtml(runtime.runtime_state || "pending review")}</strong></div><ul>${checks}</ul>`;
 }
 
+async function refreshSellerConsole() {
+  if (!sellerSessionHeaders) return;
+  const [dashboard, analytics, payouts] = await Promise.all([
+    sandboxRequest("/seller/dashboard", { headers: sellerSessionHeaders }),
+    sandboxRequest("/seller/analytics", { headers: sellerSessionHeaders }),
+    sandboxRequest("/seller/payouts", { headers: sellerSessionHeaders }),
+  ]);
+  const sellerState = dashboard.seller || {};
+  const agentCounts = dashboard.summary?.agent_status_counts || {};
+  const capabilityCount = Object.values(agentCounts).reduce((total, count) => total + Number(count || 0), 0);
+  document.querySelector("#seller-console-seller").textContent = `${sellerState.seller_status || "unknown"} / ${sellerState.verification_status || "unverified"}`;
+  document.querySelector("#seller-console-analytics").textContent = `${analytics.status || "available"} · ${capabilityCount} capability(ies)`;
+  document.querySelector("#seller-console-payouts").textContent = payouts.status || "available";
+  sellerConsoleResult.hidden = false;
+  renderSellerGovernanceState(dashboard);
+}
+
 function installSellerCatalogForm() {
   const card = document.querySelector(".seller-console-card");
   if (!card || document.querySelector("#seller-catalog-create")) return;
@@ -270,7 +287,7 @@ function installSellerCatalogForm() {
       const result = await sandboxRequest("/seller/catalog/items", { method: "POST", headers: { "Content-Type": "application/json", ...sellerSessionHeaders }, body: JSON.stringify(payload) });
       const item = result.catalog_item;
       if (result.status !== "ok" || !item?.catalog_item_id) throw new Error(result.message || "catalog_creation_rejected");
-      details.dataset.catalogItemId = item.catalog_item_id; details.querySelector("#seller-factory-followup").hidden = false; status.className = "seller-status success"; status.textContent = `Catalog listing created: ${item.catalog_item_id}. Request the governance review below.`; trackFunnel("seller-catalog-created");
+      details.dataset.catalogItemId = item.catalog_item_id; details.querySelector("#seller-factory-followup").hidden = false; status.className = "seller-status success"; status.textContent = `Catalog listing created: ${item.catalog_item_id}. Request the governance review below.`; await refreshSellerConsole(); trackFunnel("seller-catalog-created");
     } catch (error) { status.className = "seller-status error"; status.textContent = `Unable to create listing: ${error.message}`; }
     finally { button.disabled = false; }
   });
@@ -278,7 +295,7 @@ function installSellerCatalogForm() {
     const catalogItemId = details.dataset.catalogItemId;
     if (!catalogItemId || !sellerSessionHeaders) { status.className = "seller-status error"; status.textContent = "Create the catalog listing and open the console first."; return; }
     const button = details.querySelector("#seller-factory-request"); button.disabled = true; status.className = "seller-status"; status.textContent = "Submitting review request…";
-    try { const result = await sandboxRequest("/seller/agent-factory/requests", { method: "POST", headers: { "Content-Type": "application/json", ...sellerSessionHeaders }, body: JSON.stringify({ catalog_item_id: catalogItemId, requested_agent_name: details.querySelector("#seller-catalog-title").value.trim(), requested_prompt: details.querySelector("#seller-factory-prompt").value.trim(), requested_agent_count: 1 }) }); if (result.status !== "ok") throw new Error(result.message || "factory_request_rejected"); status.className = "seller-status success"; status.textContent = `Governance review requested: ${result.factory_request_id || "submitted"}.`; trackFunnel("seller-factory-review-requested"); } catch (error) { status.className = "seller-status error"; status.textContent = `Unable to request review: ${error.message}`; } finally { button.disabled = false; }
+    try { const result = await sandboxRequest("/seller/agent-factory/requests", { method: "POST", headers: { "Content-Type": "application/json", ...sellerSessionHeaders }, body: JSON.stringify({ catalog_item_id: catalogItemId, requested_agent_name: details.querySelector("#seller-catalog-title").value.trim(), requested_prompt: details.querySelector("#seller-factory-prompt").value.trim(), requested_agent_count: 1 }) }); if (result.status !== "ok") throw new Error(result.message || "factory_request_rejected"); const requestId = result.factory_request_id || result.factory_request?.factory_request_id || "submitted"; status.className = "seller-status success"; status.textContent = `Governance review requested: ${requestId}.`; await refreshSellerConsole(); trackFunnel("seller-factory-review-requested"); } catch (error) { status.className = "seller-status error"; status.textContent = `Unable to request review: ${error.message}`; } finally { button.disabled = false; }
   });
 }
 
@@ -360,19 +377,7 @@ sellerConsoleOpen.addEventListener("click", async () => {
       if (session?.access_token) sessionStorage.setItem("iat_seller_access_token", session.access_token);
       if (key) sessionStorage.setItem("iat_seller_api_key", key);
     } catch (_) { /* memory-only fallback */ }
-    const [dashboard, analytics, payouts] = await Promise.all([
-      sandboxRequest("/seller/dashboard", { headers }),
-      sandboxRequest("/seller/analytics", { headers }),
-      sandboxRequest("/seller/payouts", { headers }),
-    ]);
-    const sellerState = dashboard.seller || {};
-    const agentCounts = dashboard.summary?.agent_status_counts || {};
-    const capabilityCount = Object.values(agentCounts).reduce((total, count) => total + Number(count || 0), 0);
-    document.querySelector("#seller-console-seller").textContent = `${sellerState.seller_status || "unknown"} / ${sellerState.verification_status || "unverified"}`;
-    document.querySelector("#seller-console-analytics").textContent = `${analytics.status || "available"} · ${capabilityCount} capability(ies)`;
-    document.querySelector("#seller-console-payouts").textContent = payouts.status || "available";
-    sellerConsoleResult.hidden = false;
-    renderSellerGovernanceState(dashboard);
+    await refreshSellerConsole();
     sellerConsoleStatus.className = "seller-status success";
     sellerConsoleStatus.textContent = "Seller console ready for this browser session.";
     trackFunnel("seller-console-opened");

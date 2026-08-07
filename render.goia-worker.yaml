@@ -3,7 +3,7 @@ services:
     name: iat-goia-collector
     runtime: image
     plan: starter
-    region: frankfurt
+    region: virginia
     numInstances: 1
     maxShutdownDelaySeconds: 60
     image:

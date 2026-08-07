@@ -742,6 +742,25 @@ function showAuthenticatedWallet(address) {
   walletAddress.textContent = shortAddress(address);
   walletAddress.title = address;
   walletCheckout.hidden = false;
+  loadBuyerDashboard().catch(() => {});
+}
+
+async function loadBuyerDashboard() {
+  const token = sessionGet("iat_inbox_token");
+  if (!token || !walletCheckout || walletCheckout.hidden) return;
+  let panel = document.querySelector("#buyer-dashboard-summary");
+  if (!panel) {
+    panel = document.createElement("div");
+    panel.id = "buyer-dashboard-summary";
+    panel.className = "checkout-review";
+    walletCheckout.insertBefore(panel, walletCheckout.firstChild);
+  }
+  panel.hidden = false;
+  panel.textContent = "Loading buyer account…";
+  const dashboard = await apiJson("/buyer/dashboard", { headers: { Authorization: `Bearer ${token}` } });
+  const counts = dashboard.summary?.delivery_status_counts || {};
+  const countText = Object.entries(counts).map(([state, count]) => `${state}: ${count}`).join(" · ") || "No deliveries yet";
+  panel.innerHTML = `<strong>Buyer account</strong><span>${dashboard.summary?.delivery_count || 0} delivery receipt(s)</span><small>${countText}</small>`;
 }
 
 function base64Bytes(value) {

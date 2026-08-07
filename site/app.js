@@ -233,6 +233,26 @@ function installSellerCapabilityForm() {
   });
 }
 
+function renderSellerGovernanceState(dashboard) {
+  const card = document.querySelector(".seller-console-card");
+  if (!card) return;
+  let panel = document.querySelector("#seller-governance-state");
+  if (!panel) {
+    panel = document.createElement("div");
+    panel.id = "seller-governance-state";
+    panel.className = "seller-governance-state";
+    const result = card.querySelector("#seller-console-result");
+    if (result) card.append(panel); else card.append(panel);
+  }
+  const actions = Array.isArray(dashboard.next_required_actions) ? dashboard.next_required_actions : [];
+  const runtime = dashboard.runtime || {};
+  const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[char]));
+  const checks = actions.length
+    ? actions.map((item) => `<li><strong>${escapeHtml(item.type || "review")}</strong><span>${escapeHtml(item.action || item.reason || "pending")}</span></li>`).join("")
+    : "<li><strong>Clear</strong><span>No additional governance action reported.</span></li>";
+  panel.innerHTML = `<h3>Governance review</h3><p>Protocol approval remains independent from seller self-management.</p><div class="seller-governance-runtime"><span>Runtime state</span><strong>${escapeHtml(runtime.runtime_state || "pending review")}</strong></div><ul>${checks}</ul>`;
+}
+
 async function authenticateSellerWallet() {
   const selected = Number(walletSelector.value);
   const wallet = discoveredWallets[selected];
@@ -323,6 +343,7 @@ sellerConsoleOpen.addEventListener("click", async () => {
     document.querySelector("#seller-console-analytics").textContent = `${analytics.status || "available"} · ${capabilityCount} capability(ies)`;
     document.querySelector("#seller-console-payouts").textContent = payouts.status || "available";
     sellerConsoleResult.hidden = false;
+    renderSellerGovernanceState(dashboard);
     sellerConsoleStatus.className = "seller-status success";
     sellerConsoleStatus.textContent = "Seller console ready for this browser session.";
     trackFunnel("seller-console-opened");

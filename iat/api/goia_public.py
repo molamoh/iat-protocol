@@ -18,6 +18,7 @@ from iat.goia.partnership_responses import (
     GOIAPartnershipResponseError,
     record_partner_response,
 )
+from iat.goia.prospecting import prospecting_policy, public_prospecting_sources
 
 
 router = APIRouter(tags=["goia"])
@@ -26,6 +27,17 @@ router = APIRouter(tags=["goia"])
 @router.get("/.well-known/goia.json")
 def goia_manifest():
     return build_goia_manifest()
+
+
+@router.get("/goia/v1/prospecting/sources")
+def prospecting_sources():
+    """Expose the passive discovery registry to agents and operators."""
+    return {
+        "status": "ok",
+        "policy": prospecting_policy(),
+        "sources": public_prospecting_sources(),
+        "production_side_effects": False,
+    }
 
 
 @router.post("/goia/v1/contracts/search-intent/validate")

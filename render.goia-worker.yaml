@@ -7,7 +7,7 @@ services:
     numInstances: 1
     maxShutdownDelaySeconds: 60
     image:
-      url: docker.io/molamoh/iat-goia-worker:a2441a9
+      url: docker.io/molamoh/iat-goia-worker:0f95cd5
     envVars:
       - key: DATABASE_URL
         sync: false

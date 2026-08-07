@@ -253,6 +253,35 @@ function renderSellerGovernanceState(dashboard) {
   panel.innerHTML = `<h3>Governance review</h3><p>Protocol approval remains independent from seller self-management.</p><div class="seller-governance-runtime"><span>Runtime state</span><strong>${escapeHtml(runtime.runtime_state || "pending review")}</strong></div><ul>${checks}</ul>`;
 }
 
+function installSellerCatalogForm() {
+  const card = document.querySelector(".seller-console-card");
+  if (!card || document.querySelector("#seller-catalog-create")) return;
+  const details = document.createElement("details");
+  details.className = "seller-capability-form";
+  details.innerHTML = `<summary>Create catalog listing and request agent review</summary><p class="inbox-help">This creates the commercial record required by governance. It does not approve or expose the seller.</p><label>Listing title<input id="seller-catalog-title" placeholder="Verified web research"></label><label>Category<input id="seller-catalog-category" value="ai_service"></label><label>Description<textarea id="seller-catalog-description" rows="3" placeholder="Describe the result delivered to the buyer."></textarea></label><label>Service type<input id="seller-catalog-service" value="web_research"></label><label>Unit price in IAT<input id="seller-catalog-price" value="1.00" inputmode="decimal"></label><button id="seller-catalog-create" class="button primary" type="button">Create catalog listing</button><p id="seller-catalog-status" class="seller-status" role="status" aria-live="polite"></p><div id="seller-factory-followup" hidden><label>Agent review prompt<textarea id="seller-factory-prompt" rows="3">Validate this seller capability against the declared runtime and delivery terms.</textarea></label><button id="seller-factory-request" class="button secondary" type="button">Request protocol agent review</button></div>`;
+  card.append(details);
+  const status = details.querySelector("#seller-catalog-status");
+  details.querySelector("#seller-catalog-create").addEventListener("click", async () => {
+    if (!sellerSessionHeaders) { status.className = "seller-status error"; status.textContent = "Open the private console first."; return; }
+    const payload = { item_type: "service", category: details.querySelector("#seller-catalog-category").value.trim(), title: details.querySelector("#seller-catalog-title").value.trim(), description: details.querySelector("#seller-catalog-description").value.trim(), service_type: details.querySelector("#seller-catalog-service").value.trim(), unit_price: Number(details.querySelector("#seller-catalog-price").value.trim()), currency: "IAT", availability_status: "draft", capacity_per_order: 1 };
+    if (!payload.title || !payload.description || !payload.category || !Number.isFinite(payload.unit_price) || payload.unit_price < 0) { status.className = "seller-status error"; status.textContent = "Complete title, category, description and a valid price."; return; }
+    const button = details.querySelector("#seller-catalog-create"); button.disabled = true; status.className = "seller-status"; status.textContent = "Creating catalog listing…";
+    try {
+      const result = await sandboxRequest("/seller/catalog/items", { method: "POST", headers: { "Content-Type": "application/json", ...sellerSessionHeaders }, body: JSON.stringify(payload) });
+      const item = result.catalog_item;
+      if (result.status !== "ok" || !item?.catalog_item_id) throw new Error(result.message || "catalog_creation_rejected");
+      details.dataset.catalogItemId = item.catalog_item_id; details.querySelector("#seller-factory-followup").hidden = false; status.className = "seller-status success"; status.textContent = `Catalog listing created: ${item.catalog_item_id}. Request the governance review below.`; trackFunnel("seller-catalog-created");
+    } catch (error) { status.className = "seller-status error"; status.textContent = `Unable to create listing: ${error.message}`; }
+    finally { button.disabled = false; }
+  });
+  details.querySelector("#seller-factory-request").addEventListener("click", async () => {
+    const catalogItemId = details.dataset.catalogItemId;
+    if (!catalogItemId || !sellerSessionHeaders) { status.className = "seller-status error"; status.textContent = "Create the catalog listing and open the console first."; return; }
+    const button = details.querySelector("#seller-factory-request"); button.disabled = true; status.className = "seller-status"; status.textContent = "Submitting review request…";
+    try { const result = await sandboxRequest("/seller/agent-factory/requests", { method: "POST", headers: { "Content-Type": "application/json", ...sellerSessionHeaders }, body: JSON.stringify({ catalog_item_id: catalogItemId, requested_agent_name: details.querySelector("#seller-catalog-title").value.trim(), requested_prompt: details.querySelector("#seller-factory-prompt").value.trim(), requested_agent_count: 1 }) }); if (result.status !== "ok") throw new Error(result.message || "factory_request_rejected"); status.className = "seller-status success"; status.textContent = `Governance review requested: ${result.factory_request_id || "submitted"}.`; trackFunnel("seller-factory-review-requested"); } catch (error) { status.className = "seller-status error"; status.textContent = `Unable to request review: ${error.message}`; } finally { button.disabled = false; }
+  });
+}
+
 async function authenticateSellerWallet() {
   const selected = Number(walletSelector.value);
   const wallet = discoveredWallets[selected];
@@ -430,6 +459,7 @@ if (!document.querySelector("#wallet-selector")) {
   }
 }
 installSellerCapabilityForm();
+installSellerCatalogForm();
 const discoveredWallets = [];
 const registeredLegacyProviders = new WeakSet();
 let activeWallet = null;

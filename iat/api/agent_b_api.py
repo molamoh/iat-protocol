@@ -8371,8 +8371,9 @@ def get_authenticated_seller_from_header(x_seller_api_key):
 def seller_create_catalog_item(
     req: SellerCatalogItemRequest,
     x_seller_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None, alias="Authorization"),
 ):
-    seller = get_authenticated_seller_from_header(x_seller_api_key)
+    seller = get_authenticated_seller_from_credentials(x_seller_api_key, authorization)
     if not seller:
         return {
             "status": "error",
@@ -8742,8 +8743,9 @@ def seller_list_catalog_items(
 def seller_create_agent_factory_request(
     req: SellerAgentFactoryRequest,
     x_seller_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None, alias="Authorization"),
 ):
-    seller = get_authenticated_seller_from_header(x_seller_api_key)
+    seller = get_authenticated_seller_from_credentials(x_seller_api_key, authorization)
     if not seller:
         return {
             "status": "error",

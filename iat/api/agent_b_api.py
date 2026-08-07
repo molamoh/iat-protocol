@@ -8190,6 +8190,42 @@ class SellerRegisterAgentRequest(BaseModel):
     metadata: dict | None = None
 
 
+@app.get("/seller/demo-runtime")
+def seller_demo_runtime_manifest():
+    """Public devnet runtime used to validate the seller journey end to end."""
+    return {
+        "status": "ok",
+        "service": "iat_devnet_demo_service",
+        "runtime_adapter": "http",
+        "execution": "POST /seller/demo-runtime/execute",
+        "network": "solana-devnet",
+    }
+
+
+@app.post("/seller/demo-runtime/execute")
+def seller_demo_runtime_execute(payload: dict):
+    """Deterministic no-external-call result for the public devnet canary."""
+    context = payload.get("execution_context") if isinstance(payload, dict) else {}
+    context = context if isinstance(context, dict) else {}
+    request_text = str(
+        context.get("goal")
+        or context.get("request")
+        or context.get("service")
+        or "IAT devnet demo request"
+    )[:500]
+    return {
+        "status": "success",
+        "service": "iat_devnet_demo_service",
+        "execution_mode": "seller_runtime_demo",
+        "summary": "Deterministic devnet service result; no external provider was contacted.",
+        "request": request_text,
+        "evidence": {
+            "source": "iat_protocol_demo_runtime",
+            "network": "solana-devnet",
+        },
+    }
+
+
 @app.post("/seller/register-agent")
 def seller_register_agent(
     req: SellerRegisterAgentRequest,

@@ -1,6 +1,6 @@
 services:
   - type: worker
-    name: iat-goia-collector
+    name: iat-goia-collector-virginia
     runtime: image
     plan: starter
     region: virginia

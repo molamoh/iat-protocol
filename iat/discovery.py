@@ -92,6 +92,7 @@ _MANIFEST: dict[str, Any] = {
         "validate_search_intent": "/goia/v1/contracts/search-intent/validate",
         "validate_offer_observation": "/goia/v1/contracts/offer-observation/validate",
         "validate_provider": "/goia/v1/contracts/provider/validate",
+        "validate_openai_compatible_runtime": "/goia/v1/contracts/runtime/openai-compatible/validate",
         "validate_catalog": "/goia/v1/contracts/catalog/validate",
         "search": "/goia/v1/search",
         "status": "local_index_pilot",

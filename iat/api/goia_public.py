@@ -10,6 +10,7 @@ from iat.goia.contracts import (
     PartnershipAcknowledgement,
     PartnershipResponse,
     SearchIntent,
+    OpenAICompatibleRuntime,
     evaluate_pilot_readiness,
 )
 from iat.goia.discovery import build_goia_manifest, build_ranking_policy
@@ -96,6 +97,17 @@ def validate_provider_manifest(payload: MerchantProviderManifest):
         "contract": "MerchantProviderManifest",
         "normalized": payload.model_dump(mode="json"),
         "production_side_effects": False,
+    }
+
+
+@router.post("/goia/v1/contracts/runtime/openai-compatible/validate")
+def validate_openai_compatible_runtime(payload: OpenAICompatibleRuntime):
+    return {
+        "status": "valid",
+        "contract": "OpenAICompatibleRuntime",
+        "normalized": payload.model_dump(mode="json"),
+        "network_probe_performed": False,
+        "provider_activation": False,
     }
 
 

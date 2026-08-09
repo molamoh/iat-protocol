@@ -77,6 +77,18 @@ def reference_runtime_chat(
     }
 
 
+@router.get("/goia/v1/reference-runtime/v1/chat/completions")
+def reference_runtime_chat_probe():
+    """Allow seller registration probes without exposing execution."""
+    return {
+        "status": "ready",
+        "runtime": "iat-reference-runtime",
+        "method": "POST",
+        "authentication": "bearer_required_for_execution",
+        "provider_activation": False,
+    }
+
+
 @router.get("/.well-known/goia.json")
 def goia_manifest():
     return build_goia_manifest()

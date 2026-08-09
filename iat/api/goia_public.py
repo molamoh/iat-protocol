@@ -19,6 +19,7 @@ from iat.goia.partnership_responses import (
     record_partner_response,
 )
 from iat.goia.prospecting import prospecting_policy, public_prospecting_sources
+from iat.goia.repository import external_prospect_status_counts
 
 
 router = APIRouter(tags=["goia"])
@@ -38,6 +39,12 @@ def prospecting_sources():
         "sources": public_prospecting_sources(),
         "production_side_effects": False,
     }
+
+
+@router.get("/goia/v1/prospecting/status")
+def prospecting_status():
+    """Expose aggregate pipeline state without prospect identities or URLs."""
+    return external_prospect_status_counts()
 
 
 @router.post("/goia/v1/contracts/search-intent/validate")

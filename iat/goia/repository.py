@@ -525,6 +525,19 @@ def external_prospect_stats() -> dict[str, Any]:
     return {"count": count}
 
 
+def external_prospect_status_counts() -> dict[str, Any]:
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT status, COUNT(*) AS count FROM goia_external_prospects GROUP BY status"
+        )
+        counts = {str(row["status"]): int(row["count"]) for row in cur.fetchall()}
+        return {"status": "ok", "counts": counts, "provider_activation": False}
+    finally:
+        release_conn(conn)
+
+
 def list_external_prospects(
     *, status: str | None = None, limit: int = 100
 ) -> dict[str, Any]:

@@ -8619,6 +8619,7 @@ def seller_dashboard(
             "trust_score": trust_score,
         },
         "recent": {
+            "catalog_items": (catalog_list or [])[:10],
             "factory_requests": (factory_list or [])[:10],
             "governance_events": (governance_list or [])[:10],
             "runtime_risk_events": runtime_risk_list[:10],

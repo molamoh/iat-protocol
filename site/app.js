@@ -271,6 +271,11 @@ function renderSellerGovernanceState(dashboard) {
     ? actions.map((item) => `<li><strong>${escapeHtml(item.type || "review")}</strong><span>${escapeHtml(item.action || item.reason || "pending")}</span></li>`).join("")
     : "<li><strong>Clear</strong><span>No additional governance action reported.</span></li>";
   panel.innerHTML = `<h3>Governance review</h3><p>Protocol approval remains independent from seller self-management.</p><div class="seller-governance-runtime"><span>Runtime state</span><strong>${escapeHtml(runtime.runtime_state || "pending review")}</strong></div><ul>${checks}</ul>`;
+  const recent = dashboard.recent || {};
+  const items = Array.isArray(recent.catalog_items) ? recent.catalog_items : [];
+  const requests = Array.isArray(recent.factory_requests) ? recent.factory_requests : [];
+  const records = [...items.map((item) => `<li>Catalog <code>${escapeHtml(item.catalog_item_id || "unknown")}</code></li>`), ...requests.map((item) => `<li>Review <code>${escapeHtml(item.factory_request_id || "unknown")}</code></li>`)];
+  if (records.length) panel.insertAdjacentHTML("beforeend", `<h4>Your server records</h4><ul>${records.join("")}</ul>`);
 }
 
 async function refreshSellerConsole() {

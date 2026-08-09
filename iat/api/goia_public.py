@@ -95,6 +95,11 @@ def reference_mcp_health():
     return {"status": "ok", "server": "iat-reference-mcp", "provider_activation": False}
 
 
+@router.get("/goia/v1/reference-mcp")
+def reference_mcp_probe():
+    return {"status": "ready", "server": "iat-reference-mcp", "method": "POST", "authentication": "bearer"}
+
+
 @router.post("/goia/v1/reference-mcp")
 def reference_mcp(payload: dict[str, Any], authorization: str | None = Header(default=None, alias="Authorization")):
     expected = os.getenv("IAT_REFERENCE_RUNTIME_API_KEY", "").strip()

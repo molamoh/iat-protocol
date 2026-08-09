@@ -24782,6 +24782,25 @@ def list_seller_agents_db(seller_id, limit=100):
 
 
 
+def disable_seller_agent_db(seller_agent_id, seller_id, reason="seller_requested_disable"):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    cur.execute(f"SELECT seller_id, agent_id FROM seller_agents WHERE seller_agent_id = {p}", (seller_agent_id,))
+    row = cur.fetchone()
+    if not row:
+        release_conn(conn)
+        return {"status": "error", "message": "seller_agent_not_found"}
+    if row["seller_id"] != seller_id:
+        release_conn(conn)
+        return {"status": "error", "message": "seller_agent_seller_mismatch"}
+    now = int(time.time())
+    cur.execute(f"UPDATE seller_agents SET seller_agent_status = {p}, updated_at = {p} WHERE seller_agent_id = {p}", ("disabled", now, seller_agent_id))
+    conn.commit()
+    release_conn(conn)
+    return {"status": "ok", "seller_agent_id": seller_agent_id, "seller_agent_status": "disabled", "reason": str(reason)[:500]}
+
+
 def apply_seller_dynamic_exposure_control_with_cursor(
     cur,
     seller_id,

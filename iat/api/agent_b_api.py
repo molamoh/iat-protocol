@@ -125,6 +125,7 @@ from iat.api.db import (
     reject_seller_db,
     apply_seller_risk_event_db,
     list_seller_agents_db,
+    disable_seller_agent_db,
     get_seller_agent_db,
     list_runtime_monitored_seller_agents_db,
     list_seller_governance_events_db,
@@ -8627,6 +8628,7 @@ def seller_dashboard(
             "trust_score": trust_score,
         },
         "recent": {
+            "agents": (agents_list or [])[:10],
             "catalog_items": (catalog_list or [])[:10],
             "factory_requests": (factory_list or [])[:10],
             "governance_events": (governance_list or [])[:10],
@@ -8742,6 +8744,19 @@ def seller_list_catalog_items(
         "seller_id": seller["seller_id"],
         "items": list_seller_catalog_items_db(seller["seller_id"]),
     }
+
+
+@app.post("/seller/agents/{seller_agent_id}/disable")
+def seller_disable_agent(
+    seller_agent_id: str,
+    reason: str = "seller_requested_disable",
+    x_seller_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    seller = get_authenticated_seller_from_credentials(x_seller_api_key, authorization)
+    if not seller:
+        return {"status": "error", "message": "seller_auth_required"}
+    return disable_seller_agent_db(seller_agent_id, seller["seller_id"], reason)
 
 
 @app.post("/seller/catalog/items/{catalog_item_id}/archive")

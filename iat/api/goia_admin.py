@@ -27,6 +27,7 @@ from iat.goia.repository import (
     list_external_prospects,
     external_prospect_review_queue,
     decide_external_prospect,
+    list_external_prospect_reviews,
     prepare_partner_proposals,
     refresh_partnership_opportunities,
     refresh_partner_permissions,
@@ -209,6 +210,10 @@ def build_goia_admin_router(require_admin: Callable) -> APIRouter:
         except GOIARepositoryError as exc:
             status_code = 404 if str(exc) == "external_prospect_not_found" else 422
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+    @router.get("/prospecting/reviews")
+    def prospect_reviews(prospect_id: str | None = None, limit: int = 100):
+        return list_external_prospect_reviews(prospect_id=prospect_id, limit=limit)
 
     @router.post("/review/candidates/{candidate_id}/approve")
     def approve_candidate(candidate_id: str, payload: CandidateApprovalRequest):

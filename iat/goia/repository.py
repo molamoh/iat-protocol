@@ -647,6 +647,34 @@ def decide_external_prospect(
         release_conn(conn)
 
 
+def list_external_prospect_reviews(*, prospect_id: str | None = None, limit: int = 100) -> dict[str, Any]:
+    """Return the immutable governance decision trail for external prospects."""
+    marker = qmark()
+    safe_limit = max(1, min(int(limit), 200))
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        params: list[Any] = []
+        where = ""
+        if prospect_id:
+            where = f"WHERE prospect_id = {marker}"
+            params.append(prospect_id)
+        params.append(safe_limit)
+        cur.execute(
+            f"""
+            SELECT review_id, prospect_id, reviewer, decision, reason, created_at
+            FROM goia_external_prospect_reviews
+            {where}
+            ORDER BY created_at DESC
+            LIMIT {marker}
+            """,
+            tuple(params),
+        )
+        return {"status": "ok", "reviews": [dict(row) for row in cur.fetchall()]}
+    finally:
+        release_conn(conn)
+
+
 def qualify_external_prospects(limit: int = 50) -> dict[str, Any]:
     """Apply a conservative metadata-only qualification; never activates a provider."""
     marker = qmark()

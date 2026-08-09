@@ -61,6 +61,15 @@ def prospecting_policy() -> dict[str, Any]:
         "outreach_enabled": False,
         "provider_contact_requires_explicit_opt_in": True,
         "autonomous_review_required": True,
+        "lifecycle": [
+            "discovered",
+            "candidate_qualified",
+            "governance_review_required",
+            "governance_approved",
+            "governance_rejected",
+            "governance_evidence_required",
+        ],
+        "activation_requires_separate_protocol_step": True,
         "sources": public_prospecting_sources(),
     }
 

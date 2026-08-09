@@ -97,6 +97,7 @@ _MANIFEST: dict[str, Any] = {
         "search_available": True,
         "crawl_available": False,
         "controlled_collection_worker": True,
+        "governance_decisions_audited": True,
         "collection_enabled_by_default": False,
         "autonomous_review_required_before_publication": True,
         "human_operation_required": False,

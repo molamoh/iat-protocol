@@ -15,6 +15,7 @@ from iat.goia.contracts import (
     PartnershipResponse,
     SearchIntent,
     OpenAICompatibleRuntime,
+    MCPRuntime,
     evaluate_pilot_readiness,
 )
 from iat.goia.discovery import build_goia_manifest, build_ranking_policy
@@ -168,6 +169,17 @@ def validate_openai_compatible_runtime(payload: OpenAICompatibleRuntime):
     return {
         "status": "valid",
         "contract": "OpenAICompatibleRuntime",
+        "normalized": payload.model_dump(mode="json"),
+        "network_probe_performed": False,
+        "provider_activation": False,
+    }
+
+
+@router.post("/goia/v1/contracts/runtime/mcp/validate")
+def validate_mcp_runtime(payload: MCPRuntime):
+    return {
+        "status": "valid",
+        "contract": "MCPRuntime",
         "normalized": payload.model_dump(mode="json"),
         "network_probe_performed": False,
         "provider_activation": False,

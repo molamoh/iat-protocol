@@ -184,6 +184,16 @@ class OpenAICompatibleRuntime(StrictGOIAModel):
     requires_buyer_authorization: bool = True
 
 
+class MCPRuntime(StrictGOIAModel):
+    contract_version: Literal["goia_contracts_v1"] = GOIA_CONTRACT_VERSION
+    endpoint: HttpUrl
+    transport: Literal["streamable_http", "sse", "http"] = "streamable_http"
+    auth: Literal["none", "bearer"] = "none"
+    server_name: str = Field(min_length=2, max_length=160)
+    tools: list[str] = Field(min_length=1, max_length=100)
+    requires_buyer_authorization: bool = True
+
+
 def evaluate_pilot_readiness(manifest: MerchantProviderManifest) -> dict:
     """Evaluate a provider without registering it or performing network access."""
     website_host = str(manifest.website.host or "").lower().rstrip(".")

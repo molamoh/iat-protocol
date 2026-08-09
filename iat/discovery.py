@@ -93,6 +93,7 @@ _MANIFEST: dict[str, Any] = {
         "validate_offer_observation": "/goia/v1/contracts/offer-observation/validate",
         "validate_provider": "/goia/v1/contracts/provider/validate",
         "validate_openai_compatible_runtime": "/goia/v1/contracts/runtime/openai-compatible/validate",
+        "validate_mcp_runtime": "/goia/v1/contracts/runtime/mcp/validate",
         "reference_runtime_health": "/goia/v1/reference-runtime/health",
         "reference_runtime_models": "/goia/v1/reference-runtime/v1/models",
         "reference_runtime_chat": "/goia/v1/reference-runtime/v1/chat/completions",

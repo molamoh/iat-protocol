@@ -273,9 +273,10 @@ function renderSellerGovernanceState(dashboard) {
     : "<li><strong>Clear</strong><span>No additional governance action reported.</span></li>";
   panel.innerHTML = `<h3>Governance review</h3><p>Protocol approval remains independent from seller self-management.</p><div class="seller-governance-runtime"><span>Runtime state</span><strong>${escapeHtml(runtime.runtime_state || "pending review")}</strong></div><ul>${checks}</ul>`;
   const recent = dashboard.recent || {};
+  const agents = Array.isArray(recent.agents) ? recent.agents : [];
   const items = Array.isArray(recent.catalog_items) ? recent.catalog_items : [];
   const requests = Array.isArray(recent.factory_requests) ? recent.factory_requests : [];
-  const records = [...items.map((item) => `<li>Catalog <code>${escapeHtml(item.catalog_item_id || "unknown")}</code>${item.availability_status === "archived" ? "<span>archived</span>" : `<button type="button" class="button secondary seller-archive-catalog" data-catalog-id="${escapeHtml(item.catalog_item_id || "")}">Archive</button>`}</li>`), ...requests.map((item) => `<li>Review <code>${escapeHtml(item.factory_request_id || "unknown")}</code></li>`)];
+  const records = [...agents.map((agent) => `<li>Capability <code>${escapeHtml(agent.seller_agent_id || "unknown")}</code>${agent.seller_agent_status === "disabled" ? "<span>disabled</span>" : `<button type="button" class="button secondary seller-disable-agent" data-agent-id="${escapeHtml(agent.seller_agent_id || "")}">Disable</button>`}</li>`), ...items.map((item) => `<li>Catalog <code>${escapeHtml(item.catalog_item_id || "unknown")}</code>${item.availability_status === "archived" ? "<span>archived</span>" : `<button type="button" class="button secondary seller-archive-catalog" data-catalog-id="${escapeHtml(item.catalog_item_id || "")}">Archive</button>`}</li>`), ...requests.map((item) => `<li>Review <code>${escapeHtml(item.factory_request_id || "unknown")}</code></li>`)];
   if (records.length) panel.insertAdjacentHTML("beforeend", `<h4>Your server records</h4><ul>${records.join("")}</ul>`);
   panel.querySelectorAll(".seller-archive-catalog").forEach((button) => button.addEventListener("click", async () => {
     const catalogId = button.dataset.catalogId;
@@ -289,6 +290,16 @@ function renderSellerGovernanceState(dashboard) {
       button.disabled = false;
       window.alert(`Unable to archive listing: ${error.message}`);
     }
+  }));
+  panel.querySelectorAll(".seller-disable-agent").forEach((button) => button.addEventListener("click", async () => {
+    const agentId = button.dataset.agentId;
+    if (!agentId || !sellerSessionHeaders || !window.confirm("Disable this capability and release its capacity slot?")) return;
+    button.disabled = true;
+    try {
+      const result = await sandboxRequest(`/seller/agents/${encodeURIComponent(agentId)}/disable?reason=seller_console_disable`, { method: "POST", headers: sellerSessionHeaders });
+      if (result.status !== "ok") throw new Error(result.message || "disable_rejected");
+      await refreshSellerConsole();
+    } catch (error) { button.disabled = false; window.alert(`Unable to disable capability: ${error.message}`); }
   }));
 }
 

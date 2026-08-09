@@ -1,5 +1,7 @@
 """Public, side-effect-free GOIA contract endpoints."""
 
+from typing import Any
+
 from fastapi import APIRouter, Header, HTTPException
 
 from iat.goia.contracts import (
@@ -24,6 +26,42 @@ from iat.goia.repository import external_prospect_review_queue, external_prospec
 
 
 router = APIRouter(tags=["goia"])
+
+
+@router.get("/goia/v1/reference-runtime/health")
+def reference_runtime_health():
+    return {"status": "ok", "runtime": "iat-reference-runtime", "provider_activation": False}
+
+
+@router.get("/goia/v1/reference-runtime/v1/models")
+def reference_runtime_models():
+    return {
+        "object": "list",
+        "data": [{"id": "iat-reference-runtime", "object": "model", "owned_by": "iat"}],
+    }
+
+
+@router.post("/goia/v1/reference-runtime/v1/chat/completions")
+def reference_runtime_chat(payload: dict[str, Any]):
+    messages = payload.get("messages") or []
+    last_message = messages[-1] if messages and isinstance(messages[-1], dict) else {}
+    content = str(last_message.get("content") or "")[:2_000]
+    return {
+        "id": "iat_ref_" + __import__("uuid").uuid4().hex,
+        "object": "chat.completion",
+        "model": "iat-reference-runtime",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": (
+                "IAT reference runtime received the authorized request. "
+                "Execution evidence is sealed for protocol delivery. "
+                f"Request summary: {content}"
+            )},
+            "finish_reason": "stop",
+        }],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "iat": {"execution_mode": "reference_runtime", "provider_activation": False},
+    }
 
 
 @router.get("/.well-known/goia.json")

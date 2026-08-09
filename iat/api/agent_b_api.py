@@ -8443,17 +8443,23 @@ def seller_dashboard(
 
     # Advance pending factory reviews through the existing autonomous quorum.
     pending_factory_requests = list_seller_agent_factory_requests_db(seller_id)
+    autonomous_governance = []
     for factory_request in pending_factory_requests:
         if str(factory_request.get("governance_status") or "").lower() in {
             "pending", "pending_factory_reviews", "pending_factory_approval"
         }:
             try:
-                run_autonomous_seller_factory_governance_db(
+                autonomous_governance.append(run_autonomous_seller_factory_governance_db(
                     factory_request.get("factory_request_id")
-                )
-            except Exception:
-                # Dashboard remains available; governance failures stay auditable.
-                pass
+                ))
+            except Exception as exc:
+                autonomous_governance.append({
+                    "status": "error",
+                    "factory_request_id": factory_request.get("factory_request_id"),
+                    "message": "autonomous_governance_runtime_error",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc)[:240],
+                })
 
     agents = list_seller_agents_db(seller_id)
     catalog_items = list_seller_catalog_items_db(seller_id)
@@ -8652,6 +8658,7 @@ def seller_dashboard(
             "governance_events": (governance_list or [])[:10],
             "runtime_risk_events": runtime_risk_list[:10],
         },
+        "autonomous_governance": autonomous_governance,
         "next_required_actions": next_required_actions,
         "policy": {
             "seller_dashboard_is_read_only": True,

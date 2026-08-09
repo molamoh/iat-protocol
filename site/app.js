@@ -274,8 +274,21 @@ function renderSellerGovernanceState(dashboard) {
   const recent = dashboard.recent || {};
   const items = Array.isArray(recent.catalog_items) ? recent.catalog_items : [];
   const requests = Array.isArray(recent.factory_requests) ? recent.factory_requests : [];
-  const records = [...items.map((item) => `<li>Catalog <code>${escapeHtml(item.catalog_item_id || "unknown")}</code></li>`), ...requests.map((item) => `<li>Review <code>${escapeHtml(item.factory_request_id || "unknown")}</code></li>`)];
+  const records = [...items.map((item) => `<li>Catalog <code>${escapeHtml(item.catalog_item_id || "unknown")}</code>${item.availability_status === "archived" ? "<span>archived</span>" : `<button type="button" class="button secondary seller-archive-catalog" data-catalog-id="${escapeHtml(item.catalog_item_id || "")}">Archive</button>`}</li>`), ...requests.map((item) => `<li>Review <code>${escapeHtml(item.factory_request_id || "unknown")}</code></li>`)];
   if (records.length) panel.insertAdjacentHTML("beforeend", `<h4>Your server records</h4><ul>${records.join("")}</ul>`);
+  panel.querySelectorAll(".seller-archive-catalog").forEach((button) => button.addEventListener("click", async () => {
+    const catalogId = button.dataset.catalogId;
+    if (!catalogId || !sellerSessionHeaders || !window.confirm("Archive this catalog listing? Existing orders remain preserved.")) return;
+    button.disabled = true;
+    try {
+      const result = await sandboxRequest(`/seller/catalog/items/${encodeURIComponent(catalogId)}/archive?reason=seller_console_archive`, { method: "POST", headers: sellerSessionHeaders });
+      if (result.status !== "ok") throw new Error(result.message || "archive_rejected");
+      await refreshSellerConsole();
+    } catch (error) {
+      button.disabled = false;
+      window.alert(`Unable to archive listing: ${error.message}`);
+    }
+  }));
 }
 
 async function refreshSellerConsole() {

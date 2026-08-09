@@ -7705,6 +7705,8 @@ def init_sellers_table():
 
         seller_status TEXT DEFAULT 'pending',
         verification_status TEXT DEFAULT 'unverified',
+        governance_deadline_at INTEGER,
+        governance_decision_reason TEXT,
 
         reputation REAL DEFAULT 0.5,
         risk_score REAL DEFAULT 0,
@@ -7746,6 +7748,8 @@ def init_sellers_table():
         "tax_verification_status": "TEXT DEFAULT 'not_provided'",
         "trust_score": "REAL DEFAULT 0",
         "runtime_health_score": "REAL DEFAULT 0",
+        "governance_deadline_at": "INTEGER",
+        "governance_decision_reason": "TEXT",
     }
 
     for column, definition in seller_columns.items():
@@ -17168,6 +17172,9 @@ def create_seller_db(seller):
     cur = conn.cursor()
     p = qmark()
     now = int(time.time())
+    governance_deadline_at = int(
+        seller.get("governance_deadline_at") or (now + 300)
+    )
 
     metadata = seller.get("metadata", "{}")
     if not isinstance(metadata, str):
@@ -17201,6 +17208,7 @@ def create_seller_db(seller):
     INSERT INTO sellers (
         seller_id, seller_name, wallet, email, api_key,
         seller_status, verification_status,
+        governance_deadline_at, governance_decision_reason,
         reputation, risk_score, trust_tier,
         total_agents, active_agents, max_agents_allowed,
         stake_amount, exposure_limit,
@@ -17208,7 +17216,7 @@ def create_seller_db(seller):
         created_at, updated_at,
         metadata
     )
-    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
+    VALUES ({p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p}, {p})
     """, (
         seller["seller_id"],
         seller.get("seller_name"),
@@ -17217,6 +17225,8 @@ def create_seller_db(seller):
         seller.get("api_key"),
         seller.get("seller_status", "pending"),
         seller.get("verification_status", "unverified"),
+        governance_deadline_at,
+        seller.get("governance_decision_reason"),
         float(seller.get("reputation", 0.5) or 0.5),
         float(seller.get("risk_score", 0) or 0),
         seller.get("trust_tier", "new"),
@@ -17236,6 +17246,53 @@ def create_seller_db(seller):
     release_conn(conn)
 
     return get_seller_db(seller["seller_id"])
+
+
+def enforce_seller_governance_deadline_db(seller_id, now=None):
+    """Expire only explicitly timed pending reviews; legacy sellers remain unchanged."""
+    seller = get_seller_db(seller_id)
+    if not seller:
+        return None
+    status = str(seller.get("seller_status") or "pending").lower()
+    deadline = seller.get("governance_deadline_at")
+    if status not in {"pending", "pending_review", "pending_foundation_decision"} or not deadline:
+        return seller
+    now = int(now or time.time())
+    if now < int(deadline):
+        return seller
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    reason = "governance_timeout_5m_no_decision"
+    cur.execute(f"""
+        UPDATE sellers
+        SET seller_status = 'rejected',
+            verification_status = 'rejected',
+            governance_decision_reason = {p},
+            updated_at = {p}
+        WHERE seller_id = {p}
+          AND seller_status IN ('pending', 'pending_review', 'pending_foundation_decision')
+          AND governance_deadline_at IS NOT NULL
+          AND governance_deadline_at <= {p}
+    """, (reason, now, seller_id, now))
+    try:
+        create_seller_governance_event_with_cursor(
+            cur=cur,
+            seller_id=seller_id,
+            event_type="seller_governance_timeout_rejected",
+            reviewer="iat_governance_deadline",
+            reason=reason,
+            override_terminal=False,
+            old_status=status,
+            new_status="rejected",
+            metadata={"deadline_at": int(deadline), "decision": "reject"},
+        )
+    except Exception:
+        pass
+    conn.commit()
+    release_conn(conn)
+    return get_seller_db(seller_id)
 
 
 def get_seller_db(seller_id):

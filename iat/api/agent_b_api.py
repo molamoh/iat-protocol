@@ -115,6 +115,7 @@ from iat.api.db import (
     store_threat_forecast_db,
     get_active_threat_memory_db,
     create_seller_db,
+    enforce_seller_governance_deadline_db,
     get_seller_by_wallet_db,
     get_seller_by_email_db,
     get_seller_by_api_key_db,
@@ -8015,6 +8016,7 @@ def seller_register(req: SellerRegisterRequest):
             "email": result.get("email"),
             "seller_status": result.get("seller_status"),
             "verification_status": result.get("verification_status"),
+            "governance_deadline_at": result.get("governance_deadline_at"),
             "trust_tier": result.get("trust_tier"),
             "max_agents_allowed": result.get("max_agents_allowed"),
             "exposure_limit": result.get("exposure_limit"),
@@ -8436,6 +8438,7 @@ def seller_dashboard(
         }
 
     seller_id = seller.get("seller_id")
+    seller = enforce_seller_governance_deadline_db(seller_id) or seller
 
     agents = list_seller_agents_db(seller_id)
     catalog_items = list_seller_catalog_items_db(seller_id)

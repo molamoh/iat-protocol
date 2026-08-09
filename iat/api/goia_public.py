@@ -19,7 +19,7 @@ from iat.goia.partnership_responses import (
     record_partner_response,
 )
 from iat.goia.prospecting import prospecting_policy, public_prospecting_sources
-from iat.goia.repository import external_prospect_status_counts
+from iat.goia.repository import external_prospect_review_queue, external_prospect_status_counts
 
 
 router = APIRouter(tags=["goia"])
@@ -45,6 +45,28 @@ def prospecting_sources():
 def prospecting_status():
     """Expose aggregate pipeline state without prospect identities or URLs."""
     return external_prospect_status_counts()
+
+
+@router.get("/goia/v1/prospecting/review-queue")
+def public_prospecting_review_queue(limit: int = 100):
+    """Expose redacted candidate metadata; decisions remain admin-only."""
+    result = external_prospect_review_queue(limit=limit)
+    return {
+        "status": "ok",
+        "governance_required": True,
+        "provider_activation": False,
+        "prospects": [
+            {
+                "prospect_id": item["prospect_id"],
+                "source_id": item["source_id"],
+                "name": item["name"],
+                "governance_score": item["governance_score"],
+                "governance_reasons": item["governance_reasons"],
+                "recommendation": item["recommendation"],
+            }
+            for item in result["prospects"]
+        ],
+    }
 
 
 @router.post("/goia/v1/contracts/search-intent/validate")

@@ -87,6 +87,7 @@ _MANIFEST: dict[str, Any] = {
         "manifest": "/.well-known/goia.json",
         "prospecting_sources": "/goia/v1/prospecting/sources",
         "prospecting_status": "/goia/v1/prospecting/status",
+        "prospecting_review_queue": "/goia/v1/prospecting/review-queue",
         "ranking_policy": "/goia/v1/policies/ranking",
         "validate_search_intent": "/goia/v1/contracts/search-intent/validate",
         "validate_offer_observation": "/goia/v1/contracts/offer-observation/validate",

@@ -267,11 +267,16 @@ function renderSellerGovernanceState(dashboard) {
   }
   const actions = Array.isArray(dashboard.next_required_actions) ? dashboard.next_required_actions : [];
   const runtime = dashboard.runtime || {};
+  const seller = dashboard.seller || {};
+  const autonomous = Array.isArray(dashboard.autonomous_governance) ? dashboard.autonomous_governance : [];
   const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[char]));
   const checks = actions.length
     ? actions.map((item) => `<li><strong>${escapeHtml(item.type || "review")}</strong><span>${escapeHtml(item.action || item.reason || "pending")}</span></li>`).join("")
     : "<li><strong>Clear</strong><span>No additional governance action reported.</span></li>";
-  panel.innerHTML = `<h3>Governance review</h3><p>Protocol approval remains independent from seller self-management.</p><div class="seller-governance-runtime"><span>Runtime state</span><strong>${escapeHtml(runtime.runtime_state || "pending review")}</strong></div><ul>${checks}</ul>`;
+  const autonomousRows = autonomous.length
+    ? autonomous.map((item) => `<li><strong>Autonomous review</strong><span>${escapeHtml(item.status === "error" ? `${item.message}: ${item.error || "unknown"}` : (item.factory_review?.governance_status || item.review_evaluation?.readiness || item.status))}</span></li>`).join("")
+    : "<li><strong>Autonomous review</strong><span>No pending factory review</span></li>";
+  panel.innerHTML = `<h3>Governance review</h3><p>Protocol approval remains independent from seller self-management.</p><div class="seller-governance-runtime"><span>Runtime state</span><strong>${escapeHtml(runtime.runtime_state || "pending review")}</strong></div><ul>${checks}<li><strong>Seller status</strong><span>${escapeHtml(`${seller.seller_status || "pending"} / ${seller.verification_status || "unverified"}`)}</span></li>${autonomousRows}</ul>`;
   const recent = dashboard.recent || {};
   const agents = Array.isArray(recent.agents) ? recent.agents : [];
   const items = Array.isArray(recent.catalog_items) ? recent.catalog_items : [];

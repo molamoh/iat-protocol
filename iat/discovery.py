@@ -96,6 +96,7 @@ _MANIFEST: dict[str, Any] = {
         "reference_runtime_health": "/goia/v1/reference-runtime/health",
         "reference_runtime_models": "/goia/v1/reference-runtime/v1/models",
         "reference_runtime_chat": "/goia/v1/reference-runtime/v1/chat/completions",
+        "reference_runtime_auth": "bearer",
         "validate_catalog": "/goia/v1/contracts/catalog/validate",
         "search": "/goia/v1/search",
         "status": "local_index_pilot",

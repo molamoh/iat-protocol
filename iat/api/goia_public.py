@@ -1,6 +1,8 @@
 """Public, side-effect-free GOIA contract endpoints."""
 
 from typing import Any
+import os
+import secrets
 
 from fastapi import APIRouter, Header, HTTPException
 
@@ -42,7 +44,18 @@ def reference_runtime_models():
 
 
 @router.post("/goia/v1/reference-runtime/v1/chat/completions")
-def reference_runtime_chat(payload: dict[str, Any]):
+def reference_runtime_chat(
+    payload: dict[str, Any],
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    expected = os.getenv("IAT_REFERENCE_RUNTIME_API_KEY", "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="reference_runtime_not_configured")
+    supplied = (authorization or "").strip()
+    if not supplied.lower().startswith("bearer ") or not secrets.compare_digest(
+        supplied[7:].strip(), expected
+    ):
+        raise HTTPException(status_code=401, detail="reference_runtime_unauthorized")
     messages = payload.get("messages") or []
     last_message = messages[-1] if messages and isinstance(messages[-1], dict) else {}
     content = str(last_message.get("content") or "")[:2_000]

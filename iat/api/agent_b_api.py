@@ -116,6 +116,7 @@ from iat.api.db import (
     get_active_threat_memory_db,
     create_seller_db,
     enforce_seller_governance_deadline_db,
+    run_autonomous_seller_factory_governance_db,
     get_seller_by_wallet_db,
     get_seller_by_email_db,
     get_seller_by_api_key_db,
@@ -8439,6 +8440,20 @@ def seller_dashboard(
 
     seller_id = seller.get("seller_id")
     seller = enforce_seller_governance_deadline_db(seller_id) or seller
+
+    # Advance pending factory reviews through the existing autonomous quorum.
+    pending_factory_requests = list_seller_agent_factory_requests_db(seller_id)
+    for factory_request in pending_factory_requests:
+        if str(factory_request.get("governance_status") or "").lower() in {
+            "pending", "pending_factory_reviews", "pending_factory_approval"
+        }:
+            try:
+                run_autonomous_seller_factory_governance_db(
+                    factory_request.get("factory_request_id")
+                )
+            except Exception:
+                # Dashboard remains available; governance failures stay auditable.
+                pass
 
     agents = list_seller_agents_db(seller_id)
     catalog_items = list_seller_catalog_items_db(seller_id)

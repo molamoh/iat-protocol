@@ -8044,6 +8044,13 @@ def validate_seller_runtime_adapter(
         result["runtime_adapter"] = "http"
         return result
 
+    if adapter in {"mcp", "openai_compatible"}:
+        if not url:
+            return {"status": "error", "message": "runtime_url_required_for_adapter"}
+        result = validate_seller_runtime(url)
+        result["runtime_adapter"] = adapter
+        return result
+
     if adapter == "python":
         try:
             import iat.seller_runtime.python_plugins
@@ -8267,7 +8274,7 @@ def seller_register_agent(
             if runtime_adapter == "python"
             else "iat_internal"
             if runtime_adapter == "internal"
-            else "http_runtime"
+            else f"{runtime_adapter}_runtime"
         ),
         "runtime_adapter": runtime_adapter,
         "python_plugin": req.python_plugin,

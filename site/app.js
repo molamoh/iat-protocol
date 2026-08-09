@@ -207,12 +207,13 @@ function installSellerCapabilityForm() {
     <p class="inbox-help">Add the agent endpoint that IAT may validate and expose to buyers.</p>
     <label>Agent identifier<input id="seller-agent-id" placeholder="research-agent-01"></label>
     <label>Service name<input id="seller-service" placeholder="Verified web research"></label>
-    <label>HTTP runtime URL<input id="seller-runtime-url" type="url" placeholder="https://agent.example/run"></label>
+    <label>Runtime adapter<select id="seller-runtime-adapter"><option value="http">HTTP</option><option value="openai_compatible">OpenAI-compatible</option><option value="mcp">MCP</option></select></label>
+    <label>Runtime URL<input id="seller-runtime-url" type="url" placeholder="https://agent.example/run"></label>
     <label>Price in IAT<input id="seller-agent-price" value="1.00" inputmode="decimal"></label>
     <label>Capabilities (comma separated)<input id="seller-agent-capabilities" placeholder="web_research,source_verification"></label>
     <button id="seller-agent-register" class="button primary" type="button">Register capability</button>
     <p id="seller-agent-status" class="seller-status" role="status" aria-live="polite"></p>`;
-  bindDraft("seller-capability", [details.querySelector("#seller-agent-id"), details.querySelector("#seller-service"), details.querySelector("#seller-runtime-url"), details.querySelector("#seller-agent-price"), details.querySelector("#seller-agent-capabilities")]);
+  bindDraft("seller-capability", [details.querySelector("#seller-agent-id"), details.querySelector("#seller-service"), details.querySelector("#seller-runtime-adapter"), details.querySelector("#seller-runtime-url"), details.querySelector("#seller-agent-price"), details.querySelector("#seller-agent-capabilities")]);
   const resultPanel = card.querySelector("#seller-console-result");
   if (resultPanel) card.insertBefore(details, resultPanel); else card.append(details);
   const submit = details.querySelector("#seller-agent-register");
@@ -228,7 +229,7 @@ function installSellerCapabilityForm() {
       agent_id: details.querySelector("#seller-agent-id").value.trim(),
       service: details.querySelector("#seller-service").value.trim(),
       url: details.querySelector("#seller-runtime-url").value.trim(),
-      runtime_adapter: "http",
+      runtime_adapter: details.querySelector("#seller-runtime-adapter").value,
       price: Number(details.querySelector("#seller-agent-price").value.trim()),
       capabilities: details.querySelector("#seller-agent-capabilities").value.split(",").map((item) => item.trim()).filter(Boolean),
     };

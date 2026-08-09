@@ -512,6 +512,41 @@ def external_prospect_stats() -> dict[str, Any]:
     return {"count": count}
 
 
+def list_external_prospects(
+    *, status: str | None = None, limit: int = 100
+) -> dict[str, Any]:
+    """Return bounded metadata for passive prospect review; never activates a provider."""
+    marker = qmark()
+    safe_limit = max(1, min(int(limit), 200))
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        params: list[Any] = []
+        where = ""
+        if status:
+            where = f"WHERE status = {marker}"
+            params.append(status.strip()[:80])
+        params.append(safe_limit)
+        cur.execute(
+            f"""
+            SELECT prospect_id, source_id, source_url, name, description,
+                   status, observed_at, updated_at
+            FROM goia_external_prospects
+            {where}
+            ORDER BY updated_at DESC
+            LIMIT {marker}
+            """,
+            tuple(params),
+        )
+        return {
+            "status": "ok",
+            "prospects": [dict(row) for row in cur.fetchall()],
+            "provider_activation": False,
+        }
+    finally:
+        release_conn(conn)
+
+
 def qualify_external_prospects(limit: int = 50) -> dict[str, Any]:
     """Apply a conservative metadata-only qualification; never activates a provider."""
     marker = qmark()

@@ -24,6 +24,7 @@ from iat.goia.repository import (
     list_partner_delivery_events,
     list_partner_suppressions,
     list_worker_health,
+    list_external_prospects,
     prepare_partner_proposals,
     refresh_partnership_opportunities,
     refresh_partner_permissions,
@@ -172,6 +173,13 @@ def build_goia_admin_router(require_admin: Callable) -> APIRouter:
     def review_candidates(status: str = "pending_review", limit: int = 100):
         try:
             return list_review_candidates(status=status, limit=limit)
+        except GOIARepositoryError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @router.get("/prospecting/prospects")
+    def external_prospects(status: str | None = None, limit: int = 100):
+        try:
+            return list_external_prospects(status=status, limit=limit)
         except GOIARepositoryError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 

@@ -90,6 +90,33 @@ def reference_runtime_chat_probe():
     }
 
 
+@router.get("/goia/v1/reference-mcp/health")
+def reference_mcp_health():
+    return {"status": "ok", "server": "iat-reference-mcp", "provider_activation": False}
+
+
+@router.post("/goia/v1/reference-mcp")
+def reference_mcp(payload: dict[str, Any], authorization: str | None = Header(default=None, alias="Authorization")):
+    expected = os.getenv("IAT_REFERENCE_RUNTIME_API_KEY", "").strip()
+    supplied = (authorization or "").strip()
+    if not expected:
+        raise HTTPException(status_code=503, detail="reference_mcp_not_configured")
+    if not supplied.lower().startswith("bearer ") or not secrets.compare_digest(supplied[7:].strip(), expected):
+        raise HTTPException(status_code=401, detail="reference_mcp_unauthorized")
+    method = str(payload.get("method") or "")
+    request_id = payload.get("id")
+    if method == "initialize":
+        result = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}, "serverInfo": {"name": "iat-reference-mcp", "version": "1.0.0"}}
+    elif method == "tools/list":
+        result = {"tools": [{"name": "iat_validate_execution", "description": "Return sealed IAT execution evidence for a bounded request.", "inputSchema": {"type": "object", "properties": {"request": {"type": "string"}}, "required": ["request"]}}]}
+    elif method == "tools/call":
+        arguments = payload.get("params", {}).get("arguments", {})
+        result = {"content": [{"type": "text", "text": "IAT reference MCP execution sealed: " + str(arguments.get("request") or "")[:2000]}], "isError": False}
+    else:
+        return {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": "method_not_found"}}
+    return {"jsonrpc": "2.0", "id": request_id, "result": result}
+
+
 @router.get("/.well-known/goia.json")
 def goia_manifest():
     return build_goia_manifest()

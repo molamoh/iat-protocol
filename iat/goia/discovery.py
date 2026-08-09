@@ -53,6 +53,7 @@ _GOIA_MANIFEST: dict[str, Any] = {
         "collection_stats": "/admin/goia/collection/stats",
         "worker_health": "/admin/goia/workers/health",
         "external_prospects": "/admin/goia/prospecting/prospects",
+        "external_prospect_review_queue": "/admin/goia/prospecting/review-queue",
         "review_candidates": "/admin/goia/review/candidates",
         "approve_candidate": "/admin/goia/review/candidates/{candidate_id}/approve",
         "reject_candidate": "/admin/goia/review/candidates/{candidate_id}/reject",

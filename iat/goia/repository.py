@@ -547,6 +547,43 @@ def list_external_prospects(
         release_conn(conn)
 
 
+def external_prospect_review_queue(*, limit: int = 100) -> dict[str, Any]:
+    """Build an explainable, read-only governance queue for qualified prospects."""
+    result = list_external_prospects(status="candidate_qualified", limit=limit)
+    reviewed: list[dict[str, Any]] = []
+    for prospect in result["prospects"]:
+        score = 0
+        reasons: list[str] = []
+        source_id = str(prospect.get("source_id") or "")
+        source_url = str(prospect.get("source_url") or "")
+        description = str(prospect.get("description") or "")
+        if source_id in {"github_public_repositories", "huggingface_spaces"}:
+            score += 40
+            reasons.append("known_public_registry")
+        if source_url.startswith("https://"):
+            score += 30
+            reasons.append("https_source")
+        if len(description.strip()) >= 40:
+            score += 20
+            reasons.append("descriptive_metadata")
+        if len(str(prospect.get("name") or "").strip()) >= 3:
+            score += 10
+            reasons.append("named_project")
+        reviewed.append({
+            **prospect,
+            "governance_score": score,
+            "governance_reasons": reasons,
+            "recommendation": "governance_review_required",
+            "provider_activation": False,
+        })
+    return {
+        "status": "ok",
+        "prospects": reviewed,
+        "governance_required": True,
+        "provider_activation": False,
+    }
+
+
 def qualify_external_prospects(limit: int = 50) -> dict[str, Any]:
     """Apply a conservative metadata-only qualification; never activates a provider."""
     marker = qmark()

@@ -81,6 +81,19 @@ def init_goia_tables() -> None:
         )
         cur.execute(
             """
+            CREATE TABLE IF NOT EXISTS goia_external_prospect_reviews (
+                review_id TEXT PRIMARY KEY,
+                prospect_id TEXT NOT NULL,
+                reviewer TEXT NOT NULL,
+                decision TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                UNIQUE(prospect_id, reviewer, created_at)
+            )
+            """
+        )
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS goia_offer_observations (
                 observation_id TEXT PRIMARY KEY,
                 offer_id TEXT NOT NULL,
@@ -582,6 +595,56 @@ def external_prospect_review_queue(*, limit: int = 100) -> dict[str, Any]:
         "governance_required": True,
         "provider_activation": False,
     }
+
+
+def decide_external_prospect(
+    prospect_id: str, *, reviewer: str, decision: str, reason: str
+) -> dict[str, Any]:
+    """Record a governance decision without activating a provider."""
+    allowed = {"approve", "reject", "needs_more_evidence"}
+    if decision not in allowed:
+        raise GOIARepositoryError("invalid_governance_decision")
+    now = int(time.time())
+    next_status = {
+        "approve": "governance_approved",
+        "reject": "governance_rejected",
+        "needs_more_evidence": "governance_evidence_required",
+    }[decision]
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            "SELECT prospect_id, status FROM goia_external_prospects WHERE prospect_id = "
+            + qmark(),
+            (prospect_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise GOIARepositoryError("external_prospect_not_found")
+        review_id = f"gpr_{uuid.uuid4().hex}"
+        marker = qmark()
+        cur.execute(
+            f"INSERT INTO goia_external_prospect_reviews "
+            f"(review_id, prospect_id, reviewer, decision, reason, created_at) "
+            f"VALUES ({', '.join([marker] * 6)})",
+            (review_id, prospect_id, reviewer.strip()[:120], decision, reason.strip()[:1000], now),
+        )
+        cur.execute(
+            f"UPDATE goia_external_prospects SET status = {marker}, updated_at = {marker} "
+            f"WHERE prospect_id = {marker}",
+            (next_status, now, prospect_id),
+        )
+        conn.commit()
+        return {
+            "status": "recorded",
+            "review_id": review_id,
+            "prospect_id": prospect_id,
+            "decision": decision,
+            "prospect_status": next_status,
+            "provider_activation": False,
+        }
+    finally:
+        release_conn(conn)
 
 
 def qualify_external_prospects(limit: int = 50) -> dict[str, Any]:

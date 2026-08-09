@@ -26,6 +26,7 @@ from iat.goia.repository import (
     list_worker_health,
     list_external_prospects,
     external_prospect_review_queue,
+    decide_external_prospect,
     prepare_partner_proposals,
     refresh_partnership_opportunities,
     refresh_partner_permissions,
@@ -61,6 +62,14 @@ class CandidateRejectionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     reviewer: str = Field(min_length=3, max_length=120)
+    reason: str = Field(min_length=8, max_length=1_000)
+
+
+class ExternalProspectDecisionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    reviewer: str = Field(min_length=3, max_length=120)
+    decision: str = Field(pattern=r"^(approve|reject|needs_more_evidence)$")
     reason: str = Field(min_length=8, max_length=1_000)
 
 
@@ -187,6 +196,19 @@ def build_goia_admin_router(require_admin: Callable) -> APIRouter:
     @router.get("/prospecting/review-queue")
     def prospect_review_queue(limit: int = 100):
         return external_prospect_review_queue(limit=limit)
+
+    @router.post("/prospecting/prospects/{prospect_id}/decision")
+    def decide_prospect(prospect_id: str, payload: ExternalProspectDecisionRequest):
+        try:
+            return decide_external_prospect(
+                prospect_id,
+                reviewer=payload.reviewer,
+                decision=payload.decision,
+                reason=payload.reason,
+            )
+        except GOIARepositoryError as exc:
+            status_code = 404 if str(exc) == "external_prospect_not_found" else 422
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
     @router.post("/review/candidates/{candidate_id}/approve")
     def approve_candidate(candidate_id: str, payload: CandidateApprovalRequest):

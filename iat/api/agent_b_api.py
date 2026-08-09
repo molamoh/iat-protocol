@@ -161,6 +161,7 @@ from iat.api.db import (
     cleanup_expired_buyer_sessions_db,
     create_seller_catalog_item_db,
     list_seller_catalog_items_db,
+    archive_seller_catalog_item_db,
     get_seller_catalog_item_db,
     create_seller_agent_factory_request_db,
     list_seller_agent_factory_requests_db,
@@ -8734,6 +8735,19 @@ def seller_list_catalog_items(
         "seller_id": seller["seller_id"],
         "items": list_seller_catalog_items_db(seller["seller_id"]),
     }
+
+
+@app.post("/seller/catalog/items/{catalog_item_id}/archive")
+def seller_archive_catalog_item(
+    catalog_item_id: str,
+    reason: str = "",
+    x_seller_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    seller = get_authenticated_seller_from_credentials(x_seller_api_key, authorization)
+    if not seller:
+        return {"status": "error", "message": "seller_auth_required"}
+    return archive_seller_catalog_item_db(catalog_item_id, seller["seller_id"], reason)
 
 
 @app.post("/seller/agent-factory/requests")

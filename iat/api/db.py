@@ -8886,6 +8886,39 @@ def list_seller_catalog_items_db(seller_id, limit=100):
     return [dict(row) for row in rows]
 
 
+def archive_seller_catalog_item_db(catalog_item_id, seller_id, reason=""):
+    if not catalog_item_id or not seller_id:
+        return {"status": "error", "message": "catalog_item_required"}
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    cur.execute(
+        f"SELECT seller_id, availability_status FROM seller_catalog_items WHERE catalog_item_id = {p}",
+        (catalog_item_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        release_conn(conn)
+        return {"status": "error", "message": "catalog_item_not_found"}
+    if row["seller_id"] != seller_id:
+        release_conn(conn)
+        return {"status": "error", "message": "catalog_item_seller_mismatch"}
+    now = int(time.time())
+    cur.execute(
+        f"UPDATE seller_catalog_items SET availability_status = {p}, updated_at = {p} WHERE catalog_item_id = {p}",
+        ("archived", now, catalog_item_id),
+    )
+    conn.commit()
+    release_conn(conn)
+    return {
+        "status": "ok",
+        "catalog_item_id": catalog_item_id,
+        "availability_status": "archived",
+        "reason": str(reason or "")[:500],
+        "orders_preserved": True,
+    }
+
+
 def create_seller_agent_factory_request_db(request_data):
     seller_id = request_data.get("seller_id")
     catalog_item_id = request_data.get("catalog_item_id")

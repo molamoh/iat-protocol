@@ -127,6 +127,8 @@ from iat.api.db import (
     start_seller_email_verification_db,
     confirm_seller_email_verification_db,
     mark_seller_wallet_verified_db,
+    start_seller_runtime_verification_db,
+    confirm_seller_runtime_verification_db,
     list_sellers_db,
     authenticate_seller_api_key_db,
     approve_seller_db,
@@ -7917,6 +7919,10 @@ class SellerWalletSessionRequest(BaseModel):
     signature: str = Field(min_length=64, max_length=128)
 
 
+class SellerRuntimeVerificationRequest(BaseModel):
+    runtime_url: str = Field(min_length=12, max_length=500)
+
+
 @app.post("/seller/wallet-auth/challenge")
 def seller_wallet_auth_challenge(req: SellerWalletChallengeRequest):
     try:
@@ -8080,6 +8086,70 @@ def seller_confirm_email_verification(token: str):
     result = confirm_seller_email_verification_db(digest)
     outcome = "success" if result.get("status") == "ok" else "invalid"
     return RedirectResponse(f"{site_origin}/sellers/?email_verification={outcome}", status_code=303)
+
+
+@app.post("/seller/runtime-verification/challenge")
+def seller_runtime_verification_challenge(
+    req: SellerRuntimeVerificationRequest,
+    x_seller_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    seller = get_authenticated_seller_from_credentials(x_seller_api_key, authorization)
+    if not seller:
+        return {"status": "error", "message": "seller_auth_required"}
+    from iat.security.network import UnsafeNetworkTarget, validate_public_runtime_url
+    parsed = urlparse(req.runtime_url.strip())
+    verification_url = f"{parsed.scheme}://{parsed.netloc}/.well-known/iat-seller-verification.json"
+    try:
+        validate_public_runtime_url(verification_url)
+    except UnsafeNetworkTarget as exc:
+        return {"status": "error", "message": "unsafe_runtime_verification_target", "error": str(exc)}
+    token = secrets.token_urlsafe(32)
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    expires_at = int(time.time()) + 1800
+    stored = start_seller_runtime_verification_db(
+        seller.get("seller_id"), verification_url, digest, expires_at
+    )
+    if stored.get("status") != "ok":
+        return stored
+    return {
+        **stored,
+        "challenge_token": token,
+        "document": {
+            "seller_id": seller.get("seller_id"),
+            "iat_seller_verification": token,
+        },
+    }
+
+
+@app.post("/seller/runtime-verification/confirm")
+def seller_runtime_verification_confirm(
+    x_seller_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    seller = get_authenticated_seller_from_credentials(x_seller_api_key, authorization)
+    if not seller:
+        return {"status": "error", "message": "seller_auth_required"}
+    verification_url = str(seller.get("runtime_verification_url") or "")
+    if not verification_url or not seller.get("runtime_verification_token_digest"):
+        return {"status": "error", "message": "runtime_verification_challenge_required"}
+    from iat.security.network import UnsafeNetworkTarget, validate_public_runtime_url
+    try:
+        validate_public_runtime_url(verification_url)
+        response = requests.get(verification_url, timeout=5, allow_redirects=False)
+    except (UnsafeNetworkTarget, requests.RequestException) as exc:
+        return {"status": "error", "message": "runtime_verification_fetch_failed", "error": str(exc)[:240]}
+    if response.status_code != 200:
+        return {"status": "error", "message": "runtime_verification_document_unavailable", "http_status": response.status_code}
+    try:
+        document = response.json()
+    except ValueError:
+        return {"status": "error", "message": "runtime_verification_document_invalid_json"}
+    if str(document.get("seller_id") or "") != str(seller.get("seller_id") or ""):
+        return {"status": "error", "message": "runtime_verification_seller_mismatch"}
+    token = str(document.get("iat_seller_verification") or "")
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return confirm_seller_runtime_verification_db(seller.get("seller_id"), digest)
 
 
 

@@ -7741,6 +7741,11 @@ def init_sellers_table():
         "email_verification_sent_at": "INTEGER",
         "wallet_verified": "INTEGER DEFAULT 0",
         "wallet_verified_at": "INTEGER",
+        "runtime_verified": "INTEGER DEFAULT 0",
+        "runtime_verified_at": "INTEGER",
+        "runtime_verification_url": "TEXT",
+        "runtime_verification_token_digest": "TEXT",
+        "runtime_verification_expires_at": "INTEGER",
         "api_key_created_at": "INTEGER",
         "last_contact_at": "INTEGER",
         "onboarding_completed": "INTEGER DEFAULT 0",
@@ -9317,6 +9322,14 @@ def run_seller_agent_factory_review_db(factory_request_id):
     else:
         risk_score += 10
         risk_reasons.append("wallet_signature_not_verified")
+
+    if seller_kind == "ai_agent":
+        if int(seller.get("runtime_verified", 0) or 0) == 1:
+            trust_score += 15
+            trust_reasons.append("runtime_domain_control_verified")
+        else:
+            risk_score += 15
+            risk_reasons.append("runtime_domain_control_not_verified")
 
     if seller_kind != "ai_agent":
         if str(seller.get("kyc_status") or "not_provided").lower() in ["verified", "approved"]:
@@ -17486,6 +17499,50 @@ def mark_seller_wallet_verified_db(seller_id, now=None):
     if not updated:
         return {"status": "error", "message": "seller_not_found"}
     return {"status": "ok", "seller_id": seller_id, "wallet_verified": True}
+
+
+def start_seller_runtime_verification_db(seller_id, verification_url, token_digest, expires_at, now=None):
+    current_time = int(time.time()) if now is None else int(now)
+    if not get_seller_db(seller_id):
+        return {"status": "error", "message": "seller_not_found"}
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    cur.execute(f"""
+    UPDATE sellers
+    SET runtime_verification_url = {p},
+        runtime_verification_token_digest = {p},
+        runtime_verification_expires_at = {p},
+        updated_at = {p}
+    WHERE seller_id = {p}
+    """, (verification_url, token_digest, int(expires_at), current_time, seller_id))
+    conn.commit()
+    release_conn(conn)
+    return {"status": "ok", "seller_id": seller_id, "verification_url": verification_url, "expires_at": int(expires_at)}
+
+
+def confirm_seller_runtime_verification_db(seller_id, token_digest, now=None):
+    current_time = int(time.time()) if now is None else int(now)
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    cur.execute(f"""
+    UPDATE sellers
+    SET runtime_verified = 1,
+        runtime_verified_at = {p},
+        runtime_verification_token_digest = NULL,
+        runtime_verification_expires_at = NULL,
+        updated_at = {p}
+    WHERE seller_id = {p}
+      AND runtime_verification_token_digest = {p}
+      AND runtime_verification_expires_at >= {p}
+    """, (current_time, current_time, seller_id, token_digest, current_time))
+    updated = cur.rowcount
+    conn.commit()
+    release_conn(conn)
+    if not updated:
+        return {"status": "error", "message": "runtime_verification_challenge_invalid_or_expired"}
+    return {"status": "ok", "seller_id": seller_id, "runtime_verified": True}
 
 
 

@@ -311,11 +311,13 @@ function renderSellerGovernanceState(dashboard) {
     : "<li><strong>Autonomous review</strong><span>No factory review recorded</span></li>";
   const emailVerified = Number(seller.email_verified || 0) === 1;
   const walletVerified = Number(seller.wallet_verified || 0) === 1;
+  const runtimeVerified = Number(seller.runtime_verified || 0) === 1;
   const reachableRuntimes = agents.filter((agent) => ["validated", "healthy", "active"].includes(String(agent.runtime_validation_status || "").toLowerCase()));
   const emailAction = emailVerified ? "verified" : `<button type="button" class="button secondary seller-verify-email">Send verification email</button>`;
   const walletEvidence = walletVerified ? "verified by signature" : "sign in with the registered wallet to verify";
   const runtimeEvidence = reachableRuntimes.length ? `${reachableRuntimes.length} endpoint(s) reachable; domain control not yet verified` : "no reachable runtime registered";
-  panel.innerHTML = `<h3>Governance review</h3><p>Protocol approval remains independent from seller self-management.</p><div class="seller-governance-runtime"><span>Runtime state</span><strong>${escapeHtml(runtime.runtime_state || "pending review")}</strong></div><ul>${checks}<li><strong>Seller status</strong><span>${escapeHtml(`${seller.seller_status || "pending"} / ${seller.verification_status || "unverified"}`)}</span></li><li><strong>Current email evidence</strong><span>${emailAction}</span></li><li><strong>Current wallet evidence</strong><span>${escapeHtml(walletEvidence)}</span></li><li><strong>Current runtime evidence</strong><span>${escapeHtml(runtimeEvidence)}</span></li>${autonomousRows}</ul>${autonomous.some((item) => item.status === "completed") ? '<p class="seller-console-note">Historical reviews preserve the evidence and policy snapshot used at decision time. Current evidence is shown separately above.</p>' : ""}`;
+  const runtimeControl = runtimeVerified ? "verified by domain challenge" : `<div class="seller-runtime-verification"><input class="seller-runtime-url" type="url" value="${escapeHtml(reachableRuntimes[0]?.url || "")}" placeholder="https://agent.example"><button type="button" class="button secondary seller-runtime-challenge">Create challenge</button><button type="button" class="button secondary seller-runtime-confirm" hidden>Verify published file</button><pre class="seller-runtime-instructions" hidden></pre></div>`;
+  panel.innerHTML = `<h3>Governance review</h3><p>Protocol approval remains independent from seller self-management.</p><div class="seller-governance-runtime"><span>Runtime state</span><strong>${escapeHtml(runtime.runtime_state || "pending review")}</strong></div><ul>${checks}<li><strong>Seller status</strong><span>${escapeHtml(`${seller.seller_status || "pending"} / ${seller.verification_status || "unverified"}`)}</span></li><li><strong>Current email evidence</strong><span>${emailAction}</span></li><li><strong>Current wallet evidence</strong><span>${escapeHtml(walletEvidence)}</span></li><li><strong>Runtime reachability</strong><span>${escapeHtml(runtimeEvidence)}</span></li><li><strong>Runtime control</strong><span>${runtimeControl}</span></li>${autonomousRows}</ul>${autonomous.some((item) => item.status === "completed") ? '<p class="seller-console-note">Historical reviews preserve the evidence and policy snapshot used at decision time. Current evidence is shown separately above.</p>' : ""}`;
   panel.querySelector(".seller-verify-email")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
     button.disabled = true;
@@ -324,6 +326,37 @@ function renderSellerGovernanceState(dashboard) {
       const result = await sandboxRequest("/seller/email-verification/request", { method: "POST", headers: sellerSessionHeaders });
       if (result.status !== "ok" && result.status !== "already_verified") throw new Error(result.message || "email_verification_failed");
       button.textContent = result.status === "already_verified" ? "Verified" : "Check your inbox";
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = `Retry: ${error.message}`;
+    }
+  });
+  panel.querySelector(".seller-runtime-challenge")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const container = button.closest(".seller-runtime-verification");
+    const runtimeUrl = container.querySelector(".seller-runtime-url").value.trim();
+    const instructions = container.querySelector(".seller-runtime-instructions");
+    const confirm = container.querySelector(".seller-runtime-confirm");
+    button.disabled = true;
+    try {
+      const result = await sandboxRequest("/seller/runtime-verification/challenge", { method: "POST", headers: { "Content-Type": "application/json", ...sellerSessionHeaders }, body: JSON.stringify({ runtime_url: runtimeUrl }) });
+      if (result.status !== "ok") throw new Error(result.message || "runtime_challenge_failed");
+      instructions.textContent = `Publish this JSON at ${result.verification_url}:\n${JSON.stringify(result.document, null, 2)}`;
+      instructions.hidden = false;
+      confirm.hidden = false;
+      button.textContent = "Challenge created";
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = `Retry: ${error.message}`;
+    }
+  });
+  panel.querySelector(".seller-runtime-confirm")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const result = await sandboxRequest("/seller/runtime-verification/confirm", { method: "POST", headers: sellerSessionHeaders });
+      if (result.status !== "ok") throw new Error(result.message || "runtime_verification_failed");
+      await refreshSellerConsole();
     } catch (error) {
       button.disabled = false;
       button.textContent = `Retry: ${error.message}`;

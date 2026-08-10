@@ -278,6 +278,7 @@ function renderSellerGovernanceState(dashboard) {
       const factoryReview = item.factory_review || {};
       const factoryRequest = factoryReview.factory_request || factoryReview;
       const requestId = item.factory_request_id || factoryRequest.factory_request_id || "unknown";
+      const reviewLabel = item.status === "completed" ? "Historical autonomous review" : "Autonomous review";
       if (item.status === "error") {
         return `<li><strong>Autonomous review · ${escapeHtml(requestId)}</strong><span>${escapeHtml(`${item.message || "runtime_error"}: ${item.error || item.error_type || "unknown"}`)}</span></li>`;
       }
@@ -302,12 +303,13 @@ function renderSellerGovernanceState(dashboard) {
           : storedReasons.size
             ? Array.from(storedReasons).join(", ")
             : factoryRequest.rejection_reason || factoryReview.rejection_reason || factoryReview.message || item.review_evaluation?.reason || "no_reason_reported";
-      return `<li><strong>Autonomous review · ${escapeHtml(requestId)}</strong><span>${escapeHtml(`${reviewStatus} · ${reviewReason}`)}</span></li>`;
+      const snapshotNote = item.status === "completed" ? "decision snapshot · " : "";
+      return `<li><strong>${reviewLabel} · ${escapeHtml(requestId)}</strong><span>${escapeHtml(`${snapshotNote}${reviewStatus} · ${reviewReason}`)}</span></li>`;
     }).join("")
     : "<li><strong>Autonomous review</strong><span>No factory review recorded</span></li>";
   const emailVerified = Number(seller.email_verified || 0) === 1;
   const emailAction = emailVerified ? "verified" : `<button type="button" class="button secondary seller-verify-email">Send verification email</button>`;
-  panel.innerHTML = `<h3>Governance review</h3><p>Protocol approval remains independent from seller self-management.</p><div class="seller-governance-runtime"><span>Runtime state</span><strong>${escapeHtml(runtime.runtime_state || "pending review")}</strong></div><ul>${checks}<li><strong>Seller status</strong><span>${escapeHtml(`${seller.seller_status || "pending"} / ${seller.verification_status || "unverified"}`)}</span></li><li><strong>Email</strong><span>${emailAction}</span></li>${autonomousRows}</ul>`;
+  panel.innerHTML = `<h3>Governance review</h3><p>Protocol approval remains independent from seller self-management.</p><div class="seller-governance-runtime"><span>Runtime state</span><strong>${escapeHtml(runtime.runtime_state || "pending review")}</strong></div><ul>${checks}<li><strong>Seller status</strong><span>${escapeHtml(`${seller.seller_status || "pending"} / ${seller.verification_status || "unverified"}`)}</span></li><li><strong>Current email evidence</strong><span>${emailAction}</span></li>${autonomousRows}</ul>${autonomous.some((item) => item.status === "completed") ? '<p class="seller-console-note">Historical reviews preserve the evidence and policy snapshot used at decision time. Current evidence is shown separately above.</p>' : ""}`;
   panel.querySelector(".seller-verify-email")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
     button.disabled = true;

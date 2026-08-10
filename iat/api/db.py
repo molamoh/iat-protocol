@@ -7506,6 +7506,7 @@ def init_db():
     init_seller_agent_simulation_reviews_table()
     init_seller_agent_simulation_approvals_table()
     init_sellers_table()
+    init_seller_connector_tables()
     ensure_seller_punishment_columns()
     init_seller_agents_table()
     ensure_seller_agent_runtime_columns()
@@ -7779,6 +7780,148 @@ def init_sellers_table():
 
     conn.commit()
     release_conn(conn)
+
+
+def init_seller_connector_tables():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS seller_connector_credentials (
+        seller_id TEXT PRIMARY KEY,
+        key_digest TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at INTEGER NOT NULL,
+        rotated_at INTEGER
+    )
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS seller_connector_tasks (
+        task_id TEXT PRIMARY KEY,
+        seller_id TEXT NOT NULL,
+        seller_agent_id TEXT,
+        order_reference TEXT,
+        request_payload TEXT NOT NULL DEFAULT '{}',
+        status TEXT NOT NULL DEFAULT 'queued',
+        lease_digest TEXT,
+        leased_until INTEGER,
+        attempt_count INTEGER NOT NULL DEFAULT 0,
+        result_payload TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        completed_at INTEGER
+    )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_seller_connector_tasks_claim ON seller_connector_tasks(seller_id,status,created_at)")
+    conn.commit()
+    release_conn(conn)
+
+
+def store_seller_connector_credential_db(seller_id, key_digest, now=None):
+    current_time = int(time.time()) if now is None else int(now)
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    if USE_POSTGRES:
+        cur.execute(f"""
+        INSERT INTO seller_connector_credentials (seller_id,key_digest,status,created_at,rotated_at)
+        VALUES ({p},{p},'active',{p},NULL)
+        ON CONFLICT (seller_id) DO UPDATE SET key_digest=EXCLUDED.key_digest,status='active',rotated_at=EXCLUDED.created_at
+        """, (seller_id, key_digest, current_time))
+    else:
+        cur.execute(f"""
+        INSERT INTO seller_connector_credentials (seller_id,key_digest,status,created_at,rotated_at)
+        VALUES ({p},{p},'active',{p},NULL)
+        ON CONFLICT(seller_id) DO UPDATE SET key_digest=excluded.key_digest,status='active',rotated_at=excluded.created_at
+        """, (seller_id, key_digest, current_time))
+    conn.commit()
+    release_conn(conn)
+    return {"status": "ok", "seller_id": seller_id}
+
+
+def get_seller_by_connector_key_digest_db(key_digest):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    cur.execute(f"""
+    SELECT s.* FROM sellers s
+    JOIN seller_connector_credentials c ON c.seller_id=s.seller_id
+    WHERE c.key_digest={p} AND c.status='active' LIMIT 1
+    """, (key_digest,))
+    row = cur.fetchone()
+    release_conn(conn)
+    return dict(row) if row else None
+
+
+def claim_seller_connector_task_db(seller_id, lease_digest, now=None, lease_seconds=60):
+    current_time = int(time.time()) if now is None else int(now)
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    cur.execute(f"""
+    UPDATE seller_connector_tasks SET status='queued',lease_digest=NULL,leased_until=NULL,updated_at={p}
+    WHERE seller_id={p} AND status='leased' AND leased_until<{p}
+    """, (current_time, seller_id, current_time))
+    cur.execute(f"""
+    SELECT task_id FROM seller_connector_tasks
+    WHERE seller_id={p} AND status='queued' ORDER BY created_at ASC LIMIT 1
+    """, (seller_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.commit()
+        release_conn(conn)
+        return {"status": "empty"}
+    task_id = dict(row)["task_id"]
+    leased_until = current_time + max(15, min(int(lease_seconds), 300))
+    cur.execute(f"""
+    UPDATE seller_connector_tasks
+    SET status='leased',lease_digest={p},leased_until={p},attempt_count=attempt_count+1,updated_at={p}
+    WHERE task_id={p} AND status='queued'
+    """, (lease_digest, leased_until, current_time, task_id))
+    if cur.rowcount != 1:
+        conn.rollback()
+        release_conn(conn)
+        return {"status": "retry"}
+    cur.execute(f"SELECT * FROM seller_connector_tasks WHERE task_id={p}", (task_id,))
+    task = dict(cur.fetchone())
+    conn.commit()
+    release_conn(conn)
+    task["request_payload"] = _safe_json_loads(task.get("request_payload"), {})
+    return {"status": "ok", "task": task}
+
+
+def enqueue_seller_connector_task_db(seller_id, request_payload, seller_agent_id=None, order_reference=None, now=None):
+    current_time = int(time.time()) if now is None else int(now)
+    task_id = "sct_" + uuid.uuid4().hex
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    cur.execute(f"""
+    INSERT INTO seller_connector_tasks (
+        task_id,seller_id,seller_agent_id,order_reference,request_payload,status,
+        lease_digest,leased_until,attempt_count,result_payload,created_at,updated_at,completed_at
+    ) VALUES ({p},{p},{p},{p},{p},'queued',NULL,NULL,0,NULL,{p},{p},NULL)
+    """, (task_id, seller_id, seller_agent_id, order_reference, json.dumps(request_payload, sort_keys=True), current_time, current_time))
+    conn.commit()
+    release_conn(conn)
+    return {"status": "ok", "task_id": task_id, "seller_id": seller_id}
+
+
+def complete_seller_connector_task_db(seller_id, task_id, lease_digest, result, now=None):
+    current_time = int(time.time()) if now is None else int(now)
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    cur.execute(f"""
+    UPDATE seller_connector_tasks
+    SET status='completed',result_payload={p},completed_at={p},updated_at={p},lease_digest=NULL,leased_until=NULL
+    WHERE task_id={p} AND seller_id={p} AND status='leased' AND lease_digest={p} AND leased_until>={p}
+    """, (json.dumps(result, sort_keys=True), current_time, current_time, task_id, seller_id, lease_digest, current_time))
+    updated = cur.rowcount
+    conn.commit()
+    release_conn(conn)
+    if not updated:
+        return {"status": "error", "message": "connector_task_lease_invalid_or_expired"}
+    return {"status": "ok", "task_id": task_id, "result_pending_protocol_verification": True}
 
 
 def ensure_seller_agent_runtime_columns():

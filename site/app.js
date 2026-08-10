@@ -317,7 +317,8 @@ function renderSellerGovernanceState(dashboard) {
   const walletEvidence = walletVerified ? "verified by signature" : "sign in with the registered wallet to verify";
   const runtimeEvidence = reachableRuntimes.length ? `${reachableRuntimes.length} endpoint(s) reachable; domain control not yet verified` : "no reachable runtime registered";
   const runtimeControl = runtimeVerified ? "verified by domain challenge" : `<div class="seller-runtime-verification"><p class="seller-console-note">Use a runtime controlled by this seller. If you do not have one, deploy <a href="https://hub.docker.com/r/molamoh/iat-seller-runtime" target="_blank" rel="noopener noreferrer">molamoh/iat-seller-runtime:latest ↗</a>, then configure IAT_SELLER_ID, IAT_SELLER_VERIFICATION_TOKEN and a distinct IAT_RUNTIME_EXECUTION_SECRET.</p><input class="seller-runtime-url" type="url" value="${escapeHtml(reachableRuntimes[0]?.url || "")}" placeholder="https://your-seller-runtime.example"><button type="button" class="button secondary seller-runtime-challenge">Create challenge</button><button type="button" class="button secondary seller-runtime-confirm" hidden>Verify published file</button><pre class="seller-runtime-instructions" hidden></pre></div>`;
-  panel.innerHTML = `<h3>Governance review</h3><p>Protocol approval remains independent from seller self-management.</p><div class="seller-governance-runtime"><span>Runtime state</span><strong>${escapeHtml(runtime.runtime_state || "pending review")}</strong></div><ul>${checks}<li><strong>Seller status</strong><span>${escapeHtml(`${seller.seller_status || "pending"} / ${seller.verification_status || "unverified"}`)}</span></li><li><strong>Current email evidence</strong><span>${emailAction}</span></li><li><strong>Current wallet evidence</strong><span>${escapeHtml(walletEvidence)}</span></li><li><strong>Runtime reachability</strong><span>${escapeHtml(runtimeEvidence)}</span></li><li><strong>Runtime control</strong><span>${runtimeControl}</span></li>${autonomousRows}</ul>${autonomous.some((item) => item.status === "completed") ? '<p class="seller-console-note">Historical reviews preserve the evidence and policy snapshot used at decision time. Current evidence is shown separately above.</p>' : ""}`;
+  const connectorControl = emailVerified && walletVerified ? `<div class="seller-connector-control"><button type="button" class="button secondary seller-connector-issue">Create or rotate connector key</button><pre class="seller-connector-key" hidden></pre><p class="seller-console-note">The key is shown once. Rotation immediately revokes the previous connector.</p></div>` : "Verify email and wallet first";
+  panel.innerHTML = `<h3>Governance review</h3><p>Protocol approval remains independent from seller self-management.</p><div class="seller-governance-runtime"><span>Runtime state</span><strong>${escapeHtml(runtime.runtime_state || "pending review")}</strong></div><ul>${checks}<li><strong>Seller status</strong><span>${escapeHtml(`${seller.seller_status || "pending"} / ${seller.verification_status || "unverified"}`)}</span></li><li><strong>Current email evidence</strong><span>${emailAction}</span></li><li><strong>Current wallet evidence</strong><span>${escapeHtml(walletEvidence)}</span></li><li><strong>Managed connector</strong><span>${connectorControl}</span></li><li><strong>Runtime reachability</strong><span>${escapeHtml(runtimeEvidence)}</span></li><li><strong>Advanced runtime control</strong><span>${runtimeControl}</span></li>${autonomousRows}</ul>${autonomous.some((item) => item.status === "completed") ? '<p class="seller-console-note">Historical reviews preserve the evidence and policy snapshot used at decision time. Current evidence is shown separately above.</p>' : ""}`;
   panel.querySelector(".seller-verify-email")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
     button.disabled = true;
@@ -348,6 +349,22 @@ function renderSellerGovernanceState(dashboard) {
       instructions.hidden = false;
       confirm.hidden = false;
       button.textContent = "Challenge created";
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = `Retry: ${error.message}`;
+    }
+  });
+  panel.querySelector(".seller-connector-issue")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const output = button.closest(".seller-connector-control").querySelector(".seller-connector-key");
+    if (!window.confirm("Rotate the managed connector key? Any previous connector will stop immediately.")) return;
+    button.disabled = true;
+    try {
+      const result = await sandboxRequest("/seller/connector/credentials/rotate", { method: "POST", headers: sellerSessionHeaders });
+      if (result.status !== "ok" || !result.connector_key) throw new Error(result.message || "connector_key_failed");
+      output.textContent = `Save this key now:\n${result.connector_key}\n\nImage: molamoh/iat-managed-seller-connector:latest`;
+      output.hidden = false;
+      button.textContent = "Rotate connector key";
     } catch (error) {
       button.disabled = false;
       button.textContent = `Retry: ${error.message}`;

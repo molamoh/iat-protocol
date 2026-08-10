@@ -129,6 +129,11 @@ from iat.api.db import (
     mark_seller_wallet_verified_db,
     start_seller_runtime_verification_db,
     confirm_seller_runtime_verification_db,
+    store_seller_connector_credential_db,
+    get_seller_by_connector_key_digest_db,
+    claim_seller_connector_task_db,
+    complete_seller_connector_task_db,
+    enqueue_seller_connector_task_db,
     list_sellers_db,
     authenticate_seller_api_key_db,
     approve_seller_db,
@@ -7923,6 +7928,16 @@ class SellerRuntimeVerificationRequest(BaseModel):
     runtime_url: str = Field(min_length=12, max_length=500)
 
 
+class SellerConnectorResultRequest(BaseModel):
+    lease_token: str = Field(min_length=32, max_length=256)
+    result: dict
+
+
+class SellerConnectorCanaryRequest(BaseModel):
+    seller_id: str = Field(min_length=8, max_length=120)
+    request: str = Field(default="Return a bounded connector canary result.", min_length=1, max_length=1000)
+
+
 def is_reserved_iat_runtime_host(hostname: str | None) -> bool:
     host = str(hostname or "").lower().rstrip(".")
     return host in {"iat-protocol-latest.onrender.com", "iatprotocol.com", "www.iatprotocol.com"} or host.endswith(".iatprotocol.com")
@@ -8159,6 +8174,74 @@ def seller_runtime_verification_confirm(
     token = str(document.get("iat_seller_verification") or "")
     digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
     return confirm_seller_runtime_verification_db(seller.get("seller_id"), digest)
+
+
+@app.post("/seller/connector/credentials/rotate")
+def seller_connector_credential_rotate(
+    x_seller_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    seller = get_authenticated_seller_from_credentials(x_seller_api_key, authorization)
+    if not seller:
+        return {"status": "error", "message": "seller_auth_required"}
+    if int(seller.get("email_verified", 0) or 0) != 1 or int(seller.get("wallet_verified", 0) or 0) != 1:
+        return {"status": "error", "message": "email_and_wallet_evidence_required"}
+    connector_key = "isc_" + secrets.token_urlsafe(32)
+    digest = hashlib.sha256(connector_key.encode("utf-8")).hexdigest()
+    stored = store_seller_connector_credential_db(seller.get("seller_id"), digest)
+    return {**stored, "connector_key": connector_key, "message": "save_once_rotation_revokes_previous_key"}
+
+
+def authenticated_connector_seller(connector_key: str | None):
+    value = str(connector_key or "")
+    if not value.startswith("isc_") or len(value) > 128:
+        return None
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return get_seller_by_connector_key_digest_db(digest)
+
+
+@app.post("/seller/connector/tasks/claim")
+def seller_connector_task_claim(x_iat_connector_key: str | None = Header(default=None)):
+    seller = authenticated_connector_seller(x_iat_connector_key)
+    if not seller:
+        raise HTTPException(status_code=401, detail="connector_auth_required")
+    lease_token = "isl_" + secrets.token_urlsafe(32)
+    lease_digest = hashlib.sha256(lease_token.encode("utf-8")).hexdigest()
+    result = claim_seller_connector_task_db(seller.get("seller_id"), lease_digest)
+    if result.get("status") != "ok":
+        return result
+    task = result.get("task") or {}
+    task.pop("lease_digest", None)
+    task["lease_token"] = lease_token
+    return {"status": "ok", "task": task}
+
+
+@app.post("/seller/connector/tasks/{task_id}/complete")
+def seller_connector_task_complete(
+    task_id: str,
+    req: SellerConnectorResultRequest,
+    x_iat_connector_key: str | None = Header(default=None),
+):
+    seller = authenticated_connector_seller(x_iat_connector_key)
+    if not seller:
+        raise HTTPException(status_code=401, detail="connector_auth_required")
+    if len(json.dumps(req.result, sort_keys=True)) > 65536:
+        return {"status": "error", "message": "connector_result_too_large"}
+    lease_digest = hashlib.sha256(req.lease_token.encode("utf-8")).hexdigest()
+    return complete_seller_connector_task_db(seller.get("seller_id"), task_id, lease_digest, req.result)
+
+
+@app.post("/admin/seller/connector/canary")
+def admin_seller_connector_canary(
+    req: SellerConnectorCanaryRequest,
+    _admin: bool = Depends(require_admin),
+):
+    if not get_seller_db(req.seller_id):
+        return {"status": "error", "message": "seller_not_found"}
+    return enqueue_seller_connector_task_db(
+        req.seller_id,
+        {"type": "canary", "request": req.request, "buyer_context_included": False},
+    )
 
 
 

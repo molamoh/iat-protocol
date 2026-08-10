@@ -7923,6 +7923,11 @@ class SellerRuntimeVerificationRequest(BaseModel):
     runtime_url: str = Field(min_length=12, max_length=500)
 
 
+def is_reserved_iat_runtime_host(hostname: str | None) -> bool:
+    host = str(hostname or "").lower().rstrip(".")
+    return host in {"iat-protocol-latest.onrender.com", "iatprotocol.com", "www.iatprotocol.com"} or host.endswith(".iatprotocol.com")
+
+
 @app.post("/seller/wallet-auth/challenge")
 def seller_wallet_auth_challenge(req: SellerWalletChallengeRequest):
     try:
@@ -8099,6 +8104,8 @@ def seller_runtime_verification_challenge(
         return {"status": "error", "message": "seller_auth_required"}
     from iat.security.network import UnsafeNetworkTarget, validate_public_runtime_url
     parsed = urlparse(req.runtime_url.strip())
+    if is_reserved_iat_runtime_host(parsed.hostname):
+        return {"status": "error", "message": "shared_iat_runtime_cannot_prove_seller_control"}
     verification_url = f"{parsed.scheme}://{parsed.netloc}/.well-known/iat-seller-verification.json"
     try:
         validate_public_runtime_url(verification_url)
@@ -8133,6 +8140,8 @@ def seller_runtime_verification_confirm(
     verification_url = str(seller.get("runtime_verification_url") or "")
     if not verification_url or not seller.get("runtime_verification_token_digest"):
         return {"status": "error", "message": "runtime_verification_challenge_required"}
+    if is_reserved_iat_runtime_host(urlparse(verification_url).hostname):
+        return {"status": "error", "message": "shared_iat_runtime_cannot_prove_seller_control"}
     from iat.security.network import UnsafeNetworkTarget, validate_public_runtime_url
     try:
         validate_public_runtime_url(verification_url)

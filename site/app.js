@@ -340,7 +340,10 @@ function renderSellerGovernanceState(dashboard) {
     button.disabled = true;
     try {
       const result = await sandboxRequest("/seller/runtime-verification/challenge", { method: "POST", headers: { "Content-Type": "application/json", ...sellerSessionHeaders }, body: JSON.stringify({ runtime_url: runtimeUrl }) });
-      if (result.status !== "ok") throw new Error(result.message || "runtime_challenge_failed");
+      if (result.status !== "ok") {
+        if (result.message === "shared_iat_runtime_cannot_prove_seller_control") throw new Error("Use a runtime domain controlled by this seller, not the shared IAT demo runtime");
+        throw new Error(result.message || "runtime_challenge_failed");
+      }
       instructions.textContent = `Publish this JSON at ${result.verification_url}:\n${JSON.stringify(result.document, null, 2)}`;
       instructions.hidden = false;
       confirm.hidden = false;

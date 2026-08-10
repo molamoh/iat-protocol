@@ -268,6 +268,8 @@ function renderSellerGovernanceState(dashboard) {
   const actions = Array.isArray(dashboard.next_required_actions) ? dashboard.next_required_actions : [];
   const runtime = dashboard.runtime || {};
   const seller = dashboard.seller || {};
+  const recent = dashboard.recent || {};
+  const agents = Array.isArray(recent.agents) ? recent.agents : [];
   const autonomous = Array.isArray(dashboard.autonomous_governance) ? dashboard.autonomous_governance : [];
   const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[char]));
   const checks = actions.length
@@ -309,9 +311,11 @@ function renderSellerGovernanceState(dashboard) {
     : "<li><strong>Autonomous review</strong><span>No factory review recorded</span></li>";
   const emailVerified = Number(seller.email_verified || 0) === 1;
   const walletVerified = Number(seller.wallet_verified || 0) === 1;
+  const reachableRuntimes = agents.filter((agent) => ["validated", "healthy", "active"].includes(String(agent.runtime_validation_status || "").toLowerCase()));
   const emailAction = emailVerified ? "verified" : `<button type="button" class="button secondary seller-verify-email">Send verification email</button>`;
   const walletEvidence = walletVerified ? "verified by signature" : "sign in with the registered wallet to verify";
-  panel.innerHTML = `<h3>Governance review</h3><p>Protocol approval remains independent from seller self-management.</p><div class="seller-governance-runtime"><span>Runtime state</span><strong>${escapeHtml(runtime.runtime_state || "pending review")}</strong></div><ul>${checks}<li><strong>Seller status</strong><span>${escapeHtml(`${seller.seller_status || "pending"} / ${seller.verification_status || "unverified"}`)}</span></li><li><strong>Current email evidence</strong><span>${emailAction}</span></li><li><strong>Current wallet evidence</strong><span>${escapeHtml(walletEvidence)}</span></li>${autonomousRows}</ul>${autonomous.some((item) => item.status === "completed") ? '<p class="seller-console-note">Historical reviews preserve the evidence and policy snapshot used at decision time. Current evidence is shown separately above.</p>' : ""}`;
+  const runtimeEvidence = reachableRuntimes.length ? `${reachableRuntimes.length} endpoint(s) reachable; domain control not yet verified` : "no reachable runtime registered";
+  panel.innerHTML = `<h3>Governance review</h3><p>Protocol approval remains independent from seller self-management.</p><div class="seller-governance-runtime"><span>Runtime state</span><strong>${escapeHtml(runtime.runtime_state || "pending review")}</strong></div><ul>${checks}<li><strong>Seller status</strong><span>${escapeHtml(`${seller.seller_status || "pending"} / ${seller.verification_status || "unverified"}`)}</span></li><li><strong>Current email evidence</strong><span>${emailAction}</span></li><li><strong>Current wallet evidence</strong><span>${escapeHtml(walletEvidence)}</span></li><li><strong>Current runtime evidence</strong><span>${escapeHtml(runtimeEvidence)}</span></li>${autonomousRows}</ul>${autonomous.some((item) => item.status === "completed") ? '<p class="seller-console-note">Historical reviews preserve the evidence and policy snapshot used at decision time. Current evidence is shown separately above.</p>' : ""}`;
   panel.querySelector(".seller-verify-email")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
     button.disabled = true;
@@ -325,8 +329,6 @@ function renderSellerGovernanceState(dashboard) {
       button.textContent = `Retry: ${error.message}`;
     }
   });
-  const recent = dashboard.recent || {};
-  const agents = Array.isArray(recent.agents) ? recent.agents : [];
   const items = Array.isArray(recent.catalog_items) ? recent.catalog_items : [];
   const requests = Array.isArray(recent.factory_requests) ? recent.factory_requests : [];
   const records = [...agents.map((agent) => `<li>Capability <code>${escapeHtml(agent.seller_agent_id || "unknown")}</code>${agent.seller_agent_status === "disabled" ? "<span>disabled</span>" : `<button type="button" class="button secondary seller-disable-agent" data-agent-id="${escapeHtml(agent.seller_agent_id || "")}">Disable</button>`}</li>`), ...items.map((item) => `<li>Catalog <code>${escapeHtml(item.catalog_item_id || "unknown")}</code>${item.availability_status === "archived" ? "<span>archived</span>" : `<button type="button" class="button secondary seller-archive-catalog" data-catalog-id="${escapeHtml(item.catalog_item_id || "")}">Archive</button>`}</li>`), ...requests.map((item) => `<li>Review <code>${escapeHtml(item.factory_request_id || "unknown")}</code></li>`)];

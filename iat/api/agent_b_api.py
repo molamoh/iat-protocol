@@ -8465,6 +8465,10 @@ def seller_dashboard(
             autonomous_governance.append({
                 "status": "completed",
                 "factory_request_id": factory_request_id,
+                "factory_reviews": get_seller_agent_factory_reviews_db(
+                    factory_request_id=factory_request_id,
+                    limit=50,
+                ),
                 "review_evaluation": evaluate_seller_agent_factory_reviews_db(
                     factory_request_id=factory_request_id,
                 ),

@@ -274,8 +274,33 @@ function renderSellerGovernanceState(dashboard) {
     ? actions.map((item) => `<li><strong>${escapeHtml(item.type || "review")}</strong><span>${escapeHtml(item.action || item.reason || "pending")}</span></li>`).join("")
     : "<li><strong>Clear</strong><span>No additional governance action reported.</span></li>";
   const autonomousRows = autonomous.length
-    ? autonomous.map((item) => `<li><strong>Autonomous review</strong><span>${escapeHtml(item.status === "error" ? `${item.message}: ${item.error || "unknown"}` : (item.factory_review?.governance_status || item.review_evaluation?.readiness || item.status))}</span></li>`).join("")
-    : "<li><strong>Autonomous review</strong><span>No pending factory review</span></li>";
+    ? autonomous.map((item) => {
+      const factoryReview = item.factory_review || {};
+      const factoryRequest = factoryReview.factory_request || factoryReview;
+      const requestId = item.factory_request_id || factoryRequest.factory_request_id || "unknown";
+      if (item.status === "error") {
+        return `<li><strong>Autonomous review · ${escapeHtml(requestId)}</strong><span>${escapeHtml(`${item.message || "runtime_error"}: ${item.error || item.error_type || "unknown"}`)}</span></li>`;
+      }
+      const reviewStatus = factoryRequest.governance_status || factoryReview.governance_status || item.review_evaluation?.readiness || item.status || "unknown";
+      const storedReviews = Array.isArray(item.factory_reviews?.reviews) ? item.factory_reviews.reviews : [];
+      const missingChecks = new Set();
+      const storedReasons = new Set();
+      storedReviews.forEach((review) => {
+        if (review.review_reason) storedReasons.add(review.review_reason);
+        let metadata = review.metadata || {};
+        if (typeof metadata === "string") {
+          try { metadata = JSON.parse(metadata); } catch (_) { metadata = {}; }
+        }
+        Object.entries(metadata.checks || {}).forEach(([name, passed]) => { if (!passed) missingChecks.add(name); });
+      });
+      const reviewReason = missingChecks.size
+        ? `required evidence missing: ${Array.from(missingChecks).join(", ")}`
+        : storedReasons.size
+          ? Array.from(storedReasons).join(", ")
+          : factoryRequest.rejection_reason || factoryReview.rejection_reason || factoryReview.message || item.review_evaluation?.reason || "no_reason_reported";
+      return `<li><strong>Autonomous review · ${escapeHtml(requestId)}</strong><span>${escapeHtml(`${reviewStatus} · ${reviewReason}`)}</span></li>`;
+    }).join("")
+    : "<li><strong>Autonomous review</strong><span>No factory review recorded</span></li>";
   panel.innerHTML = `<h3>Governance review</h3><p>Protocol approval remains independent from seller self-management.</p><div class="seller-governance-runtime"><span>Runtime state</span><strong>${escapeHtml(runtime.runtime_state || "pending review")}</strong></div><ul>${checks}<li><strong>Seller status</strong><span>${escapeHtml(`${seller.seller_status || "pending"} / ${seller.verification_status || "unverified"}`)}</span></li>${autonomousRows}</ul>`;
   const recent = dashboard.recent || {};
   const agents = Array.isArray(recent.agents) ? recent.agents : [];

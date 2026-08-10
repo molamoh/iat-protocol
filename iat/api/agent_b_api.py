@@ -8445,21 +8445,33 @@ def seller_dashboard(
     pending_factory_requests = list_seller_agent_factory_requests_db(seller_id)
     autonomous_governance = []
     for factory_request in pending_factory_requests:
+        factory_request_id = factory_request.get("factory_request_id")
         if str(factory_request.get("governance_status") or "").lower() in {
             "pending", "pending_factory_reviews", "pending_factory_approval"
         }:
             try:
                 autonomous_governance.append(run_autonomous_seller_factory_governance_db(
-                    factory_request.get("factory_request_id")
+                    factory_request_id
                 ))
             except Exception as exc:
                 autonomous_governance.append({
                     "status": "error",
-                    "factory_request_id": factory_request.get("factory_request_id"),
+                    "factory_request_id": factory_request_id,
                     "message": "autonomous_governance_runtime_error",
                     "error_type": type(exc).__name__,
                     "error": str(exc)[:240],
                 })
+        else:
+            autonomous_governance.append({
+                "status": "completed",
+                "factory_request_id": factory_request_id,
+                "review_evaluation": evaluate_seller_agent_factory_reviews_db(
+                    factory_request_id=factory_request_id,
+                ),
+                "factory_review": factory_request,
+                "seller_status_unchanged": True,
+                "buyer_access": False,
+            })
 
     agents = list_seller_agents_db(seller_id)
     catalog_items = list_seller_catalog_items_db(seller_id)

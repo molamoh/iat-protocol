@@ -8492,6 +8492,30 @@ def seller_dashboard(
     governance_list = governance_events.get("events", []) if isinstance(governance_events, dict) else governance_events
     runtime_risk_list = runtime_risk_events.get("events", [])
 
+    governance_decisions = {}
+    for event in governance_list or []:
+        metadata = event.get("metadata") or {}
+        if isinstance(metadata, str):
+            try:
+                metadata = json.loads(metadata)
+            except (TypeError, ValueError):
+                metadata = {}
+        factory_request_id = metadata.get("factory_request_id")
+        if factory_request_id and factory_request_id not in governance_decisions:
+            governance_decisions[factory_request_id] = {
+                "event_type": event.get("event_type"),
+                "reason": event.get("reason"),
+                "risk_score": metadata.get("risk_score"),
+                "trust_score": metadata.get("trust_score"),
+                "risk_reasons": metadata.get("risk_reasons") or [],
+                "trust_reasons": metadata.get("trust_reasons") or [],
+                "recommendation": metadata.get("recommendation"),
+            }
+    for result in autonomous_governance:
+        result["governance_decision"] = governance_decisions.get(
+            result.get("factory_request_id")
+        )
+
     seller_orders_list = list((list_orders_db(seller_id=seller_id) or {}).values())
 
     total_orders = len(seller_orders_list)

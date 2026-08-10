@@ -283,6 +283,8 @@ function renderSellerGovernanceState(dashboard) {
       }
       const reviewStatus = factoryRequest.governance_status || factoryReview.governance_status || item.review_evaluation?.readiness || item.status || "unknown";
       const storedReviews = Array.isArray(item.factory_reviews?.reviews) ? item.factory_reviews.reviews : [];
+      const decision = item.governance_decision || {};
+      const decisionReasons = Array.isArray(decision.risk_reasons) ? decision.risk_reasons.filter(Boolean) : [];
       const missingChecks = new Set();
       const storedReasons = new Set();
       storedReviews.forEach((review) => {
@@ -293,11 +295,13 @@ function renderSellerGovernanceState(dashboard) {
         }
         Object.entries(metadata.checks || {}).forEach(([name, passed]) => { if (!passed) missingChecks.add(name); });
       });
-      const reviewReason = missingChecks.size
-        ? `required evidence missing: ${Array.from(missingChecks).join(", ")}`
-        : storedReasons.size
-          ? Array.from(storedReasons).join(", ")
-          : factoryRequest.rejection_reason || factoryReview.rejection_reason || factoryReview.message || item.review_evaluation?.reason || "no_reason_reported";
+      const reviewReason = decisionReasons.length
+        ? `risk ${decision.risk_score ?? "unknown"}: ${decisionReasons.join(", ")}`
+        : missingChecks.size
+          ? `required evidence missing: ${Array.from(missingChecks).join(", ")}`
+          : storedReasons.size
+            ? Array.from(storedReasons).join(", ")
+            : factoryRequest.rejection_reason || factoryReview.rejection_reason || factoryReview.message || item.review_evaluation?.reason || "no_reason_reported";
       return `<li><strong>Autonomous review · ${escapeHtml(requestId)}</strong><span>${escapeHtml(`${reviewStatus} · ${reviewReason}`)}</span></li>`;
     }).join("")
     : "<li><strong>Autonomous review</strong><span>No factory review recorded</span></li>";

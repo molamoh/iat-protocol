@@ -7898,6 +7898,7 @@ class SellerRegisterRequest(BaseModel):
     website: str | None = Field(default=None, max_length=500)
     support_email: EmailStr | None = None
     webhook_url: str | None = None
+    seller_kind: str = Field(default="ai_agent", pattern="^(ai_agent|human|business)$")
     metadata: dict | None = None
 
 
@@ -7986,6 +7987,7 @@ def seller_register(req: SellerRegisterRequest):
     metadata = req.metadata or {}
 
     metadata.update({
+        "seller_kind": req.seller_kind,
         "organization_name": req.organization_name,
         "website": req.website,
         "support_email": str(req.support_email).lower() if req.support_email else None,

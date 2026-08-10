@@ -9265,6 +9265,8 @@ def run_seller_agent_factory_review_db(factory_request_id):
 
     seller_status = str(seller.get("seller_status") or "pending").lower()
     seller_verification_status = str(seller.get("verification_status") or "unverified").lower()
+    seller_metadata = _safe_json_loads(seller.get("metadata"), {})
+    seller_kind = str(seller_metadata.get("seller_kind") or "ai_agent").lower()
     catalog_verification_status = str(catalog_item.get("verification_status") or "unverified").lower()
     catalog_availability_status = str(catalog_item.get("availability_status") or "draft").lower()
 
@@ -9304,19 +9306,22 @@ def run_seller_agent_factory_review_db(factory_request_id):
         risk_score += 5
         risk_reasons.append("email_not_verified")
 
-    if str(seller.get("kyc_status") or "not_provided").lower() in ["verified", "approved"]:
-        trust_score += 10
-        trust_reasons.append("kyc_verified")
-    else:
-        risk_score += 5
-        risk_reasons.append("kyc_not_verified")
+    if seller_kind != "ai_agent":
+        if str(seller.get("kyc_status") or "not_provided").lower() in ["verified", "approved"]:
+            trust_score += 10
+            trust_reasons.append("kyc_verified")
+        else:
+            risk_score += 5
+            risk_reasons.append("kyc_not_verified")
 
-    if str(seller.get("business_verification_status") or "not_provided").lower() in ["verified", "approved"]:
-        trust_score += 10
-        trust_reasons.append("business_verified")
+        if str(seller.get("business_verification_status") or "not_provided").lower() in ["verified", "approved"]:
+            trust_score += 10
+            trust_reasons.append("business_verified")
+        else:
+            risk_score += 5
+            risk_reasons.append("business_not_verified")
     else:
-        risk_score += 5
-        risk_reasons.append("business_not_verified")
+        trust_reasons.append("human_kyc_not_applicable_to_ai_agent")
 
     if str(seller.get("tax_verification_status") or "not_provided").lower() in ["verified", "approved"]:
         trust_score += 5

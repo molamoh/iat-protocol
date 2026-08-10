@@ -417,6 +417,7 @@ async function authenticateSellerWallet() {
 sellerRegisterSubmit.addEventListener("click", async () => {
   const payload = {
     seller_name: sellerRegisterName.value.trim(),
+    seller_kind: "ai_agent",
     wallet: sellerRegisterWallet.value.trim(),
     email: sellerRegisterEmail.value.trim(),
     website: sellerRegisterWebsite.value.trim() || null,

@@ -7736,6 +7736,9 @@ def init_sellers_table():
     seller_columns = {
         "email_verified": "INTEGER DEFAULT 0",
         "email_verified_at": "INTEGER",
+        "email_verification_token_digest": "TEXT",
+        "email_verification_expires_at": "INTEGER",
+        "email_verification_sent_at": "INTEGER",
         "api_key_created_at": "INTEGER",
         "last_contact_at": "INTEGER",
         "onboarding_completed": "INTEGER DEFAULT 0",
@@ -17397,6 +17400,63 @@ def get_seller_db(seller_id):
     release_conn(conn)
 
     return dict(row) if row else None
+
+
+def start_seller_email_verification_db(seller_id, token_digest, expires_at, now=None):
+    current_time = int(time.time()) if now is None else int(now)
+    seller = get_seller_db(seller_id)
+    if not seller:
+        return {"status": "error", "message": "seller_not_found"}
+    if int(seller.get("email_verified", 0) or 0) == 1:
+        return {"status": "already_verified", "seller_id": seller_id}
+    last_sent = int(seller.get("email_verification_sent_at", 0) or 0)
+    if last_sent and current_time - last_sent < 60:
+        return {"status": "error", "message": "email_verification_rate_limited", "retry_after": 60 - (current_time - last_sent)}
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    cur.execute(f"""
+    UPDATE sellers
+    SET email_verification_token_digest = {p},
+        email_verification_expires_at = {p},
+        email_verification_sent_at = {p},
+        updated_at = {p}
+    WHERE seller_id = {p}
+    """, (token_digest, int(expires_at), current_time, current_time, seller_id))
+    conn.commit()
+    release_conn(conn)
+    return {"status": "ok", "seller_id": seller_id, "email": seller.get("email"), "expires_at": int(expires_at)}
+
+
+def confirm_seller_email_verification_db(token_digest, now=None):
+    current_time = int(time.time()) if now is None else int(now)
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    cur.execute(f"""
+    SELECT seller_id FROM sellers
+    WHERE email_verification_token_digest = {p}
+      AND email_verification_expires_at >= {p}
+      AND email_verified = 0
+    LIMIT 1
+    """, (token_digest, current_time))
+    row = cur.fetchone()
+    if not row:
+        release_conn(conn)
+        return {"status": "error", "message": "email_verification_token_invalid_or_expired"}
+    seller_id = row["seller_id"]
+    cur.execute(f"""
+    UPDATE sellers
+    SET email_verified = 1,
+        email_verified_at = {p},
+        email_verification_token_digest = NULL,
+        email_verification_expires_at = NULL,
+        updated_at = {p}
+    WHERE seller_id = {p}
+    """, (current_time, current_time, seller_id))
+    conn.commit()
+    release_conn(conn)
+    return {"status": "ok", "seller_id": seller_id, "email_verified": True}
 
 
 

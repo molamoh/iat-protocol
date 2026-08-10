@@ -305,7 +305,22 @@ function renderSellerGovernanceState(dashboard) {
       return `<li><strong>Autonomous review · ${escapeHtml(requestId)}</strong><span>${escapeHtml(`${reviewStatus} · ${reviewReason}`)}</span></li>`;
     }).join("")
     : "<li><strong>Autonomous review</strong><span>No factory review recorded</span></li>";
-  panel.innerHTML = `<h3>Governance review</h3><p>Protocol approval remains independent from seller self-management.</p><div class="seller-governance-runtime"><span>Runtime state</span><strong>${escapeHtml(runtime.runtime_state || "pending review")}</strong></div><ul>${checks}<li><strong>Seller status</strong><span>${escapeHtml(`${seller.seller_status || "pending"} / ${seller.verification_status || "unverified"}`)}</span></li>${autonomousRows}</ul>`;
+  const emailVerified = Number(seller.email_verified || 0) === 1;
+  const emailAction = emailVerified ? "verified" : `<button type="button" class="button secondary seller-verify-email">Send verification email</button>`;
+  panel.innerHTML = `<h3>Governance review</h3><p>Protocol approval remains independent from seller self-management.</p><div class="seller-governance-runtime"><span>Runtime state</span><strong>${escapeHtml(runtime.runtime_state || "pending review")}</strong></div><ul>${checks}<li><strong>Seller status</strong><span>${escapeHtml(`${seller.seller_status || "pending"} / ${seller.verification_status || "unverified"}`)}</span></li><li><strong>Email</strong><span>${emailAction}</span></li>${autonomousRows}</ul>`;
+  panel.querySelector(".seller-verify-email")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = "Sending…";
+    try {
+      const result = await sandboxRequest("/seller/email-verification/request", { method: "POST", headers: sellerSessionHeaders });
+      if (result.status !== "ok" && result.status !== "already_verified") throw new Error(result.message || "email_verification_failed");
+      button.textContent = result.status === "already_verified" ? "Verified" : "Check your inbox";
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = `Retry: ${error.message}`;
+    }
+  });
   const recent = dashboard.recent || {};
   const agents = Array.isArray(recent.agents) ? recent.agents : [];
   const items = Array.isArray(recent.catalog_items) ? recent.catalog_items : [];

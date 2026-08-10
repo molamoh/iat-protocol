@@ -913,6 +913,19 @@ def _send_smtp(message: EmailMessage) -> None:
         raise DeliveryReceiptError(f"delivery_smtp_{type(exc).__name__.lower()}") from exc
 
 
+def send_transactional_email(*, recipient: str, subject: str, text: str, campaign: str) -> None:
+    """Send a bounded transactional message through the configured SMTP service."""
+    destination = validate_destination("email", recipient)
+    if not destination:
+        raise DeliveryReceiptError("delivery_email_destination_invalid")
+    message = EmailMessage()
+    message["To"] = destination
+    message["Subject"] = subject
+    message["X-Mailjet-Campaign"] = campaign
+    message.set_content(text)
+    _send_smtp(message)
+
+
 def send_email_transport_canary(
     *, now: int | None = None, send: Any = _send_smtp
 ) -> dict[str, Any]:

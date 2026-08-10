@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import secrets
 import time
@@ -9,6 +10,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 from fastapi import FastAPI, Header, Body, Request, Depends, HTTPException
+from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field
 from solders.pubkey import Pubkey
@@ -60,6 +62,7 @@ from iat.checkout_receipt import (
     DeliveryReceiptError,
     create_native_inbox_canary,
     send_email_transport_canary,
+    send_transactional_email,
 )
 from iat.config import IAT_TOKEN_ADDRESS
 from iat.buyer_identity import (
@@ -121,6 +124,8 @@ from iat.api.db import (
     get_seller_by_email_db,
     get_seller_by_api_key_db,
     get_seller_db,
+    start_seller_email_verification_db,
+    confirm_seller_email_verification_db,
     list_sellers_db,
     authenticate_seller_api_key_db,
     approve_seller_db,
@@ -8027,6 +8032,49 @@ def seller_register(req: SellerRegisterRequest):
         "api_key": result.get("api_key"),
         "message": "seller_registered_pending_protocol_review",
     }
+
+
+@app.post("/seller/email-verification/request")
+def seller_request_email_verification(
+    x_seller_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    seller = get_authenticated_seller_from_credentials(x_seller_api_key, authorization)
+    if not seller:
+        return {"status": "error", "message": "seller_auth_required"}
+    token = secrets.token_urlsafe(32)
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    expires_at = int(time.time()) + 1800
+    issued = start_seller_email_verification_db(seller.get("seller_id"), digest, expires_at)
+    if issued.get("status") != "ok":
+        return issued
+    api_origin = os.getenv("IAT_PUBLIC_API_ORIGIN", "https://iat-protocol-latest.onrender.com").rstrip("/")
+    confirmation_url = f"{api_origin}/seller/email-verification/confirm?token={token}"
+    try:
+        send_transactional_email(
+            recipient=issued.get("email"),
+            subject="Verify your IAT seller email",
+            campaign=f"iat_seller_email_verify_{seller.get('seller_id')}",
+            text=(
+                "Confirm the email address for your IAT seller agent.\n\n"
+                f"{confirmation_url}\n\n"
+                "This link expires in 30 minutes. It verifies only the email address and does not approve the seller."
+            ),
+        )
+    except DeliveryReceiptError as exc:
+        return {"status": "error", "message": str(exc)}
+    return {"status": "ok", "message": "email_verification_sent", "expires_at": expires_at}
+
+
+@app.get("/seller/email-verification/confirm")
+def seller_confirm_email_verification(token: str):
+    site_origin = os.getenv("IAT_PUBLIC_SITE_ORIGIN", "https://iatprotocol.com").rstrip("/")
+    if len(token) < 32 or len(token) > 256:
+        return RedirectResponse(f"{site_origin}/sellers/?email_verification=invalid", status_code=303)
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    result = confirm_seller_email_verification_db(digest)
+    outcome = "success" if result.get("status") == "ok" else "invalid"
+    return RedirectResponse(f"{site_origin}/sellers/?email_verification={outcome}", status_code=303)
 
 
 

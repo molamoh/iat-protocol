@@ -7739,6 +7739,8 @@ def init_sellers_table():
         "email_verification_token_digest": "TEXT",
         "email_verification_expires_at": "INTEGER",
         "email_verification_sent_at": "INTEGER",
+        "wallet_verified": "INTEGER DEFAULT 0",
+        "wallet_verified_at": "INTEGER",
         "api_key_created_at": "INTEGER",
         "last_contact_at": "INTEGER",
         "onboarding_completed": "INTEGER DEFAULT 0",
@@ -9308,6 +9310,13 @@ def run_seller_agent_factory_review_db(factory_request_id):
     else:
         risk_score += 5
         risk_reasons.append("email_not_verified")
+
+    if int(seller.get("wallet_verified", 0) or 0) == 1:
+        trust_score += 10
+        trust_reasons.append("wallet_signature_verified")
+    else:
+        risk_score += 10
+        risk_reasons.append("wallet_signature_not_verified")
 
     if seller_kind != "ai_agent":
         if str(seller.get("kyc_status") or "not_provided").lower() in ["verified", "approved"]:
@@ -17457,6 +17466,26 @@ def confirm_seller_email_verification_db(token_digest, now=None):
     conn.commit()
     release_conn(conn)
     return {"status": "ok", "seller_id": seller_id, "email_verified": True}
+
+
+def mark_seller_wallet_verified_db(seller_id, now=None):
+    current_time = int(time.time()) if now is None else int(now)
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    cur.execute(f"""
+    UPDATE sellers
+    SET wallet_verified = 1,
+        wallet_verified_at = COALESCE(wallet_verified_at, {p}),
+        updated_at = {p}
+    WHERE seller_id = {p}
+    """, (current_time, current_time, seller_id))
+    updated = cur.rowcount
+    conn.commit()
+    release_conn(conn)
+    if not updated:
+        return {"status": "error", "message": "seller_not_found"}
+    return {"status": "ok", "seller_id": seller_id, "wallet_verified": True}
 
 
 

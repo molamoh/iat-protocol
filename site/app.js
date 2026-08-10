@@ -308,8 +308,10 @@ function renderSellerGovernanceState(dashboard) {
     }).join("")
     : "<li><strong>Autonomous review</strong><span>No factory review recorded</span></li>";
   const emailVerified = Number(seller.email_verified || 0) === 1;
+  const walletVerified = Number(seller.wallet_verified || 0) === 1;
   const emailAction = emailVerified ? "verified" : `<button type="button" class="button secondary seller-verify-email">Send verification email</button>`;
-  panel.innerHTML = `<h3>Governance review</h3><p>Protocol approval remains independent from seller self-management.</p><div class="seller-governance-runtime"><span>Runtime state</span><strong>${escapeHtml(runtime.runtime_state || "pending review")}</strong></div><ul>${checks}<li><strong>Seller status</strong><span>${escapeHtml(`${seller.seller_status || "pending"} / ${seller.verification_status || "unverified"}`)}</span></li><li><strong>Current email evidence</strong><span>${emailAction}</span></li>${autonomousRows}</ul>${autonomous.some((item) => item.status === "completed") ? '<p class="seller-console-note">Historical reviews preserve the evidence and policy snapshot used at decision time. Current evidence is shown separately above.</p>' : ""}`;
+  const walletEvidence = walletVerified ? "verified by signature" : "sign in with the registered wallet to verify";
+  panel.innerHTML = `<h3>Governance review</h3><p>Protocol approval remains independent from seller self-management.</p><div class="seller-governance-runtime"><span>Runtime state</span><strong>${escapeHtml(runtime.runtime_state || "pending review")}</strong></div><ul>${checks}<li><strong>Seller status</strong><span>${escapeHtml(`${seller.seller_status || "pending"} / ${seller.verification_status || "unverified"}`)}</span></li><li><strong>Current email evidence</strong><span>${emailAction}</span></li><li><strong>Current wallet evidence</strong><span>${escapeHtml(walletEvidence)}</span></li>${autonomousRows}</ul>${autonomous.some((item) => item.status === "completed") ? '<p class="seller-console-note">Historical reviews preserve the evidence and policy snapshot used at decision time. Current evidence is shown separately above.</p>' : ""}`;
   panel.querySelector(".seller-verify-email")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
     button.disabled = true;

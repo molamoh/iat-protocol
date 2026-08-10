@@ -126,6 +126,7 @@ from iat.api.db import (
     get_seller_db,
     start_seller_email_verification_db,
     confirm_seller_email_verification_db,
+    mark_seller_wallet_verified_db,
     list_sellers_db,
     authenticate_seller_api_key_db,
     approve_seller_db,
@@ -7940,6 +7941,9 @@ def seller_wallet_auth_session(req: SellerWalletSessionRequest):
         raise HTTPException(status_code=404, detail="seller_wallet_not_registered")
     if str(seller.get("seller_status") or "").lower() == "banned":
         raise HTTPException(status_code=403, detail="seller_banned")
+    wallet_evidence = mark_seller_wallet_verified_db(seller.get("seller_id"))
+    if wallet_evidence.get("status") != "ok":
+        raise HTTPException(status_code=500, detail="seller_wallet_evidence_not_persisted")
     return {
         "status": "seller_wallet_session_created",
         "access_token": session["access_token"],
@@ -7950,6 +7954,7 @@ def seller_wallet_auth_session(req: SellerWalletSessionRequest):
             "seller_name": seller.get("seller_name"),
             "seller_status": seller.get("seller_status"),
             "verification_status": seller.get("verification_status"),
+            "wallet_verified": True,
         },
     }
 

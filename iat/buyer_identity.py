@@ -87,6 +87,9 @@ def init_wallet_identity_db() -> None:
             "ON wallet_auth_sessions(wallet, expires_at)"
         )
         conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         release_conn(conn)
 

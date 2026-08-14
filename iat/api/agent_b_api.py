@@ -69,6 +69,7 @@ from iat.buyer_identity import (
     WalletIdentityError,
     authenticate_wallet_session,
     create_wallet_challenge,
+    init_wallet_identity_db,
     exchange_wallet_signature,
 )
 
@@ -8094,6 +8095,17 @@ def seller_wallet_auth_challenge(req: SellerWalletChallengeRequest):
         )
     except WalletIdentityError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        print(
+            "[IAT_WALLET_CHALLENGE_STORAGE_ERROR]",
+            type(exc).__name__,
+            str(exc)[:500],
+            flush=True,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail=f"wallet_identity_storage_unavailable:{type(exc).__name__}",
+        ) from exc
     return {"status": "seller_wallet_challenge_issued", **challenge}
 
 
@@ -12621,6 +12633,15 @@ def runtime_heartbeat_governance_loop():
 
 def initialize_application():
     init_db()
+    try:
+        init_wallet_identity_db()
+    except Exception as exc:
+        print(
+            "[IAT_WALLET_IDENTITY_INIT_ERROR]",
+            type(exc).__name__,
+            str(exc)[:500],
+            flush=True,
+        )
     init_checkout_db()
     from iat.goia.repository import init_goia_tables
 

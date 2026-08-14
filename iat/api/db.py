@@ -7817,6 +7817,7 @@ def init_seller_connector_tables():
     CREATE TABLE IF NOT EXISTS seller_hosted_connector_configs (
         seller_id TEXT PRIMARY KEY,
         agent_url TEXT NOT NULL,
+        execution_mode TEXT NOT NULL DEFAULT 'iat_hosted',
         agent_secret_encrypted TEXT,
         status TEXT NOT NULL DEFAULT 'active',
         created_at INTEGER NOT NULL,
@@ -7825,6 +7826,13 @@ def init_seller_connector_tables():
         last_error TEXT
     )
     """)
+    try:
+        if USE_POSTGRES:
+            cur.execute("ALTER TABLE seller_hosted_connector_configs ADD COLUMN IF NOT EXISTS execution_mode TEXT NOT NULL DEFAULT 'iat_hosted'")
+        else:
+            cur.execute("ALTER TABLE seller_hosted_connector_configs ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'iat_hosted'")
+    except Exception:
+        pass
     for column, definition in {
         "verification_payload": "TEXT",
         "execution_session_id": "TEXT",
@@ -7897,25 +7905,26 @@ def seller_connector_available_db(seller_id):
     return available
 
 
-def store_seller_hosted_connector_config_db(seller_id, agent_url, encrypted_secret=None, now=None):
+def store_seller_hosted_connector_config_db(seller_id, agent_url="", encrypted_secret=None, execution_mode="iat_hosted", now=None):
     current_time = int(time.time()) if now is None else int(now)
     conn = get_conn()
     cur = conn.cursor()
     p = qmark()
     cur.execute(f"""
     INSERT INTO seller_hosted_connector_configs (
-        seller_id,agent_url,agent_secret_encrypted,status,created_at,updated_at,last_success_at,last_error
-    ) VALUES ({p},{p},{p},'active',{p},{p},NULL,NULL)
+        seller_id,agent_url,agent_secret_encrypted,execution_mode,status,created_at,updated_at,last_success_at,last_error
+    ) VALUES ({p},{p},{p},{p},'active',{p},{p},NULL,NULL)
     ON CONFLICT(seller_id) DO UPDATE SET
         agent_url=excluded.agent_url,
         agent_secret_encrypted=excluded.agent_secret_encrypted,
+        execution_mode=excluded.execution_mode,
         status='active',
         updated_at=excluded.updated_at,
         last_error=NULL
-    """, (seller_id, agent_url, encrypted_secret, current_time, current_time))
+    """, (seller_id, agent_url, encrypted_secret, execution_mode, current_time, current_time))
     conn.commit()
     release_conn(conn)
-    return {"status": "ok", "seller_id": seller_id, "agent_url": agent_url, "hosted_connector_active": True}
+    return {"status": "ok", "seller_id": seller_id, "agent_url": agent_url, "execution_mode": execution_mode, "hosted_connector_active": True}
 
 
 def get_seller_hosted_connector_config_db(seller_id):

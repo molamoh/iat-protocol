@@ -8069,7 +8069,8 @@ class SellerConnectorCanaryRequest(BaseModel):
 
 
 class SellerHostedConnectorRequest(BaseModel):
-    agent_url: str = Field(min_length=12, max_length=500)
+    execution_mode: str = Field(default="iat_hosted", pattern="^(iat_hosted|external_endpoint)$")
+    agent_url: str | None = Field(default=None, max_length=500)
     agent_secret: str | None = Field(default=None, max_length=2048)
 
 
@@ -8342,27 +8343,32 @@ def seller_hosted_connector_configure(
     from iat.security.connector_vault import encrypt_connector_secret
     from iat.security.network import UnsafeNetworkTarget, validate_public_runtime_url
 
-    agent_url = req.agent_url.strip()
-    if is_reserved_iat_runtime_host(urlparse(agent_url).hostname):
-        return {"status": "error", "message": "shared_iat_runtime_not_allowed_for_hosted_connector"}
-    try:
-        validate_public_runtime_url(agent_url)
-        encrypted_secret = encrypt_connector_secret(
-            seller.get("seller_id"), req.agent_secret
-        )
-    except UnsafeNetworkTarget as exc:
-        return {"status": "error", "message": str(exc)}
-    except RuntimeError as exc:
-        return {"status": "error", "message": str(exc)}
+    execution_mode = req.execution_mode
+    agent_url = str(req.agent_url or "").strip()
+    encrypted_secret = None
+    if execution_mode == "external_endpoint":
+        if not agent_url:
+            return {"status": "error", "message": "agent_url_required_for_external_endpoint"}
+        if is_reserved_iat_runtime_host(urlparse(agent_url).hostname):
+            return {"status": "error", "message": "shared_iat_runtime_not_allowed_for_hosted_connector"}
+        try:
+            validate_public_runtime_url(agent_url)
+            encrypted_secret = encrypt_connector_secret(
+                seller.get("seller_id"), req.agent_secret
+            )
+        except UnsafeNetworkTarget as exc:
+            return {"status": "error", "message": str(exc)}
+        except RuntimeError as exc:
+            return {"status": "error", "message": str(exc)}
 
     stored = store_seller_hosted_connector_config_db(
-        seller.get("seller_id"), agent_url, encrypted_secret
+        seller.get("seller_id"), agent_url, encrypted_secret, execution_mode
     )
     return {
         **stored,
         "secret_stored": bool(req.agent_secret),
         "secret_returned": False,
-        "execution_mode": "iat_hosted_connector",
+        "execution_mode": execution_mode,
     }
 
 
@@ -8381,6 +8387,7 @@ def seller_hosted_connector_status(
         "status": "ok",
         "hosted_connector_active": config.get("status") == "active",
         "agent_url": config.get("agent_url"),
+        "execution_mode": config.get("execution_mode") or "iat_hosted",
         "secret_configured": bool(config.get("agent_secret_encrypted")),
         "last_success_at": config.get("last_success_at"),
         "last_error": config.get("last_error"),
@@ -8400,6 +8407,26 @@ _hosted_connector_thread = None
 
 
 def _execute_hosted_connector_task(config, task):
+    execution_mode = str(config.get("execution_mode") or "iat_hosted")
+    request_payload = task.get("request_payload") or {}
+    if execution_mode == "iat_hosted":
+        if request_payload.get("type") == "canary":
+            return {
+                "status": "ok",
+                "execution_mode": "iat_hosted",
+                "canary": True,
+                "seller_id": config.get("seller_id"),
+            }
+        seller_agent = get_seller_agent_db(task.get("seller_agent_id"))
+        if not seller_agent or str(seller_agent.get("seller_id") or "") != str(config.get("seller_id") or ""):
+            raise ValueError("iat_hosted_seller_agent_unavailable")
+        from iat.seller_runtime.runtime import run_seller_runtime
+
+        return run_seller_runtime(
+            {**seller_agent, "runtime_adapter": "internal"},
+            request_payload,
+        )
+
     from iat.security.connector_vault import decrypt_connector_secret
     from iat.security.network import validate_public_runtime_url
 
@@ -8414,7 +8441,7 @@ def _execute_hosted_connector_task(config, task):
         headers["Authorization"] = f"Bearer {secret}"
     response = requests.post(
         agent_url,
-        json=task.get("request_payload") or {},
+        json=request_payload,
         headers=headers,
         timeout=(5, 20),
         allow_redirects=False,

@@ -303,6 +303,7 @@ def test_hosted_connector_calls_agent_without_platform_credentials(monkeypatch):
     result = agent_b_api._execute_hosted_connector_task(
         {
             "seller_id": "seller_1",
+            "execution_mode": "external_endpoint",
             "agent_url": "https://agent.example/execute",
             "agent_secret_encrypted": encrypted,
         },
@@ -325,11 +326,13 @@ def test_hosted_connector_configuration_never_returns_secret(monkeypatch):
     monkeypatch.setattr(
         agent_b_api,
         "store_seller_hosted_connector_config_db",
-        lambda seller_id, agent_url, encrypted_secret: stored.update(
-            seller_id=seller_id, agent_url=agent_url, encrypted_secret=encrypted_secret
+        lambda seller_id, agent_url, encrypted_secret, execution_mode: stored.update(
+            seller_id=seller_id, agent_url=agent_url, encrypted_secret=encrypted_secret,
+            execution_mode=execution_mode,
         ) or {"status": "ok", "seller_id": seller_id, "agent_url": agent_url},
     )
     request = agent_b_api.SellerHostedConnectorRequest(
+        execution_mode="external_endpoint",
         agent_url="https://agent.example/execute", agent_secret="agent-token"
     )
     result = agent_b_api.seller_hosted_connector_configure(
@@ -339,3 +342,48 @@ def test_hosted_connector_configuration_never_returns_secret(monkeypatch):
     assert result["secret_returned"] is False
     assert "agent-token" not in str(result)
     assert stored["encrypted_secret"] != "agent-token"
+
+
+def test_iat_hosted_runtime_requires_no_url_or_secret(monkeypatch):
+    monkeypatch.setattr(agent_b_api, "get_authenticated_seller_from_credentials", lambda *_args: {
+        "seller_id": "seller_1", "email_verified": 1, "wallet_verified": 1
+    })
+    stored = {}
+    monkeypatch.setattr(
+        agent_b_api,
+        "store_seller_hosted_connector_config_db",
+        lambda seller_id, agent_url, encrypted_secret, execution_mode: stored.update(
+            seller_id=seller_id, agent_url=agent_url, encrypted_secret=encrypted_secret,
+            execution_mode=execution_mode,
+        ) or {"status": "ok", "seller_id": seller_id},
+    )
+    result = agent_b_api.seller_hosted_connector_configure(
+        agent_b_api.SellerHostedConnectorRequest(execution_mode="iat_hosted"),
+        "seller-key",
+        None,
+    )
+    assert result["status"] == "ok"
+    assert stored == {
+        "seller_id": "seller_1",
+        "agent_url": "",
+        "encrypted_secret": None,
+        "execution_mode": "iat_hosted",
+    }
+
+
+def test_iat_hosted_canary_executes_without_network(monkeypatch):
+    monkeypatch.setattr(
+        agent_b_api.requests,
+        "post",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("network not allowed")),
+    )
+    result = agent_b_api._execute_hosted_connector_task(
+        {"seller_id": "seller_1", "execution_mode": "iat_hosted"},
+        {"request_payload": {"type": "canary"}},
+    )
+    assert result == {
+        "status": "ok",
+        "execution_mode": "iat_hosted",
+        "canary": True,
+        "seller_id": "seller_1",
+    }

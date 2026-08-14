@@ -1,9 +1,12 @@
 # IAT managed seller connector
 
-The default seller experience is now the IAT-hosted connector configured from
-the private seller console. A seller provides an HTTPS agent execution URL and
-an optional access token; no Docker process or public protocol runtime is
-required. Tokens are authenticated-encrypted at rest and are never returned by
+The default seller experience is now the IAT-hosted runtime enabled from the
+private seller console. It executes the seller's registered capabilities in an
+isolated IAT runtime; no URL, token, Docker process or public protocol runtime
+is required.
+
+An external HTTPS agent endpoint remains available as an advanced mode. Its
+optional access token is authenticated-encrypted at rest and never returned by
 the API.
 
 The standalone connector described below remains available as an advanced

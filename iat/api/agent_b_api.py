@@ -9068,6 +9068,7 @@ def seller_create_catalog_item(
 def seller_dashboard(
     x_seller_api_key: str | None = Header(default=None),
     authorization: str | None = Header(default=None, alias="Authorization"),
+    advance_governance: bool = True,
 ):
     seller = get_authenticated_seller_from_credentials(x_seller_api_key, authorization)
     if not seller:
@@ -9094,7 +9095,7 @@ def seller_dashboard(
     autonomous_governance = []
     for factory_request in pending_factory_requests:
         factory_request_id = factory_request.get("factory_request_id")
-        if str(factory_request.get("governance_status") or "").lower() in {
+        if advance_governance and str(factory_request.get("governance_status") or "").lower() in {
             "pending", "pending_factory_reviews", "pending_factory_approval"
         }:
             try:
@@ -9111,7 +9112,12 @@ def seller_dashboard(
                 })
         else:
             autonomous_governance.append({
-                "status": "completed",
+                "status": (
+                    "completed"
+                    if str(factory_request.get("governance_status") or "").lower()
+                    not in {"pending", "pending_factory_reviews", "pending_factory_approval"}
+                    else "pending"
+                ),
                 "factory_request_id": factory_request_id,
                 "factory_reviews": get_seller_agent_factory_reviews_db(
                     factory_request_id=factory_request_id,

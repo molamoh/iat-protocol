@@ -556,7 +556,9 @@ function renderSellerGovernanceState(dashboard) {
 
 async function refreshSellerConsole() {
   if (!sellerSessionHeaders) return;
-  const dashboard = await sandboxRequest("/seller/dashboard", { headers: sellerSessionHeaders });
+  // Opening the console must remain a bounded read. Governance is advanced by
+  // the explicit review actions below, not by this dashboard refresh.
+  const dashboard = await sandboxRequest("/seller/dashboard?advance_governance=false", { headers: sellerSessionHeaders });
   const [analyticsResult, payoutsResult] = await Promise.allSettled([
     sandboxRequest("/seller/analytics", { headers: sellerSessionHeaders }),
     sandboxRequest("/seller/payouts", { headers: sellerSessionHeaders }),

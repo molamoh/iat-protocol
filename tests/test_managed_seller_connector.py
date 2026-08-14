@@ -292,6 +292,17 @@ def test_turnkey_catalog_link_requires_unique_service_match():
     assert resolved["catalog_item"]["catalog_item_id"] == "cat_research"
     assert resolved["match"] == "service_type"
     assert ambiguous["message"] == "catalog_link_ambiguous"
+    selected = db.select_verified_catalog_for_capability(
+        capability,
+        catalogs + [{**catalogs[0], "catalog_item_id": "cat_research_2"}],
+        selected_catalog_item_id="cat_research_2",
+    )
+    ineligible = db.select_verified_catalog_for_capability(
+        capability, catalogs, selected_catalog_item_id="cat_code"
+    )
+    assert selected["match"] == "seller_selected_exact_service"
+    assert selected["catalog_item"]["catalog_item_id"] == "cat_research_2"
+    assert ineligible["message"] == "selected_catalog_not_eligible"
 
 
 def test_expired_lease_cannot_complete_and_task_can_be_reclaimed(tmp_path, monkeypatch):

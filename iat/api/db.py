@@ -9669,7 +9669,11 @@ def evaluate_current_seller_capability_evidence(
     }
 
 
-def select_verified_catalog_for_capability(seller_agent, catalog_items):
+def select_verified_catalog_for_capability(
+    seller_agent,
+    catalog_items,
+    selected_catalog_item_id=None,
+):
     verified = [
         item for item in (catalog_items or [])
         if str(item.get("verification_status") or "").lower() in {
@@ -9682,6 +9686,18 @@ def select_verified_catalog_for_capability(seller_agent, catalog_items):
         item for item in verified
         if str(item.get("service_type") or "").strip().lower() == service
     ]
+    if selected_catalog_item_id:
+        selected = [
+            item for item in exact
+            if item.get("catalog_item_id") == selected_catalog_item_id
+        ]
+        if len(selected) == 1:
+            return {
+                "status": "resolved",
+                "catalog_item": selected[0],
+                "match": "seller_selected_exact_service",
+            }
+        return {"status": "blocked", "message": "selected_catalog_not_eligible"}
     if len(exact) == 1:
         return {"status": "resolved", "catalog_item": exact[0], "match": "service_type"}
     if len(exact) > 1:
@@ -9694,7 +9710,11 @@ def select_verified_catalog_for_capability(seller_agent, catalog_items):
     }
 
 
-def run_current_seller_capability_review_db(seller_agent_id, seller_id):
+def run_current_seller_capability_review_db(
+    seller_agent_id,
+    seller_id,
+    selected_catalog_item_id=None,
+):
     seller_agent = get_seller_agent_db(seller_agent_id)
     if not seller_agent:
         return {"status": "error", "message": "seller_agent_not_found"}
@@ -9712,6 +9732,7 @@ def run_current_seller_capability_review_db(seller_agent_id, seller_id):
         catalog_resolution = select_verified_catalog_for_capability(
             seller_agent,
             list_seller_catalog_items_db(seller_id),
+            selected_catalog_item_id=selected_catalog_item_id,
         )
         if catalog_resolution.get("status") != "resolved":
             return {

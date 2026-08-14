@@ -9465,6 +9465,7 @@ def seller_disable_agent(
 @app.post("/seller/agents/{seller_agent_id}/request-review")
 def seller_request_current_capability_review(
     seller_agent_id: str,
+    catalog_item_id: str | None = None,
     x_seller_api_key: str | None = Header(default=None),
     authorization: str | None = Header(default=None, alias="Authorization"),
 ):
@@ -9472,7 +9473,9 @@ def seller_request_current_capability_review(
     if not seller:
         return {"status": "error", "message": "seller_auth_required"}
     return run_current_seller_capability_review_db(
-        seller_agent_id, seller["seller_id"]
+        seller_agent_id,
+        seller["seller_id"],
+        selected_catalog_item_id=catalog_item_id,
     )
 
 

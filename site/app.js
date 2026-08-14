@@ -617,25 +617,44 @@ async function authenticateSellerWallet() {
   const selected = Number(walletSelector.value);
   const wallet = discoveredWallets[selected];
   if (!wallet) throw new Error("Select a detected Wallet Standard-compatible Solana wallet first");
-  const connection = await wallet.features["standard:connect"].connect();
+  let connection;
+  try {
+    connection = await wallet.features["standard:connect"].connect();
+  } catch (error) {
+    throw new Error(`wallet_connect_failed: ${error?.message || "wallet connection rejected"}`);
+  }
   const account = connection?.accounts?.[0] || wallet.accounts?.[0];
   if (!account?.address) throw new Error("The wallet returned no Solana account");
-  const challenge = await apiJson("/seller/wallet-auth/challenge", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ wallet: account.address }),
-  });
-  const signed = await wallet.features["solana:signMessage"].signMessage({
-    account,
-    message: new TextEncoder().encode(challenge.message),
-  });
+  let challenge;
+  try {
+    challenge = await apiJson("/seller/wallet-auth/challenge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ wallet: account.address }),
+    });
+  } catch (error) {
+    throw new Error(`challenge_request_failed: ${error?.message || "network request failed"}`);
+  }
+  let signed;
+  try {
+    signed = await wallet.features["solana:signMessage"].signMessage({
+      account,
+      message: new TextEncoder().encode(challenge.message),
+    });
+  } catch (error) {
+    throw new Error(`wallet_signature_failed: ${error?.message || "signature rejected"}`);
+  }
   const signature = signed?.[0]?.signature;
   if (!signature) throw new Error("The wallet returned no message signature");
-  return apiJson("/seller/wallet-auth/session", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ challenge_id: challenge.challenge_id, signature: base58Encode(signature) }),
-  });
+  try {
+    return await apiJson("/seller/wallet-auth/session", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ challenge_id: challenge.challenge_id, signature: base58Encode(signature) }),
+    });
+  } catch (error) {
+    throw new Error(`session_exchange_failed: ${error?.message || "network request failed"}`);
+  }
 }
 
 sellerRegisterSubmit.addEventListener("click", async () => {
@@ -692,7 +711,11 @@ sellerConsoleOpen.addEventListener("click", async () => {
       if (session?.access_token) sessionStorage.setItem("iat_seller_access_token", session.access_token);
       if (key) sessionStorage.setItem("iat_seller_api_key", key);
     } catch (_) { /* memory-only fallback */ }
-    await refreshSellerConsole();
+    try {
+      await refreshSellerConsole();
+    } catch (error) {
+      throw new Error(`console_data_failed: ${error?.message || "network request failed"}`);
+    }
     sellerConsoleStatus.className = "seller-status success";
     sellerConsoleStatus.textContent = "Seller console ready for this browser session.";
     trackFunnel("seller-console-opened");

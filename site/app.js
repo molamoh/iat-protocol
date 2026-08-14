@@ -556,11 +556,18 @@ function renderSellerGovernanceState(dashboard) {
 
 async function refreshSellerConsole() {
   if (!sellerSessionHeaders) return;
-  const [dashboard, analytics, payouts] = await Promise.all([
-    sandboxRequest("/seller/dashboard", { headers: sellerSessionHeaders }),
+  const dashboard = await sandboxRequest("/seller/dashboard", { headers: sellerSessionHeaders });
+  const [analyticsResult, payoutsResult] = await Promise.allSettled([
     sandboxRequest("/seller/analytics", { headers: sellerSessionHeaders }),
     sandboxRequest("/seller/payouts", { headers: sellerSessionHeaders }),
   ]);
+  if (dashboard.status !== "ok") throw new Error(dashboard.message || "seller_dashboard_unavailable");
+  const analytics = analyticsResult.status === "fulfilled"
+    ? analyticsResult.value
+    : { status: "temporarily unavailable" };
+  const payouts = payoutsResult.status === "fulfilled"
+    ? payoutsResult.value
+    : { status: "temporarily unavailable" };
   const sellerState = dashboard.seller || {};
   const agentCounts = dashboard.summary?.agent_status_counts || {};
   const capabilityCount = Object.values(agentCounts).reduce((total, count) => total + Number(count || 0), 0);

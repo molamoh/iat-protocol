@@ -8358,6 +8358,13 @@ def seller_connector_task_complete(
         if (
             existing
             and str(existing.get("seller_id") or "") == str(seller.get("seller_id") or "")
+            and (existing.get("request_payload") or {}).get("type") == "canary"
+            and existing.get("status") == "completed"
+        ):
+            return {"status": "ok", "task_id": task_id, "canary_completed": True, "idempotent_replay": True}
+        if (
+            existing
+            and str(existing.get("seller_id") or "") == str(seller.get("seller_id") or "")
             and str(existing.get("status") or "") in {
                 "completed",
                 "verification_approved",
@@ -8367,6 +8374,9 @@ def seller_connector_task_complete(
         ):
             return verify_completed_seller_connector_task_db(task_id)
         return completed
+    completed_task = get_seller_connector_task_db(task_id=task_id)
+    if ((completed_task or {}).get("request_payload") or {}).get("type") == "canary":
+        return {"status": "ok", "task_id": task_id, "canary_completed": True}
     return verify_completed_seller_connector_task_db(task_id)
 
 
@@ -8381,6 +8391,40 @@ def admin_seller_connector_canary(
         req.seller_id,
         {"type": "canary", "request": req.request, "buyer_context_included": False},
     )
+
+
+@app.post("/seller/connector/canary")
+def seller_connector_canary(
+    x_seller_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    seller = get_authenticated_seller_from_credentials(x_seller_api_key, authorization)
+    if not seller:
+        raise HTTPException(status_code=401, detail="seller_auth_required")
+    seller_id = seller.get("seller_id")
+    if int(seller.get("email_verified", 0) or 0) != 1 or int(seller.get("wallet_verified", 0) or 0) != 1:
+        return {"status": "error", "message": "email_and_wallet_evidence_required"}
+    if not seller_connector_available_db(seller_id):
+        return {"status": "error", "message": "active_connector_credential_required"}
+
+    window = int(time.time()) // 300
+    task = enqueue_seller_connector_task_db(
+        seller_id,
+        {
+            "type": "canary",
+            "request": "Return a bounded connector canary result.",
+            "buyer_context_included": False,
+            "payment_context_included": False,
+        },
+        order_reference=f"connector_canary:{seller_id}:{window}",
+    )
+    return {
+        **task,
+        "canary": True,
+        "expires_with_window_seconds": 300,
+        "buyer_data_included": False,
+        "payment_data_included": False,
+    }
 
 
 

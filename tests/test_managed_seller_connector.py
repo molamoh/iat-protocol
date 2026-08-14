@@ -169,3 +169,51 @@ def test_foundation_pipeline_reuses_verified_connector_contribution(monkeypatch)
     assert result["status"] == "foundation_review_required"
     assert result["supplier_execution"]["reused_verified_contribution"] is True
     assert result["supplier_verification"]["verification_status"] == "approved"
+
+
+def test_seller_can_create_private_idempotent_canary(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(agent_b_api, "get_authenticated_seller_from_credentials", lambda *_args: {
+        "seller_id": "seller_1", "email_verified": 1, "wallet_verified": 1
+    })
+    monkeypatch.setattr(agent_b_api, "seller_connector_available_db", lambda _seller_id: True)
+    monkeypatch.setattr(agent_b_api.time, "time", lambda: 1501)
+    monkeypatch.setattr(
+        agent_b_api,
+        "enqueue_seller_connector_task_db",
+        lambda *args, **kwargs: captured.update({"args": args, "kwargs": kwargs}) or {
+            "status": "ok", "task_id": "sct_canary", "idempotent_replay": False
+        },
+    )
+    result = agent_b_api.seller_connector_canary("seller-key", None)
+    assert result["task_id"] == "sct_canary"
+    assert captured["kwargs"]["order_reference"] == "connector_canary:seller_1:5"
+    assert captured["args"][1]["buyer_context_included"] is False
+    assert captured["args"][1]["payment_context_included"] is False
+
+
+def test_canary_completion_does_not_enter_order_governance(monkeypatch):
+    monkeypatch.setattr(agent_b_api, "authenticated_connector_seller", lambda _key: {"seller_id": "seller_1"})
+    monkeypatch.setattr(
+        agent_b_api,
+        "complete_seller_connector_task_db",
+        lambda *_args: {"status": "ok", "task_id": "sct_canary"},
+    )
+    monkeypatch.setattr(
+        agent_b_api,
+        "get_seller_connector_task_db",
+        lambda **_kwargs: {"request_payload": {"type": "canary"}},
+    )
+    monkeypatch.setattr(
+        agent_b_api,
+        "verify_completed_seller_connector_task_db",
+        lambda _task_id: (_ for _ in ()).throw(AssertionError("canary is not an order")),
+    )
+    request = agent_b_api.SellerConnectorResultRequest(
+        lease_token="isl_" + "x" * 40,
+        result={"status": "ok"},
+    )
+    result = agent_b_api.seller_connector_task_complete(
+        "sct_canary", request, "isc_test"
+    )
+    assert result["canary_completed"] is True

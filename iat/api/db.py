@@ -9688,14 +9688,21 @@ def select_verified_catalog_for_capability(
     ]
     if selected_catalog_item_id:
         selected = [
-            item for item in exact
+            item for item in verified
             if item.get("catalog_item_id") == selected_catalog_item_id
         ]
         if len(selected) == 1:
+            exact_service = str(
+                selected[0].get("service_type") or ""
+            ).strip().lower() == service
             return {
                 "status": "resolved",
                 "catalog_item": selected[0],
-                "match": "seller_selected_exact_service",
+                "match": (
+                    "seller_selected_exact_service"
+                    if exact_service
+                    else "seller_selected_verified_catalog"
+                ),
             }
         return {"status": "blocked", "message": "selected_catalog_not_eligible"}
     if len(exact) == 1:
@@ -9723,6 +9730,7 @@ def run_current_seller_capability_review_db(
 
     seller = get_seller_db(seller_id) or {}
     metadata = _safe_json_loads(seller_agent.get("metadata"), {})
+    resolved_service = str(seller_agent.get("service") or "")
     catalog_item = get_seller_catalog_item_db(metadata.get("catalog_item_id"))
     factory_request = get_seller_agent_factory_request_db(
         metadata.get("factory_request_id")
@@ -9744,6 +9752,11 @@ def run_current_seller_capability_review_db(
         catalog_item = catalog_resolution["catalog_item"]
         metadata["catalog_item_id"] = catalog_item["catalog_item_id"]
         metadata["catalog_link_source"] = catalog_resolution["match"]
+        catalog_service = str(catalog_item.get("service_type") or "").strip()
+        if catalog_service and catalog_service != resolved_service:
+            metadata["legacy_service_before_catalog_link"] = resolved_service
+            metadata["service_alignment_source"] = "seller_selected_verified_catalog"
+            resolved_service = catalog_service
 
     if not factory_request:
         factory_request_id = "current_review_" + hashlib.sha256(
@@ -9751,7 +9764,7 @@ def run_current_seller_capability_review_db(
         ).hexdigest()[:24]
         factory_request = get_seller_agent_factory_request_db(factory_request_id)
         if not factory_request:
-            service = str(seller_agent.get("service") or catalog_item.get("service_type") or "service")
+            service = str(resolved_service or catalog_item.get("service_type") or "service")
             created = create_seller_agent_factory_request_db({
                 "factory_request_id": factory_request_id,
                 "seller_id": seller_id,
@@ -9789,8 +9802,11 @@ def run_current_seller_capability_review_db(
         cur = conn.cursor()
         p = qmark()
         now = int(time.time())
-        cur.execute(f"UPDATE seller_agents SET metadata = {p}, updated_at = {p} WHERE seller_agent_id = {p} AND seller_id = {p}", (
-            json.dumps(metadata, sort_keys=True), now, seller_agent_id, seller_id,
+        cur.execute(f"UPDATE seller_agents SET metadata = {p}, service = {p}, updated_at = {p} WHERE seller_agent_id = {p} AND seller_id = {p}", (
+            json.dumps(metadata, sort_keys=True), resolved_service, now, seller_agent_id, seller_id,
+        ))
+        cur.execute(f"UPDATE agents SET service = {p}, updated_at = {p} WHERE agent_id = {p} AND seller_id = {p}", (
+            resolved_service, now, seller_agent.get("agent_id"), seller_id,
         ))
         cur.execute(f"UPDATE seller_catalog_items SET linked_seller_agent_id = {p}, updated_at = {p} WHERE catalog_item_id = {p} AND seller_id = {p}", (
             seller_agent_id, now, catalog_item["catalog_item_id"], seller_id,

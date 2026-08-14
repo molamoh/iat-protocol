@@ -483,7 +483,7 @@ function renderSellerGovernanceState(dashboard) {
   const requests = Array.isArray(recent.factory_requests) ? recent.factory_requests : [];
   const capabilityCatalogSelector = (agent) => {
     const service = String(agent.service || "").toLowerCase();
-    const eligible = items.filter((item) => ["verified", "foundation_verified"].includes(String(item.verification_status || "").toLowerCase()) && String(item.availability_status || "").toLowerCase() !== "archived" && String(item.service_type || "").toLowerCase() === service);
+    const eligible = items.filter((item) => ["verified", "foundation_verified"].includes(String(item.verification_status || "").toLowerCase()) && String(item.availability_status || "").toLowerCase() !== "archived");
     if (eligible.length <= 1) return "";
     return `<label>Catalog<select class="seller-agent-catalog"><option value="">Choose the matching catalog</option>${eligible.map((item) => `<option value="${escapeHtml(item.catalog_item_id)}">${escapeHtml(`${item.title || item.catalog_item_id} · ${item.service_type || service}`)}</option>`).join("")}</select></label>`;
   };

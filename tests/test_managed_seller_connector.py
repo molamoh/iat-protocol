@@ -217,3 +217,51 @@ def test_canary_completion_does_not_enter_order_governance(monkeypatch):
         "sct_canary", request, "isc_test"
     )
     assert result["canary_completed"] is True
+
+
+def test_seller_can_only_read_own_connector_task_status(monkeypatch):
+    monkeypatch.setattr(
+        agent_b_api,
+        "get_authenticated_seller_from_credentials",
+        lambda *_args: {"seller_id": "seller_1"},
+    )
+    monkeypatch.setattr(
+        agent_b_api,
+        "get_seller_connector_task_db",
+        lambda **_kwargs: {
+            "seller_id": "seller_1",
+            "status": "completed",
+            "attempt_count": 1,
+            "request_payload": {"type": "canary"},
+            "result_payload": {"private": "must-not-be-returned"},
+        },
+    )
+    result = agent_b_api.seller_connector_task_status(
+        "sct_canary", "seller-key", None
+    )
+    assert result == {
+        "status": "ok",
+        "task_id": "sct_canary",
+        "task_status": "completed",
+        "attempt_count": 1,
+        "completed": True,
+        "canary": True,
+    }
+
+
+def test_seller_cannot_read_another_sellers_connector_task(monkeypatch):
+    monkeypatch.setattr(
+        agent_b_api,
+        "get_authenticated_seller_from_credentials",
+        lambda *_args: {"seller_id": "seller_1"},
+    )
+    monkeypatch.setattr(
+        agent_b_api,
+        "get_seller_connector_task_db",
+        lambda **_kwargs: {"seller_id": "seller_2", "status": "completed"},
+    )
+    try:
+        agent_b_api.seller_connector_task_status("sct_other", "seller-key", None)
+        raise AssertionError("cross-seller task read must fail")
+    except agent_b_api.HTTPException as exc:
+        assert exc.status_code == 404

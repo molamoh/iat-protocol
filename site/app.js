@@ -380,7 +380,20 @@ function renderSellerGovernanceState(dashboard) {
       if (result.status !== "ok") throw new Error(result.message || "connector_canary_failed");
       output.textContent = `Canary queued: ${result.task_id}${result.idempotent_replay ? " (already queued in this 5-minute window)" : ""}. Keep the connector running; it will claim this task automatically.`;
       output.hidden = false;
-      button.textContent = "Canary queued";
+      button.textContent = "Waiting for connector…";
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 3000));
+        const status = await sandboxRequest(`/seller/connector/tasks/${encodeURIComponent(result.task_id)}/status`, { headers: sellerSessionHeaders });
+        if (status.status !== "ok") throw new Error(status.message || "connector_canary_status_failed");
+        output.textContent = `Canary ${status.task_status}: ${result.task_id}. Attempts: ${status.attempt_count}.`;
+        if (status.completed) {
+          button.textContent = "Connector verified";
+          return;
+        }
+      }
+      button.disabled = false;
+      button.textContent = "Check connector again";
+      output.textContent += " The connector did not claim the task within 60 seconds. Check that it is running with the current connector key.";
     } catch (error) {
       button.disabled = false;
       button.textContent = `Retry: ${error.message}`;

@@ -8427,6 +8427,33 @@ def seller_connector_canary(
     }
 
 
+@app.get("/seller/connector/tasks/{task_id}/status")
+def seller_connector_task_status(
+    task_id: str,
+    x_seller_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    seller = get_authenticated_seller_from_credentials(x_seller_api_key, authorization)
+    if not seller:
+        raise HTTPException(status_code=401, detail="seller_auth_required")
+    task = get_seller_connector_task_db(task_id=task_id)
+    if not task or str(task.get("seller_id") or "") != str(seller.get("seller_id") or ""):
+        raise HTTPException(status_code=404, detail="connector_task_not_found")
+    return {
+        "status": "ok",
+        "task_id": task_id,
+        "task_status": task.get("status"),
+        "attempt_count": task.get("attempt_count", 0),
+        "completed": task.get("status") in {
+            "completed",
+            "verification_approved",
+            "verification_rejected",
+            "verification_manual_review",
+        },
+        "canary": (task.get("request_payload") or {}).get("type") == "canary",
+    }
+
+
 
 
 

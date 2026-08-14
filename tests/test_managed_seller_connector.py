@@ -130,6 +130,49 @@ def test_seller_approval_does_not_reenable_disabled_agents(monkeypatch):
     assert "verification_status = 'foundation_verified'" in agent_updates[0]
 
 
+def test_autonomous_onboarding_approves_only_identity(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(db, "get_seller_db", lambda _seller_id: {
+        "seller_id": "seller_1", "seller_status": "pending",
+        "verification_status": "unverified", "risk_score": 0,
+    })
+    monkeypatch.setattr(db, "evaluate_seller_onboarding_evidence_db", lambda _seller_id: {
+        "status": "ready_for_foundation_review", "blockers": [],
+    })
+    monkeypatch.setattr(
+        db,
+        "approve_seller_db",
+        lambda seller_id, reviewer: captured.update({
+            "seller_id": seller_id, "reviewer": reviewer,
+        }) or {"status": "ok"},
+    )
+    result = db.run_autonomous_seller_onboarding_review_db("seller_1")
+    assert result["status"] == "approved"
+    assert captured["reviewer"] == "iat_autonomous_seller_onboarding_v1"
+    assert result["scope"]["catalogs_auto_activated"] is False
+    assert result["scope"]["capabilities_auto_activated"] is False
+    assert result["scope"]["disabled_agents_preserved"] is True
+
+
+def test_autonomous_onboarding_never_overrides_terminal_or_risky_seller(monkeypatch):
+    approvals = []
+    monkeypatch.setattr(db, "evaluate_seller_onboarding_evidence_db", lambda _seller_id: {
+        "status": "ready_for_foundation_review", "blockers": [],
+    })
+    monkeypatch.setattr(db, "approve_seller_db", lambda *_args, **_kwargs: approvals.append(True))
+
+    monkeypatch.setattr(db, "get_seller_db", lambda _seller_id: {
+        "seller_status": "rejected", "verification_status": "rejected", "risk_score": 0,
+    })
+    assert db.run_autonomous_seller_onboarding_review_db("seller_1")["status"] == "blocked"
+
+    monkeypatch.setattr(db, "get_seller_db", lambda _seller_id: {
+        "seller_status": "pending", "verification_status": "unverified", "risk_score": 75,
+    })
+    assert db.run_autonomous_seller_onboarding_review_db("seller_1")["status"] == "blocked"
+    assert approvals == []
+
+
 def test_expired_lease_cannot_complete_and_task_can_be_reclaimed(tmp_path, monkeypatch):
     connector_database(tmp_path, monkeypatch)
     queued = db.enqueue_seller_connector_task_db("seller_1", {"task": "safe"})

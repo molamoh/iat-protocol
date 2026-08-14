@@ -7984,6 +7984,86 @@ def evaluate_seller_onboarding_evidence_db(seller_id):
     }
 
 
+def run_autonomous_seller_onboarding_review_db(seller_id):
+    """Apply the Foundation-owned seller identity gate.
+
+    This activates only the seller identity. Catalogs and capabilities keep
+    their own availability and review state, so onboarding cannot publish an
+    unreviewed or previously disabled agent.
+    """
+    seller = get_seller_db(seller_id)
+    if not seller:
+        return {"status": "error", "message": "seller_not_found"}
+
+    seller_status = str(seller.get("seller_status") or "pending").lower()
+    verification_status = str(
+        seller.get("verification_status") or "unverified"
+    ).lower()
+    evidence = evaluate_seller_onboarding_evidence_db(seller_id)
+
+    if seller_status in {"rejected", "banned", "contained"}:
+        return {
+            "status": "blocked",
+            "decision": "terminal_state_requires_foundation_override",
+            "seller_status": seller_status,
+            "evidence": evidence,
+        }
+    if seller_status in {"restricted", "watchlist", "limited"}:
+        return {
+            "status": "blocked",
+            "decision": "risk_state_requires_foundation_review",
+            "seller_status": seller_status,
+            "evidence": evidence,
+        }
+    if seller_status in {"active", "approved"} and verification_status in {
+        "verified", "foundation_verified"
+    }:
+        return {
+            "status": "approved",
+            "decision": "seller_identity_already_approved",
+            "seller_status": seller_status,
+            "evidence": evidence,
+            "idempotent_replay": True,
+        }
+    if evidence.get("status") != "ready_for_foundation_review":
+        return {
+            "status": "pending",
+            "decision": "additional_evidence_required",
+            "evidence": evidence,
+        }
+
+    risk_score = float(seller.get("risk_score", 0) or 0)
+    if risk_score >= 50:
+        return {
+            "status": "blocked",
+            "decision": "seller_risk_requires_foundation_review",
+            "risk_score": risk_score,
+            "evidence": evidence,
+        }
+
+    approval = approve_seller_db(
+        seller_id,
+        reviewer="iat_autonomous_seller_onboarding_v1",
+    )
+    if approval.get("status") != "ok":
+        return {
+            "status": "blocked",
+            "decision": "foundation_approval_failed",
+            "approval": approval,
+            "evidence": evidence,
+        }
+    return {
+        "status": "approved",
+        "decision": "seller_identity_approved",
+        "approval": approval,
+        "evidence": evidence,
+        "scope": {
+            "seller_identity_activated": True,
+            "catalogs_auto_activated": False,
+            "capabilities_auto_activated": False,
+            "disabled_agents_preserved": True,
+        },
+    }
 def list_active_seller_hosted_connector_configs_db(limit=100):
     conn = get_conn()
     cur = conn.cursor()

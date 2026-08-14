@@ -140,6 +140,7 @@ from iat.api.db import (
     store_seller_hosted_connector_config_db,
     get_seller_hosted_connector_config_db,
     evaluate_seller_onboarding_evidence_db,
+    run_autonomous_seller_onboarding_review_db,
     list_active_seller_hosted_connector_configs_db,
     update_seller_hosted_connector_health_db,
     list_sellers_db,
@@ -9062,6 +9063,10 @@ def seller_dashboard(
     seller_id = seller.get("seller_id")
     seller = enforce_seller_governance_deadline_db(seller_id) or seller
 
+    # The decision is Foundation-owned and activates only seller identity.
+    onboarding_review = run_autonomous_seller_onboarding_review_db(seller_id)
+    seller = get_seller_db(seller_id) or seller
+
     # Advance pending factory reviews through the existing autonomous quorum.
     pending_factory_requests = list_seller_agent_factory_requests_db(seller_id)
     autonomous_governance = []
@@ -9322,6 +9327,7 @@ def seller_dashboard(
         },
         "autonomous_governance": autonomous_governance,
         "onboarding_evidence": onboarding_evidence,
+        "onboarding_review": onboarding_review,
         "next_required_actions": next_required_actions,
         "policy": {
             "seller_dashboard_is_read_only": True,

@@ -481,7 +481,7 @@ function renderSellerGovernanceState(dashboard) {
   });
   const items = Array.isArray(recent.catalog_items) ? recent.catalog_items : [];
   const requests = Array.isArray(recent.factory_requests) ? recent.factory_requests : [];
-  const records = [...agents.map((agent) => `<li>Capability <code>${escapeHtml(agent.seller_agent_id || "unknown")}</code><span>${escapeHtml(agent.seller_agent_status || "unknown")}</span>${agent.seller_agent_status === "disabled" ? "" : `<button type="button" class="button secondary seller-disable-agent" data-agent-id="${escapeHtml(agent.seller_agent_id || "")}">Disable</button>`}</li>`), ...items.map((item) => `<li>Catalog <code>${escapeHtml(item.catalog_item_id || "unknown")}</code><span>${escapeHtml(item.verification_status || "unverified")}</span>${item.availability_status === "archived" ? "<span>archived</span>" : `${!["verified", "foundation_verified"].includes(String(item.verification_status || "").toLowerCase()) ? `<button type="button" class="button secondary seller-review-catalog" data-catalog-id="${escapeHtml(item.catalog_item_id || "")}">Request review</button>` : ""}<button type="button" class="button secondary seller-archive-catalog" data-catalog-id="${escapeHtml(item.catalog_item_id || "")}">Archive</button>`}</li>`), ...requests.map((item) => `<li>Review <code>${escapeHtml(item.factory_request_id || "unknown")}</code><span>${escapeHtml(item.governance_status || "unknown")}</span></li>`)];
+  const records = [...agents.map((agent) => `<li>Capability <code>${escapeHtml(agent.seller_agent_id || "unknown")}</code><span>${escapeHtml(agent.seller_agent_status || "unknown")}</span>${agent.seller_agent_status === "pending_review" ? `<button type="button" class="button secondary seller-review-agent" data-agent-id="${escapeHtml(agent.seller_agent_id || "")}">Review &amp; activate</button>` : ""}${agent.seller_agent_status === "disabled" ? "" : `<button type="button" class="button secondary seller-disable-agent" data-agent-id="${escapeHtml(agent.seller_agent_id || "")}">Disable</button>`}</li>`), ...items.map((item) => `<li>Catalog <code>${escapeHtml(item.catalog_item_id || "unknown")}</code><span>${escapeHtml(item.verification_status || "unverified")}</span>${item.availability_status === "archived" ? "<span>archived</span>" : `${!["verified", "foundation_verified"].includes(String(item.verification_status || "").toLowerCase()) ? `<button type="button" class="button secondary seller-review-catalog" data-catalog-id="${escapeHtml(item.catalog_item_id || "")}">Request review</button>` : ""}<button type="button" class="button secondary seller-archive-catalog" data-catalog-id="${escapeHtml(item.catalog_item_id || "")}">Archive</button>`}</li>`), ...requests.map((item) => `<li>Review <code>${escapeHtml(item.factory_request_id || "unknown")}</code><span>${escapeHtml(item.governance_status || "unknown")}</span></li>`)];
   if (records.length) panel.insertAdjacentHTML("beforeend", `<h4>Your server records</h4><ul>${records.join("")}</ul>`);
   panel.querySelectorAll(".seller-review-catalog").forEach((button) => button.addEventListener("click", async () => {
     const catalogId = button.dataset.catalogId;
@@ -495,6 +495,23 @@ function renderSellerGovernanceState(dashboard) {
     } catch (error) {
       button.disabled = false;
       button.textContent = `Rejected: ${error.message}`;
+    }
+  }));
+  panel.querySelectorAll(".seller-review-agent").forEach((button) => button.addEventListener("click", async () => {
+    const agentId = button.dataset.agentId;
+    if (!agentId || !sellerSessionHeaders) return;
+    button.disabled = true;
+    button.textContent = "Reviewing…";
+    try {
+      const result = await sandboxRequest(`/seller/agents/${encodeURIComponent(agentId)}/request-review`, { method: "POST", headers: sellerSessionHeaders });
+      if (result.status !== "approved") {
+        const reasons = result.evidence?.failed_checks || [];
+        throw new Error(reasons.length ? reasons.join(", ") : result.approval?.message || result.message || "capability_review_blocked");
+      }
+      await refreshSellerConsole();
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = `Blocked: ${error.message}`;
     }
   }));
   panel.querySelectorAll(".seller-archive-catalog").forEach((button) => button.addEventListener("click", async () => {

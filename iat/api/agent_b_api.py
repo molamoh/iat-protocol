@@ -190,6 +190,7 @@ from iat.api.db import (
     archive_seller_catalog_item_db,
     get_seller_catalog_item_db,
     review_seller_catalog_item_db,
+    run_current_seller_capability_review_db,
     create_seller_agent_factory_request_db,
     list_seller_agent_factory_requests_db,
     get_seller_agent_factory_request_db,
@@ -9459,6 +9460,20 @@ def seller_disable_agent(
     if not seller:
         return {"status": "error", "message": "seller_auth_required"}
     return disable_seller_agent_db(seller_agent_id, seller["seller_id"], reason)
+
+
+@app.post("/seller/agents/{seller_agent_id}/request-review")
+def seller_request_current_capability_review(
+    seller_agent_id: str,
+    x_seller_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    seller = get_authenticated_seller_from_credentials(x_seller_api_key, authorization)
+    if not seller:
+        return {"status": "error", "message": "seller_auth_required"}
+    return run_current_seller_capability_review_db(
+        seller_agent_id, seller["seller_id"]
+    )
 
 
 @app.post("/seller/catalog/items/{catalog_item_id}/archive")

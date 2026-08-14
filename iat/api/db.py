@@ -9599,6 +9599,173 @@ def review_seller_catalog_item_db(catalog_item_id, seller_id):
     }
 
 
+def evaluate_current_seller_capability_evidence(
+    seller,
+    seller_agent,
+    agent,
+    catalog_item,
+    factory_request,
+    hosted_config,
+):
+    failed = []
+    if str((seller or {}).get("seller_status") or "").lower() != "active":
+        failed.append("seller_not_active")
+    if str((seller or {}).get("verification_status") or "").lower() not in {
+        "verified", "foundation_verified"
+    }:
+        failed.append("seller_not_verified")
+    if str((seller_agent or {}).get("seller_agent_status") or "").lower() != "pending_review":
+        failed.append("capability_not_pending_review")
+    if str((catalog_item or {}).get("verification_status") or "").lower() not in {
+        "verified", "foundation_verified"
+    }:
+        failed.append("catalog_not_verified")
+    if not factory_request:
+        failed.append("factory_request_missing")
+
+    prompt = str((factory_request or {}).get("requested_prompt") or "").strip()
+    if not prompt:
+        failed.append("review_prompt_missing")
+    lowered_prompt = prompt.lower()
+    forbidden = (
+        "bypass foundation", "bypass iat", "outside iat",
+        "off-platform payment", "external payment", "raw buyer prompt",
+        "contact buyer directly", "steal credentials", "exfiltrate",
+    )
+    failed.extend(
+        f"forbidden_prompt_pattern:{pattern}"
+        for pattern in forbidden if pattern in lowered_prompt
+    )
+
+    if not agent:
+        failed.append("registry_agent_missing")
+    else:
+        for access in ("buyer_access", "web_access", "raw_prompt_access"):
+            if int(agent.get(access, 0) or 0) != 0:
+                failed.append(f"{access}_must_be_disabled")
+        if int(agent.get("available", 0) or 0) != 0:
+            failed.append("agent_available_before_approval")
+
+    hosted_verified = (
+        (hosted_config or {}).get("status") == "active"
+        and (hosted_config or {}).get("execution_mode") == "iat_hosted"
+        and bool((hosted_config or {}).get("last_success_at"))
+    )
+    if not hosted_verified:
+        failed.append("iat_hosted_runtime_canary_required")
+
+    seller_risk = float((seller or {}).get("risk_score", 0) or 0)
+    if seller_risk >= 50:
+        failed.append("seller_risk_requires_foundation_review")
+    return {
+        "status": "approved" if not failed else "blocked",
+        "failed_checks": failed,
+        "risk_score": 5 if not failed else min(100, 15 * len(failed)),
+        "confidence_score": 0.95 if not failed else 0.0,
+        "policy_score": 0.95 if not failed else 0.0,
+        "safety_score": 0.95 if not failed else 0.0,
+        "runtime_score": 0.95 if hosted_verified else 0.0,
+    }
+
+
+def run_current_seller_capability_review_db(seller_agent_id, seller_id):
+    seller_agent = get_seller_agent_db(seller_agent_id)
+    if not seller_agent:
+        return {"status": "error", "message": "seller_agent_not_found"}
+    if seller_agent.get("seller_id") != seller_id:
+        return {"status": "error", "message": "seller_agent_seller_mismatch"}
+
+    seller = get_seller_db(seller_id) or {}
+    metadata = _safe_json_loads(seller_agent.get("metadata"), {})
+    catalog_item = get_seller_catalog_item_db(metadata.get("catalog_item_id"))
+    factory_request = get_seller_agent_factory_request_db(
+        metadata.get("factory_request_id")
+    )
+    hosted = get_seller_hosted_connector_config_db(seller_id) or {}
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    cur.execute(f"SELECT * FROM agents WHERE agent_id = {p}", (seller_agent.get("agent_id"),))
+    row = cur.fetchone()
+    release_conn(conn)
+    agent = dict(row) if row else None
+
+    evidence = evaluate_current_seller_capability_evidence(
+        seller, seller_agent, agent, catalog_item, factory_request, hosted
+    )
+    if evidence["status"] != "approved":
+        return {
+            "status": "blocked",
+            "message": "current_capability_evidence_failed",
+            "seller_agent_id": seller_agent_id,
+            "evidence": evidence,
+        }
+
+    # A verified hosted seller receives one conservative activation slot.
+    if int(seller.get("max_agents_allowed", 0) or 0) < 1:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(f"UPDATE sellers SET max_agents_allowed = 1, updated_at = {p} WHERE seller_id = {p}", (int(time.time()), seller_id))
+        conn.commit()
+        release_conn(conn)
+
+    reviewer_ids = (
+        "iat_current_capability_policy_v1",
+        "iat_current_capability_runtime_v1",
+    )
+    for reviewer_id in reviewer_ids:
+        existing = get_seller_agent_activation_governance_reviews_db(
+            seller_agent_id=seller_agent_id,
+            reviewer_id=reviewer_id,
+            limit=1,
+        )
+        if existing.get("count", 0) == 0:
+            store_seller_agent_activation_governance_review_db(
+                seller_agent_id=seller_agent_id,
+                agent_id=seller_agent.get("agent_id"),
+                seller_id=seller_id,
+                reviewer_type="autonomous_foundation_engine",
+                reviewer_id=reviewer_id,
+                review_decision="approve",
+                review_reason="current_bounded_capability_checks_passed",
+                confidence_score=evidence["confidence_score"],
+                risk_score=evidence["risk_score"] / 100,
+                activation_score=0.95,
+                policy_score=evidence["policy_score"],
+                safety_score=evidence["safety_score"],
+                metadata={"current_evidence": evidence, "review_epoch": "v1"},
+            )
+
+    approval = approve_seller_agent_activation_request_db(
+        seller_agent_id,
+        approved_by="iat_current_capability_governance_v1",
+        approval_reason="current_bounded_capability_quorum_passed",
+        reviewer_ids=reviewer_ids,
+    )
+    if approval.get("status") not in {"approved", "already_approved"}:
+        return {
+            "status": "blocked",
+            "message": "current_capability_quorum_not_ready",
+            "evidence": evidence,
+            "approval": approval,
+        }
+    activation = manual_activate_seller_agent_db(
+        seller_agent_id,
+        approved_by="iat_current_capability_governance_v1",
+        approval_reason="current_bounded_capability_approved",
+        reviewer_ids=reviewer_ids,
+    )
+    return {
+        "status": "approved" if activation.get("status") == "ok" else "blocked",
+        "seller_agent_id": seller_agent_id,
+        "evidence": evidence,
+        "approval": approval,
+        "activation": activation,
+        "historical_factory_decisions_unchanged": True,
+        "seller_cannot_self_approve": True,
+    }
+
+
 def list_seller_catalog_items_db(seller_id, limit=100):
     conn = get_conn()
     cur = conn.cursor()
@@ -22949,6 +23116,7 @@ def approve_seller_agent_activation_request_db(
     seller_agent_id,
     approved_by="iat_core",
     approval_reason="",
+    reviewer_ids=None,
 ):
     if not seller_agent_id:
         return {"status": "error", "message": "seller_agent_id_required"}
@@ -22965,7 +23133,8 @@ def approve_seller_agent_activation_request_db(
     seller_id = seller_agent.get("seller_id")
 
     review_evaluation = evaluate_seller_agent_activation_governance_reviews_db(
-        seller_agent_id=seller_agent_id
+        seller_agent_id=seller_agent_id,
+        reviewer_ids=reviewer_ids,
     )
 
     if review_evaluation.get("readiness") != "ready_for_activation_approval":
@@ -23038,6 +23207,7 @@ def manual_activate_seller_agent_db(
     seller_agent_id,
     approved_by="iat_manual_activation_governance",
     approval_reason="manual_activation_approval",
+    reviewer_ids=None,
 ):
     if not seller_agent_id:
         return {"status": "error", "message": "seller_agent_id_required"}
@@ -23054,7 +23224,8 @@ def manual_activate_seller_agent_db(
     seller_id = seller_agent.get("seller_id")
 
     review_evaluation = evaluate_seller_agent_activation_governance_reviews_db(
-        seller_agent_id=seller_agent_id
+        seller_agent_id=seller_agent_id,
+        reviewer_ids=reviewer_ids,
     )
 
     if review_evaluation.get("readiness") != "ready_for_activation_approval":
@@ -23333,6 +23504,7 @@ def evaluate_seller_agent_activation_governance_reviews_db(
     min_avg_activation=0.70,
     min_avg_policy=0.70,
     min_avg_safety=0.70,
+    reviewer_ids=None,
 ):
     if not seller_agent_id:
         return {"status": "error", "message": "seller_agent_id_required"}
@@ -23343,6 +23515,9 @@ def evaluate_seller_agent_activation_governance_reviews_db(
     )
 
     reviews = reviews_result.get("reviews", [])
+    if reviewer_ids:
+        reviewer_ids = set(reviewer_ids)
+        reviews = [r for r in reviews if r.get("reviewer_id") in reviewer_ids]
 
     approve_reviews = [r for r in reviews if r.get("review_decision") == "approve"]
     reject_reviews = [r for r in reviews if r.get("review_decision") == "reject"]

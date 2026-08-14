@@ -8064,6 +8064,61 @@ def run_autonomous_seller_onboarding_review_db(seller_id):
             "disabled_agents_preserved": True,
         },
     }
+
+
+def reconcile_unapproved_seller_capabilities_db(seller_id):
+    """Remove routing access from active capabilities lacking approval."""
+    if not seller_id:
+        return {"status": "error", "message": "seller_id_required"}
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+    cur.execute(f"""
+    UPDATE seller_agents
+    SET seller_agent_status = 'pending_review', updated_at = {p}
+    WHERE seller_id = {p}
+      AND seller_agent_status = 'active'
+      AND NOT EXISTS (
+          SELECT 1 FROM seller_agent_activation_approvals approval
+          WHERE approval.seller_agent_id = seller_agents.seller_agent_id
+            AND approval.status = 'approved'
+      )
+    """, (now, seller_id))
+    moved_to_review = max(0, int(cur.rowcount or 0))
+
+    cur.execute(f"""
+    UPDATE agents
+    SET available = 0, updated_at = {p}
+    WHERE seller_id = {p}
+      AND agent_id IN (
+          SELECT agent_id FROM seller_agents
+          WHERE seller_id = {p} AND seller_agent_status = 'pending_review'
+      )
+    """, (now, seller_id, seller_id))
+    cur.execute(f"""
+    UPDATE sellers
+    SET active_agents = (
+            SELECT COUNT(*) FROM seller_agents
+            WHERE seller_id = {p} AND seller_agent_status = 'active'
+        ),
+        total_agents = (
+            SELECT COUNT(*) FROM seller_agents WHERE seller_id = {p}
+        ),
+        updated_at = {p}
+    WHERE seller_id = {p}
+    """, (seller_id, seller_id, now, seller_id))
+    conn.commit()
+    release_conn(conn)
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "moved_to_review": moved_to_review,
+        "disabled_agents_preserved": True,
+    }
+
+
 def list_active_seller_hosted_connector_configs_db(limit=100):
     conn = get_conn()
     cur = conn.cursor()
@@ -25653,6 +25708,16 @@ def disable_seller_agent_db(seller_agent_id, seller_id, reason="seller_requested
         return {"status": "error", "message": "seller_agent_seller_mismatch"}
     now = int(time.time())
     cur.execute(f"UPDATE seller_agents SET seller_agent_status = {p}, updated_at = {p} WHERE seller_agent_id = {p}", ("disabled", now, seller_agent_id))
+    cur.execute(f"UPDATE agents SET available = 0, updated_at = {p} WHERE agent_id = {p}", (now, row["agent_id"]))
+    cur.execute(f"""
+    UPDATE sellers
+    SET active_agents = (
+            SELECT COUNT(*) FROM seller_agents
+            WHERE seller_id = {p} AND seller_agent_status = 'active'
+        ),
+        updated_at = {p}
+    WHERE seller_id = {p}
+    """, (seller_id, now, seller_id))
     conn.commit()
     release_conn(conn)
     return {"status": "ok", "seller_agent_id": seller_agent_id, "seller_agent_status": "disabled", "reason": str(reason)[:500]}

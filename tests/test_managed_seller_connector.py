@@ -173,6 +173,42 @@ def test_autonomous_onboarding_never_overrides_terminal_or_risky_seller(monkeypa
     assert approvals == []
 
 
+def test_reconciliation_moves_only_unapproved_active_capabilities_to_review(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "reconcile.sqlite")
+    monkeypatch.setattr(db, "USE_POSTGRES", False)
+    conn = db.get_conn()
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE sellers (seller_id TEXT PRIMARY KEY, active_agents INTEGER, total_agents INTEGER, updated_at INTEGER)")
+    cur.execute("CREATE TABLE seller_agents (seller_agent_id TEXT PRIMARY KEY, seller_id TEXT, agent_id TEXT, seller_agent_status TEXT, updated_at INTEGER)")
+    cur.execute("CREATE TABLE agents (agent_id TEXT PRIMARY KEY, seller_id TEXT, available INTEGER, updated_at INTEGER)")
+    cur.execute("CREATE TABLE seller_agent_activation_approvals (seller_agent_id TEXT, status TEXT)")
+    for seller_agent_id, agent_id, status, available in [
+        ("sa_unapproved", "a_unapproved", "active", 1),
+        ("sa_approved", "a_approved", "active", 1),
+        ("sa_disabled", "a_disabled", "disabled", 0),
+    ]:
+        cur.execute("INSERT INTO seller_agents VALUES (?, 'seller_1', ?, ?, 0)", (seller_agent_id, agent_id, status))
+        cur.execute("INSERT INTO agents VALUES (?, 'seller_1', ?, 0)", (agent_id, available))
+    cur.execute("INSERT INTO seller_agent_activation_approvals VALUES ('sa_approved', 'approved')")
+    cur.execute("INSERT INTO sellers VALUES ('seller_1', 2, 3, 0)")
+    conn.commit()
+    db.release_conn(conn)
+
+    result = db.reconcile_unapproved_seller_capabilities_db("seller_1")
+    conn = db.get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT seller_agent_status FROM seller_agents WHERE seller_agent_id='sa_unapproved'")
+    assert cur.fetchone()[0] == "pending_review"
+    cur.execute("SELECT seller_agent_status FROM seller_agents WHERE seller_agent_id='sa_approved'")
+    assert cur.fetchone()[0] == "active"
+    cur.execute("SELECT seller_agent_status FROM seller_agents WHERE seller_agent_id='sa_disabled'")
+    assert cur.fetchone()[0] == "disabled"
+    cur.execute("SELECT active_agents, total_agents FROM sellers WHERE seller_id='seller_1'")
+    assert tuple(cur.fetchone()) == (1, 3)
+    db.release_conn(conn)
+    assert result["moved_to_review"] == 1
+
+
 def test_expired_lease_cannot_complete_and_task_can_be_reclaimed(tmp_path, monkeypatch):
     connector_database(tmp_path, monkeypatch)
     queued = db.enqueue_seller_connector_task_db("seller_1", {"task": "safe"})

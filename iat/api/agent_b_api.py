@@ -141,6 +141,7 @@ from iat.api.db import (
     get_seller_hosted_connector_config_db,
     evaluate_seller_onboarding_evidence_db,
     run_autonomous_seller_onboarding_review_db,
+    reconcile_unapproved_seller_capabilities_db,
     list_active_seller_hosted_connector_configs_db,
     update_seller_hosted_connector_health_db,
     list_sellers_db,
@@ -9065,6 +9066,11 @@ def seller_dashboard(
 
     # The decision is Foundation-owned and activates only seller identity.
     onboarding_review = run_autonomous_seller_onboarding_review_db(seller_id)
+    capability_reconciliation = None
+    if onboarding_review.get("status") == "approved":
+        capability_reconciliation = reconcile_unapproved_seller_capabilities_db(
+            seller_id
+        )
     seller = get_seller_db(seller_id) or seller
 
     # Advance pending factory reviews through the existing autonomous quorum.
@@ -9328,6 +9334,7 @@ def seller_dashboard(
         "autonomous_governance": autonomous_governance,
         "onboarding_evidence": onboarding_evidence,
         "onboarding_review": onboarding_review,
+        "capability_reconciliation": capability_reconciliation,
         "next_required_actions": next_required_actions,
         "policy": {
             "seller_dashboard_is_read_only": True,

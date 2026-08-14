@@ -9473,7 +9473,10 @@ def get_seller_catalog_item_db(catalog_item_id):
     return dict(row) if row else None
 
 
-def evaluate_seller_catalog_item_evidence(catalog_item):
+def evaluate_seller_catalog_item_evidence(
+    catalog_item,
+    managed_runtime_available=False,
+):
     """Bounded, deterministic catalog checks owned by the Foundation."""
     item = catalog_item or {}
     failed = []
@@ -9482,7 +9485,11 @@ def evaluate_seller_catalog_item_evidence(catalog_item):
     item_type = str(item.get("item_type") or "").lower()
     service_type = str(item.get("service_type") or "").strip()
     unit_price = float(item.get("unit_price", 0) or 0)
-    capacity_per_day = float(item.get("capacity_per_day", 0) or 0)
+    declared_capacity_per_day = float(item.get("capacity_per_day", 0) or 0)
+    managed_capacity_defaulted = (
+        managed_runtime_available and declared_capacity_per_day <= 0
+    )
+    capacity_per_day = 1.0 if managed_capacity_defaulted else declared_capacity_per_day
     combined = f"{title} {description} {service_type}".lower()
 
     if len(title) < 3 or len(title) > 160:
@@ -9516,6 +9523,8 @@ def evaluate_seller_catalog_item_evidence(catalog_item):
         ] if not failed else [],
         "risk_score": 0 if not failed else min(100, 20 * len(failed)),
         "trust_score": 70 if not failed else 0,
+        "effective_capacity_per_day": capacity_per_day,
+        "managed_capacity_defaulted": managed_capacity_defaulted,
     }
 
 
@@ -9533,8 +9542,24 @@ def review_seller_catalog_item_db(catalog_item_id, seller_id):
     }:
         return {"status": "blocked", "message": "verified_seller_required"}
 
-    review = evaluate_seller_catalog_item_evidence(item)
+    hosted = get_seller_hosted_connector_config_db(seller_id) or {}
+    managed_runtime_available = (
+        hosted.get("status") == "active"
+        and hosted.get("execution_mode") == "iat_hosted"
+        and bool(hosted.get("last_success_at"))
+    )
+    review = evaluate_seller_catalog_item_evidence(
+        item,
+        managed_runtime_available=managed_runtime_available,
+    )
     approved = review["status"] == "approved"
+    catalog_metadata = _safe_json_loads(item.get("metadata"), {})
+    if review["managed_capacity_defaulted"]:
+        catalog_metadata["iat_managed_capacity"] = {
+            "capacity_per_day": review["effective_capacity_per_day"],
+            "source": "iat_hosted_runtime",
+            "policy": "conservative_starter_capacity_v1",
+        }
     conn = get_conn()
     cur = conn.cursor()
     p = qmark()
@@ -9542,12 +9567,15 @@ def review_seller_catalog_item_db(catalog_item_id, seller_id):
     cur.execute(f"""
     UPDATE seller_catalog_items
     SET verification_status = {p}, risk_score = {p}, trust_score = {p},
-        availability_status = {p}, updated_at = {p}
+        availability_status = {p}, capacity_per_day = {p}, metadata = {p},
+        updated_at = {p}
     WHERE catalog_item_id = {p} AND seller_id = {p}
     """, (
         "foundation_verified" if approved else "rejected",
         review["risk_score"], review["trust_score"],
         item.get("availability_status") if approved else "draft",
+        review["effective_capacity_per_day"],
+        json.dumps(catalog_metadata, sort_keys=True),
         now, catalog_item_id, seller_id,
     ))
     create_seller_governance_event_with_cursor(

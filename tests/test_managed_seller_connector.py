@@ -227,6 +227,23 @@ def test_bounded_catalog_review_accepts_safe_service_and_rejects_bypass_text():
     assert any(reason.startswith("forbidden_catalog_pattern") for reason in unsafe["failed_checks"])
 
 
+def test_iat_hosted_runtime_supplies_conservative_missing_catalog_capacity():
+    catalog = {
+        "item_type": "service", "title": "Verified research",
+        "description": "Produces a bounded research report with cited evidence.",
+        "service_type": "web_research", "unit_price": 2,
+        "capacity_per_day": 0,
+    }
+    unmanaged = db.evaluate_seller_catalog_item_evidence(catalog)
+    managed = db.evaluate_seller_catalog_item_evidence(
+        catalog, managed_runtime_available=True
+    )
+    assert unmanaged["status"] == "rejected"
+    assert managed["status"] == "approved"
+    assert managed["effective_capacity_per_day"] == 1
+    assert managed["managed_capacity_defaulted"] is True
+
+
 def test_expired_lease_cannot_complete_and_task_can_be_reclaimed(tmp_path, monkeypatch):
     connector_database(tmp_path, monkeypatch)
     queued = db.enqueue_seller_connector_task_db("seller_1", {"task": "safe"})

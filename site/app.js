@@ -84,7 +84,12 @@ function sandboxPayload() {
 }
 
 async function sandboxRequest(path, options = {}) {
-  const response = await fetch(`${API_BASE}${path}`, options);
+  let response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, options);
+  } catch (error) {
+    throw new Error(`network_request_failed (${path}): ${error?.message || "Failed to fetch"}`);
+  }
   const result = await response.json();
   if (!response.ok) throw new Error(result.detail || "Sandbox request rejected");
   return result;

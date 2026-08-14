@@ -9078,17 +9078,31 @@ def seller_dashboard(
         }
 
     seller_id = seller.get("seller_id")
-    seller = enforce_seller_governance_deadline_db(seller_id) or seller
+    if advance_governance:
+        seller = enforce_seller_governance_deadline_db(seller_id) or seller
 
-    # The decision is Foundation-owned and activates only seller identity.
-    onboarding_review = run_autonomous_seller_onboarding_review_db(seller_id)
-    capability_reconciliation = None
-    if onboarding_review.get("status") == "approved":
-        capability_reconciliation = reconcile_unapproved_seller_capabilities_db(
-            seller_id
+        # The decision is Foundation-owned and activates only seller identity.
+        onboarding_review = run_autonomous_seller_onboarding_review_db(seller_id)
+        capability_reconciliation = None
+        if onboarding_review.get("status") == "approved":
+            capability_reconciliation = reconcile_unapproved_seller_capabilities_db(
+                seller_id
+            )
+            sync_current_capability_review_status_db(seller_id)
+        seller = get_seller_db(seller_id) or seller
+    else:
+        # A console refresh is a bounded snapshot. It must not run governance,
+        # reconciliation or orchestration work on the request path.
+        foundation_verified = (
+            str(seller.get("seller_status") or "").lower() in {"active", "approved"}
+            and str(seller.get("verification_status") or "").lower()
+            in {"verified", "foundation_verified"}
         )
-        sync_current_capability_review_status_db(seller_id)
-    seller = get_seller_db(seller_id) or seller
+        onboarding_review = {
+            "status": "approved" if foundation_verified else "pending",
+            "decision": "stored_seller_evidence_snapshot",
+        }
+        capability_reconciliation = {"moved_to_review": 0, "snapshot_only": True}
 
     # Advance pending factory reviews through the existing autonomous quorum.
     pending_factory_requests = list_seller_agent_factory_requests_db(seller_id)
@@ -9119,12 +9133,20 @@ def seller_dashboard(
                     else "pending"
                 ),
                 "factory_request_id": factory_request_id,
-                "factory_reviews": get_seller_agent_factory_reviews_db(
-                    factory_request_id=factory_request_id,
-                    limit=50,
+                "factory_reviews": (
+                    get_seller_agent_factory_reviews_db(
+                        factory_request_id=factory_request_id,
+                        limit=50,
+                    )
+                    if advance_governance else {"reviews": []}
                 ),
-                "review_evaluation": evaluate_seller_agent_factory_reviews_db(
-                    factory_request_id=factory_request_id,
+                "review_evaluation": (
+                    evaluate_seller_agent_factory_reviews_db(
+                        factory_request_id=factory_request_id,
+                    )
+                    if advance_governance else {
+                        "readiness": factory_request.get("governance_status")
+                    }
                 ),
                 "factory_review": factory_request,
                 "seller_status_unchanged": True,

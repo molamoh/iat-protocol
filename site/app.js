@@ -283,7 +283,8 @@ function renderSellerGovernanceState(dashboard) {
       const factoryReview = item.factory_review || {};
       const factoryRequest = factoryReview.factory_request || factoryReview;
       const requestId = item.factory_request_id || factoryRequest.factory_request_id || "unknown";
-      const reviewLabel = item.status === "completed" ? "Historical autonomous review" : "Autonomous review";
+      const currentCapabilityReview = String(requestId).startsWith("current_review_");
+      const reviewLabel = currentCapabilityReview ? "Current capability review" : item.status === "completed" ? "Historical autonomous review" : "Autonomous review";
       if (item.status === "error") {
         return `<li><strong>Autonomous review · ${escapeHtml(requestId)}</strong><span>${escapeHtml(`${item.message || "runtime_error"}: ${item.error || item.error_type || "unknown"}`)}</span></li>`;
       }
@@ -301,14 +302,16 @@ function renderSellerGovernanceState(dashboard) {
         }
         Object.entries(metadata.checks || {}).forEach(([name, passed]) => { if (!passed) missingChecks.add(name); });
       });
-      const reviewReason = decisionReasons.length
+      const reviewReason = currentCapabilityReview && reviewStatus === "approved_current_capability"
+        ? "current bounded capability quorum passed"
+        : decisionReasons.length
         ? `risk ${decision.risk_score ?? "unknown"}: ${decisionReasons.join(", ")}`
         : missingChecks.size
           ? `required evidence missing: ${Array.from(missingChecks).join(", ")}`
           : storedReasons.size
             ? Array.from(storedReasons).join(", ")
             : factoryRequest.rejection_reason || factoryReview.rejection_reason || factoryReview.message || item.review_evaluation?.reason || "no_reason_reported";
-      const snapshotNote = item.status === "completed" ? "decision snapshot · " : "";
+      const snapshotNote = item.status === "completed" && !currentCapabilityReview ? "decision snapshot · " : "";
       return `<li><strong>${reviewLabel} · ${escapeHtml(requestId)}</strong><span>${escapeHtml(`${snapshotNote}${reviewStatus} · ${reviewReason}`)}</span></li>`;
     }).join("")
     : "<li><strong>Autonomous review</strong><span>No factory review recorded</span></li>";

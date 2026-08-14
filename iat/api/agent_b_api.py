@@ -142,6 +142,7 @@ from iat.api.db import (
     evaluate_seller_onboarding_evidence_db,
     run_autonomous_seller_onboarding_review_db,
     reconcile_unapproved_seller_capabilities_db,
+    sync_current_capability_review_status_db,
     list_active_seller_hosted_connector_configs_db,
     update_seller_hosted_connector_health_db,
     list_sellers_db,
@@ -9073,6 +9074,7 @@ def seller_dashboard(
         capability_reconciliation = reconcile_unapproved_seller_capabilities_db(
             seller_id
         )
+        sync_current_capability_review_status_db(seller_id)
     seller = get_seller_db(seller_id) or seller
 
     # Advance pending factory reviews through the existing autonomous quorum.

@@ -306,6 +306,29 @@ def test_turnkey_catalog_link_requires_unique_service_match():
     assert selected_other_service["catalog_item"]["catalog_item_id"] == "cat_code"
 
 
+def test_active_turnkey_capability_synchronizes_current_review_status(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "current_review.sqlite")
+    monkeypatch.setattr(db, "USE_POSTGRES", False)
+    conn = db.get_conn()
+    cur = conn.cursor()
+    cur.execute("CREATE TABLE seller_agents (seller_agent_id TEXT, seller_id TEXT, seller_agent_status TEXT)")
+    cur.execute("CREATE TABLE seller_agent_factory_requests (factory_request_id TEXT, seller_id TEXT, generated_seller_agent_id TEXT, governance_status TEXT, factory_status TEXT, sandbox_status TEXT, simulation_status TEXT, risk_score REAL, trust_score REAL, rejection_reason TEXT, updated_at INTEGER)")
+    cur.execute("INSERT INTO seller_agents VALUES ('sa_1', 'seller_1', 'active')")
+    cur.execute("INSERT INTO seller_agent_factory_requests VALUES ('current_review_1', 'seller_1', 'sa_1', 'current_evidence_pending', 'current_capability_review', 'replaced_by_hosted_canary', 'replaced_by_hosted_canary', 0, 0, NULL, 0)")
+    cur.execute("INSERT INTO seller_agent_factory_requests VALUES ('historical_1', 'seller_1', 'sa_1', 'rejected', 'rejected', 'blocked', 'blocked', 100, 0, 'historical', 0)")
+    conn.commit()
+    db.release_conn(conn)
+    result = db.sync_current_capability_review_status_db("seller_1")
+    conn = db.get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT governance_status FROM seller_agent_factory_requests WHERE factory_request_id='current_review_1'")
+    assert cur.fetchone()[0] == "approved_current_capability"
+    cur.execute("SELECT governance_status FROM seller_agent_factory_requests WHERE factory_request_id='historical_1'")
+    assert cur.fetchone()[0] == "rejected"
+    db.release_conn(conn)
+    assert result["synchronized_reviews"] == 1
+
+
 def test_expired_lease_cannot_complete_and_task_can_be_reclaimed(tmp_path, monkeypatch):
     connector_database(tmp_path, monkeypatch)
     queued = db.enqueue_seller_connector_task_db("seller_1", {"task": "safe"})

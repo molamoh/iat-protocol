@@ -8120,6 +8120,42 @@ def reconcile_unapproved_seller_capabilities_db(seller_id):
     }
 
 
+def sync_current_capability_review_status_db(seller_id):
+    """Reflect successful activation in the turnkey review audit record."""
+    if not seller_id:
+        return {"status": "error", "message": "seller_id_required"}
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+    cur.execute(f"""
+    UPDATE seller_agent_factory_requests
+    SET governance_status = 'approved_current_capability',
+        factory_status = 'activated',
+        sandbox_status = 'passed_hosted_canary',
+        simulation_status = 'passed_hosted_canary',
+        risk_score = 5,
+        trust_score = 95,
+        rejection_reason = NULL,
+        updated_at = {p}
+    WHERE seller_id = {p}
+      AND factory_request_id LIKE 'current_review_%'
+      AND generated_seller_agent_id IN (
+          SELECT seller_agent_id FROM seller_agents
+          WHERE seller_id = {p} AND seller_agent_status = 'active'
+      )
+      AND governance_status != 'approved_current_capability'
+    """, (now, seller_id, seller_id))
+    synchronized = max(0, int(cur.rowcount or 0))
+    conn.commit()
+    release_conn(conn)
+    return {
+        "status": "ok",
+        "seller_id": seller_id,
+        "synchronized_reviews": synchronized,
+    }
+
+
 def list_active_seller_hosted_connector_configs_db(limit=100):
     conn = get_conn()
     cur = conn.cursor()

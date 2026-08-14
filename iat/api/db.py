@@ -7939,6 +7939,51 @@ def get_seller_hosted_connector_config_db(seller_id):
     return dict(row) if row else None
 
 
+def evaluate_seller_onboarding_evidence_db(seller_id):
+    """Return current evidence without mutating seller governance state.
+
+    This is deliberately separate from historical factory decisions and from
+    seller approval.  A seller can supply evidence, but cannot turn that
+    evidence into its own protocol approval.
+    """
+    seller = get_seller_db(seller_id)
+    if not seller:
+        return {"status": "error", "message": "seller_not_found"}
+
+    hosted = get_seller_hosted_connector_config_db(seller_id) or {}
+    email_verified = int(seller.get("email_verified", 0) or 0) == 1
+    wallet_verified = int(seller.get("wallet_verified", 0) or 0) == 1
+    hosted_runtime_verified = (
+        hosted.get("status") == "active"
+        and hosted.get("execution_mode") == "iat_hosted"
+        and bool(hosted.get("last_success_at"))
+    )
+    domain_runtime_verified = int(seller.get("runtime_verified", 0) or 0) == 1
+
+    checks = {
+        "email_verified": email_verified,
+        "wallet_signature_verified": wallet_verified,
+        "runtime_execution_verified": hosted_runtime_verified or domain_runtime_verified,
+    }
+    blockers = [name for name, passed in checks.items() if not passed]
+    return {
+        "status": "ready_for_foundation_review" if not blockers else "evidence_required",
+        "seller_id": seller_id,
+        "checks": checks,
+        "blockers": blockers,
+        "runtime_evidence": {
+            "iat_hosted_canary_verified": hosted_runtime_verified,
+            "domain_control_verified": domain_runtime_verified,
+            "last_success_at": hosted.get("last_success_at"),
+        },
+        "policy": {
+            "seller_cannot_self_approve": True,
+            "evidence_does_not_equal_approval": True,
+            "historical_decisions_are_immutable": True,
+        },
+    }
+
+
 def list_active_seller_hosted_connector_configs_db(limit=100):
     conn = get_conn()
     cur = conn.cursor()
@@ -9736,12 +9781,23 @@ def run_seller_agent_factory_review_db(factory_request_id):
         risk_reasons.append("wallet_signature_not_verified")
 
     if seller_kind == "ai_agent":
-        if int(seller.get("runtime_verified", 0) or 0) == 1:
+        hosted_runtime = get_seller_hosted_connector_config_db(
+            seller.get("seller_id")
+        ) or {}
+        hosted_runtime_verified = (
+            hosted_runtime.get("status") == "active"
+            and hosted_runtime.get("execution_mode") == "iat_hosted"
+            and bool(hosted_runtime.get("last_success_at"))
+        )
+        if hosted_runtime_verified:
+            trust_score += 15
+            trust_reasons.append("iat_hosted_runtime_canary_verified")
+        elif int(seller.get("runtime_verified", 0) or 0) == 1:
             trust_score += 15
             trust_reasons.append("runtime_domain_control_verified")
         else:
             risk_score += 15
-            risk_reasons.append("runtime_domain_control_not_verified")
+            risk_reasons.append("runtime_execution_not_verified")
 
     if seller_kind != "ai_agent":
         if str(seller.get("kyc_status") or "not_provided").lower() in ["verified", "approved"]:
@@ -18146,10 +18202,13 @@ def approve_seller_db(
         seller_id,
     ))
 
+    # Propagate governance identity without changing per-agent availability.
+    # Explicitly disabled capabilities must remain disabled.
     cur.execute(f"""
     UPDATE agents
     SET
-        available = 1,
+        seller_status = 'active',
+        verification_status = 'foundation_verified',
         trust_tier = 'verified'
     WHERE seller_id = {p}
     """, (

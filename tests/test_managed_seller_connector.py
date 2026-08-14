@@ -74,6 +74,62 @@ def test_order_enqueue_is_idempotent(tmp_path, monkeypatch):
     assert db.get_seller_connector_task_db(order_reference="order_1")["request_payload"] == {"task": "safe"}
 
 
+def test_hosted_canary_is_current_onboarding_runtime_evidence(monkeypatch):
+    monkeypatch.setattr(db, "get_seller_db", lambda _seller_id: {
+        "seller_id": "seller_1", "email_verified": 1, "wallet_verified": 1,
+        "runtime_verified": 0,
+    })
+    monkeypatch.setattr(db, "get_seller_hosted_connector_config_db", lambda _seller_id: {
+        "status": "active", "execution_mode": "iat_hosted", "last_success_at": 123,
+    })
+    result = db.evaluate_seller_onboarding_evidence_db("seller_1")
+    assert result["status"] == "ready_for_foundation_review"
+    assert result["checks"]["runtime_execution_verified"] is True
+    assert result["runtime_evidence"]["domain_control_verified"] is False
+    assert result["policy"]["evidence_does_not_equal_approval"] is True
+
+
+def test_configured_runtime_without_success_is_not_verified(monkeypatch):
+    monkeypatch.setattr(db, "get_seller_db", lambda _seller_id: {
+        "seller_id": "seller_1", "email_verified": 1, "wallet_verified": 1,
+        "runtime_verified": 0,
+    })
+    monkeypatch.setattr(db, "get_seller_hosted_connector_config_db", lambda _seller_id: {
+        "status": "active", "execution_mode": "iat_hosted", "last_success_at": None,
+    })
+    result = db.evaluate_seller_onboarding_evidence_db("seller_1")
+    assert result["status"] == "evidence_required"
+    assert result["blockers"] == ["runtime_execution_verified"]
+
+
+def test_seller_approval_does_not_reenable_disabled_agents(monkeypatch):
+    statements = []
+
+    class Cursor:
+        def execute(self, statement, _params=()):
+            statements.append(" ".join(statement.split()))
+
+    class Connection:
+        def cursor(self):
+            return Cursor()
+
+        def commit(self):
+            return None
+
+    monkeypatch.setattr(db, "get_seller_db", lambda _seller_id: {
+        "seller_id": "seller_1", "seller_status": "pending", "metadata": "{}",
+    })
+    monkeypatch.setattr(db, "get_conn", Connection)
+    monkeypatch.setattr(db, "release_conn", lambda _conn: None)
+    monkeypatch.setattr(db, "create_seller_governance_event_with_cursor", lambda **_kwargs: None)
+    result = db.approve_seller_db("seller_1")
+    agent_updates = [sql for sql in statements if sql.startswith("UPDATE agents")]
+    assert result["status"] == "ok"
+    assert len(agent_updates) == 1
+    assert "available" not in agent_updates[0]
+    assert "verification_status = 'foundation_verified'" in agent_updates[0]
+
+
 def test_expired_lease_cannot_complete_and_task_can_be_reclaimed(tmp_path, monkeypatch):
     connector_database(tmp_path, monkeypatch)
     queued = db.enqueue_seller_connector_task_db("seller_1", {"task": "safe"})

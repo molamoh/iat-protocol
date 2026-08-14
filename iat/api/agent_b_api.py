@@ -139,6 +139,7 @@ from iat.api.db import (
     verify_completed_seller_connector_task_db,
     store_seller_hosted_connector_config_db,
     get_seller_hosted_connector_config_db,
+    evaluate_seller_onboarding_evidence_db,
     list_active_seller_hosted_connector_configs_db,
     update_seller_hosted_connector_health_db,
     list_sellers_db,
@@ -9165,6 +9166,7 @@ def seller_dashboard(
     average_delivered_order_value_iat = round((delivered_revenue_iat / delivered_orders), 4) if delivered_orders else 0
 
     runtime_summary = get_seller_runtime_summary_db(seller_id)
+    onboarding_evidence = evaluate_seller_onboarding_evidence_db(seller_id)
 
     exposure_limit = float(
         seller.get("dynamic_exposure_limit")
@@ -9319,6 +9321,7 @@ def seller_dashboard(
             "runtime_risk_events": runtime_risk_list[:10],
         },
         "autonomous_governance": autonomous_governance,
+        "onboarding_evidence": onboarding_evidence,
         "next_required_actions": next_required_actions,
         "policy": {
             "seller_dashboard_is_read_only": True,

@@ -15,3 +15,24 @@ Required configuration:
 - `IAT_API_ORIGIN`: optional; defaults to the public IAT API.
 
 Rotating the connector key immediately invalidates the previous connector.
+
+## Order safety lifecycle
+
+The protocol creates a connector task only after on-chain payment validation and
+only for an active, Foundation-verified seller agent. Each order reference is
+unique, so retries cannot create duplicate work. Claims use short-lived leases;
+an expired lease cannot submit a result.
+
+Returned results are contributions, never direct buyer deliveries. IAT records
+them in a Foundation execution session, checks them for forbidden buyer data and
+policy violations, and keeps delivery blocked until the Foundation decision is
+ready and approved.
+
+Buyers can follow an asynchronous order with:
+
+```text
+GET /buyer/orders/{order_id}/status
+X-IAT-Buyer-Secret: <secret returned when the order was created>
+```
+
+The buyer secret belongs in the header, not in the URL.

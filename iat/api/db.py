@@ -7806,12 +7806,26 @@ def init_seller_connector_tables():
         leased_until INTEGER,
         attempt_count INTEGER NOT NULL DEFAULT 0,
         result_payload TEXT,
+        verification_payload TEXT,
+        execution_session_id TEXT,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         completed_at INTEGER
     )
     """)
+    for column, definition in {
+        "verification_payload": "TEXT",
+        "execution_session_id": "TEXT",
+    }.items():
+        try:
+            if USE_POSTGRES:
+                cur.execute(f"ALTER TABLE seller_connector_tasks ADD COLUMN IF NOT EXISTS {column} {definition}")
+            else:
+                cur.execute(f"ALTER TABLE seller_connector_tasks ADD COLUMN {column} {definition}")
+        except Exception:
+            pass
     cur.execute("CREATE INDEX IF NOT EXISTS idx_seller_connector_tasks_claim ON seller_connector_tasks(seller_id,status,created_at)")
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_seller_connector_tasks_order ON seller_connector_tasks(order_reference) WHERE order_reference IS NOT NULL")
     conn.commit()
     release_conn(conn)
 
@@ -7850,6 +7864,21 @@ def get_seller_by_connector_key_digest_db(key_digest):
     row = cur.fetchone()
     release_conn(conn)
     return dict(row) if row else None
+
+
+def seller_connector_available_db(seller_id):
+    if not seller_id:
+        return False
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    cur.execute(f"""
+    SELECT 1 FROM seller_connector_credentials
+    WHERE seller_id={p} AND status='active' LIMIT 1
+    """, (seller_id,))
+    available = cur.fetchone() is not None
+    release_conn(conn)
+    return available
 
 
 def claim_seller_connector_task_db(seller_id, lease_digest, now=None, lease_seconds=60):
@@ -7895,15 +7924,165 @@ def enqueue_seller_connector_task_db(seller_id, request_payload, seller_agent_id
     conn = get_conn()
     cur = conn.cursor()
     p = qmark()
+    if order_reference:
+        cur.execute(f"SELECT task_id,status FROM seller_connector_tasks WHERE order_reference={p} LIMIT 1", (order_reference,))
+        existing = cur.fetchone()
+        if existing:
+            task = dict(existing)
+            release_conn(conn)
+            return {
+                "status": "ok",
+                "task_id": task["task_id"],
+                "seller_id": seller_id,
+                "task_status": task["status"],
+                "idempotent_replay": True,
+            }
+    try:
+        cur.execute(f"""
+        INSERT INTO seller_connector_tasks (
+            task_id,seller_id,seller_agent_id,order_reference,request_payload,status,
+            lease_digest,leased_until,attempt_count,result_payload,created_at,updated_at,completed_at
+        ) VALUES ({p},{p},{p},{p},{p},'queued',NULL,NULL,0,NULL,{p},{p},NULL)
+        """, (task_id, seller_id, seller_agent_id, order_reference, json.dumps(request_payload, sort_keys=True), current_time, current_time))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        if not order_reference:
+            release_conn(conn)
+            raise
+        cur.execute(f"SELECT task_id,status FROM seller_connector_tasks WHERE order_reference={p} LIMIT 1", (order_reference,))
+        existing = cur.fetchone()
+        if not existing:
+            release_conn(conn)
+            raise
+        task = dict(existing)
+        release_conn(conn)
+        return {
+            "status": "ok",
+            "task_id": task["task_id"],
+            "seller_id": seller_id,
+            "task_status": task["status"],
+            "idempotent_replay": True,
+        }
+    release_conn(conn)
+    return {"status": "ok", "task_id": task_id, "seller_id": seller_id, "task_status": "queued", "idempotent_replay": False}
+
+
+def get_seller_connector_task_db(task_id=None, order_reference=None):
+    if not task_id and not order_reference:
+        return None
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    if task_id:
+        cur.execute(f"SELECT * FROM seller_connector_tasks WHERE task_id={p} LIMIT 1", (task_id,))
+    else:
+        cur.execute(f"SELECT * FROM seller_connector_tasks WHERE order_reference={p} LIMIT 1", (order_reference,))
+    row = cur.fetchone()
+    release_conn(conn)
+    if not row:
+        return None
+    task = dict(row)
+    task["request_payload"] = _safe_json_loads(task.get("request_payload"), {})
+    task["result_payload"] = _safe_json_loads(task.get("result_payload"), {})
+    task["verification_payload"] = _safe_json_loads(task.get("verification_payload"), {})
+    task.pop("lease_digest", None)
+    return task
+
+
+def verify_completed_seller_connector_task_db(task_id):
+    task = get_seller_connector_task_db(task_id=task_id)
+    if not task:
+        return {"status": "error", "message": "completed_connector_task_required"}
+    if str(task.get("status") or "").startswith("verification_") and task.get("verification_payload"):
+        return {
+            "status": "ok",
+            "task_id": task_id,
+            "task_status": task.get("status"),
+            "execution_session_id": task.get("execution_session_id"),
+            "verification": task.get("verification_payload"),
+            "delivery_authorized": False,
+            "idempotent_replay": True,
+        }
+    if task.get("status") != "completed":
+        return {"status": "error", "message": "completed_connector_task_required"}
+
+    agent = get_seller_agent_db(task.get("seller_agent_id"))
+    if not agent or str(agent.get("seller_id") or "") != str(task.get("seller_id") or ""):
+        return {"status": "error", "message": "connector_task_seller_agent_mismatch"}
+
+    session = create_seller_agent_execution_session_db({
+        "order_id": task.get("order_reference"),
+        "seller_id": task.get("seller_id"),
+        "seller_agent_id": task.get("seller_agent_id"),
+        "agent_id": agent.get("agent_id"),
+        "service": (task.get("request_payload") or {}).get("service"),
+        "execution_status": "completed",
+        "execution_context": task.get("request_payload") or {},
+        "execution_result": {
+            "status": "ok",
+            "execution_mode": "managed_connector",
+            "result_type": "seller_runtime_contribution",
+            "result": task.get("result_payload") or {},
+        },
+        "metadata": {
+            "source": "managed_seller_connector",
+            "execution_mode": "managed_connector",
+            "buyer_data_stripped": True,
+            "foundation_mediated": True,
+        },
+    })
+    if not session or not session.get("execution_session_id"):
+        return {"status": "error", "message": "execution_session_creation_failed"}
+
+    execution_session_id = session.get("execution_session_id")
+    verification = verify_seller_execution_result_db(execution_session_id)
+    verification_status = str(verification.get("verification_status") or "").lower()
+    task_status = {
+        "approved": "verification_approved",
+        "rejected": "verification_rejected",
+        "manual_review": "verification_manual_review",
+    }.get(verification_status, "verification_error")
+
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
     cur.execute(f"""
-    INSERT INTO seller_connector_tasks (
-        task_id,seller_id,seller_agent_id,order_reference,request_payload,status,
-        lease_digest,leased_until,attempt_count,result_payload,created_at,updated_at,completed_at
-    ) VALUES ({p},{p},{p},{p},{p},'queued',NULL,NULL,0,NULL,{p},{p},NULL)
-    """, (task_id, seller_id, seller_agent_id, order_reference, json.dumps(request_payload, sort_keys=True), current_time, current_time))
+    UPDATE seller_connector_tasks
+    SET status={p},verification_payload={p},execution_session_id={p},updated_at={p}
+    WHERE task_id={p} AND status='completed'
+    """, (task_status, json.dumps(verification, sort_keys=True), execution_session_id, int(time.time()), task_id))
     conn.commit()
     release_conn(conn)
-    return {"status": "ok", "task_id": task_id, "seller_id": seller_id}
+
+    order_reference = task.get("order_reference")
+    if order_reference:
+        next_order_status = (
+            "foundation_review_required"
+            if task_status == "verification_approved"
+            else "foundation_delivery_blocked"
+            if task_status == "verification_rejected"
+            else "seller_result_manual_review"
+        )
+        update_order_db(order_reference, {
+            "status": next_order_status,
+            "delivery_result": json.dumps({
+                "status": next_order_status,
+                "task_id": task_id,
+                "execution_session_id": execution_session_id,
+                "seller_result_verification": verification,
+                "delivery_authorized": False,
+            }),
+        })
+
+    return {
+        "status": "ok",
+        "task_id": task_id,
+        "task_status": task_status,
+        "execution_session_id": execution_session_id,
+        "verification": verification,
+        "delivery_authorized": False,
+    }
 
 
 def complete_seller_connector_task_db(seller_id, task_id, lease_digest, result, now=None):
@@ -18168,6 +18347,24 @@ def get_seller_agent_execution_session_db(execution_session_id):
     return dict(row) if row else None
 
 
+def get_latest_verified_seller_execution_session_db(order_id):
+    if not order_id:
+        return None
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    cur.execute(f"""
+    SELECT execution_session_id FROM seller_agent_execution_sessions
+    WHERE order_id={p} AND execution_status='verified'
+    ORDER BY updated_at DESC LIMIT 1
+    """, (order_id,))
+    row = cur.fetchone()
+    release_conn(conn)
+    if not row:
+        return None
+    return get_seller_agent_execution_session_db(dict(row)["execution_session_id"])
+
+
 def update_seller_agent_execution_session_db(
     execution_session_id,
     updates,
@@ -18842,6 +19039,7 @@ def verify_seller_execution_result_db(execution_session_id):
     supported_execution_modes = {
         "iat_internal",
         "python_plugin_runtime",
+        "managed_connector",
     }
 
     execution_mode_check = str(

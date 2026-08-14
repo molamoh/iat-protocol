@@ -134,6 +134,9 @@ from iat.api.db import (
     claim_seller_connector_task_db,
     complete_seller_connector_task_db,
     enqueue_seller_connector_task_db,
+    get_seller_connector_task_db,
+    seller_connector_available_db,
+    verify_completed_seller_connector_task_db,
     list_sellers_db,
     authenticate_seller_api_key_db,
     approve_seller_db,
@@ -4500,6 +4503,75 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
     }
 
 
+def queue_paid_order_for_managed_connector(order, tx_signature):
+    """Queue only Foundation-selected seller agents with an active connector."""
+    agent = get_agent_db(order.get("seller_id"))
+    if not agent:
+        return None
+
+    seller_id = agent.get("seller_id")
+    seller_agent_id = agent.get("seller_agent_id")
+    if not seller_id or not seller_agent_id:
+        return None
+    if str(agent.get("agent_type") or "").lower() != "seller":
+        return None
+    if str(agent.get("seller_status") or "").lower() != "active":
+        return None
+    if str(agent.get("verification_status") or "").lower() != "foundation_verified":
+        return None
+    if not bool(agent.get("available")) or not seller_connector_available_db(seller_id):
+        return None
+
+    execution_context = order.get("execution_context") or {}
+    buyer_intent = order.get("buyer_intent") or {}
+    requirements = order.get("requirements") or {}
+    foundation_task = (
+        execution_context.get("task")
+        or buyer_intent.get("goal")
+        or order.get("query")
+        or f"Execute service: {order.get('service')}"
+    )
+    try:
+        task = enqueue_seller_connector_task_db(
+            seller_id=seller_id,
+            seller_agent_id=seller_agent_id,
+            order_reference=order.get("order_id"),
+            request_payload={
+                "type": "foundation_supplier_execution",
+                "service": order.get("service"),
+                "task": foundation_task,
+                "requirements": requirements,
+                "required_format": "structured_supplier_contribution",
+                "trusted_input_only": True,
+                "foundation_mediated": True,
+                "buyer_data_stripped": True,
+            },
+        )
+    except Exception:
+        return None
+    if task.get("status") != "ok":
+        return None
+
+    pending_record = {
+        "status": "seller_execution_pending",
+        "task_id": task.get("task_id"),
+        "seller_id": seller_id,
+        "seller_agent_id": seller_agent_id,
+        "payment_verified": True,
+        "buyer_data_stripped": True,
+        "foundation_mediated": True,
+    }
+    update_order_db(
+        order.get("order_id"),
+        {
+            "status": "seller_execution_pending",
+            "tx_signature": tx_signature,
+            "delivery_result": json.dumps(pending_record),
+        },
+    )
+    return pending_record
+
+
 @app.post("/verify-payment-base")
 def verify_payment(req: VerifyPaymentRequest, x_api_key: str | None = Header(default=None), deliver: bool = True):
     if not require_admin_key(x_api_key):
@@ -4683,6 +4755,13 @@ def verify_payment(req: VerifyPaymentRequest, x_api_key: str | None = Header(def
                 "new_reputation": None,
                 "data": None,
             }
+
+        connector_pending = queue_paid_order_for_managed_connector(
+            order,
+            req.tx_signature,
+        )
+        if connector_pending:
+            return connector_pending
 
         from iat.action_engine.protocol_runtime import execute_protocol_order
 
@@ -4879,6 +4958,15 @@ def make_buyer_payment_response(result):
         return {
             "status": "delivery_failed",
             "message": "Payment was verified, but delivery failed. The order should be retried or escalated.",
+        }
+
+    if status == "seller_execution_pending":
+        return {
+            "status": "seller_execution_pending",
+            "payment_verified": True,
+            "delivered": False,
+            "task_id": result.get("task_id"),
+            "message": "Payment verified. The approved seller connector is processing the Foundation-mediated task.",
         }
 
     if status == "foundation_review_required":
@@ -5304,6 +5392,40 @@ def buyer_verify_payment(req: VerifyPaymentRequest):
     )
 
     return make_buyer_payment_response(result)
+
+
+@app.get("/buyer/orders/{order_id}/status")
+def buyer_order_status(
+    order_id: str,
+    x_iat_buyer_secret: str | None = Header(default=None),
+):
+    order = get_order_db(order_id)
+    expected_secret = str((order or {}).get("buyer_secret") or "")
+    if not order or not expected_secret or not secrets.compare_digest(
+        expected_secret, str(x_iat_buyer_secret or "")
+    ):
+        raise HTTPException(status_code=404, detail="order_not_found")
+
+    status = str(order.get("status") or "unknown")
+    response = {
+        "status": status,
+        "order_id": order_id,
+        "payment_verified": bool(order.get("tx_signature")),
+        "delivered": bool(order.get("used")) and status == "delivered",
+    }
+    if status == "delivered":
+        response["delivery"] = order.get("delivery_result") or {}
+        return response
+
+    task = get_seller_connector_task_db(order_reference=order_id)
+    if task:
+        response["seller_execution"] = {
+            "task_id": task.get("task_id"),
+            "status": task.get("status"),
+            "attempt_count": task.get("attempt_count", 0),
+        }
+    response["delivery_authorized"] = False
+    return response
 
 
 @app.post("/request")
@@ -8228,7 +8350,24 @@ def seller_connector_task_complete(
     if len(json.dumps(req.result, sort_keys=True)) > 65536:
         return {"status": "error", "message": "connector_result_too_large"}
     lease_digest = hashlib.sha256(req.lease_token.encode("utf-8")).hexdigest()
-    return complete_seller_connector_task_db(seller.get("seller_id"), task_id, lease_digest, req.result)
+    completed = complete_seller_connector_task_db(
+        seller.get("seller_id"), task_id, lease_digest, req.result
+    )
+    if completed.get("status") != "ok":
+        existing = get_seller_connector_task_db(task_id=task_id)
+        if (
+            existing
+            and str(existing.get("seller_id") or "") == str(seller.get("seller_id") or "")
+            and str(existing.get("status") or "") in {
+                "completed",
+                "verification_approved",
+                "verification_rejected",
+                "verification_manual_review",
+            }
+        ):
+            return verify_completed_seller_connector_task_db(task_id)
+        return completed
+    return verify_completed_seller_connector_task_db(task_id)
 
 
 @app.post("/admin/seller/connector/canary")

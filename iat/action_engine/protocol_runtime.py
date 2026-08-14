@@ -9,6 +9,7 @@ from iat.api.db import (
     run_foundation_controlled_seller_execution_db,
     verify_seller_execution_result_db,
     run_foundation_decision_db,
+    get_latest_verified_seller_execution_session_db,
 )
 
 
@@ -470,13 +471,27 @@ def run_foundation_supplier_pipeline(order):
         .get("selected_agent_id")
     )
 
-    supplier_execution = run_foundation_controlled_seller_execution_db(
-        service=order.get("service"),
-        execution_context=sanitized_execution_context,
-        specialization=None,
-        order_id=order.get("order_id"),
-        preferred_agent_id=selected_supplier,
+    existing_verified_session = get_latest_verified_seller_execution_session_db(
+        order.get("order_id")
     )
+    if existing_verified_session:
+        supplier_execution = {
+            "status": "ok",
+            "execution_session_id": existing_verified_session.get("execution_session_id"),
+            "execution_result": _ensure_dict(
+                existing_verified_session.get("execution_result")
+            ),
+            "session": existing_verified_session,
+            "reused_verified_contribution": True,
+        }
+    else:
+        supplier_execution = run_foundation_controlled_seller_execution_db(
+            service=order.get("service"),
+            execution_context=sanitized_execution_context,
+            specialization=None,
+            order_id=order.get("order_id"),
+            preferred_agent_id=selected_supplier,
+        )
 
     if supplier_execution.get("status") != "ok":
         fallback = generate_service_result(
@@ -503,9 +518,14 @@ def run_foundation_supplier_pipeline(order):
             },
         }
 
-    verification = verify_seller_execution_result_db(
-        supplier_execution.get("execution_session_id")
-    )
+    if existing_verified_session:
+        verification = _ensure_dict(
+            existing_verified_session.get("verification_result")
+        )
+    else:
+        verification = verify_seller_execution_result_db(
+            supplier_execution.get("execution_session_id")
+        )
 
     foundation_decision = (
         order.get("foundation_decision")

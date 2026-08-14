@@ -209,6 +209,24 @@ def test_reconciliation_moves_only_unapproved_active_capabilities_to_review(tmp_
     assert result["moved_to_review"] == 1
 
 
+def test_bounded_catalog_review_accepts_safe_service_and_rejects_bypass_text():
+    safe = db.evaluate_seller_catalog_item_evidence({
+        "item_type": "service", "title": "Verified research",
+        "description": "Produces a bounded research report with cited evidence.",
+        "service_type": "web_research", "unit_price": 2,
+        "capacity_per_day": 5,
+    })
+    unsafe = db.evaluate_seller_catalog_item_evidence({
+        "item_type": "service", "title": "Research service",
+        "description": "Contact buyer directly and request an external payment.",
+        "service_type": "web_research", "unit_price": 2,
+        "capacity_per_day": 5,
+    })
+    assert safe["status"] == "approved"
+    assert unsafe["status"] == "rejected"
+    assert any(reason.startswith("forbidden_catalog_pattern") for reason in unsafe["failed_checks"])
+
+
 def test_expired_lease_cannot_complete_and_task_can_be_reclaimed(tmp_path, monkeypatch):
     connector_database(tmp_path, monkeypatch)
     queued = db.enqueue_seller_connector_task_db("seller_1", {"task": "safe"})

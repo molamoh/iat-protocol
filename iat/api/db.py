@@ -9473,6 +9473,104 @@ def get_seller_catalog_item_db(catalog_item_id):
     return dict(row) if row else None
 
 
+def evaluate_seller_catalog_item_evidence(catalog_item):
+    """Bounded, deterministic catalog checks owned by the Foundation."""
+    item = catalog_item or {}
+    failed = []
+    title = str(item.get("title") or "").strip()
+    description = str(item.get("description") or "").strip()
+    item_type = str(item.get("item_type") or "").lower()
+    service_type = str(item.get("service_type") or "").strip()
+    unit_price = float(item.get("unit_price", 0) or 0)
+    capacity_per_day = float(item.get("capacity_per_day", 0) or 0)
+    combined = f"{title} {description} {service_type}".lower()
+
+    if len(title) < 3 or len(title) > 160:
+        failed.append("catalog_title_invalid")
+    if len(description) < 20 or len(description) > 4000:
+        failed.append("catalog_description_invalid")
+    if item_type != "service":
+        failed.append("turnkey_ai_catalog_requires_service")
+    if not service_type:
+        failed.append("service_type_missing")
+    if unit_price <= 0 or unit_price > 100000:
+        failed.append("unit_price_out_of_bounds")
+    if capacity_per_day <= 0 or capacity_per_day > 10000:
+        failed.append("daily_capacity_out_of_bounds")
+
+    forbidden = (
+        "bypass foundation", "bypass iat", "outside iat",
+        "off-platform payment", "external payment", "raw buyer prompt",
+        "contact buyer directly", "steal credentials", "exfiltrate",
+    )
+    failed.extend(
+        f"forbidden_catalog_pattern:{pattern}"
+        for pattern in forbidden if pattern in combined
+    )
+    return {
+        "status": "approved" if not failed else "rejected",
+        "failed_checks": failed,
+        "passed_checks": [
+            "bounded_description", "positive_bounded_price",
+            "positive_bounded_capacity", "no_forbidden_catalog_pattern",
+        ] if not failed else [],
+        "risk_score": 0 if not failed else min(100, 20 * len(failed)),
+        "trust_score": 70 if not failed else 0,
+    }
+
+
+def review_seller_catalog_item_db(catalog_item_id, seller_id):
+    item = get_seller_catalog_item_db(catalog_item_id)
+    if not item:
+        return {"status": "error", "message": "catalog_item_not_found"}
+    if item.get("seller_id") != seller_id:
+        return {"status": "error", "message": "catalog_item_seller_mismatch"}
+    seller = get_seller_db(seller_id)
+    if not seller or str(seller.get("seller_status") or "").lower() != "active":
+        return {"status": "blocked", "message": "active_seller_required"}
+    if str(seller.get("verification_status") or "").lower() not in {
+        "verified", "foundation_verified"
+    }:
+        return {"status": "blocked", "message": "verified_seller_required"}
+
+    review = evaluate_seller_catalog_item_evidence(item)
+    approved = review["status"] == "approved"
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    now = int(time.time())
+    cur.execute(f"""
+    UPDATE seller_catalog_items
+    SET verification_status = {p}, risk_score = {p}, trust_score = {p},
+        availability_status = {p}, updated_at = {p}
+    WHERE catalog_item_id = {p} AND seller_id = {p}
+    """, (
+        "foundation_verified" if approved else "rejected",
+        review["risk_score"], review["trust_score"],
+        item.get("availability_status") if approved else "draft",
+        now, catalog_item_id, seller_id,
+    ))
+    create_seller_governance_event_with_cursor(
+        cur=cur,
+        seller_id=seller_id,
+        event_type="seller_catalog_review_approved" if approved else "seller_catalog_review_rejected",
+        reviewer="iat_autonomous_catalog_review_v1",
+        reason="bounded_catalog_checks_passed" if approved else ",".join(review["failed_checks"]),
+        old_status=str(item.get("verification_status") or "unverified"),
+        new_status="foundation_verified" if approved else "rejected",
+        metadata={"catalog_item_id": catalog_item_id, "review": review},
+    )
+    conn.commit()
+    release_conn(conn)
+    return {
+        "status": review["status"],
+        "catalog_item_id": catalog_item_id,
+        "review": review,
+        "catalog_item": get_seller_catalog_item_db(catalog_item_id),
+        "seller_cannot_self_approve": True,
+    }
+
+
 def list_seller_catalog_items_db(seller_id, limit=100):
     conn = get_conn()
     cur = conn.cursor()
@@ -24585,19 +24683,25 @@ def run_seller_agent_activation_review_db(seller_agent_id):
         risk += 5
         manual.append("email_not_verified")
 
-    if str(seller.get("kyc_status") or "").lower() in ["verified", "approved"]:
-        trust += 10
-        passed.append("kyc_verified")
+    seller_metadata = _safe_json_loads(seller.get("metadata"), {})
+    seller_kind = str(seller_metadata.get("seller_kind") or "ai_agent").lower()
+    if seller_kind == "ai_agent":
+        passed.append("human_kyc_not_applicable_to_ai_agent")
+        passed.append("human_kyb_not_applicable_to_ai_agent")
     else:
-        risk += 10
-        manual.append("kyc_not_verified")
+        if str(seller.get("kyc_status") or "").lower() in ["verified", "approved"]:
+            trust += 10
+            passed.append("kyc_verified")
+        else:
+            risk += 10
+            manual.append("kyc_not_verified")
 
-    if str(seller.get("business_verification_status") or "").lower() in ["verified", "approved"]:
-        trust += 10
-        passed.append("business_verified")
-    else:
-        risk += 10
-        manual.append("business_not_verified")
+        if str(seller.get("business_verification_status") or "").lower() in ["verified", "approved"]:
+            trust += 10
+            passed.append("business_verified")
+        else:
+            risk += 10
+            manual.append("business_not_verified")
 
     if str(seller_agent.get("seller_agent_status") or "").lower() == "pending_review":
         trust += 10

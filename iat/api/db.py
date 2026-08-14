@@ -7813,6 +7813,18 @@ def init_seller_connector_tables():
         completed_at INTEGER
     )
     """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS seller_hosted_connector_configs (
+        seller_id TEXT PRIMARY KEY,
+        agent_url TEXT NOT NULL,
+        agent_secret_encrypted TEXT,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        last_success_at INTEGER,
+        last_error TEXT
+    )
+    """)
     for column, definition in {
         "verification_payload": "TEXT",
         "execution_session_id": "TEXT",
@@ -7874,11 +7886,80 @@ def seller_connector_available_db(seller_id):
     p = qmark()
     cur.execute(f"""
     SELECT 1 FROM seller_connector_credentials
-    WHERE seller_id={p} AND status='active' LIMIT 1
-    """, (seller_id,))
+    WHERE seller_id={p} AND status='active'
+    UNION ALL
+    SELECT 1 FROM seller_hosted_connector_configs
+    WHERE seller_id={p} AND status='active'
+    LIMIT 1
+    """, (seller_id, seller_id))
     available = cur.fetchone() is not None
     release_conn(conn)
     return available
+
+
+def store_seller_hosted_connector_config_db(seller_id, agent_url, encrypted_secret=None, now=None):
+    current_time = int(time.time()) if now is None else int(now)
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    cur.execute(f"""
+    INSERT INTO seller_hosted_connector_configs (
+        seller_id,agent_url,agent_secret_encrypted,status,created_at,updated_at,last_success_at,last_error
+    ) VALUES ({p},{p},{p},'active',{p},{p},NULL,NULL)
+    ON CONFLICT(seller_id) DO UPDATE SET
+        agent_url=excluded.agent_url,
+        agent_secret_encrypted=excluded.agent_secret_encrypted,
+        status='active',
+        updated_at=excluded.updated_at,
+        last_error=NULL
+    """, (seller_id, agent_url, encrypted_secret, current_time, current_time))
+    conn.commit()
+    release_conn(conn)
+    return {"status": "ok", "seller_id": seller_id, "agent_url": agent_url, "hosted_connector_active": True}
+
+
+def get_seller_hosted_connector_config_db(seller_id):
+    if not seller_id:
+        return None
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    cur.execute(f"SELECT * FROM seller_hosted_connector_configs WHERE seller_id={p} LIMIT 1", (seller_id,))
+    row = cur.fetchone()
+    release_conn(conn)
+    return dict(row) if row else None
+
+
+def list_active_seller_hosted_connector_configs_db(limit=100):
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    cur.execute(f"""
+    SELECT * FROM seller_hosted_connector_configs
+    WHERE status='active' ORDER BY updated_at ASC LIMIT {p}
+    """, (max(1, min(int(limit), 500)),))
+    rows = [dict(row) for row in cur.fetchall()]
+    release_conn(conn)
+    return rows
+
+
+def update_seller_hosted_connector_health_db(seller_id, success, error=None, now=None):
+    current_time = int(time.time()) if now is None else int(now)
+    conn = get_conn()
+    cur = conn.cursor()
+    p = qmark()
+    if success:
+        cur.execute(f"""
+        UPDATE seller_hosted_connector_configs
+        SET last_success_at={p},last_error=NULL,updated_at={p} WHERE seller_id={p}
+        """, (current_time, current_time, seller_id))
+    else:
+        cur.execute(f"""
+        UPDATE seller_hosted_connector_configs
+        SET last_error={p},updated_at={p} WHERE seller_id={p}
+        """, (str(error or "hosted_connector_failed")[:500], current_time, seller_id))
+    conn.commit()
+    release_conn(conn)
 
 
 def claim_seller_connector_task_db(seller_id, lease_digest, now=None, lease_seconds=60):

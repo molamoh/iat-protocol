@@ -316,9 +316,10 @@ function renderSellerGovernanceState(dashboard) {
   const emailAction = emailVerified ? "verified" : `<button type="button" class="button secondary seller-verify-email">Send verification email</button>`;
   const walletEvidence = walletVerified ? "verified by signature" : "sign in with the registered wallet to verify";
   const runtimeEvidence = reachableRuntimes.length ? `${reachableRuntimes.length} endpoint(s) reachable; domain control not yet verified` : "no reachable runtime registered";
+  const hostedCandidate = reachableRuntimes.find((agent) => !String(agent.url || "").includes("iat-protocol-latest.onrender.com"))?.url || "";
   const runtimeControl = runtimeVerified ? "verified by domain challenge" : `<div class="seller-runtime-verification"><p class="seller-console-note">Use a runtime controlled by this seller. If you do not have one, deploy <a href="https://hub.docker.com/r/molamoh/iat-seller-runtime" target="_blank" rel="noopener noreferrer">molamoh/iat-seller-runtime:latest ↗</a>, then configure IAT_SELLER_ID, IAT_SELLER_VERIFICATION_TOKEN and a distinct IAT_RUNTIME_EXECUTION_SECRET.</p><input class="seller-runtime-url" type="url" value="${escapeHtml(reachableRuntimes[0]?.url || "")}" placeholder="https://your-seller-runtime.example"><button type="button" class="button secondary seller-runtime-challenge">Create challenge</button><button type="button" class="button secondary seller-runtime-confirm" hidden>Verify published file</button><pre class="seller-runtime-instructions" hidden></pre></div>`;
-  const connectorControl = emailVerified && walletVerified ? `<div class="seller-connector-control"><button type="button" class="button secondary seller-connector-issue">Create or rotate connector key</button><button type="button" class="button secondary seller-connector-canary">Test connector</button><pre class="seller-connector-key" hidden></pre><p class="seller-console-note">The key is shown once. Rotation immediately revokes the previous connector.</p></div>` : "Verify email and wallet first";
-  panel.innerHTML = `<h3>Governance review</h3><p>Protocol approval remains independent from seller self-management.</p><div class="seller-governance-runtime"><span>Runtime state</span><strong>${escapeHtml(runtime.runtime_state || "pending review")}</strong></div><ul>${checks}<li><strong>Seller status</strong><span>${escapeHtml(`${seller.seller_status || "pending"} / ${seller.verification_status || "unverified"}`)}</span></li><li><strong>Current email evidence</strong><span>${emailAction}</span></li><li><strong>Current wallet evidence</strong><span>${escapeHtml(walletEvidence)}</span></li><li><strong>Managed connector</strong><span>${connectorControl}</span></li><li><strong>Runtime reachability</strong><span>${escapeHtml(runtimeEvidence)}</span></li><li><strong>Advanced runtime control</strong><span>${runtimeControl}</span></li>${autonomousRows}</ul>${autonomous.some((item) => item.status === "completed") ? '<p class="seller-console-note">Historical reviews preserve the evidence and policy snapshot used at decision time. Current evidence is shown separately above.</p>' : ""}`;
+  const connectorControl = emailVerified && walletVerified ? `<div class="seller-connector-control"><p class="seller-console-note">IAT hosts the connector. Provide only the HTTPS execution URL of your agent. The access token is encrypted and never displayed again.</p><input class="seller-hosted-agent-url" type="url" value="${escapeHtml(hostedCandidate)}" placeholder="https://your-agent.example/execute"><input class="seller-hosted-agent-secret" type="password" autocomplete="new-password" placeholder="Agent access token (optional)"><button type="button" class="button secondary seller-hosted-configure">Connect my agent</button><button type="button" class="button secondary seller-connector-canary">Test connector</button><pre class="seller-connector-key" hidden></pre><details><summary>Self-hosted connector (advanced)</summary><button type="button" class="button secondary seller-connector-issue">Create or rotate connector key</button><p class="seller-console-note">For sellers that operate their own connector process. Rotation immediately revokes the previous key.</p></details></div>` : "Verify email and wallet first";
+  panel.innerHTML = `<h3>Governance review</h3><p>Protocol approval remains independent from seller self-management.</p><div class="seller-governance-runtime"><span>Runtime state</span><strong>${escapeHtml(runtime.runtime_state || "pending review")}</strong></div><ul>${checks}<li><strong>Seller status</strong><span>${escapeHtml(`${seller.seller_status || "pending"} / ${seller.verification_status || "unverified"}`)}</span></li><li><strong>Current email evidence</strong><span>${emailAction}</span></li><li><strong>Current wallet evidence</strong><span>${escapeHtml(walletEvidence)}</span></li><li><strong>Managed connector</strong><span>${connectorControl}</span></li><li><strong>Runtime reachability</strong><span>${escapeHtml(runtimeEvidence)}</span></li><li><strong>Advanced runtime control</strong><span><details><summary>Domain-controlled runtime</summary>${runtimeControl}</details></span></li>${autonomousRows}</ul>${autonomous.some((item) => item.status === "completed") ? '<p class="seller-console-note">Historical reviews preserve the evidence and policy snapshot used at decision time. Current evidence is shown separately above.</p>' : ""}`;
   panel.querySelector(".seller-verify-email")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
     button.disabled = true;
@@ -365,6 +366,43 @@ function renderSellerGovernanceState(dashboard) {
       output.textContent = `Save this key now:\n${result.connector_key}\n\nImage: molamoh/iat-managed-seller-connector:latest`;
       output.hidden = false;
       button.textContent = "Rotate connector key";
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = `Retry: ${error.message}`;
+    }
+  });
+  if (emailVerified && walletVerified) {
+    sandboxRequest("/seller/connector/hosted/status", { headers: sellerSessionHeaders }).then((hosted) => {
+      if (hosted.status !== "ok") return;
+      const container = panel.querySelector(".seller-connector-control");
+      const input = container?.querySelector(".seller-hosted-agent-url");
+      const output = container?.querySelector(".seller-connector-key");
+      if (input && hosted.agent_url) input.value = hosted.agent_url;
+      if (output) {
+        output.textContent = hosted.last_error
+          ? `Hosted connector active. Last error: ${hosted.last_error}`
+          : hosted.last_success_at
+            ? `Hosted connector active. Last success: ${new Date(hosted.last_success_at * 1000).toLocaleString()}`
+            : "Hosted connector configured and waiting for its first task.";
+        output.hidden = false;
+      }
+    }).catch(() => {});
+  }
+  panel.querySelector(".seller-hosted-configure")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    const container = button.closest(".seller-connector-control");
+    const agentUrl = container.querySelector(".seller-hosted-agent-url").value.trim();
+    const agentSecret = container.querySelector(".seller-hosted-agent-secret").value;
+    const output = container.querySelector(".seller-connector-key");
+    button.disabled = true;
+    button.textContent = "Connecting…";
+    try {
+      const result = await sandboxRequest("/seller/connector/hosted/configure", { method: "POST", headers: { "Content-Type": "application/json", ...sellerSessionHeaders }, body: JSON.stringify({ agent_url: agentUrl, agent_secret: agentSecret || null }) });
+      if (result.status !== "ok") throw new Error(result.message || "hosted_connector_configuration_failed");
+      container.querySelector(".seller-hosted-agent-secret").value = "";
+      output.textContent = `Hosted connector active for ${result.agent_url}. You can test it now.`;
+      output.hidden = false;
+      button.textContent = "Agent connected";
     } catch (error) {
       button.disabled = false;
       button.textContent = `Retry: ${error.message}`;

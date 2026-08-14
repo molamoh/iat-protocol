@@ -137,6 +137,10 @@ from iat.api.db import (
     get_seller_connector_task_db,
     seller_connector_available_db,
     verify_completed_seller_connector_task_db,
+    store_seller_hosted_connector_config_db,
+    get_seller_hosted_connector_config_db,
+    list_active_seller_hosted_connector_configs_db,
+    update_seller_hosted_connector_health_db,
     list_sellers_db,
     authenticate_seller_api_key_db,
     approve_seller_db,
@@ -306,7 +310,11 @@ INTERNAL_DOCS_ENABLED = (
 @asynccontextmanager
 async def application_lifespan(_app: FastAPI):
     initialize_application()
-    yield
+    start_hosted_connector_worker()
+    try:
+        yield
+    finally:
+        stop_hosted_connector_worker()
 
 
 app = FastAPI(
@@ -8060,6 +8068,11 @@ class SellerConnectorCanaryRequest(BaseModel):
     request: str = Field(default="Return a bounded connector canary result.", min_length=1, max_length=1000)
 
 
+class SellerHostedConnectorRequest(BaseModel):
+    agent_url: str = Field(min_length=12, max_length=500)
+    agent_secret: str | None = Field(default=None, max_length=2048)
+
+
 def is_reserved_iat_runtime_host(hostname: str | None) -> bool:
     host = str(hostname or "").lower().rstrip(".")
     return host in {"iat-protocol-latest.onrender.com", "iatprotocol.com", "www.iatprotocol.com"} or host.endswith(".iatprotocol.com")
@@ -8314,12 +8327,165 @@ def seller_connector_credential_rotate(
     return {**stored, "connector_key": connector_key, "message": "save_once_rotation_revokes_previous_key"}
 
 
+@app.post("/seller/connector/hosted/configure")
+def seller_hosted_connector_configure(
+    req: SellerHostedConnectorRequest,
+    x_seller_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    seller = get_authenticated_seller_from_credentials(x_seller_api_key, authorization)
+    if not seller:
+        raise HTTPException(status_code=401, detail="seller_auth_required")
+    if int(seller.get("email_verified", 0) or 0) != 1 or int(seller.get("wallet_verified", 0) or 0) != 1:
+        return {"status": "error", "message": "email_and_wallet_evidence_required"}
+
+    from iat.security.connector_vault import encrypt_connector_secret
+    from iat.security.network import UnsafeNetworkTarget, validate_public_runtime_url
+
+    agent_url = req.agent_url.strip()
+    if is_reserved_iat_runtime_host(urlparse(agent_url).hostname):
+        return {"status": "error", "message": "shared_iat_runtime_not_allowed_for_hosted_connector"}
+    try:
+        validate_public_runtime_url(agent_url)
+        encrypted_secret = encrypt_connector_secret(
+            seller.get("seller_id"), req.agent_secret
+        )
+    except UnsafeNetworkTarget as exc:
+        return {"status": "error", "message": str(exc)}
+    except RuntimeError as exc:
+        return {"status": "error", "message": str(exc)}
+
+    stored = store_seller_hosted_connector_config_db(
+        seller.get("seller_id"), agent_url, encrypted_secret
+    )
+    return {
+        **stored,
+        "secret_stored": bool(req.agent_secret),
+        "secret_returned": False,
+        "execution_mode": "iat_hosted_connector",
+    }
+
+
+@app.get("/seller/connector/hosted/status")
+def seller_hosted_connector_status(
+    x_seller_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    seller = get_authenticated_seller_from_credentials(x_seller_api_key, authorization)
+    if not seller:
+        raise HTTPException(status_code=401, detail="seller_auth_required")
+    config = get_seller_hosted_connector_config_db(seller.get("seller_id"))
+    if not config:
+        return {"status": "not_configured", "hosted_connector_active": False}
+    return {
+        "status": "ok",
+        "hosted_connector_active": config.get("status") == "active",
+        "agent_url": config.get("agent_url"),
+        "secret_configured": bool(config.get("agent_secret_encrypted")),
+        "last_success_at": config.get("last_success_at"),
+        "last_error": config.get("last_error"),
+    }
+
+
 def authenticated_connector_seller(connector_key: str | None):
     value = str(connector_key or "")
     if not value.startswith("isc_") or len(value) > 128:
         return None
     digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
     return get_seller_by_connector_key_digest_db(digest)
+
+
+_hosted_connector_stop = threading.Event()
+_hosted_connector_thread = None
+
+
+def _execute_hosted_connector_task(config, task):
+    from iat.security.connector_vault import decrypt_connector_secret
+    from iat.security.network import validate_public_runtime_url
+
+    seller_id = config.get("seller_id")
+    agent_url = str(config.get("agent_url") or "")
+    validate_public_runtime_url(agent_url)
+    secret = decrypt_connector_secret(
+        seller_id, config.get("agent_secret_encrypted")
+    )
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if secret:
+        headers["Authorization"] = f"Bearer {secret}"
+    response = requests.post(
+        agent_url,
+        json=task.get("request_payload") or {},
+        headers=headers,
+        timeout=(5, 20),
+        allow_redirects=False,
+        stream=True,
+    )
+    response.raise_for_status()
+    if "application/json" not in str(response.headers.get("content-type") or "").lower():
+        raise ValueError("hosted_connector_response_must_be_json")
+    body = bytearray()
+    for chunk in response.iter_content(chunk_size=8192):
+        body.extend(chunk)
+        if len(body) > 65536:
+            raise ValueError("hosted_connector_response_too_large")
+    result = json.loads(body.decode("utf-8"))
+    if not isinstance(result, dict):
+        raise ValueError("hosted_connector_response_must_be_object")
+    return result
+
+
+def _hosted_connector_worker_loop():
+    while not _hosted_connector_stop.wait(2):
+        try:
+            configs = list_active_seller_hosted_connector_configs_db(limit=100)
+        except Exception:
+            continue
+        for config in configs:
+            if _hosted_connector_stop.is_set():
+                return
+            seller_id = config.get("seller_id")
+            lease_digest = hashlib.sha256(
+                ("ish_" + secrets.token_urlsafe(32)).encode("utf-8")
+            ).hexdigest()
+            try:
+                claimed = claim_seller_connector_task_db(
+                    seller_id, lease_digest, lease_seconds=90
+                )
+                if claimed.get("status") != "ok":
+                    continue
+                task = claimed.get("task") or {}
+                result = _execute_hosted_connector_task(config, task)
+                completed = complete_seller_connector_task_db(
+                    seller_id, task.get("task_id"), lease_digest, result
+                )
+                if completed.get("status") != "ok":
+                    raise RuntimeError(completed.get("message") or "hosted_connector_completion_failed")
+                if (task.get("request_payload") or {}).get("type") != "canary":
+                    verify_completed_seller_connector_task_db(task.get("task_id"))
+                update_seller_hosted_connector_health_db(seller_id, True)
+            except Exception as exc:
+                update_seller_hosted_connector_health_db(
+                    seller_id, False, f"{type(exc).__name__}:{exc}"
+                )
+
+
+def start_hosted_connector_worker():
+    global _hosted_connector_thread
+    if _hosted_connector_thread and _hosted_connector_thread.is_alive():
+        return
+    _hosted_connector_stop.clear()
+    _hosted_connector_thread = threading.Thread(
+        target=_hosted_connector_worker_loop,
+        name="iat-hosted-seller-connector",
+        daemon=True,
+    )
+    _hosted_connector_thread.start()
+
+
+def stop_hosted_connector_worker():
+    _hosted_connector_stop.set()
+    if _hosted_connector_thread and _hosted_connector_thread.is_alive():
+        _hosted_connector_thread.join(timeout=3)
 
 
 @app.post("/seller/connector/tasks/claim")

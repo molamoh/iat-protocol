@@ -1,8 +1,11 @@
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 from iat.api import agent_b_api, db
 from iat.action_engine import protocol_runtime
+from iat.security import connector_vault, network
 
 
 MODULE_PATH = Path(__file__).parents[1] / "integrations" / "managed_seller_connector" / "connector.py"
@@ -265,3 +268,74 @@ def test_seller_cannot_read_another_sellers_connector_task(monkeypatch):
         raise AssertionError("cross-seller task read must fail")
     except agent_b_api.HTTPException as exc:
         assert exc.status_code == 404
+
+
+def test_hosted_connector_secret_is_encrypted_and_bound_to_seller(monkeypatch):
+    monkeypatch.setenv("IAT_ADMIN_API_KEY", "admin-secret-long-enough-for-vault")
+    encrypted = connector_vault.encrypt_connector_secret("seller_1", "agent-token")
+    assert encrypted != "agent-token"
+    assert connector_vault.decrypt_connector_secret("seller_1", encrypted) == "agent-token"
+    with pytest.raises(Exception):
+        connector_vault.decrypt_connector_secret("seller_2", encrypted)
+
+
+def test_hosted_connector_calls_agent_without_platform_credentials(monkeypatch):
+    monkeypatch.setenv("IAT_ADMIN_API_KEY", "admin-secret-long-enough-for-vault")
+    monkeypatch.setattr(network, "validate_public_runtime_url", lambda _url: {"public": True})
+    captured = {}
+
+    class HostedResponse:
+        headers = {"content-type": "application/json"}
+
+        def raise_for_status(self):
+            return None
+
+        def iter_content(self, chunk_size):
+            assert chunk_size == 8192
+            yield b'{"status":"ok"}'
+
+    def hosted_post(url, **kwargs):
+        captured.update(url=url, kwargs=kwargs)
+        return HostedResponse()
+
+    monkeypatch.setattr(agent_b_api.requests, "post", hosted_post)
+    encrypted = connector_vault.encrypt_connector_secret("seller_1", "agent-token")
+    result = agent_b_api._execute_hosted_connector_task(
+        {
+            "seller_id": "seller_1",
+            "agent_url": "https://agent.example/execute",
+            "agent_secret_encrypted": encrypted,
+        },
+        {"request_payload": {"type": "canary", "buyer_context_included": False}},
+    )
+    assert result == {"status": "ok"}
+    assert captured["kwargs"]["headers"]["Authorization"] == "Bearer agent-token"
+    assert "IAT_ADMIN_API_KEY" not in str(captured)
+    assert captured["kwargs"]["allow_redirects"] is False
+    assert captured["kwargs"]["stream"] is True
+
+
+def test_hosted_connector_configuration_never_returns_secret(monkeypatch):
+    monkeypatch.setenv("IAT_ADMIN_API_KEY", "admin-secret-long-enough-for-vault")
+    monkeypatch.setattr(agent_b_api, "get_authenticated_seller_from_credentials", lambda *_args: {
+        "seller_id": "seller_1", "email_verified": 1, "wallet_verified": 1
+    })
+    monkeypatch.setattr(network, "validate_public_runtime_url", lambda _url: {"public": True})
+    stored = {}
+    monkeypatch.setattr(
+        agent_b_api,
+        "store_seller_hosted_connector_config_db",
+        lambda seller_id, agent_url, encrypted_secret: stored.update(
+            seller_id=seller_id, agent_url=agent_url, encrypted_secret=encrypted_secret
+        ) or {"status": "ok", "seller_id": seller_id, "agent_url": agent_url},
+    )
+    request = agent_b_api.SellerHostedConnectorRequest(
+        agent_url="https://agent.example/execute", agent_secret="agent-token"
+    )
+    result = agent_b_api.seller_hosted_connector_configure(
+        request, "seller-key", None
+    )
+    assert result["secret_stored"] is True
+    assert result["secret_returned"] is False
+    assert "agent-token" not in str(result)
+    assert stored["encrypted_secret"] != "agent-token"

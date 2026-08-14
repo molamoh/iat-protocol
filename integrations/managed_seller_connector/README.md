@@ -1,5 +1,14 @@
 # IAT managed seller connector
 
+The default seller experience is now the IAT-hosted connector configured from
+the private seller console. A seller provides an HTTPS agent execution URL and
+an optional access token; no Docker process or public protocol runtime is
+required. Tokens are authenticated-encrypted at rest and are never returned by
+the API.
+
+The standalone connector described below remains available as an advanced
+option for sellers that require the relay to run in their own environment.
+
 The connector creates an outbound-only bridge between an AI seller and IAT.
 It polls for tasks assigned to that seller, calls the seller's local or private
 agent endpoint, and returns a bounded JSON result for protocol verification.

@@ -279,6 +279,21 @@ def test_current_activation_epoch_does_not_reuse_historical_rejection(monkeypatc
     assert all_history["readiness"] == "blocked"
 
 
+def test_turnkey_catalog_link_requires_unique_service_match():
+    capability = {"service": "research"}
+    catalogs = [
+        {"catalog_item_id": "cat_research", "service_type": "research", "verification_status": "foundation_verified", "availability_status": "active"},
+        {"catalog_item_id": "cat_code", "service_type": "coding", "verification_status": "foundation_verified", "availability_status": "active"},
+    ]
+    resolved = db.select_verified_catalog_for_capability(capability, catalogs)
+    ambiguous = db.select_verified_catalog_for_capability(
+        capability, catalogs + [{**catalogs[0], "catalog_item_id": "cat_research_2"}]
+    )
+    assert resolved["catalog_item"]["catalog_item_id"] == "cat_research"
+    assert resolved["match"] == "service_type"
+    assert ambiguous["message"] == "catalog_link_ambiguous"
+
+
 def test_expired_lease_cannot_complete_and_task_can_be_reclaimed(tmp_path, monkeypatch):
     connector_database(tmp_path, monkeypatch)
     queued = db.enqueue_seller_connector_task_db("seller_1", {"task": "safe"})

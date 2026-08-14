@@ -5,6 +5,7 @@ pool = None
 import os
 import sqlite3
 import json
+import hashlib
 import secrets
 import time
 import uuid
@@ -9668,6 +9669,31 @@ def evaluate_current_seller_capability_evidence(
     }
 
 
+def select_verified_catalog_for_capability(seller_agent, catalog_items):
+    verified = [
+        item for item in (catalog_items or [])
+        if str(item.get("verification_status") or "").lower() in {
+            "verified", "foundation_verified"
+        }
+        and str(item.get("availability_status") or "").lower() != "archived"
+    ]
+    service = str((seller_agent or {}).get("service") or "").strip().lower()
+    exact = [
+        item for item in verified
+        if str(item.get("service_type") or "").strip().lower() == service
+    ]
+    if len(exact) == 1:
+        return {"status": "resolved", "catalog_item": exact[0], "match": "service_type"}
+    if len(exact) > 1:
+        return {"status": "blocked", "message": "catalog_link_ambiguous"}
+    if len(verified) == 1:
+        return {"status": "resolved", "catalog_item": verified[0], "match": "only_verified_catalog"}
+    return {
+        "status": "blocked",
+        "message": "verified_catalog_link_missing" if not verified else "catalog_link_ambiguous",
+    }
+
+
 def run_current_seller_capability_review_db(seller_agent_id, seller_id):
     seller_agent = get_seller_agent_db(seller_agent_id)
     if not seller_agent:
@@ -9681,6 +9707,76 @@ def run_current_seller_capability_review_db(seller_agent_id, seller_id):
     factory_request = get_seller_agent_factory_request_db(
         metadata.get("factory_request_id")
     )
+
+    if not catalog_item:
+        catalog_resolution = select_verified_catalog_for_capability(
+            seller_agent,
+            list_seller_catalog_items_db(seller_id),
+        )
+        if catalog_resolution.get("status") != "resolved":
+            return {
+                "status": "blocked",
+                "message": catalog_resolution.get("message"),
+                "seller_agent_id": seller_agent_id,
+                "evidence": {"failed_checks": [catalog_resolution.get("message")]},
+            }
+        catalog_item = catalog_resolution["catalog_item"]
+        metadata["catalog_item_id"] = catalog_item["catalog_item_id"]
+        metadata["catalog_link_source"] = catalog_resolution["match"]
+
+    if not factory_request:
+        factory_request_id = "current_review_" + hashlib.sha256(
+            seller_agent_id.encode("utf-8")
+        ).hexdigest()[:24]
+        factory_request = get_seller_agent_factory_request_db(factory_request_id)
+        if not factory_request:
+            service = str(seller_agent.get("service") or catalog_item.get("service_type") or "service")
+            created = create_seller_agent_factory_request_db({
+                "factory_request_id": factory_request_id,
+                "seller_id": seller_id,
+                "catalog_item_id": catalog_item["catalog_item_id"],
+                "requested_agent_name": seller_agent.get("agent_id"),
+                "requested_prompt": (
+                    f"Execute the verified {service} capability only through "
+                    "the bounded IAT runtime and return structured evidence to Foundation."
+                ),
+                "requested_agent_count": 1,
+                "requested_specializations": [],
+                "factory_plan": {"requires_sandbox": True, "source": "iat_turnkey_migration_v1"},
+                "factory_status": "current_capability_review",
+                "sandbox_status": "replaced_by_hosted_canary",
+                "simulation_status": "replaced_by_hosted_canary",
+                "governance_status": "current_evidence_pending",
+                "generated_agent_id": seller_agent.get("agent_id"),
+                "generated_seller_agent_id": seller_agent_id,
+                "metadata": {
+                    "source": "iat_turnkey_migration_v1",
+                    "historical_factory_decisions_unchanged": True,
+                },
+            })
+            if created.get("status") != "ok":
+                return {
+                    "status": "blocked",
+                    "message": created.get("message") or "current_factory_evidence_creation_failed",
+                    "evidence": {"failed_checks": [created.get("message") or "current_factory_evidence_creation_failed"]},
+                }
+            factory_request = created.get("factory_request")
+        metadata["factory_request_id"] = factory_request_id
+
+    if metadata != _safe_json_loads(seller_agent.get("metadata"), {}):
+        conn = get_conn()
+        cur = conn.cursor()
+        p = qmark()
+        now = int(time.time())
+        cur.execute(f"UPDATE seller_agents SET metadata = {p}, updated_at = {p} WHERE seller_agent_id = {p} AND seller_id = {p}", (
+            json.dumps(metadata, sort_keys=True), now, seller_agent_id, seller_id,
+        ))
+        cur.execute(f"UPDATE seller_catalog_items SET linked_seller_agent_id = {p}, updated_at = {p} WHERE catalog_item_id = {p} AND seller_id = {p}", (
+            seller_agent_id, now, catalog_item["catalog_item_id"], seller_id,
+        ))
+        conn.commit()
+        release_conn(conn)
+
     hosted = get_seller_hosted_connector_config_db(seller_id) or {}
     conn = get_conn()
     cur = conn.cursor()

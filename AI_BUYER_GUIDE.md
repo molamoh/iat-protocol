@@ -239,6 +239,19 @@ verified payment is marked confirmed and allowed to trigger the existing
 seller-delivery lifecycle. The result includes the delivery state and final
 receipt when they are available.
 
+An agent can then follow the whole transaction through one wallet-authenticated
+read-only resource:
+
+```http
+GET /payments/v1/universal/buyer/intents/bid_.../lifecycle
+Authorization: Bearer ias_...
+```
+
+The response exposes the safe order, checkout, delivery and receipt states plus
+one machine-readable `next_action`. Pending chain confirmation and delivery
+states include `poll_after_seconds`; polling never creates a quote, reserves
+funds, signs a transaction or retries seller execution by itself.
+
 ## Production boundary
 
 The production buyer flow remains:

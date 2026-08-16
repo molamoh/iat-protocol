@@ -502,6 +502,23 @@ def _active_quote_for_order(order_id: str, now: int) -> dict[str, Any] | None:
         release_conn(conn)
 
 
+def _latest_quote_for_order(order_id: str) -> dict[str, Any] | None:
+    init_checkout_db()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        p = qmark()
+        cur.execute(
+            f"""SELECT * FROM universal_checkout_quotes
+            WHERE order_id={p} ORDER BY created_at DESC LIMIT 1""",
+            (str(order_id),),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        release_conn(conn)
+
+
 def _submitted_quotes_for_wallet(wallet: str, limit: int = 3) -> list[dict[str, Any]]:
     init_checkout_db()
     conn = get_conn()
@@ -2457,6 +2474,75 @@ def confirm_buyer_intent_checkout(
         "payment_verified": payment_verified,
         "delivery_triggered": payment_verified,
         "retryable": not payment_verified,
+    }
+
+
+@router.get("/buyer/intents/{intent_decision_id}/lifecycle")
+def get_buyer_intent_lifecycle(
+    intent_decision_id: str,
+    response: Response,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    wallet, _ = _session_wallet(authorization)
+    try:
+        decision = get_buyer_intent_decision(wallet, intent_decision_id)
+    except WalletIdentityError as exc:
+        code = str(exc)
+        status = 404 if code == "intent_decision_not_found" else 410
+        raise HTTPException(status_code=status, detail=code) from exc
+    order_id = str(decision.get("order_id") or "")
+    if not order_id:
+        raise HTTPException(status_code=409, detail="intent_decision_not_committed")
+    order = _wallet_owned_order(order_id, wallet)
+    quote = _latest_quote_for_order(order_id)
+    quote_state = str((quote or {}).get("state") or "not_created")
+    quote_id = str((quote or {}).get("quote_id") or "")
+    if quote and quote_state in ACTIVE_STATES and int(time.time()) >= int(quote["expires_at"]):
+        quote_state = "expired"
+
+    delivery = None
+    final_receipt = None
+    if quote_id and quote_state == "confirmed":
+        delivery = public_delivery_status(quote_id)
+        final_receipt = public_delivery_receipt(get_delivery_receipt(quote_id))
+        if final_receipt:
+            final_receipt.pop("receipt_token", None)
+
+    delivery_state = str((delivery or {}).get("state") or "not_started")
+    if quote_state == "not_created":
+        next_action = "prepare_checkout"
+    elif quote_state in {"quoted", "prepared"}:
+        next_action = "buyer_sign_and_broadcast"
+    elif quote_state == "submitted":
+        next_action = "confirm_payment"
+    elif quote_state == "confirmed" and delivery_state == "completed":
+        next_action = "open_delivery_inbox"
+    elif quote_state == "confirmed":
+        next_action = "wait_for_delivery"
+    elif quote_state in {"expired", "failed"}:
+        next_action = "prepare_new_checkout"
+    else:
+        next_action = "inspect_checkout"
+
+    _private_no_store(response)
+    return {
+        "status": "buyer_intent_lifecycle_found",
+        "intent_decision_id": intent_decision_id,
+        "order": {
+            "order_id": order_id,
+            "status": order.get("status"),
+            "service": order.get("service"),
+        },
+        "checkout": {
+            "quote_id": quote_id or None,
+            "state": quote_state,
+            "expires_at": (quote or {}).get("expires_at"),
+            "tx_signature": (quote or {}).get("tx_signature"),
+        },
+        "delivery": delivery,
+        "final_receipt": final_receipt,
+        "next_action": next_action,
+        "poll_after_seconds": 5 if next_action in {"confirm_payment", "wait_for_delivery"} else None,
     }
 
 

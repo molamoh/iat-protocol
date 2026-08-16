@@ -673,6 +673,69 @@ def test_intent_checkout_confirm_rejects_quote_from_another_order(monkeypatch):
     assert rejected.value.detail == "intent_quote_mismatch"
 
 
+@pytest.mark.parametrize(
+    ("quote", "delivery", "next_action", "poll_after"),
+    [
+        (None, None, "prepare_checkout", None),
+        ({"quote_id": "uq_1", "state": "prepared", "expires_at": NOW + 100}, None, "buyer_sign_and_broadcast", None),
+        ({"quote_id": "uq_1", "state": "submitted", "expires_at": NOW + 100}, None, "confirm_payment", 5),
+        ({"quote_id": "uq_1", "state": "confirmed", "expires_at": NOW + 100}, {"state": "running"}, "wait_for_delivery", 5),
+        ({"quote_id": "uq_1", "state": "confirmed", "expires_at": NOW + 100}, {"state": "completed"}, "open_delivery_inbox", None),
+    ],
+)
+def test_intent_lifecycle_returns_one_safe_next_action(
+    monkeypatch, quote, delivery, next_action, poll_after
+):
+    monkeypatch.setattr(checkout_api, "_session_wallet", lambda authorization: (BUYER, "token"))
+    monkeypatch.setattr(
+        checkout_api,
+        "get_buyer_intent_decision",
+        lambda wallet, decision_id: {"order_id": "order_1", "wallet": wallet},
+    )
+    monkeypatch.setattr(
+        checkout_api,
+        "_wallet_owned_order",
+        lambda order_id, wallet: {"order_id": order_id, "status": "paid", "service": "web_research"},
+    )
+    monkeypatch.setattr(checkout_api, "_latest_quote_for_order", lambda order_id: quote)
+    if delivery is not None:
+        monkeypatch.setattr(checkout_api, "public_delivery_status", lambda quote_id: delivery)
+        monkeypatch.setattr(checkout_api, "get_delivery_receipt", lambda quote_id: None)
+
+    result = checkout_api.get_buyer_intent_lifecycle(
+        "bid_test_decision", Response(), authorization="Bearer session"
+    )
+    assert result["next_action"] == next_action
+    assert result["poll_after_seconds"] == poll_after
+    assert "buyer_secret" not in result["order"]
+
+
+def test_intent_lifecycle_hides_delivery_receipt_token(monkeypatch):
+    monkeypatch.setattr(checkout_api, "_session_wallet", lambda authorization: (BUYER, "token"))
+    monkeypatch.setattr(
+        checkout_api, "get_buyer_intent_decision", lambda *args: {"order_id": "order_1"}
+    )
+    monkeypatch.setattr(
+        checkout_api, "_wallet_owned_order", lambda *args: {"status": "paid", "service": "web_research"}
+    )
+    monkeypatch.setattr(
+        checkout_api,
+        "_latest_quote_for_order",
+        lambda order_id: {"quote_id": "uq_1", "state": "confirmed", "expires_at": NOW + 100},
+    )
+    monkeypatch.setattr(checkout_api, "public_delivery_status", lambda quote_id: {"state": "completed"})
+    monkeypatch.setattr(checkout_api, "get_delivery_receipt", lambda quote_id: {"receipt_token": "secret"})
+    monkeypatch.setattr(
+        checkout_api,
+        "public_delivery_receipt",
+        lambda receipt: {"state": "delivered", "receipt_token": receipt["receipt_token"]},
+    )
+    result = checkout_api.get_buyer_intent_lifecycle(
+        "bid_test_decision", Response(), authorization="Bearer session"
+    )
+    assert result["final_receipt"] == {"state": "delivered"}
+
+
 def test_intent_commit_rejects_changed_market_and_releases_claim(monkeypatch):
     released = []
     monkeypatch.setattr(checkout_api, "_session_wallet", lambda authorization: (BUYER, "token"))

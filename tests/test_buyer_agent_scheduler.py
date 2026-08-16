@@ -42,6 +42,20 @@ def test_schedule_is_idempotent_and_survives_restart(tmp_path):
     assert job["max_attempts"] == 7
 
 
+def test_summary_exposes_counts_without_job_contents(tmp_path):
+    scheduler = BuyerAgentScheduler(Runner([]), tmp_path / "jobs.sqlite3")
+    scheduler.schedule("bid_due", now=100)
+    scheduler.schedule("bid_later", now=200)
+    summary = scheduler.summary(now=150)
+    assert summary == {
+        "status": "ready",
+        "due_jobs": 1,
+        "next_due_at": 100,
+        "states": {"scheduled": 2},
+        "total_jobs": 2,
+    }
+
+
 def test_cycle_performs_only_one_transition_and_respects_poll_delay(tmp_path):
     runner = Runner(
         [{"next_action": "confirm_payment"}],

@@ -115,6 +115,30 @@ class BuyerAgentScheduler:
             raise KeyError("buyer_agent_job_not_found")
         return dict(row)
 
+    def summary(self, *, now: int | None = None) -> dict[str, Any]:
+        timestamp = int(time.time() if now is None else now)
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT state, COUNT(*) AS count FROM buyer_agent_jobs GROUP BY state"
+            ).fetchall()
+            due = connection.execute(
+                """SELECT COUNT(*) FROM buyer_agent_jobs
+                   WHERE state IN ('scheduled', 'waiting') AND next_run_at <= ?""",
+                (timestamp,),
+            ).fetchone()[0]
+            next_due = connection.execute(
+                """SELECT MIN(next_run_at) FROM buyer_agent_jobs
+                   WHERE state IN ('scheduled', 'waiting')"""
+            ).fetchone()[0]
+        states = {str(row["state"]): int(row["count"]) for row in rows}
+        return {
+            "status": "ready",
+            "due_jobs": int(due),
+            "next_due_at": int(next_due) if next_due is not None else None,
+            "states": states,
+            "total_jobs": sum(states.values()),
+        }
+
     def run_due_once(self, *, now: int | None = None, limit: int = 10) -> list[dict[str, Any]]:
         if not 1 <= limit <= 100:
             raise ValueError("scheduler_limit_invalid")

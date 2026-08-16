@@ -25,6 +25,8 @@ class BuyerAgentIntentRequest(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=128)
     strategy: str = Field(default="balanced", pattern="^(balanced|cheapest|fastest|safest|quality)$")
     required_capabilities: list[str] = Field(default_factory=list, max_length=20)
+    auto_schedule: bool = True
+    max_attempts: int = Field(default=100, ge=1, le=10_000)
 
 
 class BuyerAgentScheduleRequest(BaseModel):
@@ -119,12 +121,15 @@ def create_buyer_agent_service(
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
-        return {
+        result = {
             "status": "ready",
             "wallet_address": runner.wallet.wallet_address,
             "cluster": list(runner.policy.allowed_clusters),
             "private_key_configured": False,
         }
+        if scheduler is not None:
+            result["scheduler"] = scheduler.summary()
+        return result
 
     @app.post("/v1/intents")
     async def create_intent(
@@ -132,7 +137,7 @@ def create_buyer_agent_service(
         authorization: str | None = Header(default=None, alias="Authorization"),
     ):
         authenticate(authorization)
-        return await execute(
+        result = await execute(
             runner.create_intent,
             service=req.service,
             goal=req.goal,
@@ -141,6 +146,18 @@ def create_buyer_agent_service(
             strategy=req.strategy,
             required_capabilities=req.required_capabilities,
         )
+        decision_id = str(result.get("intent_decision_id") or "")
+        if (
+            req.auto_schedule
+            and scheduler is not None
+            and decision_id
+            and result.get("status") == "buyer_intent_created"
+        ):
+            result["scheduler_job"] = scheduler.schedule(
+                decision_id,
+                max_attempts=req.max_attempts,
+            )
+        return result
 
     @app.post("/v1/intents/{intent_decision_id}/advance")
     async def advance(

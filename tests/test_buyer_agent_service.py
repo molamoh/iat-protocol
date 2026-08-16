@@ -125,3 +125,50 @@ def test_buyer_agent_api_schedules_and_runs_one_persistent_cycle(tmp_path):
     assert cycle.json()["processed"] == 1
     assert job.json()["state"] == "waiting"
     assert [item[0] for item in runner.calls] == ["lifecycle"]
+
+
+def test_created_intent_is_automatically_enrolled_when_scheduler_exists(tmp_path):
+    runner = Runner()
+    scheduler = BuyerAgentScheduler(runner, tmp_path / "jobs.sqlite3")
+    app = create_buyer_agent_service(runner, service_token=TOKEN, scheduler=scheduler)
+    created = call(
+        app,
+        "POST",
+        "/v1/intents",
+        headers=headers(),
+        json={
+            "service": "web_research",
+            "goal": "Produce a cited autonomous market report",
+            "maximum_price": 2,
+            "idempotency_key": "buyer-intent-0002",
+        },
+    )
+    assert created.status_code == 200
+    assert created.json()["scheduler_job"]["state"] == "scheduled"
+    health = call(app, "GET", "/health").json()
+    assert health["scheduler"]["total_jobs"] == 1
+
+
+def test_unselected_intent_is_not_enrolled(tmp_path):
+    runner = Runner()
+    runner.create_intent = lambda **kwargs: {
+        "status": "buyer_intent_has_no_selection",
+        "intent_decision_id": "bid_unselected",
+    }
+    scheduler = BuyerAgentScheduler(runner, tmp_path / "jobs.sqlite3")
+    app = create_buyer_agent_service(runner, service_token=TOKEN, scheduler=scheduler)
+    response = call(
+        app,
+        "POST",
+        "/v1/intents",
+        headers=headers(),
+        json={
+            "service": "web_research",
+            "goal": "Find an unavailable bounded research service",
+            "maximum_price": 2,
+            "idempotency_key": "buyer-intent-0003",
+        },
+    )
+    assert response.status_code == 200
+    assert "scheduler_job" not in response.json()
+    assert scheduler.summary()["total_jobs"] == 0

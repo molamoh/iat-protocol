@@ -395,6 +395,22 @@ scheduling metadata only—never API tokens, sidecar credentials, signer tokens,
 transactions or delivered results. A local supervisor or timer may invoke
 `run-once`; the API intentionally creates no hidden infinite background loop.
 
+When the scheduler is configured, `POST /v1/intents` enrolls every successfully
+created intent automatically unless the caller explicitly sends
+`"auto_schedule": false`. The health endpoint reports only aggregate queue
+counts and never job payloads or credentials.
+
+For continuous operation, run the independently supervisable worker:
+
+```bash
+python -m iat.buyer_agent_worker
+```
+
+`IAT_BUYER_WORKER_INTERVAL_SECONDS` controls the delay between wake-ups and
+`IAT_BUYER_WORKER_BATCH_LIMIT` caps the number of claimed jobs per wake-up.
+Both values have strict bounds. SIGTERM and SIGINT request a clean stop between
+cycles; each cycle still performs at most one transition for each claimed job.
+
 ## Production boundary
 
 The production buyer flow remains:

@@ -357,6 +357,27 @@ uvicorn iat.agent_buyer_runtime:create_wallet_sidecar_from_env \
 and policy boundaries, but never token values. The configuration has no private
 key field. This release remains devnet-only.
 
+## Local buyer-agent API
+
+`create_buyer_agent_service_from_env()` exposes the complete bounded journey to
+an AI through one local API:
+
+- `POST /v1/intents` previews, selects and commits an order idempotently;
+- `POST /v1/intents/{id}/advance` performs at most one safe lifecycle step;
+- `GET /v1/intents/{id}` returns the current lifecycle and next action;
+- `GET /v1/intents/{id}/result` opens delivery only when it is ready.
+
+Launch it on loopback with:
+
+```bash
+uvicorn iat.buyer_agent_service:create_buyer_agent_service_from_env \
+  --factory --host 127.0.0.1 --port 8788
+```
+
+The API requires its own `IAT_BUYER_AGENT_API_TOKEN`. The IAT wallet session,
+sidecar token and signer token remain internal and are never returned. Calls do
+not loop: the agent follows `next_action` and respects `poll_after_seconds`.
+
 ## Production boundary
 
 The production buyer flow remains:

@@ -119,6 +119,72 @@ class AutonomousBuyerRunner:
             },
         )
 
+    def create_intent(
+        self,
+        *,
+        service: str,
+        goal: str,
+        maximum_price: float,
+        idempotency_key: str,
+        strategy: str = "balanced",
+        required_capabilities: list[str] | None = None,
+    ) -> dict[str, Any]:
+        preview = self._request(
+            "POST",
+            "/payments/v1/universal/buyer/intents/preview",
+            {
+                "service": service,
+                "goal": goal,
+                "maximum_price": maximum_price,
+                "strategy": strategy,
+                "required_capabilities": list(required_capabilities or []),
+            },
+            headers={"Idempotency-Key": idempotency_key},
+        )
+        decision_id = str(preview.get("intent_decision_id") or "")
+        if not decision_id or not (preview.get("selection") or {}).get("selected"):
+            return {
+                "status": "buyer_intent_has_no_selection",
+                "preview": preview,
+                "intent_decision_id": decision_id or None,
+            }
+        committed = self._request(
+            "POST",
+            "/payments/v1/universal/buyer/intents/commit",
+            {"intent_decision_id": decision_id},
+        )
+        return {
+            "status": "buyer_intent_created",
+            "intent_decision_id": decision_id,
+            "order_id": committed.get("order_id"),
+            "preview": preview,
+            "commit": committed,
+            "next_action": "advance",
+        }
+
+    def lifecycle(self, intent_decision_id: str) -> dict[str, Any]:
+        return self._request(
+            "GET",
+            f"/payments/v1/universal/buyer/intents/{intent_decision_id}/lifecycle",
+        )
+
+    def open_result(self, intent_decision_id: str) -> dict[str, Any]:
+        lifecycle = self.lifecycle(intent_decision_id)
+        if lifecycle.get("next_action") != "open_delivery_inbox":
+            return {
+                "status": "buyer_result_not_ready",
+                "intent_decision_id": intent_decision_id,
+                "next_action": lifecycle.get("next_action"),
+                "poll_after_seconds": lifecycle.get("poll_after_seconds"),
+            }
+        quote_id = str((lifecycle.get("checkout") or {}).get("quote_id") or "")
+        if not quote_id:
+            raise AutonomousBuyerError("delivery_quote_missing")
+        return self._request(
+            "GET",
+            f"/payments/v1/universal/wallet-inbox/{quote_id}",
+        )
+
     def _validate_prepared_transaction(self, prepared: Any) -> dict[str, Any]:
         if not isinstance(prepared, dict):
             raise AutonomousBuyerError("prepared_transaction_missing")
@@ -182,17 +248,26 @@ class AutonomousBuyerRunner:
             "simulation": dict(simulation),
         }
 
-    def _request(self, method: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        headers: Mapping[str, str] | None = None,
+    ) -> dict[str, Any]:
+        request_headers = {
+            "Authorization": f"Bearer {self.access_token}",
+            "Accept": "application/json",
+            "User-Agent": "iat-autonomous-buyer/1.0",
+        }
+        request_headers.update(dict(headers or {}))
         try:
             response = self.session.request(
                 method,
                 self.base_url + path,
                 json=payload,
-                headers={
-                    "Authorization": f"Bearer {self.access_token}",
-                    "Accept": "application/json",
-                    "User-Agent": "iat-autonomous-buyer/1.0",
-                },
+                headers=request_headers,
                 timeout=self.policy.timeout_seconds,
             )
         except requests.RequestException as exc:

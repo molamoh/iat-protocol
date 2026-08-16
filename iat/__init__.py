@@ -31,6 +31,11 @@ from .agent_buyer_runtime import (
     create_wallet_sidecar_from_env,
     diagnose_agent_buyer_runtime,
 )
+from .buyer_agent_service import (
+    BuyerAgentServiceConfig,
+    create_buyer_agent_service,
+    create_buyer_agent_service_from_env,
+)
 
 __all__ = [
     "IATAPIError",
@@ -61,6 +66,9 @@ __all__ = [
     "BoundedTransactionApproval",
     "create_wallet_sidecar_from_env",
     "diagnose_agent_buyer_runtime",
+    "BuyerAgentServiceConfig",
+    "create_buyer_agent_service",
+    "create_buyer_agent_service_from_env",
     "RetryPolicy",
     "IATWallet",
     "create_order",

@@ -186,3 +186,65 @@ def test_runner_rejects_http_for_remote_api_and_mainnet_by_default():
             ),
             policy=BuyerRunnerPolicy(),
         ).step("bid_test_decision")
+
+
+def test_runner_creates_and_commits_selected_intent_idempotently():
+    session = Session(
+        [
+            Response(
+                {
+                    "intent_decision_id": "bid_test_decision",
+                    "selection": {"selected": {"candidate_id": "agent_1"}},
+                }
+            ),
+            Response({"order_id": "order_1"}),
+        ]
+    )
+    result = runner(session).create_intent(
+        service="web_research",
+        goal="Produce a cited autonomous market report",
+        maximum_price=2,
+        idempotency_key="buyer-intent-0001",
+    )
+    assert result["status"] == "buyer_intent_created"
+    assert result["order_id"] == "order_1"
+    assert session.calls[0][2]["headers"]["Idempotency-Key"] == "buyer-intent-0001"
+    assert session.calls[1][2]["json"] == {"intent_decision_id": "bid_test_decision"}
+
+
+def test_runner_does_not_commit_intent_without_selection():
+    session = Session(
+        [Response({"intent_decision_id": "bid_no_match", "selection": {"selected": None}})]
+    )
+    result = runner(session).create_intent(
+        service="web_research",
+        goal="Produce a cited autonomous market report",
+        maximum_price=2,
+        idempotency_key="buyer-intent-0002",
+    )
+    assert result["status"] == "buyer_intent_has_no_selection"
+    assert len(session.calls) == 1
+
+
+def test_runner_opens_result_only_after_lifecycle_is_complete():
+    waiting_session = Session(
+        [Response({"next_action": "wait_for_delivery", "poll_after_seconds": 5})]
+    )
+    waiting = runner(waiting_session).open_result("bid_test_decision")
+    assert waiting["status"] == "buyer_result_not_ready"
+    assert len(waiting_session.calls) == 1
+
+    ready_session = Session(
+        [
+            Response(
+                {
+                    "next_action": "open_delivery_inbox",
+                    "checkout": {"quote_id": "uq_1"},
+                }
+            ),
+            Response({"status": "wallet_inbox_item_opened", "inbox": {"result": "done"}}),
+        ]
+    )
+    ready = runner(ready_session).open_result("bid_test_decision")
+    assert ready["inbox"]["result"] == "done"
+    assert ready_session.calls[1][0] == "GET"

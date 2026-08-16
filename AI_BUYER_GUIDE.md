@@ -252,6 +252,22 @@ one machine-readable `next_action`. Pending chain confirmation and delivery
 states include `poll_after_seconds`; polling never creates a quote, reserves
 funds, signs a transaction or retries seller execution by itself.
 
+For bounded automation, an agent may request exactly one safe transition:
+
+```http
+POST /payments/v1/universal/buyer/intents/advance
+Authorization: Bearer ias_...
+Content-Type: application/json
+
+{"intent_decision_id": "bid_...", "input_asset": "USDC"}
+```
+
+One call can prepare a policy-authorized checkout or reconfirm an already
+broadcast transaction. It never loops, signs, broadcasts, or bypasses wallet
+policy. At a buyer-signature boundary or while waiting for delivery it returns
+a safety stop and performs no mutation. Clients must respect the returned
+`poll_after_seconds` before requesting another step.
+
 ## Production boundary
 
 The production buyer flow remains:

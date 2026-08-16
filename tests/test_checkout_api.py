@@ -736,6 +736,82 @@ def test_intent_lifecycle_hides_delivery_receipt_token(monkeypatch):
     assert result["final_receipt"] == {"state": "delivered"}
 
 
+def test_intent_advance_prepares_exactly_one_checkout_and_stops_before_signature(monkeypatch):
+    monkeypatch.setattr(
+        checkout_api,
+        "get_buyer_intent_lifecycle",
+        lambda *args, **kwargs: {"next_action": "prepare_checkout"},
+    )
+    calls = []
+    monkeypatch.setattr(
+        checkout_api,
+        "prepare_buyer_intent_checkout",
+        lambda req, *args, **kwargs: calls.append(req) or {"quote_id": "uq_1"},
+    )
+    result = checkout_api.advance_buyer_intent_once(
+        checkout_api.BuyerIntentAdvanceRequest(intent_decision_id="bid_test_decision"),
+        Response(),
+        authorization="Bearer session",
+    )
+    assert len(calls) == 1
+    assert calls[0].input_asset == "USDC"
+    assert result["next_action"] == "buyer_sign_and_broadcast"
+    assert result["stopped_before_buyer_signature"] is True
+
+
+def test_intent_advance_confirms_only_existing_submitted_quote(monkeypatch):
+    monkeypatch.setattr(
+        checkout_api,
+        "get_buyer_intent_lifecycle",
+        lambda *args, **kwargs: {
+            "next_action": "confirm_payment",
+            "checkout": {"quote_id": "uq_1"},
+        },
+    )
+    calls = []
+    monkeypatch.setattr(
+        checkout_api,
+        "confirm_buyer_intent_checkout",
+        lambda req, *args, **kwargs: calls.append(req) or {"payment_verified": False},
+    )
+    result = checkout_api.advance_buyer_intent_once(
+        checkout_api.BuyerIntentAdvanceRequest(intent_decision_id="bid_test_decision"),
+        Response(),
+        authorization="Bearer session",
+    )
+    assert len(calls) == 1
+    assert calls[0].quote_id == "uq_1"
+    assert result["next_action"] == "confirm_payment"
+    assert result["poll_after_seconds"] == 5
+
+
+@pytest.mark.parametrize("action", ["buyer_sign_and_broadcast", "wait_for_delivery", "open_delivery_inbox"])
+def test_intent_advance_wait_states_perform_no_mutation(monkeypatch, action):
+    monkeypatch.setattr(
+        checkout_api,
+        "get_buyer_intent_lifecycle",
+        lambda *args, **kwargs: {"next_action": action, "poll_after_seconds": 5},
+    )
+    monkeypatch.setattr(
+        checkout_api,
+        "prepare_buyer_intent_checkout",
+        lambda *args, **kwargs: pytest.fail("prepare must not run"),
+    )
+    monkeypatch.setattr(
+        checkout_api,
+        "confirm_buyer_intent_checkout",
+        lambda *args, **kwargs: pytest.fail("confirm must not run"),
+    )
+    result = checkout_api.advance_buyer_intent_once(
+        checkout_api.BuyerIntentAdvanceRequest(intent_decision_id="bid_test_decision"),
+        Response(),
+        authorization="Bearer session",
+    )
+    assert result["status"] == "buyer_intent_waiting"
+    assert result["performed_action"] is None
+    assert result["next_action"] == action
+
+
 def test_intent_commit_rejects_changed_market_and_releases_claim(monkeypatch):
     released = []
     monkeypatch.setattr(checkout_api, "_session_wallet", lambda authorization: (BUYER, "token"))

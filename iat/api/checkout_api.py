@@ -207,6 +207,11 @@ class BuyerIntentCheckoutConfirmRequest(BaseModel):
     quote_id: str = Field(min_length=3, max_length=128)
 
 
+class BuyerIntentAdvanceRequest(BaseModel):
+    intent_decision_id: str = Field(min_length=12, max_length=128)
+    input_asset: str = Field(default="USDC", pattern="^USDC$")
+
+
 class WalletCheckoutSubmitRequest(BaseModel):
     tx_signature: str = Field(min_length=64, max_length=128)
 
@@ -2543,6 +2548,71 @@ def get_buyer_intent_lifecycle(
         "final_receipt": final_receipt,
         "next_action": next_action,
         "poll_after_seconds": 5 if next_action in {"confirm_payment", "wait_for_delivery"} else None,
+    }
+
+
+@router.post("/buyer/intents/advance")
+def advance_buyer_intent_once(
+    req: BuyerIntentAdvanceRequest,
+    response: Response,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    lifecycle = get_buyer_intent_lifecycle(
+        req.intent_decision_id,
+        response,
+        authorization=authorization,
+    )
+    action = str(lifecycle.get("next_action") or "inspect_checkout")
+    if action in {"prepare_checkout", "prepare_new_checkout"}:
+        result = prepare_buyer_intent_checkout(
+            BuyerIntentCheckoutPrepareRequest(
+                intent_decision_id=req.intent_decision_id,
+                input_asset=req.input_asset,
+            ),
+            response,
+            authorization=authorization,
+        )
+        return {
+            "status": "buyer_intent_advanced",
+            "performed_action": action,
+            "next_action": "buyer_sign_and_broadcast",
+            "stopped_before_buyer_signature": True,
+            "result": result,
+        }
+    if action == "confirm_payment":
+        quote_id = str((lifecycle.get("checkout") or {}).get("quote_id") or "")
+        if not quote_id:
+            raise HTTPException(status_code=409, detail="intent_quote_unavailable")
+        result = confirm_buyer_intent_checkout(
+            BuyerIntentCheckoutConfirmRequest(
+                intent_decision_id=req.intent_decision_id,
+                quote_id=quote_id,
+            ),
+            response,
+            authorization=authorization,
+        )
+        return {
+            "status": "buyer_intent_advanced",
+            "performed_action": action,
+            "next_action": (
+                "wait_for_delivery"
+                if result.get("payment_verified") is True
+                else "confirm_payment"
+            ),
+            "poll_after_seconds": 5,
+            "result": result,
+        }
+    return {
+        "status": "buyer_intent_waiting",
+        "performed_action": None,
+        "next_action": action,
+        "poll_after_seconds": lifecycle.get("poll_after_seconds"),
+        "lifecycle": lifecycle,
+        "safety_stop": (
+            "buyer_signature_required"
+            if action == "buyer_sign_and_broadcast"
+            else "external_state_change_required"
+        ),
     }
 
 

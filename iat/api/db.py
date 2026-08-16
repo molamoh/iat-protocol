@@ -19391,6 +19391,7 @@ def list_verified_marketplace_candidates_db(service, limit=50):
                 sa.capabilities, sa.specialties, sa.reputation,
                 sa.successful_orders, sa.failed_orders,
                 sa.runtime_health_score, sa.runtime_validation_status,
+                a.price AS registry_price,
                 sci.catalog_item_id, sci.title, sci.description,
                 sci.service_type, sci.unit_price, sci.currency,
                 sci.capacity_per_day, sci.capacity_per_order,

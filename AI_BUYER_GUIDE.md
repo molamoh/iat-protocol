@@ -148,6 +148,7 @@ capabilities without creating an order or reserving funds:
 ```http
 POST /payments/v1/universal/buyer/intents/preview
 Authorization: Bearer ias_...
+Idempotency-Key: research-btc-2026-08-16-001
 Content-Type: application/json
 
 {
@@ -166,7 +167,24 @@ risks and confidence. It exposes catalog and capability identifiers but never
 seller wallets, private runtime URLs, credentials or raw execution context.
 
 This endpoint is a preview, not a quote: it creates no order, reserves no funds
-and performs no seller execution.
+and performs no seller execution. It persists a wallet-bound decision for at
+most two minutes. Replaying the same request and idempotency key returns the
+same decision; changing the request under that key is rejected.
+
+To create the selected order, commit the returned decision:
+
+```http
+POST /payments/v1/universal/buyer/intents/commit
+Authorization: Bearer ias_...
+Content-Type: application/json
+
+{"intent_decision_id": "bid_..."}
+```
+
+Commit revalidates the seller identity, capability, runtime, catalog, currency
+and price. Any market change invalidates the decision. A successful commit is
+single-use and idempotent: retries return the same deterministic order. It
+still moves no funds; the next action is the wallet checkout preparation route.
 
 ## Production boundary
 

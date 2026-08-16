@@ -7,6 +7,7 @@ import time
 import uuid
 import requests
 import threading
+from decimal import Decimal, InvalidOperation
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
@@ -4360,6 +4361,24 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
 
     buyer_wallet = req.buyer_wallet
 
+    if req.locked_order_id:
+        existing_order = get_order_db(req.locked_order_id)
+        if existing_order:
+            if str(existing_order.get("buyer_wallet") or "") != str(buyer_wallet or ""):
+                return {"status": "rejected", "reason": "locked_order_id_conflict"}
+            return {
+                "order_id": existing_order["order_id"],
+                "buyer_secret": existing_order.get("buyer_secret"),
+                "price": existing_order.get("price"),
+                "seller_id": existing_order.get("seller_id"),
+                "seller_wallet": existing_order.get("seller_wallet"),
+                "actual_agent_wallet": existing_order.get("seller_wallet"),
+                "payment_target": existing_order.get("payment_target") or payment_target(),
+                "seller_url": existing_order.get("seller_url") or "",
+                "seller_source": existing_order.get("seller_source"),
+                "idempotent_replay": True,
+            }
+
     if buyer_wallet and is_buyer_banned_db(buyer_wallet):
         return {
             "status": "rejected",
@@ -4438,7 +4457,18 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
             "seller_id": seller.get("seller_id"),
         }
 
-    order_id = str(uuid.uuid4())
+    if req.locked_unit_price is not None:
+        try:
+            price_matches = Decimal(str(seller.get("price"))) == Decimal(req.locked_unit_price)
+        except (InvalidOperation, TypeError, ValueError):
+            price_matches = False
+        if not price_matches:
+            return {
+                "status": "rejected",
+                "reason": "intent_decision_price_changed",
+            }
+
+    order_id = req.locked_order_id or str(uuid.uuid4())
     now = int(time.time())
 
     consensus_preference = str(
@@ -4501,6 +4531,7 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
             "service": req.service,
             "requirements": requirements,
             "trusted_input_only": True,
+            "intent_decision_id": req.intent_decision_id,
         },
         "used": False,
     }

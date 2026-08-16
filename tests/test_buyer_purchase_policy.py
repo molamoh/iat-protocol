@@ -152,3 +152,129 @@ def test_submitted_spend_remains_in_daily_budget_after_quote_expiry(buyer_policy
             expires_at=300,
             now=151,
         )
+
+
+def test_intent_decision_is_wallet_bound_idempotent_and_tamper_evident(buyer_policy_database):
+    wallet = buyer_policy_database
+    request = {
+        "service": "web_research",
+        "goal": "Produce a cited market report",
+        "maximum_price": 3,
+        "strategy": "safest",
+        "required_capabilities": ["source_verification"],
+    }
+    selection = {"status": "selected", "selected": {"candidate_id": "sa_1"}}
+    selected = {
+        "seller_agent_id": "sa_1",
+        "agent_id": "agent_1",
+        "catalog_item_id": "catalog_1",
+        "unit_price": 2,
+        "currency": "IAT",
+    }
+    created = buyer_identity.save_buyer_intent_decision(
+        wallet,
+        idempotency_key="intent-key-0001",
+        request_payload=request,
+        selection=selection,
+        selected_record=selected,
+        now=100,
+    )
+    replay = buyer_identity.save_buyer_intent_decision(
+        wallet,
+        idempotency_key="intent-key-0001",
+        request_payload=request,
+        selection={"status": "selected", "selected": {"candidate_id": "attacker"}},
+        selected_record={**selected, "seller_agent_id": "attacker"},
+        now=101,
+    )
+    assert created["intent_decision_id"] == replay["intent_decision_id"]
+    assert replay["selection"] == selection
+    assert replay["selected_seller_agent_id"] == "sa_1"
+    assert replay["idempotent_replay"] is True
+    assert created["expires_at"] == 220
+
+    with pytest.raises(buyer_identity.WalletIdentityError, match="intent_idempotency_conflict"):
+        buyer_identity.save_buyer_intent_decision(
+            wallet,
+            idempotency_key="intent-key-0001",
+            request_payload={**request, "maximum_price": 30},
+            selection=selection,
+            selected_record=selected,
+            now=102,
+        )
+
+
+def test_same_intent_key_is_isolated_between_wallets(buyer_policy_database):
+    request = {"service": "web_research", "goal": "A sufficiently long goal"}
+    first = buyer_identity.save_buyer_intent_decision(
+        buyer_policy_database,
+        idempotency_key="shared-intent-key",
+        request_payload=request,
+        selection={"status": "no_eligible_candidate"},
+        selected_record=None,
+        now=100,
+    )
+    second = buyer_identity.save_buyer_intent_decision(
+        str(Keypair().pubkey()),
+        idempotency_key="shared-intent-key",
+        request_payload=request,
+        selection={"status": "no_eligible_candidate"},
+        selected_record=None,
+        now=100,
+    )
+    assert first["intent_decision_id"] != second["intent_decision_id"]
+
+
+def test_intent_decision_claim_is_single_use_and_order_replay_is_idempotent(buyer_policy_database):
+    wallet = buyer_policy_database
+    created = buyer_identity.save_buyer_intent_decision(
+        wallet,
+        idempotency_key="claim-intent-key",
+        request_payload={"service": "web_research", "goal": "A sufficiently long goal"},
+        selection={"status": "selected"},
+        selected_record={
+            "seller_agent_id": "sa_1",
+            "agent_id": "agent_1",
+            "catalog_item_id": "catalog_1",
+            "unit_price": 2,
+            "currency": "IAT",
+        },
+        now=100,
+    )
+    claimed = buyer_identity.claim_buyer_intent_decision(
+        wallet, created["intent_decision_id"], now=110
+    )
+    assert claimed["selected_agent_id"] == "agent_1"
+    with pytest.raises(buyer_identity.WalletIdentityError, match="intent_decision_commit_in_progress"):
+        buyer_identity.claim_buyer_intent_decision(
+            wallet, created["intent_decision_id"], now=111
+        )
+    assert buyer_identity.finalize_buyer_intent_decision(
+        wallet, created["intent_decision_id"], "order_1"
+    )
+    replay = buyer_identity.claim_buyer_intent_decision(
+        wallet, created["intent_decision_id"], now=112
+    )
+    assert replay["order_id"] == "order_1"
+    assert replay["idempotent_replay"] is True
+
+
+def test_expired_or_foreign_intent_decision_cannot_be_claimed(buyer_policy_database):
+    wallet = buyer_policy_database
+    created = buyer_identity.save_buyer_intent_decision(
+        wallet,
+        idempotency_key="expiry-intent-key",
+        request_payload={"service": "web_research", "goal": "A sufficiently long goal"},
+        selection={"status": "selected"},
+        selected_record=None,
+        now=100,
+        ttl_seconds=30,
+    )
+    with pytest.raises(buyer_identity.WalletIdentityError, match="intent_decision_not_found"):
+        buyer_identity.claim_buyer_intent_decision(
+            str(Keypair().pubkey()), created["intent_decision_id"], now=110
+        )
+    with pytest.raises(buyer_identity.WalletIdentityError, match="intent_decision_expired"):
+        buyer_identity.claim_buyer_intent_decision(
+            wallet, created["intent_decision_id"], now=130
+        )

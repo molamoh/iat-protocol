@@ -429,6 +429,84 @@ def test_wallet_checkout_reuses_matching_prepared_quote(monkeypatch):
     assert result["transaction_base64"] == "transaction"
 
 
+def test_authenticated_intent_commit_locks_selected_agent_and_price(monkeypatch):
+    from iat.api import agent_b_api
+
+    decision = {
+        "intent_decision_id": "bid_test_decision",
+        "request": {
+            "service": "web_research",
+            "goal": "Produce a cited market report",
+            "maximum_price": 3,
+            "strategy": "safest",
+            "required_capabilities": ["source_verification"],
+        },
+        "selected_agent_id": "agent_1",
+        "selected_seller_agent_id": "sa_1",
+        "selected_catalog_item_id": "catalog_1",
+        "selected_unit_price": "2",
+        "selected_currency": "IAT",
+        "order_id": None,
+    }
+    candidate = {
+        "agent_id": "agent_1",
+        "seller_agent_id": "sa_1",
+        "catalog_item_id": "catalog_1",
+        "unit_price": "2",
+        "registry_price": "2",
+        "currency": "IAT",
+    }
+    observed = {}
+    monkeypatch.setattr(checkout_api, "_session_wallet", lambda authorization: (BUYER, "token"))
+    monkeypatch.setattr(checkout_api, "claim_buyer_intent_decision", lambda *args: decision)
+    monkeypatch.setattr(checkout_api, "list_verified_marketplace_candidates_db", lambda *args, **kwargs: [candidate])
+    monkeypatch.setattr(checkout_api, "finalize_buyer_intent_decision", lambda *args: True)
+
+    def create(req, **kwargs):
+        observed["request"] = req
+        return {"order_id": "order_1", "seller_id": "agent_1", "price": 2}
+
+    monkeypatch.setattr(agent_b_api, "create_order", create)
+    result = checkout_api.commit_buyer_intent(
+        checkout_api.BuyerIntentCommitRequest(intent_decision_id="bid_test_decision"),
+        Response(),
+        authorization="Bearer session",
+    )
+    assert result["order_id"] == "order_1"
+    assert result["funds_reserved"] is False
+    assert observed["request"].locked_agent_id == "agent_1"
+    assert observed["request"].locked_unit_price == "2"
+    assert observed["request"].locked_order_id.startswith("bio_")
+
+
+def test_intent_commit_rejects_changed_market_and_releases_claim(monkeypatch):
+    released = []
+    monkeypatch.setattr(checkout_api, "_session_wallet", lambda authorization: (BUYER, "token"))
+    monkeypatch.setattr(checkout_api, "claim_buyer_intent_decision", lambda *args: {
+        "request": {"service": "web_research", "goal": "Produce a cited report"},
+        "selected_agent_id": "agent_1",
+        "selected_seller_agent_id": "sa_1",
+        "selected_catalog_item_id": "catalog_1",
+        "selected_unit_price": "2",
+        "selected_currency": "IAT",
+        "order_id": None,
+    })
+    monkeypatch.setattr(checkout_api, "list_verified_marketplace_candidates_db", lambda *args, **kwargs: [{
+        "agent_id": "agent_1", "seller_agent_id": "sa_1", "catalog_item_id": "catalog_1",
+        "unit_price": "3", "registry_price": "3", "currency": "IAT",
+    }])
+    monkeypatch.setattr(checkout_api, "release_buyer_intent_decision_claim", lambda *args: released.append(args) or True)
+    with pytest.raises(HTTPException) as rejected:
+        checkout_api.commit_buyer_intent(
+            checkout_api.BuyerIntentCommitRequest(intent_decision_id="bid_test_decision"),
+            Response(),
+            authorization="Bearer session",
+        )
+    assert rejected.value.status_code == 409
+    assert rejected.value.detail == "intent_decision_market_changed"
+    assert released
+
+
 def test_wallet_checkout_does_not_reuse_submitted_quote(monkeypatch):
     monkeypatch.setattr(checkout_api, "_session_wallet", lambda authorization: (BUYER, {}))
     monkeypatch.setattr(

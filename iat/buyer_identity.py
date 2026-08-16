@@ -119,6 +119,32 @@ def init_wallet_identity_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_buyer_spend_wallet_day "
             "ON buyer_spend_reservations(wallet,input_asset,created_at,expires_at)"
         )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS buyer_intent_decisions (
+                intent_decision_id TEXT PRIMARY KEY,
+                wallet TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                request_hash TEXT NOT NULL,
+                request_json TEXT NOT NULL,
+                selection_json TEXT NOT NULL,
+                selected_seller_agent_id TEXT,
+                selected_agent_id TEXT,
+                selected_catalog_item_id TEXT,
+                selected_unit_price TEXT,
+                selected_currency TEXT,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                consumed_at INTEGER,
+                order_id TEXT,
+                UNIQUE(wallet,idempotency_key)
+            )
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_buyer_intent_wallet_expires "
+            "ON buyer_intent_decisions(wallet,expires_at,consumed_at)"
+        )
         conn.commit()
     except Exception:
         conn.rollback()
@@ -488,6 +514,184 @@ def update_buyer_spend_reservation(
         cur.execute(
             f"UPDATE buyer_spend_reservations SET state={p},expires_at={p} WHERE quote_id={p}",
             (normalized_state, effective_expiry, str(quote_id)),
+        )
+        changed = cur.rowcount == 1
+        conn.commit()
+        return changed
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_conn(conn)
+
+
+def save_buyer_intent_decision(
+    wallet: str,
+    *,
+    idempotency_key: str,
+    request_payload: dict[str, Any],
+    selection: dict[str, Any],
+    selected_record: dict[str, Any] | None,
+    now: int | None = None,
+    ttl_seconds: int = 120,
+) -> dict[str, Any]:
+    wallet = validate_wallet(wallet)
+    key = str(idempotency_key or "").strip()
+    if not 8 <= len(key) <= 128:
+        raise WalletIdentityError("invalid_intent_idempotency_key")
+    current = int(time.time()) if now is None else int(now)
+    ttl = max(30, min(int(ttl_seconds), 300))
+    canonical_request = json.dumps(request_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    request_hash = hashlib.sha256(canonical_request.encode()).hexdigest()
+    init_wallet_identity_db()
+    conn = get_conn()
+    try:
+        p = qmark()
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT * FROM buyer_intent_decisions WHERE wallet={p} AND idempotency_key={p}",
+            (wallet, key),
+        )
+        existing = cur.fetchone()
+        if existing:
+            row = dict(existing)
+            if row.get("request_hash") != request_hash:
+                raise WalletIdentityError("intent_idempotency_conflict")
+            row["selection"] = json.loads(row.pop("selection_json"))
+            row.pop("request_json", None)
+            row["idempotent_replay"] = True
+            conn.commit()
+            return row
+        decision_id = f"bid_{secrets.token_urlsafe(24)}"
+        expires_at = current + ttl
+        selected = selected_record or {}
+        cur.execute(
+            f"""INSERT INTO buyer_intent_decisions
+            (intent_decision_id,wallet,idempotency_key,request_hash,request_json,selection_json,
+             selected_seller_agent_id,selected_agent_id,selected_catalog_item_id,
+             selected_unit_price,selected_currency,created_at,expires_at,consumed_at,order_id)
+            VALUES ({p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},{p},NULL,NULL)""",
+            (
+                decision_id, wallet, key, request_hash, canonical_request,
+                json.dumps(selection, sort_keys=True),
+                selected.get("seller_agent_id"), selected.get("agent_id"),
+                selected.get("catalog_item_id"), str(selected.get("unit_price")) if selected else None,
+                selected.get("currency"), current, expires_at,
+            ),
+        )
+        conn.commit()
+        return {
+            "intent_decision_id": decision_id,
+            "wallet": wallet,
+            "idempotency_key": key,
+            "request_hash": request_hash,
+            "selection": selection,
+            "selected_seller_agent_id": selected.get("seller_agent_id"),
+            "selected_agent_id": selected.get("agent_id"),
+            "selected_catalog_item_id": selected.get("catalog_item_id"),
+            "selected_unit_price": str(selected.get("unit_price")) if selected else None,
+            "selected_currency": selected.get("currency"),
+            "created_at": current,
+            "expires_at": expires_at,
+            "consumed_at": None,
+            "order_id": None,
+            "idempotent_replay": False,
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_conn(conn)
+
+
+def claim_buyer_intent_decision(
+    wallet: str,
+    intent_decision_id: str,
+    *,
+    now: int | None = None,
+) -> dict[str, Any]:
+    wallet = validate_wallet(wallet)
+    current = int(time.time()) if now is None else int(now)
+    init_wallet_identity_db()
+    conn = get_conn()
+    try:
+        p = qmark()
+        cur = conn.cursor()
+        lock = " FOR UPDATE" if database.USE_POSTGRES else ""
+        cur.execute(
+            f"SELECT * FROM buyer_intent_decisions WHERE intent_decision_id={p} AND wallet={p}{lock}",
+            (str(intent_decision_id), wallet),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise WalletIdentityError("intent_decision_not_found")
+        decision = dict(row)
+        if decision.get("order_id"):
+            decision["request"] = json.loads(decision.pop("request_json"))
+            decision["selection"] = json.loads(decision.pop("selection_json"))
+            decision["idempotent_replay"] = True
+            conn.commit()
+            return decision
+        if current >= int(decision["expires_at"]):
+            raise WalletIdentityError("intent_decision_expired")
+        claimed_at = decision.get("consumed_at")
+        if claimed_at is not None and int(claimed_at) > current - 30:
+            raise WalletIdentityError("intent_decision_commit_in_progress")
+        cur.execute(
+            f"""UPDATE buyer_intent_decisions SET consumed_at={p}
+            WHERE intent_decision_id={p} AND wallet={p} AND order_id IS NULL
+            AND (consumed_at IS NULL OR consumed_at<={p})""",
+            (current, str(intent_decision_id), wallet, current - 30),
+        )
+        if cur.rowcount != 1:
+            raise WalletIdentityError("intent_decision_commit_in_progress")
+        conn.commit()
+        decision["consumed_at"] = current
+        decision["request"] = json.loads(decision.pop("request_json"))
+        decision["selection"] = json.loads(decision.pop("selection_json"))
+        decision["idempotent_replay"] = False
+        return decision
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_conn(conn)
+
+
+def finalize_buyer_intent_decision(wallet: str, intent_decision_id: str, order_id: str) -> bool:
+    wallet = validate_wallet(wallet)
+    init_wallet_identity_db()
+    conn = get_conn()
+    try:
+        p = qmark()
+        cur = conn.cursor()
+        cur.execute(
+            f"""UPDATE buyer_intent_decisions SET order_id={p}
+            WHERE intent_decision_id={p} AND wallet={p} AND consumed_at IS NOT NULL
+            AND order_id IS NULL""",
+            (str(order_id), str(intent_decision_id), wallet),
+        )
+        changed = cur.rowcount == 1
+        conn.commit()
+        return changed
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_conn(conn)
+
+
+def release_buyer_intent_decision_claim(wallet: str, intent_decision_id: str) -> bool:
+    wallet = validate_wallet(wallet)
+    init_wallet_identity_db()
+    conn = get_conn()
+    try:
+        p = qmark()
+        cur = conn.cursor()
+        cur.execute(
+            f"""UPDATE buyer_intent_decisions SET consumed_at=NULL
+            WHERE intent_decision_id={p} AND wallet={p} AND order_id IS NULL""",
+            (str(intent_decision_id), wallet),
         )
         changed = cur.rowcount == 1
         conn.commit()

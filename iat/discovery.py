@@ -33,6 +33,7 @@ _MANIFEST: dict[str, Any] = {
         "wallet_auth_session": "/payments/v1/universal/wallet-auth/session",
         "purchase_policy": "/payments/v1/universal/buyer/purchase-policy",
         "intent_preview": "/payments/v1/universal/buyer/intents/preview",
+        "intent_commit": "/payments/v1/universal/buyer/intents/commit",
         "universal_checkout_quote": "/payments/v1/universal/quote",
         "universal_checkout_prepare": "/payments/v1/universal/{quote_id}/prepare",
         "universal_checkout_authorize": "/payments/v1/universal/{quote_id}/authorize",
@@ -327,6 +328,7 @@ execute an order, verify a result, and settle payment under explicit policies.
 - No-funds sandbox preview: `POST /sandbox/v1/preview`
 - No-funds sandbox purchase: `POST /sandbox/v1/purchase`
 - Authenticated production intent preview: `POST /payments/v1/universal/buyer/intents/preview`
+- Commit a wallet-bound intent decision: `POST /payments/v1/universal/buyer/intents/commit`
 - Bounded autonomous purchase policy: `PUT /payments/v1/universal/buyer/purchase-policy`
 - Hybrid payment quote: `POST /payments/v1/universal/quote`
 - Authenticated invitation response: `POST /growth/v1/respond`

@@ -13,7 +13,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import replace
-from decimal import Decimal, ROUND_UP
+from decimal import Decimal, InvalidOperation, ROUND_UP
 from typing import Any
 
 import requests
@@ -95,14 +95,19 @@ from iat.buyer_identity import (
     WalletIdentityError,
     authenticate_wallet_session,
     authorize_buyer_spend,
+    claim_buyer_intent_decision,
     create_wallet_challenge,
     exchange_wallet_signature,
+    finalize_buyer_intent_decision,
     get_buyer_purchase_policy,
     revoke_wallet_session,
+    release_buyer_intent_decision_claim,
+    save_buyer_intent_decision,
     save_buyer_purchase_policy,
     update_buyer_spend_reservation,
 )
 from iat.buyer_discovery import build_buyer_intent_preview
+from iat.api.schemas import OrderRequest
 
 
 router = APIRouter(prefix="/payments/v1/universal", tags=["universal-checkout"])
@@ -179,6 +184,10 @@ class BuyerIntentPreviewRequest(BaseModel):
     maximum_price: float = Field(gt=0, le=1_000_000_000)
     strategy: str = Field(default="balanced", pattern="^(balanced|cheapest|fastest|safest|quality)$")
     required_capabilities: list[str] = Field(default_factory=list, max_length=20)
+
+
+class BuyerIntentCommitRequest(BaseModel):
+    intent_decision_id: str = Field(min_length=12, max_length=128)
 
 
 class WalletCheckoutSubmitRequest(BaseModel):
@@ -2140,6 +2149,7 @@ def preview_buyer_intent(
     req: BuyerIntentPreviewRequest,
     response: Response,
     authorization: str | None = Header(default=None, alias="Authorization"),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ):
     wallet, _ = _session_wallet(authorization)
     service = req.service.strip().lower()
@@ -2154,9 +2164,37 @@ def preview_buyer_intent(
         strategy=req.strategy,
         required_capabilities=required,
     )
+    selected_id = str((result.get("selected") or {}).get("candidate_id") or "")
+    selected_record = next(
+        (record for record in records if str(record.get("seller_agent_id") or "") == selected_id),
+        None,
+    )
+    try:
+        persisted = save_buyer_intent_decision(
+            wallet,
+            idempotency_key=str(idempotency_key or ""),
+            request_payload={
+                "service": service,
+                "goal": req.goal.strip(),
+                "maximum_price": req.maximum_price,
+                "strategy": req.strategy,
+                "required_capabilities": required,
+            },
+            selection=result,
+            selected_record=selected_record,
+        )
+    except WalletIdentityError as exc:
+        code = str(exc)
+        raise HTTPException(
+            status_code=409 if code == "intent_idempotency_conflict" else 422,
+            detail=code,
+        ) from exc
     _private_no_store(response)
     return {
         "status": "buyer_intent_preview_ready",
+        "intent_decision_id": persisted["intent_decision_id"],
+        "expires_at": persisted["expires_at"],
+        "idempotent_replay": persisted["idempotent_replay"],
         "wallet": wallet,
         "intent": {
             "service": service,
@@ -2170,7 +2208,126 @@ def preview_buyer_intent(
             "only_foundation_verified_catalogs": True,
             "only_active_capabilities": True,
         },
-        "selection": result,
+        "selection": persisted["selection"],
+    }
+
+
+@router.post("/buyer/intents/commit")
+def commit_buyer_intent(
+    req: BuyerIntentCommitRequest,
+    response: Response,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    wallet, _ = _session_wallet(authorization)
+    try:
+        decision = claim_buyer_intent_decision(wallet, req.intent_decision_id)
+    except WalletIdentityError as exc:
+        code = str(exc)
+        status = 404 if code == "intent_decision_not_found" else 410 if code == "intent_decision_expired" else 409
+        raise HTTPException(status_code=status, detail=code) from exc
+
+    if decision.get("order_id"):
+        order = get_order_db(str(decision["order_id"]))
+        if not order or str(order.get("buyer_wallet") or "") != wallet:
+            raise HTTPException(status_code=409, detail="intent_order_unavailable")
+        _private_no_store(response)
+        return {
+            "status": "buyer_intent_order_created",
+            "intent_decision_id": req.intent_decision_id,
+            "order_id": order["order_id"],
+            "service": order.get("service"),
+            "amount_iat": order.get("price"),
+            "idempotent_replay": True,
+            "next_action": f"/payments/v1/universal/wallet-checkout/{order['order_id']}/prepare",
+        }
+
+    request_payload = decision.get("request") or {}
+    selected_agent_id = str(decision.get("selected_agent_id") or "")
+    selected_seller_agent_id = str(decision.get("selected_seller_agent_id") or "")
+    selected_catalog_id = str(decision.get("selected_catalog_item_id") or "")
+    if not selected_agent_id or not selected_seller_agent_id or not selected_catalog_id:
+        release_buyer_intent_decision_claim(wallet, req.intent_decision_id)
+        raise HTTPException(status_code=409, detail="intent_decision_has_no_selection")
+
+    current_records = list_verified_marketplace_candidates_db(
+        str(request_payload.get("service") or ""), limit=100
+    )
+    current = next(
+        (
+            item for item in current_records
+            if str(item.get("seller_agent_id") or "") == selected_seller_agent_id
+            and str(item.get("agent_id") or "") == selected_agent_id
+            and str(item.get("catalog_item_id") or "") == selected_catalog_id
+        ),
+        None,
+    )
+    try:
+        market_unchanged = (
+            current is not None
+            and Decimal(str(current.get("unit_price"))) == Decimal(str(decision.get("selected_unit_price")))
+            and Decimal(str(current.get("registry_price"))) == Decimal(str(decision.get("selected_unit_price")))
+            and str(current.get("currency") or "").upper() == str(decision.get("selected_currency") or "").upper()
+        )
+    except (InvalidOperation, TypeError, ValueError):
+        market_unchanged = False
+    if not market_unchanged:
+        release_buyer_intent_decision_claim(wallet, req.intent_decision_id)
+        raise HTTPException(status_code=409, detail="intent_decision_market_changed")
+
+    locked_order_id = "bio_" + hashlib.sha256(
+        f"{wallet}:{req.intent_decision_id}".encode()
+    ).hexdigest()[:32]
+    from iat.api.agent_b_api import create_order
+
+    order_result = create_order(
+        OrderRequest(
+            service=str(request_payload["service"]),
+            query=str(request_payload["goal"]),
+            buyer_wallet=wallet,
+            buyer_intent={
+                "goal": request_payload["goal"],
+                "required_capabilities": request_payload.get("required_capabilities") or [],
+                "execution_strategy": request_payload.get("strategy") or "balanced",
+                "catalog_item_id": selected_catalog_id,
+                "intent_decision_id": req.intent_decision_id,
+            },
+            requirements={
+                "catalog_item_id": selected_catalog_id,
+                "maximum_price": request_payload.get("maximum_price"),
+            },
+            buyer_context={
+                "source": "authenticated_intent_decision",
+                "intent_decision_id": req.intent_decision_id,
+            },
+            locked_agent_id=selected_agent_id,
+            locked_unit_price=str(decision["selected_unit_price"]),
+            intent_decision_id=req.intent_decision_id,
+            locked_order_id=locked_order_id,
+        ),
+        internal_call=True,
+    )
+    order_id = str(order_result.get("order_id") or "")
+    if not order_id or str(order_result.get("seller_id") or "") != selected_agent_id:
+        release_buyer_intent_decision_claim(wallet, req.intent_decision_id)
+        raise HTTPException(
+            status_code=409,
+            detail=str(order_result.get("reason") or order_result.get("status") or "intent_order_creation_failed"),
+        )
+    if not finalize_buyer_intent_decision(wallet, req.intent_decision_id, order_id):
+        raise HTTPException(status_code=503, detail="intent_decision_finalization_failed")
+    _private_no_store(response)
+    return {
+        "status": "buyer_intent_order_created",
+        "intent_decision_id": req.intent_decision_id,
+        "order_id": order_id,
+        "service": request_payload["service"],
+        "catalog_item_id": selected_catalog_id,
+        "seller_agent_id": selected_seller_agent_id,
+        "amount_iat": decision["selected_unit_price"],
+        "currency": decision["selected_currency"],
+        "idempotent_replay": False,
+        "funds_reserved": False,
+        "next_action": f"/payments/v1/universal/wallet-checkout/{order_id}/prepare",
     }
 
 

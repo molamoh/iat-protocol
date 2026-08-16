@@ -11,6 +11,9 @@ class OrderRequest(BaseModel):
     requirements: dict | None = None
     buyer_context: dict | None = None
     locked_agent_id: str | None = None
+    locked_unit_price: str | None = None
+    intent_decision_id: str | None = None
+    locked_order_id: str | None = None
 
 
 class BuyerPreviewRequest(BaseModel):

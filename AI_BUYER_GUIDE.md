@@ -339,6 +339,24 @@ is mandatory outside loopback, redirects fail closed, and the provider token is
 never included in request bodies. `SolanaRPCWalletBackend` independently checks
 the returned message and signature before broadcasting it.
 
+## Key-in-hand buyer sidecar configuration
+
+`AgentBuyerRuntimeConfig.from_env()` assembles the attested signer, bounded
+approval policy, Solana RPC backend and local sidecar. It requires the wallet,
+signer URL, separate signer/sidecar tokens, maximum USDC atomic amount, and exact
+allowed program, treasury vault and IAT destination. Missing values fail closed.
+
+The sidecar can be launched with:
+
+```bash
+uvicorn iat.agent_buyer_runtime:create_wallet_sidecar_from_env \
+  --factory --host 127.0.0.1 --port 8787
+```
+
+`diagnose_agent_buyer_runtime()` reports missing variable names, public wallet
+and policy boundaries, but never token values. The configuration has no private
+key field. This release remains devnet-only.
+
 ## Production boundary
 
 The production buyer flow remains:

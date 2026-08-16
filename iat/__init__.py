@@ -24,6 +24,13 @@ from .attested_wallet_signer import (
     AttestedHTTPSDetachedSigner,
     AttestedWalletSignerError,
 )
+from .agent_buyer_runtime import (
+    AgentBuyerRuntimeConfig,
+    AgentBuyerRuntimeConfigError,
+    BoundedTransactionApproval,
+    create_wallet_sidecar_from_env,
+    diagnose_agent_buyer_runtime,
+)
 
 __all__ = [
     "IATAPIError",
@@ -49,6 +56,11 @@ __all__ = [
     "ATTESTATION_DOMAIN",
     "AttestedHTTPSDetachedSigner",
     "AttestedWalletSignerError",
+    "AgentBuyerRuntimeConfig",
+    "AgentBuyerRuntimeConfigError",
+    "BoundedTransactionApproval",
+    "create_wallet_sidecar_from_env",
+    "diagnose_agent_buyer_runtime",
     "RetryPolicy",
     "IATWallet",
     "create_order",

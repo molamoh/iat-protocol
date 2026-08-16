@@ -19,6 +19,11 @@ from .solana_wallet_backend import (
     SolanaWalletBackendError,
     TransactionReviewApproval,
 )
+from .attested_wallet_signer import (
+    ATTESTATION_DOMAIN,
+    AttestedHTTPSDetachedSigner,
+    AttestedWalletSignerError,
+)
 
 __all__ = [
     "IATAPIError",
@@ -41,6 +46,9 @@ __all__ = [
     "SolanaRPCWalletBackend",
     "SolanaWalletBackendError",
     "TransactionReviewApproval",
+    "ATTESTATION_DOMAIN",
+    "AttestedHTTPSDetachedSigner",
+    "AttestedWalletSignerError",
     "RetryPolicy",
     "IATWallet",
     "create_order",

@@ -324,6 +324,21 @@ signature must equal the transaction's first signature. Receipt by the RPC is
 still not settlement proof: the intent confirmation endpoint remains the only
 step that marks payment verified and triggers delivery.
 
+### Attested agent-wallet signer
+
+`AttestedHTTPSDetachedSigner` is the concrete signer contract for an agent
+wallet or HSM gateway. Before sending any transaction it asks the provider to
+sign a unique, domain-separated identity challenge at
+`POST /v1/identity/attest` and verifies that proof against the configured
+Solana address. Attestations are cached only for a short bounded period.
+
+Transaction signing uses `POST /v1/transactions/sign`. The request binds a
+random request ID, wallet address and SHA-256 transaction digest. The response
+must repeat all three bindings and return the signed transaction bytes. HTTPS
+is mandatory outside loopback, redirects fail closed, and the provider token is
+never included in request bodies. `SolanaRPCWalletBackend` independently checks
+the returned message and signature before broadcasting it.
+
 ## Production boundary
 
 The production buyer flow remains:

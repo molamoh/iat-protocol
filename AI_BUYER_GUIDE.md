@@ -268,6 +268,18 @@ policy. At a buyer-signature boundary or while waiting for delivery it returns
 a safety stop and performs no mutation. Clients must respect the returned
 `poll_after_seconds` before requesting another step.
 
+## Local non-custodial buyer runner
+
+`AutonomousBuyerRunner` connects the one-step controller to an external wallet
+adapter. The adapter exposes only its public address and a
+`sign_and_broadcast(transaction_base64, review)` method; IAT never asks for a
+seed phrase, private key or keypair file.
+
+Before calling that method the runner requires a successful server simulation,
+an allowed cluster, an exact fee-payer match, all non-submission safety flags,
+and an explicit `TransactionApproval` decision over the transaction summary.
+The default policy permits devnet only. One `step()` call never polls or loops.
+
 ## Production boundary
 
 The production buyer flow remains:

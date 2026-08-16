@@ -4,6 +4,13 @@ from .auto_integration import IATMarket, IATEconomicTool, enable_ai_market, enab
 from .wallet import IATWallet, create_wallet, get_network_stats
 from .buyer import IATAPIError, IATClient, IATClientError, IATTransportError, RetryPolicy
 from .seller import IATSellerClient
+from .autonomous_buyer import (
+    AutonomousBuyerError,
+    AutonomousBuyerRunner,
+    BuyerRunnerPolicy,
+    BuyerWalletAdapter,
+    TransactionApproval,
+)
 
 __all__ = [
     "IATAPIError",
@@ -13,6 +20,11 @@ __all__ = [
     "IATEconomicTool",
     "IATMarket",
     "IATSellerClient",
+    "AutonomousBuyerError",
+    "AutonomousBuyerRunner",
+    "BuyerRunnerPolicy",
+    "BuyerWalletAdapter",
+    "TransactionApproval",
     "RetryPolicy",
     "IATWallet",
     "create_order",

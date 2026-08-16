@@ -34,6 +34,7 @@ _MANIFEST: dict[str, Any] = {
         "purchase_policy": "/payments/v1/universal/buyer/purchase-policy",
         "intent_preview": "/payments/v1/universal/buyer/intents/preview",
         "intent_commit": "/payments/v1/universal/buyer/intents/commit",
+        "intent_checkout_prepare": "/payments/v1/universal/buyer/intents/checkout/prepare",
         "universal_checkout_quote": "/payments/v1/universal/quote",
         "universal_checkout_prepare": "/payments/v1/universal/{quote_id}/prepare",
         "universal_checkout_authorize": "/payments/v1/universal/{quote_id}/authorize",

@@ -604,6 +604,37 @@ def save_buyer_intent_decision(
         release_conn(conn)
 
 
+def get_buyer_intent_decision(
+    wallet: str,
+    intent_decision_id: str,
+    *,
+    now: int | None = None,
+) -> dict[str, Any]:
+    """Read a wallet-bound decision without claiming or mutating it."""
+    wallet = validate_wallet(wallet)
+    current = int(time.time()) if now is None else int(now)
+    init_wallet_identity_db()
+    conn = get_conn()
+    try:
+        p = qmark()
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT * FROM buyer_intent_decisions WHERE intent_decision_id={p} AND wallet={p}",
+            (str(intent_decision_id), wallet),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise WalletIdentityError("intent_decision_not_found")
+        decision = dict(row)
+        if not decision.get("order_id") and current >= int(decision["expires_at"]):
+            raise WalletIdentityError("intent_decision_expired")
+        decision["request"] = json.loads(decision.pop("request_json"))
+        decision["selection"] = json.loads(decision.pop("selection_json"))
+        return decision
+    finally:
+        release_conn(conn)
+
+
 def claim_buyer_intent_decision(
     wallet: str,
     intent_decision_id: str,

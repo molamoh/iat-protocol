@@ -479,6 +479,69 @@ def test_authenticated_intent_commit_locks_selected_agent_and_price(monkeypatch)
     assert observed["request"].locked_order_id.startswith("bio_")
 
 
+def test_intent_checkout_prepare_enforces_autonomous_policy_and_never_submits(monkeypatch):
+    observed = {}
+    monkeypatch.setattr(checkout_api, "_session_wallet", lambda authorization: (BUYER, "token"))
+    monkeypatch.setattr(
+        checkout_api,
+        "get_buyer_intent_decision",
+        lambda wallet, decision_id: {"order_id": "order_1", "wallet": wallet},
+    )
+
+    def prepare(order_id, req, response, authorization=None):
+        observed.update(
+            order_id=order_id,
+            autonomous=req.autonomous,
+            input_asset=req.input_asset,
+            authorization=authorization,
+        )
+        return {
+            "status": "autonomous_checkout_policy_authorized",
+            "order_id": order_id,
+            "quote_id": "uq_1",
+            "transaction_base64": "unsigned-for-buyer",
+        }
+
+    monkeypatch.setattr(checkout_api, "prepare_wallet_checkout", prepare)
+    result = checkout_api.prepare_buyer_intent_checkout(
+        checkout_api.BuyerIntentCheckoutPrepareRequest(
+            intent_decision_id="bid_test_decision", input_asset="USDC"
+        ),
+        Response(),
+        authorization="Bearer session",
+    )
+
+    assert observed == {
+        "order_id": "order_1",
+        "autonomous": True,
+        "input_asset": "USDC",
+        "authorization": "Bearer session",
+    }
+    assert result["policy_enforced"] is True
+    assert result["buyer_signature_required"] is True
+    assert result["transaction_submitted"] is False
+    assert result["funds_moved"] is False
+
+
+def test_intent_checkout_prepare_requires_committed_wallet_decision(monkeypatch):
+    monkeypatch.setattr(checkout_api, "_session_wallet", lambda authorization: (BUYER, "token"))
+    monkeypatch.setattr(
+        checkout_api,
+        "get_buyer_intent_decision",
+        lambda wallet, decision_id: {"order_id": None, "wallet": wallet},
+    )
+    with pytest.raises(HTTPException) as rejected:
+        checkout_api.prepare_buyer_intent_checkout(
+            checkout_api.BuyerIntentCheckoutPrepareRequest(
+                intent_decision_id="bid_test_decision"
+            ),
+            Response(),
+            authorization="Bearer session",
+        )
+    assert rejected.value.status_code == 409
+    assert rejected.value.detail == "intent_decision_not_committed"
+
+
 def test_intent_commit_rejects_changed_market_and_releases_claim(monkeypatch):
     released = []
     monkeypatch.setattr(checkout_api, "_session_wallet", lambda authorization: (BUYER, "token"))

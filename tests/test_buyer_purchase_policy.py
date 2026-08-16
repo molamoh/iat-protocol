@@ -278,3 +278,50 @@ def test_expired_or_foreign_intent_decision_cannot_be_claimed(buyer_policy_datab
         buyer_identity.claim_buyer_intent_decision(
             wallet, created["intent_decision_id"], now=130
         )
+
+
+def test_committed_intent_decision_remains_readable_without_mutation(buyer_policy_database):
+    wallet = buyer_policy_database
+    created = buyer_identity.save_buyer_intent_decision(
+        wallet,
+        idempotency_key="read-committed-intent",
+        request_payload={"service": "web_research", "goal": "A sufficiently long goal"},
+        selection={"status": "selected"},
+        selected_record=None,
+        now=100,
+        ttl_seconds=30,
+    )
+    buyer_identity.claim_buyer_intent_decision(wallet, created["intent_decision_id"], now=110)
+    assert buyer_identity.finalize_buyer_intent_decision(
+        wallet, created["intent_decision_id"], "order_1"
+    )
+
+    decision = buyer_identity.get_buyer_intent_decision(
+        wallet, created["intent_decision_id"], now=200
+    )
+    replay = buyer_identity.get_buyer_intent_decision(
+        wallet, created["intent_decision_id"], now=201
+    )
+    assert decision["order_id"] == "order_1"
+    assert decision["request"]["service"] == "web_research"
+    assert replay["consumed_at"] == decision["consumed_at"]
+    with pytest.raises(buyer_identity.WalletIdentityError, match="intent_decision_not_found"):
+        buyer_identity.get_buyer_intent_decision(
+            str(Keypair().pubkey()), created["intent_decision_id"], now=200
+        )
+
+
+def test_uncommitted_expired_intent_decision_cannot_be_read(buyer_policy_database):
+    created = buyer_identity.save_buyer_intent_decision(
+        buyer_policy_database,
+        idempotency_key="read-expired-intent",
+        request_payload={"service": "web_research", "goal": "A sufficiently long goal"},
+        selection={"status": "selected"},
+        selected_record=None,
+        now=100,
+        ttl_seconds=30,
+    )
+    with pytest.raises(buyer_identity.WalletIdentityError, match="intent_decision_expired"):
+        buyer_identity.get_buyer_intent_decision(
+            buyer_policy_database, created["intent_decision_id"], now=130
+        )

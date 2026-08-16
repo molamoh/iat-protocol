@@ -99,6 +99,7 @@ from iat.buyer_identity import (
     create_wallet_challenge,
     exchange_wallet_signature,
     finalize_buyer_intent_decision,
+    get_buyer_intent_decision,
     get_buyer_purchase_policy,
     revoke_wallet_session,
     release_buyer_intent_decision_claim,
@@ -188,6 +189,11 @@ class BuyerIntentPreviewRequest(BaseModel):
 
 class BuyerIntentCommitRequest(BaseModel):
     intent_decision_id: str = Field(min_length=12, max_length=128)
+
+
+class BuyerIntentCheckoutPrepareRequest(BaseModel):
+    intent_decision_id: str = Field(min_length=12, max_length=128)
+    input_asset: str = Field(default="USDC", pattern="^USDC$")
 
 
 class WalletCheckoutSubmitRequest(BaseModel):
@@ -2238,7 +2244,7 @@ def commit_buyer_intent(
             "service": order.get("service"),
             "amount_iat": order.get("price"),
             "idempotent_replay": True,
-            "next_action": f"/payments/v1/universal/wallet-checkout/{order['order_id']}/prepare",
+            "next_action": "/payments/v1/universal/buyer/intents/checkout/prepare",
         }
 
     request_payload = decision.get("request") or {}
@@ -2327,7 +2333,40 @@ def commit_buyer_intent(
         "currency": decision["selected_currency"],
         "idempotent_replay": False,
         "funds_reserved": False,
-        "next_action": f"/payments/v1/universal/wallet-checkout/{order_id}/prepare",
+        "next_action": "/payments/v1/universal/buyer/intents/checkout/prepare",
+    }
+
+
+@router.post("/buyer/intents/checkout/prepare")
+def prepare_buyer_intent_checkout(
+    req: BuyerIntentCheckoutPrepareRequest,
+    response: Response,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    wallet, _ = _session_wallet(authorization)
+    try:
+        decision = get_buyer_intent_decision(wallet, req.intent_decision_id)
+    except WalletIdentityError as exc:
+        code = str(exc)
+        status = 404 if code == "intent_decision_not_found" else 410
+        raise HTTPException(status_code=status, detail=code) from exc
+    order_id = str(decision.get("order_id") or "")
+    if not order_id:
+        raise HTTPException(status_code=409, detail="intent_decision_not_committed")
+    prepared = prepare_wallet_checkout(
+        order_id,
+        WalletCheckoutRequest(input_asset=req.input_asset, autonomous=True),
+        response,
+        authorization=authorization,
+    )
+    return {
+        **prepared,
+        "status": "buyer_intent_checkout_prepared",
+        "intent_decision_id": req.intent_decision_id,
+        "policy_enforced": True,
+        "buyer_signature_required": True,
+        "transaction_submitted": False,
+        "funds_moved": False,
     }
 
 

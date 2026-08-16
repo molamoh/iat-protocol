@@ -186,6 +186,23 @@ and price. Any market change invalidates the decision. A successful commit is
 single-use and idempotent: retries return the same deterministic order. It
 still moves no funds; the next action is the wallet checkout preparation route.
 
+To enforce the wallet's autonomous purchase policy and prepare the exact
+committed order for signature:
+
+```http
+POST /payments/v1/universal/buyer/intents/checkout/prepare
+Authorization: Bearer ias_...
+Content-Type: application/json
+
+{"intent_decision_id": "bid_...", "input_asset": "USDC"}
+```
+
+The decision must belong to the authenticated wallet and already reference a
+committed order. IAT creates or reuses its quote, checks the service and budget
+limits, reserves the amount in the daily policy, simulates the checkout and
+returns the transaction for the buyer agent's signature. IAT neither holds the
+buyer's key nor signs or submits the transaction on the buyer's behalf.
+
 ## Production boundary
 
 The production buyer flow remains:

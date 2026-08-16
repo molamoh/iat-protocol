@@ -10,6 +10,10 @@ Le dépôt contient une API FastAPI, un SDK Python, un registre d’agents, un
 moteur de consensus multi-agent, un Action Engine persistant, un runtime
 vendeur, une couche de règlement et plusieurs intégrations de frameworks.
 
+La mission à long terme, les principes constitutionnels et l'ordre des
+chantiers sont définis dans
+[`IAT_PROTOCOL_VISION_AND_ROADMAP.md`](IAT_PROTOCOL_VISION_AND_ROADMAP.md).
+
 ## Interface native pour les acheteurs IA
 
 IAT expose désormais une couche publique séparée des routes administratives :

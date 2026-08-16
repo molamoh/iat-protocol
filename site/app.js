@@ -191,6 +191,7 @@ const sellerConsoleOpen = optionalElement("#seller-console-open");
 const sellerConsoleStatus = optionalElement("#seller-console-status");
 const sellerConsoleResult = optionalElement("#seller-console-result");
 let sellerSessionHeaders = null;
+let sellerConsoleActiveTab = "overview";
 bindDraft("seller-registration", [sellerRegisterName, sellerRegisterWallet, sellerRegisterEmail, sellerRegisterWebsite]);
 bindDraft("seller-economics", [sellerPrice, sellerOrders, sellerRefunds, sellerCost]);
 
@@ -270,11 +271,20 @@ function renderSellerGovernanceState(dashboard) {
     const result = card.querySelector("#seller-console-result");
     if (result) card.append(panel); else card.append(panel);
   }
+  // Keep the interactive forms alive while the tab shell is re-rendered.
+  // Assigning panel.innerHTML would otherwise destroy their event listeners.
+  const existingSellerForms = [...document.querySelectorAll(".seller-capability-form")];
+  const capabilityForm = existingSellerForms.find((form) => form.querySelector("#seller-agent-register"));
+  const catalogForm = existingSellerForms.find((form) => form.querySelector("#seller-catalog-create"));
+  capabilityForm?.remove();
+  catalogForm?.remove();
   const actions = Array.isArray(dashboard.next_required_actions) ? dashboard.next_required_actions : [];
   const runtime = dashboard.runtime || {};
   const seller = dashboard.seller || {};
   const recent = dashboard.recent || {};
   const agents = Array.isArray(recent.agents) ? recent.agents : [];
+  const items = Array.isArray(recent.catalog_items) ? recent.catalog_items : [];
+  const requests = Array.isArray(recent.factory_requests) ? recent.factory_requests : [];
   const autonomous = Array.isArray(dashboard.autonomous_governance) ? dashboard.autonomous_governance : [];
   const onboarding = dashboard.onboarding_evidence || {};
   const onboardingReview = dashboard.onboarding_review || {};
@@ -283,8 +293,8 @@ function renderSellerGovernanceState(dashboard) {
   const checks = actions.length
     ? actions.map((item) => `<li><strong>${escapeHtml(item.type || "review")}</strong><span>${escapeHtml(item.action || item.reason || "pending")}</span></li>`).join("")
     : "<li><strong>Clear</strong><span>No additional governance action reported.</span></li>";
-  const autonomousRows = autonomous.length
-    ? autonomous.map((item) => {
+  const renderAutonomousRows = (reviews, emptyLabel) => reviews.length
+    ? reviews.map((item) => {
       const factoryReview = item.factory_review || {};
       const factoryRequest = factoryReview.factory_request || factoryReview;
       const requestId = item.factory_request_id || factoryRequest.factory_request_id || "unknown";
@@ -321,7 +331,15 @@ function renderSellerGovernanceState(dashboard) {
       const snapshotNote = item.status === "completed" && !currentCapabilityReview ? "decision snapshot · " : "";
       return `<li><strong>${reviewLabel} · ${escapeHtml(requestId)}</strong><span>${escapeHtml(`${snapshotNote}${reviewStatus} · ${reviewReason}`)}</span></li>`;
     }).join("")
-    : "<li><strong>Autonomous review</strong><span>No factory review recorded</span></li>";
+    : `<li class="seller-empty-state"><span>${escapeHtml(emptyLabel)}</span></li>`;
+  const currentAutonomous = autonomous.filter((item) => {
+    const factoryReview = item.factory_review || {};
+    const factoryRequest = factoryReview.factory_request || factoryReview;
+    return String(item.factory_request_id || factoryRequest.factory_request_id || "").startsWith("current_review_");
+  });
+  const historicalAutonomous = autonomous.filter((item) => !currentAutonomous.includes(item));
+  const currentReviewRows = renderAutonomousRows(currentAutonomous, "No current capability review.");
+  const historicalReviewRows = renderAutonomousRows(historicalAutonomous, "No historical review.");
   const emailVerified = Number(seller.email_verified || 0) === 1;
   const walletVerified = Number(seller.wallet_verified || 0) === 1;
   const runtimeVerified = Number(seller.runtime_verified || 0) === 1;
@@ -343,7 +361,44 @@ function renderSellerGovernanceState(dashboard) {
   const capabilityReviewLabel = Number(capabilityReconciliation.moved_to_review || 0) > 0
     ? `${capabilityReconciliation.moved_to_review} unapproved capability(s) safely moved to review`
     : "No unapproved active capability detected";
-  panel.innerHTML = `<h3>Governance review</h3><p>Protocol approval remains independent from seller self-management.</p><div class="seller-governance-runtime"><span>Runtime state</span><strong>${escapeHtml(runtime.runtime_state || "pending review")}</strong></div><ul>${checks}<li><strong>Current onboarding evidence</strong><span>${escapeHtml(onboardingLabel)}</span></li><li><strong>Capability safety</strong><span>${escapeHtml(capabilityReviewLabel)}</span></li><li><strong>Seller status</strong><span>${escapeHtml(`${seller.seller_status || "pending"} / ${seller.verification_status || "unverified"}`)}</span></li><li><strong>Current email evidence</strong><span>${emailAction}</span></li><li><strong>Current wallet evidence</strong><span>${escapeHtml(walletEvidence)}</span></li><li><strong>Managed connector</strong><span>${connectorControl}</span></li><li><strong>Runtime reachability</strong><span>${escapeHtml(runtimeEvidence)}</span></li><li><strong>Advanced runtime control</strong><span><details><summary>Domain-controlled runtime</summary>${runtimeControl}</details></span></li>${autonomousRows}</ul>${autonomous.some((item) => item.status === "completed") ? '<p class="seller-console-note">Historical reviews preserve the evidence and policy snapshot used at decision time. Current evidence is shown separately above.</p>' : ""}`;
+  const activeCapabilityCount = agents.filter((agent) => agent.seller_agent_status === "active").length;
+  const pendingCapabilityCount = agents.filter((agent) => agent.seller_agent_status === "pending_review").length;
+  const verifiedCatalogCount = items.filter((item) => ["verified", "foundation_verified"].includes(String(item.verification_status || "").toLowerCase())).length;
+  panel.innerHTML = `
+    <div class="seller-console-heading"><div><h3>Seller workspace</h3><p>Manage each part of your account from a dedicated tab.</p></div><span class="seller-console-health">Account protected</span></div>
+    <div class="seller-console-tabs" role="tablist" aria-label="Seller console sections">
+      <button type="button" role="tab" data-seller-tab="overview">Overview</button>
+      <button type="button" role="tab" data-seller-tab="capabilities">Capabilities <span>${agents.filter((agent) => agent.seller_agent_status !== "disabled").length}</span></button>
+      <button type="button" role="tab" data-seller-tab="catalog">Catalog <span>${items.filter((item) => item.availability_status !== "archived").length}</span></button>
+      <button type="button" role="tab" data-seller-tab="reviews">Reviews <span>${currentAutonomous.length}</span></button>
+      <button type="button" role="tab" data-seller-tab="archive">Archive</button>
+    </div>
+    <section class="seller-tab-panel" data-seller-panel="overview" role="tabpanel">
+      <div class="seller-summary-grid"><article><span>Active capabilities</span><strong>${activeCapabilityCount}</strong></article><article><span>Awaiting review</span><strong>${pendingCapabilityCount}</strong></article><article><span>Verified catalogs</span><strong>${verifiedCatalogCount}</strong></article></div>
+      <h4>Account and governance</h4><div class="seller-governance-runtime"><span>Runtime state</span><strong>${escapeHtml(runtime.runtime_state || "pending review")}</strong></div>
+      <ul>${checks}<li><strong>Onboarding</strong><span>${escapeHtml(onboardingLabel)}</span></li><li><strong>Capability safety</strong><span>${escapeHtml(capabilityReviewLabel)}</span></li><li><strong>Seller status</strong><span>${escapeHtml(`${seller.seller_status || "pending"} / ${seller.verification_status || "unverified"}`)}</span></li><li><strong>Email</strong><span>${emailAction}</span></li><li><strong>Wallet</strong><span>${escapeHtml(walletEvidence)}</span></li></ul>
+      <details class="seller-advanced-settings"><summary>Runtime settings</summary><ul><li><strong>Managed connector</strong><span>${connectorControl}</span></li><li><strong>Runtime reachability</strong><span>${escapeHtml(runtimeEvidence)}</span></li><li><strong>Domain control</strong><span>${runtimeControl}</span></li></ul></details>
+    </section>
+    <section class="seller-tab-panel" data-seller-panel="capabilities" role="tabpanel"><div class="seller-tab-intro"><div><h4>Capabilities</h4><p>Services your seller can provide to buyers.</p></div></div><div class="seller-tab-form-slot" data-form-slot="capabilities"></div><ul class="seller-record-list" data-records="capabilities"></ul></section>
+    <section class="seller-tab-panel" data-seller-panel="catalog" role="tabpanel"><div class="seller-tab-intro"><div><h4>Catalog</h4><p>Commercial listings linked to your capabilities.</p></div></div><div class="seller-tab-form-slot" data-form-slot="catalog"></div><ul class="seller-record-list" data-records="catalog"></ul></section>
+    <section class="seller-tab-panel" data-seller-panel="reviews" role="tabpanel"><div class="seller-tab-intro"><div><h4>Governance reviews</h4><p>Current decisions and immutable historical evidence.</p></div></div><h5>Current reviews</h5><ul class="seller-record-list">${currentReviewRows}</ul><details class="seller-review-history"><summary>Historical reviews (${historicalAutonomous.length})</summary><ul class="seller-record-list">${historicalReviewRows}</ul><p class="seller-console-note">Historical decisions preserve the evidence and policy used at decision time.</p></details></section>
+    <section class="seller-tab-panel" data-seller-panel="archive" role="tabpanel"><div class="seller-tab-intro"><div><h4>Archive</h4><p>Disabled capabilities and archived listings kept for audit purposes.</p></div></div><ul class="seller-record-list" data-records="archive"></ul></section>`;
+
+  const activateSellerTab = (tabName) => {
+    const available = panel.querySelector(`[data-seller-panel="${tabName}"]`) ? tabName : "overview";
+    sellerConsoleActiveTab = available;
+    panel.querySelectorAll("[data-seller-tab]").forEach((button) => {
+      const selected = button.dataset.sellerTab === available;
+      button.classList.toggle("active", selected);
+      button.setAttribute("aria-selected", String(selected));
+      button.tabIndex = selected ? 0 : -1;
+    });
+    panel.querySelectorAll("[data-seller-panel]").forEach((section) => { section.hidden = section.dataset.sellerPanel !== available; });
+  };
+  panel.querySelectorAll("[data-seller-tab]").forEach((button) => button.addEventListener("click", () => activateSellerTab(button.dataset.sellerTab)));
+  activateSellerTab(sellerConsoleActiveTab);
+  if (capabilityForm) panel.querySelector('[data-form-slot="capabilities"]')?.append(capabilityForm);
+  if (catalogForm) panel.querySelector('[data-form-slot="catalog"]')?.append(catalogForm);
   panel.querySelector(".seller-verify-email")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
     button.disabled = true;
@@ -489,8 +544,6 @@ function renderSellerGovernanceState(dashboard) {
       button.textContent = `Retry: ${error.message}`;
     }
   });
-  const items = Array.isArray(recent.catalog_items) ? recent.catalog_items : [];
-  const requests = Array.isArray(recent.factory_requests) ? recent.factory_requests : [];
   const capabilityCatalogSelector = (agent) => {
     const service = String(agent.service || "").toLowerCase();
     const eligible = items.filter((item) => ["verified", "foundation_verified"].includes(String(item.verification_status || "").toLowerCase()) && String(item.availability_status || "").toLowerCase() !== "archived");
@@ -500,7 +553,18 @@ function renderSellerGovernanceState(dashboard) {
     return `<label>Catalog<select class="seller-agent-catalog"><option value="">Choose the matching catalog</option>${eligible.map((item) => `<option value="${escapeHtml(item.catalog_item_id)}"${item.catalog_item_id === automaticCatalogId ? " selected" : ""}>${escapeHtml(`${item.title || item.catalog_item_id} · ${item.service_type || service}`)}</option>`).join("")}</select>${automaticCatalogId ? '<small>Matched automatically by service type.</small>' : ""}</label>`;
   };
   const records = [...agents.map((agent) => `<li>Capability <code>${escapeHtml(agent.seller_agent_id || "unknown")}</code><span>${escapeHtml(agent.seller_agent_status || "unknown")}</span>${agent.seller_agent_status === "pending_review" ? `${capabilityCatalogSelector(agent)}<button type="button" class="button secondary seller-review-agent" data-agent-id="${escapeHtml(agent.seller_agent_id || "")}">Review &amp; activate</button>` : ""}${agent.seller_agent_status === "disabled" ? "" : `<button type="button" class="button secondary seller-disable-agent" data-agent-id="${escapeHtml(agent.seller_agent_id || "")}">Disable</button>`}</li>`), ...items.map((item) => `<li>Catalog <code>${escapeHtml(item.catalog_item_id || "unknown")}</code><span>${escapeHtml(item.verification_status || "unverified")}</span>${item.availability_status === "archived" ? "<span>archived</span>" : `${!["verified", "foundation_verified"].includes(String(item.verification_status || "").toLowerCase()) ? `<button type="button" class="button secondary seller-review-catalog" data-catalog-id="${escapeHtml(item.catalog_item_id || "")}">Request review</button>` : ""}<button type="button" class="button secondary seller-archive-catalog" data-catalog-id="${escapeHtml(item.catalog_item_id || "")}">Archive</button>`}</li>`), ...requests.map((item) => `<li>Review <code>${escapeHtml(item.factory_request_id || "unknown")}</code><span>${escapeHtml(item.governance_status || "unknown")}</span></li>`)];
-  if (records.length) panel.insertAdjacentHTML("beforeend", `<h4>Your server records</h4><ul>${records.join("")}</ul>`);
+  const capabilityRecord = (agent) => `<li><div class="seller-record-main"><strong>${escapeHtml(agent.service || "Capability")}</strong><code>${escapeHtml(agent.seller_agent_id || "unknown")}</code></div><span class="seller-record-status ${escapeHtml(agent.seller_agent_status || "unknown")}">${escapeHtml(agent.seller_agent_status || "unknown")}</span>${agent.seller_agent_status === "pending_review" ? `${capabilityCatalogSelector(agent)}<button type="button" class="button secondary seller-review-agent" data-agent-id="${escapeHtml(agent.seller_agent_id || "")}">Review &amp; activate</button>` : ""}${agent.seller_agent_status === "disabled" ? "" : `<button type="button" class="button secondary seller-disable-agent" data-agent-id="${escapeHtml(agent.seller_agent_id || "")}">Disable</button>`}</li>`;
+  const catalogRecord = (item) => `<li><div class="seller-record-main"><strong>${escapeHtml(item.title || item.service_type || "Catalog listing")}</strong><code>${escapeHtml(item.catalog_item_id || "unknown")}</code></div><span class="seller-record-status ${escapeHtml(item.verification_status || "unverified")}">${escapeHtml(item.verification_status || "unverified")}</span>${item.availability_status === "archived" ? '<span class="seller-record-status archived">archived</span>' : `${!["verified", "foundation_verified"].includes(String(item.verification_status || "").toLowerCase()) ? `<button type="button" class="button secondary seller-review-catalog" data-catalog-id="${escapeHtml(item.catalog_item_id || "")}">Request review</button>` : ""}<button type="button" class="button secondary seller-archive-catalog" data-catalog-id="${escapeHtml(item.catalog_item_id || "")}">Archive</button>`}</li>`;
+  const currentAgents = agents.filter((agent) => agent.seller_agent_status !== "disabled");
+  const disabledAgents = agents.filter((agent) => agent.seller_agent_status === "disabled");
+  const currentItems = items.filter((item) => item.availability_status !== "archived");
+  const archivedItems = items.filter((item) => item.availability_status === "archived");
+  const capabilityList = panel.querySelector('[data-records="capabilities"]');
+  const catalogList = panel.querySelector('[data-records="catalog"]');
+  const archiveList = panel.querySelector('[data-records="archive"]');
+  if (capabilityList) capabilityList.innerHTML = currentAgents.length ? currentAgents.map(capabilityRecord).join("") : '<li class="seller-empty-state"><span>No capability registered yet.</span></li>';
+  if (catalogList) catalogList.innerHTML = currentItems.length ? currentItems.map(catalogRecord).join("") : '<li class="seller-empty-state"><span>No catalog listing yet.</span></li>';
+  if (archiveList) archiveList.innerHTML = disabledAgents.length || archivedItems.length ? [...disabledAgents.map(capabilityRecord), ...archivedItems.map(catalogRecord)].join("") : '<li class="seller-empty-state"><span>The archive is empty.</span></li>';
   panel.querySelectorAll(".seller-review-catalog").forEach((button) => button.addEventListener("click", async () => {
     const catalogId = button.dataset.catalogId;
     if (!catalogId || !sellerSessionHeaders) return;

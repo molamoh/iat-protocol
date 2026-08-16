@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import secrets
 import time
@@ -85,6 +86,38 @@ def init_wallet_identity_db() -> None:
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_wallet_auth_sessions_wallet_expires "
             "ON wallet_auth_sessions(wallet, expires_at)"
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS buyer_purchase_policies (
+                wallet TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                input_asset TEXT NOT NULL,
+                max_per_order_minor INTEGER NOT NULL,
+                daily_limit_minor INTEGER NOT NULL,
+                allowed_services TEXT NOT NULL DEFAULT '[]',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS buyer_spend_reservations (
+                quote_id TEXT PRIMARY KEY,
+                wallet TEXT NOT NULL,
+                input_asset TEXT NOT NULL,
+                amount_minor INTEGER NOT NULL,
+                service TEXT,
+                state TEXT NOT NULL DEFAULT 'reserved',
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL
+            )
+            """
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_buyer_spend_wallet_day "
+            "ON buyer_spend_reservations(wallet,input_asset,created_at,expires_at)"
         )
         conn.commit()
     except Exception:
@@ -263,6 +296,198 @@ def revoke_wallet_session(token: str, *, now: int | None = None) -> bool:
             f"UPDATE wallet_auth_sessions SET revoked_at={p} "
             f"WHERE token_hash={p} AND revoked_at IS NULL",
             (current, _token_hash(value)),
+        )
+        changed = cur.rowcount == 1
+        conn.commit()
+        return changed
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_conn(conn)
+
+
+def save_buyer_purchase_policy(
+    wallet: str,
+    *,
+    enabled: bool,
+    input_asset: str,
+    max_per_order_minor: int,
+    daily_limit_minor: int,
+    allowed_services: list[str] | None = None,
+    now: int | None = None,
+) -> dict[str, Any]:
+    wallet = validate_wallet(wallet)
+    asset = str(input_asset or "").strip().upper()
+    per_order = int(max_per_order_minor)
+    daily = int(daily_limit_minor)
+    if asset != "USDC":
+        raise WalletIdentityError("unsupported_purchase_policy_asset")
+    if per_order <= 0 or daily <= 0 or per_order > daily:
+        raise WalletIdentityError("invalid_purchase_policy_limits")
+    services = sorted({str(item).strip().lower() for item in (allowed_services or []) if str(item).strip()})
+    if len(services) > 50 or any(len(item) > 100 for item in services):
+        raise WalletIdentityError("invalid_purchase_policy_services")
+    current = int(time.time()) if now is None else int(now)
+    init_wallet_identity_db()
+    conn = get_conn()
+    try:
+        p = qmark()
+        cur = conn.cursor()
+        if database.USE_POSTGRES:
+            cur.execute(
+                f"""INSERT INTO buyer_purchase_policies
+                (wallet,enabled,input_asset,max_per_order_minor,daily_limit_minor,allowed_services,created_at,updated_at)
+                VALUES ({p},{p},{p},{p},{p},{p},{p},{p})
+                ON CONFLICT (wallet) DO UPDATE SET enabled=EXCLUDED.enabled,
+                input_asset=EXCLUDED.input_asset,max_per_order_minor=EXCLUDED.max_per_order_minor,
+                daily_limit_minor=EXCLUDED.daily_limit_minor,allowed_services=EXCLUDED.allowed_services,
+                updated_at=EXCLUDED.updated_at""",
+                (wallet, int(enabled), asset, per_order, daily, json.dumps(services), current, current),
+            )
+        else:
+            cur.execute(
+                f"""INSERT INTO buyer_purchase_policies
+                (wallet,enabled,input_asset,max_per_order_minor,daily_limit_minor,allowed_services,created_at,updated_at)
+                VALUES ({p},{p},{p},{p},{p},{p},{p},{p})
+                ON CONFLICT(wallet) DO UPDATE SET enabled=excluded.enabled,
+                input_asset=excluded.input_asset,max_per_order_minor=excluded.max_per_order_minor,
+                daily_limit_minor=excluded.daily_limit_minor,allowed_services=excluded.allowed_services,
+                updated_at=excluded.updated_at""",
+                (wallet, int(enabled), asset, per_order, daily, json.dumps(services), current, current),
+            )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_conn(conn)
+    return get_buyer_purchase_policy(wallet) or {}
+
+
+def get_buyer_purchase_policy(wallet: str) -> dict[str, Any] | None:
+    wallet = validate_wallet(wallet)
+    init_wallet_identity_db()
+    conn = get_conn()
+    try:
+        p = qmark()
+        cur = conn.cursor()
+        cur.execute(f"SELECT * FROM buyer_purchase_policies WHERE wallet={p}", (wallet,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        policy = dict(row)
+        policy["enabled"] = bool(policy.get("enabled"))
+        try:
+            policy["allowed_services"] = json.loads(policy.get("allowed_services") or "[]")
+        except (TypeError, ValueError):
+            policy["allowed_services"] = []
+        return policy
+    finally:
+        release_conn(conn)
+
+
+def authorize_buyer_spend(
+    wallet: str,
+    *,
+    quote_id: str,
+    input_asset: str,
+    amount_minor: int,
+    service: str = "",
+    expires_at: int,
+    now: int | None = None,
+) -> dict[str, Any]:
+    """Atomically reserve a bounded autonomous spend under the wallet policy."""
+    wallet = validate_wallet(wallet)
+    current = int(time.time()) if now is None else int(now)
+    amount = int(amount_minor)
+    asset = str(input_asset or "").strip().upper()
+    normalized_service = str(service or "").strip().lower()
+    if amount <= 0 or int(expires_at) <= current:
+        raise WalletIdentityError("invalid_autonomous_spend")
+    init_wallet_identity_db()
+    conn = get_conn()
+    try:
+        p = qmark()
+        cur = conn.cursor()
+        lock = " FOR UPDATE" if database.USE_POSTGRES else ""
+        cur.execute(f"SELECT * FROM buyer_purchase_policies WHERE wallet={p}{lock}", (wallet,))
+        row = cur.fetchone()
+        if not row or not bool(dict(row).get("enabled")):
+            raise WalletIdentityError("autonomous_purchase_policy_required")
+        policy = dict(row)
+        if asset != str(policy.get("input_asset") or "").upper():
+            raise WalletIdentityError("purchase_policy_asset_blocked")
+        if amount > int(policy.get("max_per_order_minor") or 0):
+            raise WalletIdentityError("purchase_policy_order_limit_exceeded")
+        allowed = json.loads(policy.get("allowed_services") or "[]")
+        if allowed and normalized_service not in allowed:
+            raise WalletIdentityError("purchase_policy_service_blocked")
+        cur.execute(f"SELECT * FROM buyer_spend_reservations WHERE quote_id={p}", (quote_id,))
+        existing = cur.fetchone()
+        if existing:
+            reservation = dict(existing)
+            if reservation.get("wallet") != wallet or int(reservation.get("amount_minor") or 0) != amount:
+                raise WalletIdentityError("autonomous_spend_idempotency_conflict")
+            conn.commit()
+            return {"status": "already_reserved", **reservation}
+        day_start = current - (current % 86400)
+        cur.execute(
+            f"""SELECT COALESCE(SUM(amount_minor),0) AS total FROM buyer_spend_reservations
+            WHERE wallet={p} AND input_asset={p} AND created_at>={p} AND expires_at>{p}
+            AND state IN ('reserved','submitted','confirmed')""",
+            (wallet, asset, day_start, current),
+        )
+        reserved = int(dict(cur.fetchone()).get("total") or 0)
+        if reserved + amount > int(policy.get("daily_limit_minor") or 0):
+            raise WalletIdentityError("purchase_policy_daily_limit_exceeded")
+        cur.execute(
+            f"""INSERT INTO buyer_spend_reservations
+            (quote_id,wallet,input_asset,amount_minor,service,state,created_at,expires_at)
+            VALUES ({p},{p},{p},{p},{p},'reserved',{p},{p})""",
+            (quote_id, wallet, asset, amount, normalized_service, current, int(expires_at)),
+        )
+        conn.commit()
+        return {
+            "status": "reserved",
+            "quote_id": quote_id,
+            "amount_minor": amount,
+            "input_asset": asset,
+            "daily_reserved_minor": reserved + amount,
+            "daily_limit_minor": int(policy["daily_limit_minor"]),
+            "expires_at": int(expires_at),
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        release_conn(conn)
+
+
+def update_buyer_spend_reservation(
+    quote_id: str,
+    state: str,
+    *,
+    now: int | None = None,
+) -> bool:
+    normalized_state = str(state or "").strip().lower()
+    if normalized_state not in {"submitted", "confirmed", "released"}:
+        raise WalletIdentityError("invalid_spend_reservation_state")
+    current = int(time.time()) if now is None else int(now)
+    # Submitted and confirmed funds remain part of today's consumed budget.
+    effective_expiry = (
+        current - (current % 86400) + 86400
+        if normalized_state in {"submitted", "confirmed"}
+        else current
+    )
+    init_wallet_identity_db()
+    conn = get_conn()
+    try:
+        p = qmark()
+        cur = conn.cursor()
+        cur.execute(
+            f"UPDATE buyer_spend_reservations SET state={p},expires_at={p} WHERE quote_id={p}",
+            (normalized_state, effective_expiry, str(quote_id)),
         )
         changed = cur.rowcount == 1
         conn.commit()

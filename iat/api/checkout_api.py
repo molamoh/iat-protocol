@@ -88,9 +88,13 @@ from iat.checkout_receipt import (
 from iat.buyer_identity import (
     WalletIdentityError,
     authenticate_wallet_session,
+    authorize_buyer_spend,
     create_wallet_challenge,
     exchange_wallet_signature,
+    get_buyer_purchase_policy,
     revoke_wallet_session,
+    save_buyer_purchase_policy,
+    update_buyer_spend_reservation,
 )
 
 
@@ -151,6 +155,15 @@ class WalletSessionRequest(BaseModel):
 
 class WalletCheckoutRequest(BaseModel):
     input_asset: str = Field(default="USDC", pattern="^USDC$")
+    autonomous: bool = False
+
+
+class BuyerPurchasePolicyRequest(BaseModel):
+    enabled: bool = False
+    input_asset: str = Field(default="USDC", pattern="^USDC$")
+    max_per_order_minor: int = Field(gt=0, le=1_000_000_000_000)
+    daily_limit_minor: int = Field(gt=0, le=1_000_000_000_000)
+    allowed_services: list[str] = Field(default_factory=list, max_length=50)
 
 
 class WalletCheckoutSubmitRequest(BaseModel):
@@ -1900,6 +1913,19 @@ def prepare_wallet_checkout(
         ):
             raise
         quote = _public_quote(active)
+    policy_authorization = None
+    if req.autonomous:
+        try:
+            policy_authorization = authorize_buyer_spend(
+                wallet,
+                quote_id=str(quote["quote_id"]),
+                input_asset=str(quote["input"]["asset"]),
+                amount_minor=int(quote["input"]["amount_minor"]),
+                service=str(order.get("service") or ""),
+                expires_at=int(quote["expires_at"]),
+            )
+        except (WalletIdentityError, KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
     prepared = prepare_universal_checkout(
         str(quote["quote_id"]),
         UniversalPrepareRequest(buyer_wallet=wallet, buyer_secret=secret),
@@ -1908,7 +1934,9 @@ def prepare_wallet_checkout(
     plan = prepared["solana_instruction_plan"]
     _private_no_store(response)
     return {
-        "status": "wallet_checkout_ready_for_review",
+        "status": "autonomous_checkout_policy_authorized" if req.autonomous else "wallet_checkout_ready_for_review",
+        "autonomous": req.autonomous,
+        "policy_authorization": policy_authorization,
         "order_id": order_id,
         "quote_id": quote["quote_id"],
         "expires_at": quote["expires_at"],
@@ -1943,6 +1971,7 @@ def submit_wallet_checkout(
             tx_signature=req.tx_signature,
         ),
     )
+    update_buyer_spend_reservation(quote_id, "submitted")
     _private_no_store(response)
     return result
 
@@ -1962,6 +1991,8 @@ def confirm_wallet_checkout(
             buyer_secret=str(order["buyer_secret"]),
         ),
     )
+    if result.get("status") == "confirmed":
+        update_buyer_spend_reservation(quote_id, "confirmed")
     _private_no_store(response)
     return result
 
@@ -2044,6 +2075,49 @@ def delete_wallet_auth_session(
     revoke_wallet_session(token)
     _private_no_store(response)
     return {"status": "wallet_session_revoked"}
+
+
+@router.get("/buyer/purchase-policy")
+def get_wallet_purchase_policy(
+    response: Response,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    wallet, _ = _session_wallet(authorization)
+    policy = get_buyer_purchase_policy(wallet)
+    _private_no_store(response)
+    return {
+        "status": "buyer_purchase_policy_found" if policy else "buyer_purchase_policy_not_configured",
+        "wallet": wallet,
+        "policy": policy,
+        "autonomous_spending_enabled": bool(policy and policy.get("enabled")),
+    }
+
+
+@router.put("/buyer/purchase-policy")
+def put_wallet_purchase_policy(
+    req: BuyerPurchasePolicyRequest,
+    response: Response,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    wallet, _ = _session_wallet(authorization)
+    try:
+        policy = save_buyer_purchase_policy(
+            wallet,
+            enabled=req.enabled,
+            input_asset=req.input_asset,
+            max_per_order_minor=req.max_per_order_minor,
+            daily_limit_minor=req.daily_limit_minor,
+            allowed_services=req.allowed_services,
+        )
+    except WalletIdentityError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _private_no_store(response)
+    return {
+        "status": "buyer_purchase_policy_saved",
+        "wallet": wallet,
+        "policy": policy,
+        "notice": "This policy limits autonomous checkout preparation; it does not transfer funds by itself.",
+    }
 
 
 @router.get("/wallet-inbox")

@@ -108,6 +108,38 @@ The sandbox guarantees:
 Feedback changes only a sandbox offer adjustment between `-5` and `+5`.
 Feedback is idempotent and has no effect on production trust or settlement.
 
+## Bounded autonomous purchase policy
+
+A wallet-authenticated buyer can persist an explicit fail-closed policy before
+asking an agent to prepare autonomous purchases:
+
+```http
+PUT /payments/v1/universal/buyer/purchase-policy
+Authorization: Bearer ias_...
+Content-Type: application/json
+
+{
+  "enabled": true,
+  "input_asset": "USDC",
+  "max_per_order_minor": 2000000,
+  "daily_limit_minor": 5000000,
+  "allowed_services": ["web_research"]
+}
+```
+
+Amounts use the input asset's atomic unit. For USDC, `2000000` represents 2
+USDC. The policy can be inspected with `GET` on the same route.
+
+The wallet checkout request accepts `"autonomous": true`. In that mode IAT
+refuses preparation unless the policy is enabled and the asset, service,
+per-order amount and cumulative UTC-day amount are all permitted. Quote
+reservations are idempotent; expired unpaid quotes release their reservation,
+while submitted or confirmed payments remain in the daily total.
+
+This policy authorizes only bounded checkout preparation. It does not transfer
+funds or grant custody to IAT. On-chain delegated execution is a later phase
+and will require a separate cryptographic authorization contract.
+
 ## Production boundary
 
 The production buyer flow remains:

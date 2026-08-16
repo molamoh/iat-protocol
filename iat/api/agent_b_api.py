@@ -1,5 +1,6 @@
 import json
 import hashlib
+import logging
 import os
 import secrets
 import time
@@ -9,7 +10,7 @@ import threading
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
-from fastapi import FastAPI, Header, Body, Request, Depends, HTTPException
+from fastapi import BackgroundTasks, FastAPI, Header, Body, Request, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr, Field
@@ -25,6 +26,8 @@ from iat.onchain import (
 )
 
 from iat.api.execution_engine import select_best_agent, compute_agent_score
+
+logger = logging.getLogger(__name__)
 from iat.api.schemas import (
     BuyerConfirmRequest,
     BuyerPreviewRequest,
@@ -9507,13 +9510,36 @@ def seller_disable_agent(
 @app.post("/seller/agents/{seller_agent_id}/request-review")
 def seller_request_current_capability_review(
     seller_agent_id: str,
+    background_tasks: BackgroundTasks,
     catalog_item_id: str | None = None,
+    deferred: bool = False,
     x_seller_api_key: str | None = Header(default=None),
     authorization: str | None = Header(default=None, alias="Authorization"),
 ):
     seller = get_authenticated_seller_from_credentials(x_seller_api_key, authorization)
     if not seller:
         return {"status": "error", "message": "seller_auth_required"}
+    if deferred:
+        def run_review():
+            try:
+                run_current_seller_capability_review_db(
+                    seller_agent_id,
+                    seller["seller_id"],
+                    selected_catalog_item_id=catalog_item_id,
+                )
+            except Exception:
+                logger.exception(
+                    "Deferred seller capability review failed for %s",
+                    seller_agent_id,
+                )
+
+        background_tasks.add_task(run_review)
+        return {
+            "status": "queued",
+            "seller_agent_id": seller_agent_id,
+            "governance_checks_deferred": True,
+            "seller_cannot_self_approve": True,
+        }
     return run_current_seller_capability_review_db(
         seller_agent_id,
         seller["seller_id"],

@@ -526,8 +526,25 @@ function renderSellerGovernanceState(dashboard) {
     button.disabled = true;
     button.textContent = "Reviewing…";
     try {
-      const catalogQuery = catalogId ? `?catalog_item_id=${encodeURIComponent(catalogId)}` : "";
+      const catalogQuery = catalogId
+        ? `?catalog_item_id=${encodeURIComponent(catalogId)}&deferred=true`
+        : "?deferred=true";
       const result = await sandboxRequest(`/seller/agents/${encodeURIComponent(agentId)}/request-review${catalogQuery}`, { method: "POST", headers: sellerSessionHeaders });
+      if (result.status === "queued") {
+        button.textContent = "Governance review running…";
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          await new Promise((resolve) => window.setTimeout(resolve, 2000));
+          const snapshot = await sandboxRequest("/seller/dashboard?advance_governance=false", { headers: sellerSessionHeaders });
+          const reviewedAgent = (snapshot.recent?.agents || []).find((agent) => agent.seller_agent_id === agentId);
+          if (reviewedAgent?.seller_agent_status === "active") {
+            await refreshSellerConsole();
+            return;
+          }
+        }
+        button.disabled = false;
+        button.textContent = "Review still running — check again";
+        return;
+      }
       if (result.status !== "approved") {
         const reasons = result.evidence?.failed_checks || [];
         throw new Error(reasons.length ? reasons.join(", ") : result.approval?.message || result.message || "capability_review_blocked");

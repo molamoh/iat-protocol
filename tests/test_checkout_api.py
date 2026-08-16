@@ -609,6 +609,70 @@ def test_intent_checkout_submit_rejects_quote_substitution(monkeypatch):
     assert rejected.value.detail == "intent_quote_mismatch"
 
 
+@pytest.mark.parametrize(
+    ("confirmation", "expected_status", "verified"),
+    [
+        ({"status": "pending", "reason": "transaction_not_finalized"}, "buyer_intent_payment_pending", False),
+        (
+            {"status": "confirmed", "payment_verified": True, "delivery": {"state": "queued"}},
+            "buyer_intent_payment_confirmed",
+            True,
+        ),
+    ],
+)
+def test_intent_checkout_confirm_reports_only_verified_chain_state(
+    monkeypatch, confirmation, expected_status, verified
+):
+    monkeypatch.setattr(checkout_api, "_session_wallet", lambda authorization: (BUYER, "token"))
+    monkeypatch.setattr(
+        checkout_api,
+        "get_buyer_intent_decision",
+        lambda wallet, decision_id: {"order_id": "order_1", "wallet": wallet},
+    )
+    monkeypatch.setattr(
+        checkout_api,
+        "_wallet_owned_quote",
+        lambda quote_id, wallet: ({"quote_id": quote_id, "order_id": "order_1"}, {}),
+    )
+    monkeypatch.setattr(checkout_api, "confirm_wallet_checkout", lambda *args, **kwargs: confirmation)
+
+    result = checkout_api.confirm_buyer_intent_checkout(
+        checkout_api.BuyerIntentCheckoutConfirmRequest(
+            intent_decision_id="bid_test_decision", quote_id="uq_1"
+        ),
+        Response(),
+        authorization="Bearer session",
+    )
+    assert result["status"] == expected_status
+    assert result["payment_verified"] is verified
+    assert result["delivery_triggered"] is verified
+    assert result["retryable"] is (not verified)
+
+
+def test_intent_checkout_confirm_rejects_quote_from_another_order(monkeypatch):
+    monkeypatch.setattr(checkout_api, "_session_wallet", lambda authorization: (BUYER, "token"))
+    monkeypatch.setattr(
+        checkout_api,
+        "get_buyer_intent_decision",
+        lambda wallet, decision_id: {"order_id": "order_1", "wallet": wallet},
+    )
+    monkeypatch.setattr(
+        checkout_api,
+        "_wallet_owned_quote",
+        lambda quote_id, wallet: ({"quote_id": quote_id, "order_id": "order_2"}, {}),
+    )
+    with pytest.raises(HTTPException) as rejected:
+        checkout_api.confirm_buyer_intent_checkout(
+            checkout_api.BuyerIntentCheckoutConfirmRequest(
+                intent_decision_id="bid_test_decision", quote_id="uq_other"
+            ),
+            Response(),
+            authorization="Bearer session",
+        )
+    assert rejected.value.status_code == 409
+    assert rejected.value.detail == "intent_quote_mismatch"
+
+
 def test_intent_commit_rejects_changed_market_and_releases_claim(monkeypatch):
     released = []
     monkeypatch.setattr(checkout_api, "_session_wallet", lambda authorization: (BUYER, "token"))

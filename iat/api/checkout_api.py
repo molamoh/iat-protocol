@@ -202,6 +202,11 @@ class BuyerIntentCheckoutSubmitRequest(BaseModel):
     tx_signature: str = Field(min_length=64, max_length=128)
 
 
+class BuyerIntentCheckoutConfirmRequest(BaseModel):
+    intent_decision_id: str = Field(min_length=12, max_length=128)
+    quote_id: str = Field(min_length=3, max_length=128)
+
+
 class WalletCheckoutSubmitRequest(BaseModel):
     tx_signature: str = Field(min_length=64, max_length=128)
 
@@ -2410,6 +2415,48 @@ def submit_buyer_intent_checkout(
         "broadcast_performed_by_iat": False,
         "iat_custodied_buyer_key": False,
         "next_action": f"/payments/v1/universal/wallet-checkout/{req.quote_id}/confirm",
+    }
+
+
+@router.post("/buyer/intents/checkout/confirm")
+def confirm_buyer_intent_checkout(
+    req: BuyerIntentCheckoutConfirmRequest,
+    response: Response,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    wallet, _ = _session_wallet(authorization)
+    try:
+        decision = get_buyer_intent_decision(wallet, req.intent_decision_id)
+    except WalletIdentityError as exc:
+        code = str(exc)
+        status = 404 if code == "intent_decision_not_found" else 410
+        raise HTTPException(status_code=status, detail=code) from exc
+    order_id = str(decision.get("order_id") or "")
+    if not order_id:
+        raise HTTPException(status_code=409, detail="intent_decision_not_committed")
+    quote, _ = _wallet_owned_quote(req.quote_id, wallet)
+    if not hmac.compare_digest(str(quote.get("order_id") or ""), order_id):
+        raise HTTPException(status_code=409, detail="intent_quote_mismatch")
+    result = confirm_wallet_checkout(
+        req.quote_id,
+        response,
+        authorization=authorization,
+    )
+    payment_verified = bool(
+        result.get("payment_verified") is True or result.get("status") == "confirmed"
+    )
+    return {
+        **result,
+        "status": (
+            "buyer_intent_payment_confirmed"
+            if payment_verified
+            else "buyer_intent_payment_pending"
+        ),
+        "intent_decision_id": req.intent_decision_id,
+        "order_id": order_id,
+        "payment_verified": payment_verified,
+        "delivery_triggered": payment_verified,
+        "retryable": not payment_verified,
     }
 
 

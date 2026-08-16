@@ -223,6 +223,22 @@ same authenticated wallet and rejects quote substitution. This call records a
 signature for later on-chain confirmation; it does not receive a private key
 and does not broadcast a transaction.
 
+Confirmation is also bound to the same intent lifecycle:
+
+```http
+POST /payments/v1/universal/buyer/intents/checkout/confirm
+Authorization: Bearer ias_...
+Content-Type: application/json
+
+{"intent_decision_id": "bid_...", "quote_id": "uq_..."}
+```
+
+IAT verifies the decision/order/quote relationship again before consulting
+Solana. A non-finalized transaction returns a retryable pending state. Only a
+verified payment is marked confirmed and allowed to trigger the existing
+seller-delivery lifecycle. The result includes the delivery state and final
+receipt when they are available.
+
 ## Production boundary
 
 The production buyer flow remains:

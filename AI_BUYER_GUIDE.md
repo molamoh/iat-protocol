@@ -280,6 +280,23 @@ an allowed cluster, an exact fee-payer match, all non-submission safety flags,
 and an explicit `TransactionApproval` decision over the transaction summary.
 The default policy permits devnet only. One `step()` call never polls or loops.
 
+### Local wallet sidecar
+
+`LocalWalletRPCAdapter` provides a standard boundary for an agent-owned wallet
+process. By default it accepts only literal loopback endpoints such as
+`http://127.0.0.1:8787`; remote HTTPS requires an explicit opt-in. It calls:
+
+```http
+POST /v1/wallet/sign-and-broadcast
+Authorization: Bearer <sidecar-specific-token>
+```
+
+The body contains the public wallet address, prepared transaction and reviewed
+payment summary. A successful sidecar response contains `approved: true`, the
+same wallet address and the public Solana transaction signature. Redirects,
+identity changes and invalid signatures fail closed. The IAT session token and
+all wallet key material stay outside this request.
+
 ## Production boundary
 
 The production buyer flow remains:

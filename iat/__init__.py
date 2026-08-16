@@ -11,6 +11,7 @@ from .autonomous_buyer import (
     BuyerWalletAdapter,
     TransactionApproval,
 )
+from .wallet_adapters import LocalWalletRPCAdapter, WalletAdapterError
 
 __all__ = [
     "IATAPIError",
@@ -25,6 +26,8 @@ __all__ = [
     "BuyerRunnerPolicy",
     "BuyerWalletAdapter",
     "TransactionApproval",
+    "LocalWalletRPCAdapter",
+    "WalletAdapterError",
     "RetryPolicy",
     "IATWallet",
     "create_order",

@@ -7,6 +7,7 @@ import pytest
 from fastapi import HTTPException, Response
 from solders.keypair import Keypair
 from solders.hash import Hash
+from solders.signature import Signature
 from solders.transaction import VersionedTransaction
 
 from iat.api import checkout_api, db
@@ -540,6 +541,72 @@ def test_intent_checkout_prepare_requires_committed_wallet_decision(monkeypatch)
         )
     assert rejected.value.status_code == 409
     assert rejected.value.detail == "intent_decision_not_committed"
+
+
+def test_intent_checkout_submit_binds_quote_to_committed_order(monkeypatch):
+    signature = str(Signature.default())
+    observed = {}
+    monkeypatch.setattr(checkout_api, "_session_wallet", lambda authorization: (BUYER, "token"))
+    monkeypatch.setattr(
+        checkout_api,
+        "get_buyer_intent_decision",
+        lambda wallet, decision_id: {"order_id": "order_1", "wallet": wallet},
+    )
+    monkeypatch.setattr(
+        checkout_api,
+        "_wallet_owned_quote",
+        lambda quote_id, wallet: ({"quote_id": quote_id, "order_id": "order_1"}, {}),
+    )
+
+    def submit(quote_id, req, response, authorization=None):
+        observed.update(quote_id=quote_id, signature=req.tx_signature, authorization=authorization)
+        return {"status": "submitted", "quote_id": quote_id, "tx_signature": req.tx_signature}
+
+    monkeypatch.setattr(checkout_api, "submit_wallet_checkout", submit)
+    result = checkout_api.submit_buyer_intent_checkout(
+        checkout_api.BuyerIntentCheckoutSubmitRequest(
+            intent_decision_id="bid_test_decision",
+            quote_id="uq_1",
+            tx_signature=signature,
+        ),
+        Response(),
+        authorization="Bearer session",
+    )
+    assert observed == {
+        "quote_id": "uq_1",
+        "signature": signature,
+        "authorization": "Bearer session",
+    }
+    assert result["order_id"] == "order_1"
+    assert result["buyer_signature_reported"] is True
+    assert result["broadcast_performed_by_iat"] is False
+    assert result["iat_custodied_buyer_key"] is False
+
+
+def test_intent_checkout_submit_rejects_quote_substitution(monkeypatch):
+    monkeypatch.setattr(checkout_api, "_session_wallet", lambda authorization: (BUYER, "token"))
+    monkeypatch.setattr(
+        checkout_api,
+        "get_buyer_intent_decision",
+        lambda wallet, decision_id: {"order_id": "order_1", "wallet": wallet},
+    )
+    monkeypatch.setattr(
+        checkout_api,
+        "_wallet_owned_quote",
+        lambda quote_id, wallet: ({"quote_id": quote_id, "order_id": "order_2"}, {}),
+    )
+    with pytest.raises(HTTPException) as rejected:
+        checkout_api.submit_buyer_intent_checkout(
+            checkout_api.BuyerIntentCheckoutSubmitRequest(
+                intent_decision_id="bid_test_decision",
+                quote_id="uq_other",
+                tx_signature=str(Signature.default()),
+            ),
+            Response(),
+            authorization="Bearer session",
+        )
+    assert rejected.value.status_code == 409
+    assert rejected.value.detail == "intent_quote_mismatch"
 
 
 def test_intent_commit_rejects_changed_market_and_releases_claim(monkeypatch):

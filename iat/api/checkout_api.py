@@ -196,6 +196,12 @@ class BuyerIntentCheckoutPrepareRequest(BaseModel):
     input_asset: str = Field(default="USDC", pattern="^USDC$")
 
 
+class BuyerIntentCheckoutSubmitRequest(BaseModel):
+    intent_decision_id: str = Field(min_length=12, max_length=128)
+    quote_id: str = Field(min_length=3, max_length=128)
+    tx_signature: str = Field(min_length=64, max_length=128)
+
+
 class WalletCheckoutSubmitRequest(BaseModel):
     tx_signature: str = Field(min_length=64, max_length=128)
 
@@ -2367,6 +2373,43 @@ def prepare_buyer_intent_checkout(
         "buyer_signature_required": True,
         "transaction_submitted": False,
         "funds_moved": False,
+    }
+
+
+@router.post("/buyer/intents/checkout/submit")
+def submit_buyer_intent_checkout(
+    req: BuyerIntentCheckoutSubmitRequest,
+    response: Response,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    wallet, _ = _session_wallet(authorization)
+    try:
+        decision = get_buyer_intent_decision(wallet, req.intent_decision_id)
+    except WalletIdentityError as exc:
+        code = str(exc)
+        status = 404 if code == "intent_decision_not_found" else 410
+        raise HTTPException(status_code=status, detail=code) from exc
+    order_id = str(decision.get("order_id") or "")
+    if not order_id:
+        raise HTTPException(status_code=409, detail="intent_decision_not_committed")
+    quote, _ = _wallet_owned_quote(req.quote_id, wallet)
+    if not hmac.compare_digest(str(quote.get("order_id") or ""), order_id):
+        raise HTTPException(status_code=409, detail="intent_quote_mismatch")
+    result = submit_wallet_checkout(
+        req.quote_id,
+        WalletCheckoutSubmitRequest(tx_signature=req.tx_signature),
+        response,
+        authorization=authorization,
+    )
+    return {
+        **result,
+        "status": "buyer_intent_checkout_submitted",
+        "intent_decision_id": req.intent_decision_id,
+        "order_id": order_id,
+        "buyer_signature_reported": True,
+        "broadcast_performed_by_iat": False,
+        "iat_custodied_buyer_key": False,
+        "next_action": f"/payments/v1/universal/wallet-checkout/{req.quote_id}/confirm",
     }
 
 

@@ -203,6 +203,26 @@ limits, reserves the amount in the daily policy, simulates the checkout and
 returns the transaction for the buyer agent's signature. IAT neither holds the
 buyer's key nor signs or submits the transaction on the buyer's behalf.
 
+After the buyer agent has reviewed, signed and broadcast that exact transaction,
+it can bind the resulting Solana signature back to the intent lifecycle:
+
+```http
+POST /payments/v1/universal/buyer/intents/checkout/submit
+Authorization: Bearer ias_...
+Content-Type: application/json
+
+{
+  "intent_decision_id": "bid_...",
+  "quote_id": "uq_...",
+  "tx_signature": "..."
+}
+```
+
+IAT verifies that the decision, committed order and quote all belong to the
+same authenticated wallet and rejects quote substitution. This call records a
+signature for later on-chain confirmation; it does not receive a private key
+and does not broadcast a transaction.
+
 ## Production boundary
 
 The production buyer flow remains:

@@ -13,6 +13,12 @@ from .autonomous_buyer import (
 )
 from .wallet_adapters import LocalWalletRPCAdapter, WalletAdapterError
 from .wallet_sidecar import WalletSigningBackend, create_wallet_sidecar_app
+from .solana_wallet_backend import (
+    DetachedTransactionSigner,
+    SolanaRPCWalletBackend,
+    SolanaWalletBackendError,
+    TransactionReviewApproval,
+)
 
 __all__ = [
     "IATAPIError",
@@ -31,6 +37,10 @@ __all__ = [
     "WalletAdapterError",
     "WalletSigningBackend",
     "create_wallet_sidecar_app",
+    "DetachedTransactionSigner",
+    "SolanaRPCWalletBackend",
+    "SolanaWalletBackendError",
+    "TransactionReviewApproval",
     "RetryPolicy",
     "IATWallet",
     "create_order",

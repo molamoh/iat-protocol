@@ -310,6 +310,20 @@ checks its fee payer and required signers, then delegates once. Identical
 transaction bytes return the cached public signature and are never signed or
 broadcast twice. Tests use only a fake backend and never contact Solana.
 
+### Concrete Solana RPC backend
+
+`SolanaRPCWalletBackend` connects the sidecar to any external
+`DetachedTransactionSigner` (agent wallet, HSM, or Wallet Standard bridge). It
+defaults strictly to devnet and asks a separate approval policy before calling
+the signer. The returned signed transaction must preserve the original message
+and every pre-existing signature; the buyer signature is verified locally.
+
+Only then does the backend call Solana `sendTransaction` with base64 encoding,
+preflight enabled, `confirmed` preflight commitment and bounded retries. The RPC
+signature must equal the transaction's first signature. Receipt by the RPC is
+still not settlement proof: the intent confirmation endpoint remains the only
+step that marks payment verified and triggers delivery.
+
 ## Production boundary
 
 The production buyer flow remains:

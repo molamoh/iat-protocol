@@ -94,6 +94,12 @@ class AutonomousBuyerRunner:
         if advanced.get("next_action") != "buyer_sign_and_broadcast":
             return advanced
         prepared = advanced.get("result")
+        if not isinstance(prepared, dict) or not prepared.get("transaction_base64"):
+            prepared = self._request(
+                "POST",
+                "/payments/v1/universal/buyer/intents/checkout/prepare",
+                {"intent_decision_id": intent_decision_id, "input_asset": input_asset},
+            )
         review = self._validate_prepared_transaction(prepared)
         if not self.approval.approve(review):
             return {

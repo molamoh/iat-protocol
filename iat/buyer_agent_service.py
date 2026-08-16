@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from iat.agent_buyer_runtime import AgentBuyerRuntimeConfig, BoundedTransactionApproval
 from iat.autonomous_buyer import AutonomousBuyerError, AutonomousBuyerRunner, BuyerRunnerPolicy
+from iat.buyer_agent_scheduler import BuyerAgentScheduler
 from iat.wallet_adapters import LocalWalletRPCAdapter, WalletAdapterError
 
 
@@ -26,6 +27,18 @@ class BuyerAgentIntentRequest(BaseModel):
     required_capabilities: list[str] = Field(default_factory=list, max_length=20)
 
 
+class BuyerAgentScheduleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    max_attempts: int = Field(default=100, ge=1, le=10_000)
+
+
+class BuyerAgentRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    limit: int = Field(default=10, ge=1, le=100)
+
+
 @dataclass(frozen=True)
 class BuyerAgentServiceConfig:
     iat_api_url: str
@@ -34,6 +47,7 @@ class BuyerAgentServiceConfig:
     sidecar_url: str
     sidecar_token: str = field(repr=False)
     service_token: str = field(repr=False)
+    scheduler_database_path: str
     approval: BoundedTransactionApproval
 
     @classmethod
@@ -55,6 +69,9 @@ class BuyerAgentServiceConfig:
             sidecar_url=str(values.get("IAT_WALLET_SIDECAR_URL") or "http://127.0.0.1:8787").strip(),
             sidecar_token=signing.sidecar_token,
             service_token=service_token,
+            scheduler_database_path=str(
+                values.get("IAT_BUYER_SCHEDULER_DB") or "iat-buyer-jobs.sqlite3"
+            ).strip(),
             approval=signing.approval(),
         )
 
@@ -77,6 +94,7 @@ def create_buyer_agent_service(
     runner: AutonomousBuyerRunner,
     *,
     service_token: str,
+    scheduler: BuyerAgentScheduler | None = None,
 ) -> FastAPI:
     if len(str(service_token)) < 16:
         raise ValueError("service_token is invalid")
@@ -93,6 +111,11 @@ def create_buyer_agent_service(
             return operation(*args, **kwargs)
         except (AutonomousBuyerError, WalletAdapterError) as exc:
             raise HTTPException(status_code=409, detail=exc.code) from exc
+
+    def require_scheduler() -> BuyerAgentScheduler:
+        if scheduler is None:
+            raise HTTPException(status_code=503, detail="buyer_agent_scheduler_not_configured")
+        return scheduler
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
@@ -143,9 +166,44 @@ def create_buyer_agent_service(
         authenticate(authorization)
         return await execute(runner.open_result, intent_decision_id)
 
+    @app.post("/v1/intents/{intent_decision_id}/schedule")
+    async def schedule(
+        intent_decision_id: str,
+        req: BuyerAgentScheduleRequest,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ):
+        authenticate(authorization)
+        return require_scheduler().schedule(intent_decision_id, max_attempts=req.max_attempts)
+
+    @app.get("/v1/jobs/{intent_decision_id}")
+    async def job(
+        intent_decision_id: str,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ):
+        authenticate(authorization)
+        try:
+            return require_scheduler().get(intent_decision_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
+
+    @app.post("/v1/scheduler/run-once")
+    async def run_scheduler_once(
+        req: BuyerAgentRunRequest,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ):
+        authenticate(authorization)
+        jobs = require_scheduler().run_due_once(limit=req.limit)
+        return {"status": "scheduler_cycle_completed", "processed": len(jobs), "jobs": jobs}
+
     return app
 
 
 def create_buyer_agent_service_from_env() -> FastAPI:
     config = BuyerAgentServiceConfig.from_env()
-    return create_buyer_agent_service(config.create_runner(), service_token=config.service_token)
+    runner = config.create_runner()
+    scheduler = BuyerAgentScheduler(runner, config.scheduler_database_path)
+    return create_buyer_agent_service(
+        runner,
+        service_token=config.service_token,
+        scheduler=scheduler,
+    )

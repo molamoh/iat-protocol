@@ -162,6 +162,21 @@ def test_runner_returns_wait_state_without_signing():
     assert wallet.calls == []
 
 
+def test_runner_recovers_prepared_unsigned_intent_after_restart():
+    wallet = Wallet()
+    session = Session(
+        [
+            Response({"status": "buyer_intent_waiting", "next_action": "buyer_sign_and_broadcast"}),
+            Response(prepared_response()),
+            Response({"status": "buyer_intent_checkout_submitted", "quote_id": "uq_1"}),
+        ]
+    )
+    result = runner(session, wallet=wallet).step("bid_test_decision")
+    assert result["status"] == "buyer_intent_checkout_submitted"
+    assert session.calls[1][1].endswith("/buyer/intents/checkout/prepare")
+    assert len(wallet.calls) == 1
+
+
 def test_runner_rejects_http_for_remote_api_and_mainnet_by_default():
     with pytest.raises(ValueError, match="HTTPS"):
         AutonomousBuyerRunner(

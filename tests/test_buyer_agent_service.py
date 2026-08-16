@@ -2,6 +2,7 @@ import asyncio
 
 import httpx
 
+from iat.buyer_agent_scheduler import BuyerAgentScheduler
 from iat.buyer_agent_service import create_buyer_agent_service
 
 
@@ -99,3 +100,28 @@ def test_buyer_agent_health_contains_no_secret():
     body = call(app, "GET", "/health").json()
     assert body["private_key_configured"] is False
     assert TOKEN not in str(body)
+
+
+def test_buyer_agent_api_schedules_and_runs_one_persistent_cycle(tmp_path):
+    runner = Runner()
+    scheduler = BuyerAgentScheduler(runner, tmp_path / "jobs.sqlite3")
+    app = create_buyer_agent_service(runner, service_token=TOKEN, scheduler=scheduler)
+    scheduled = call(
+        app,
+        "POST",
+        "/v1/intents/bid_1/schedule",
+        headers=headers(),
+        json={"max_attempts": 5},
+    )
+    cycle = call(
+        app,
+        "POST",
+        "/v1/scheduler/run-once",
+        headers=headers(),
+        json={"limit": 1},
+    )
+    job = call(app, "GET", "/v1/jobs/bid_1", headers=headers())
+    assert scheduled.status_code == cycle.status_code == job.status_code == 200
+    assert cycle.json()["processed"] == 1
+    assert job.json()["state"] == "waiting"
+    assert [item[0] for item in runner.calls] == ["lifecycle"]

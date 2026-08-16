@@ -378,6 +378,23 @@ The API requires its own `IAT_BUYER_AGENT_API_TOKEN`. The IAT wallet session,
 sidecar token and signer token remain internal and are never returned. Calls do
 not loop: the agent follows `next_action` and respects `poll_after_seconds`.
 
+### Persistent bounded scheduling
+
+Set `IAT_BUYER_SCHEDULER_DB` to a local SQLite file (the default is
+`iat-buyer-jobs.sqlite3`). An intent can then be enrolled idempotently with
+`POST /v1/intents/{id}/schedule`, inspected with `GET /v1/jobs/{id}`, and moved
+through one due transition with `POST /v1/scheduler/run-once`.
+
+Each scheduler cycle claims a job with a short lease, performs no more than one
+protocol transition, and persists the next run time from
+`poll_after_seconds`. An expired lease is recoverable after process restart.
+Transport failures use bounded backoff; an exhausted attempt budget, rejected
+local approval, unknown next action, invalid transaction, cluster mismatch or
+wallet mismatch stops the job. The database contains lifecycle identifiers and
+scheduling metadata only—never API tokens, sidecar credentials, signer tokens,
+transactions or delivered results. A local supervisor or timer may invoke
+`run-once`; the API intentionally creates no hidden infinite background loop.
+
 ## Production boundary
 
 The production buyer flow remains:

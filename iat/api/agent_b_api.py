@@ -9096,6 +9096,9 @@ def seller_dashboard(
     else:
         # A console refresh is a bounded snapshot. It must not run governance,
         # reconciliation or orchestration work on the request path.
+        # This local audit reconciliation only reflects activations that have
+        # already passed Foundation quorum; it cannot activate a capability.
+        sync_current_capability_review_status_db(seller_id)
         foundation_verified = (
             str(seller.get("seller_status") or "").lower() in {"active", "approved"}
             and str(seller.get("verification_status") or "").lower()

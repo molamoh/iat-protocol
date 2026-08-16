@@ -8139,13 +8139,13 @@ def sync_current_capability_review_status_db(seller_id):
         rejection_reason = NULL,
         updated_at = {p}
     WHERE seller_id = {p}
-      AND factory_request_id LIKE 'current_review_%'
+      AND factory_request_id LIKE {p}
       AND generated_seller_agent_id IN (
           SELECT seller_agent_id FROM seller_agents
           WHERE seller_id = {p} AND seller_agent_status = 'active'
       )
       AND governance_status != 'approved_current_capability'
-    """, (now, seller_id, seller_id))
+    """, (now, seller_id, "current_review_%", seller_id))
     synchronized = max(0, int(cur.rowcount or 0))
     conn.commit()
     release_conn(conn)

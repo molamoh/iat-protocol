@@ -54,7 +54,13 @@ from iat.checkout_verifier import (
     message_hash_from_transaction_base64,
 )
 from iat.quote_signer import QuoteSigningRejected, verify_quote_authorization
-from iat.api.db import get_conn, get_order_db, qmark, release_conn
+from iat.api.db import (
+    get_conn,
+    get_order_db,
+    list_verified_marketplace_candidates_db,
+    qmark,
+    release_conn,
+)
 from iat.api import db as database
 from iat.checkout_delivery import (
     accelerate_foundation_retry,
@@ -96,6 +102,7 @@ from iat.buyer_identity import (
     save_buyer_purchase_policy,
     update_buyer_spend_reservation,
 )
+from iat.buyer_discovery import build_buyer_intent_preview
 
 
 router = APIRouter(prefix="/payments/v1/universal", tags=["universal-checkout"])
@@ -164,6 +171,14 @@ class BuyerPurchasePolicyRequest(BaseModel):
     max_per_order_minor: int = Field(gt=0, le=1_000_000_000_000)
     daily_limit_minor: int = Field(gt=0, le=1_000_000_000_000)
     allowed_services: list[str] = Field(default_factory=list, max_length=50)
+
+
+class BuyerIntentPreviewRequest(BaseModel):
+    service: str = Field(min_length=2, max_length=100)
+    goal: str = Field(min_length=10, max_length=4_000)
+    maximum_price: float = Field(gt=0, le=1_000_000_000)
+    strategy: str = Field(default="balanced", pattern="^(balanced|cheapest|fastest|safest|quality)$")
+    required_capabilities: list[str] = Field(default_factory=list, max_length=20)
 
 
 class WalletCheckoutSubmitRequest(BaseModel):
@@ -2117,6 +2132,45 @@ def put_wallet_purchase_policy(
         "wallet": wallet,
         "policy": policy,
         "notice": "This policy limits autonomous checkout preparation; it does not transfer funds by itself.",
+    }
+
+
+@router.post("/buyer/intents/preview")
+def preview_buyer_intent(
+    req: BuyerIntentPreviewRequest,
+    response: Response,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
+    wallet, _ = _session_wallet(authorization)
+    service = req.service.strip().lower()
+    required = sorted({item.strip().lower() for item in req.required_capabilities if item.strip()})
+    records = list_verified_marketplace_candidates_db(service, limit=100)
+    result = build_buyer_intent_preview(
+        records,
+        wallet=wallet,
+        service=service,
+        goal=req.goal.strip(),
+        maximum_price=req.maximum_price,
+        strategy=req.strategy,
+        required_capabilities=required,
+    )
+    _private_no_store(response)
+    return {
+        "status": "buyer_intent_preview_ready",
+        "wallet": wallet,
+        "intent": {
+            "service": service,
+            "goal": req.goal.strip(),
+            "maximum_price": req.maximum_price,
+            "strategy": req.strategy,
+            "required_capabilities": required,
+        },
+        "market": {
+            "verified_candidate_count": len(records),
+            "only_foundation_verified_catalogs": True,
+            "only_active_capabilities": True,
+        },
+        "selection": result,
     }
 
 

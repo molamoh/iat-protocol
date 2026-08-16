@@ -19374,6 +19374,60 @@ def get_available_seller_execution_agents_db(
     }
 
 
+def list_verified_marketplace_candidates_db(service, limit=50):
+    """Return only buyer-routable capabilities with a verified active catalog."""
+    normalized_service = str(service or "").strip().lower()
+    if not normalized_service:
+        return []
+    safe_limit = max(1, min(int(limit or 50), 100))
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        p = qmark()
+        cur.execute(
+            f"""
+            SELECT
+                sa.seller_agent_id, sa.agent_id, sa.seller_id, sa.service,
+                sa.capabilities, sa.specialties, sa.reputation,
+                sa.successful_orders, sa.failed_orders,
+                sa.runtime_health_score, sa.runtime_validation_status,
+                sci.catalog_item_id, sci.title, sci.description,
+                sci.service_type, sci.unit_price, sci.currency,
+                sci.capacity_per_day, sci.capacity_per_order,
+                sci.verification_status AS catalog_verification_status,
+                s.trust_score AS seller_trust_score,
+                s.risk_score AS seller_risk_score
+            FROM seller_agents sa
+            JOIN agents a ON a.agent_id = sa.agent_id
+            JOIN sellers s ON s.seller_id = sa.seller_id
+            JOIN seller_catalog_items sci
+              ON sci.seller_id = sa.seller_id
+             AND sci.linked_seller_agent_id = sa.seller_agent_id
+            WHERE LOWER(sa.service) = {p}
+              AND sa.seller_agent_status = 'active'
+              AND sa.runtime_validation_status IN ('healthy','validated','active')
+              AND a.available = 1
+              AND a.agent_type = 'seller'
+              AND a.seller_status = 'active'
+              AND a.verification_status = 'foundation_verified'
+              AND COALESCE(a.buyer_access, 0) = 0
+              AND COALESCE(a.web_access, 0) = 0
+              AND COALESCE(a.raw_prompt_access, 0) = 0
+              AND s.seller_status = 'active'
+              AND s.verification_status IN ('verified','foundation_verified')
+              AND sci.verification_status IN ('verified','foundation_verified')
+              AND sci.availability_status = 'active'
+            ORDER BY sci.unit_price ASC, sa.runtime_health_score DESC,
+                     s.trust_score DESC, sa.seller_agent_id ASC
+            LIMIT {p}
+            """,
+            (normalized_service, safe_limit),
+        )
+        return [dict(row) for row in cur.fetchall()]
+    finally:
+        release_conn(conn)
+
+
 
 
 def _sanitize_foundation_execution_context(execution_context):

@@ -140,6 +140,34 @@ This policy authorizes only bounded checkout preparation. It does not transfer
 funds or grant custody to IAT. On-chain delegated execution is a later phase
 and will require a separate cryptographic authorization contract.
 
+## Authenticated marketplace intent preview
+
+An authenticated buyer agent can rank the currently routable production
+capabilities without creating an order or reserving funds:
+
+```http
+POST /payments/v1/universal/buyer/intents/preview
+Authorization: Bearer ias_...
+Content-Type: application/json
+
+{
+  "service": "web_research",
+  "goal": "Produce a cited summary of current Bitcoin market signals",
+  "maximum_price": 3,
+  "strategy": "safest",
+  "required_capabilities": ["source_verification"]
+}
+```
+
+The candidate set is built only from active seller identities, active
+capabilities, healthy runtimes and active Foundation-verified catalogs. The
+response explains eligible and rejected candidates, objective contributions,
+risks and confidence. It exposes catalog and capability identifiers but never
+seller wallets, private runtime URLs, credentials or raw execution context.
+
+This endpoint is a preview, not a quote: it creates no order, reserves no funds
+and performs no seller execution.
+
 ## Production boundary
 
 The production buyer flow remains:

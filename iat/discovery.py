@@ -29,10 +29,14 @@ _MANIFEST: dict[str, Any] = {
         "services": "/services",
         "create_order": "/create-order",
         "verify_payment": "/buyer/verify-payment",
+        "wallet_auth_challenge": "/payments/v1/universal/wallet-auth/challenge",
+        "wallet_auth_session": "/payments/v1/universal/wallet-auth/session",
+        "purchase_policy": "/payments/v1/universal/buyer/purchase-policy",
+        "intent_preview": "/payments/v1/universal/buyer/intents/preview",
         "universal_checkout_quote": "/payments/v1/universal/quote",
-    "universal_checkout_prepare": "/payments/v1/universal/{quote_id}/prepare",
-    "universal_checkout_authorize": "/payments/v1/universal/{quote_id}/authorize",
-    "universal_checkout_submit": "/payments/v1/universal/{quote_id}/submit",
+        "universal_checkout_prepare": "/payments/v1/universal/{quote_id}/prepare",
+        "universal_checkout_authorize": "/payments/v1/universal/{quote_id}/authorize",
+        "universal_checkout_submit": "/payments/v1/universal/{quote_id}/submit",
         "universal_checkout_confirm": "/payments/v1/universal/{quote_id}/confirm",
         "universal_checkout_deliver": "/payments/v1/universal/{quote_id}/deliver",
         "universal_delivery_destination": "/payments/v1/universal/{quote_id}/delivery-destination",
@@ -322,6 +326,8 @@ execute an order, verify a result, and settle payment under explicit policies.
 - No-funds sandbox offers: `/sandbox/v1/offers`
 - No-funds sandbox preview: `POST /sandbox/v1/preview`
 - No-funds sandbox purchase: `POST /sandbox/v1/purchase`
+- Authenticated production intent preview: `POST /payments/v1/universal/buyer/intents/preview`
+- Bounded autonomous purchase policy: `PUT /payments/v1/universal/buyer/purchase-policy`
 - Hybrid payment quote: `POST /payments/v1/universal/quote`
 - Authenticated invitation response: `POST /growth/v1/respond`
 - GOIA machine manifest: `/.well-known/goia.json`

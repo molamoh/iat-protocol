@@ -9924,6 +9924,8 @@ def run_current_seller_capability_review_db(
         approval_reason="current_bounded_capability_approved",
         reviewer_ids=reviewer_ids,
     )
+    if activation.get("status") == "ok":
+        sync_current_capability_review_status_db(seller_id)
     return {
         "status": "approved" if activation.get("status") == "ok" else "blocked",
         "seller_agent_id": seller_agent_id,

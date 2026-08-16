@@ -309,6 +309,8 @@ function renderSellerGovernanceState(dashboard) {
       });
       const reviewReason = currentCapabilityReview && reviewStatus === "approved_current_capability"
         ? "current bounded capability quorum passed"
+        : currentCapabilityReview && reviewStatus === "current_evidence_pending"
+        ? "awaiting explicit capability review"
         : decisionReasons.length
         ? `risk ${decision.risk_score ?? "unknown"}: ${decisionReasons.join(", ")}`
         : missingChecks.size
@@ -493,7 +495,9 @@ function renderSellerGovernanceState(dashboard) {
     const service = String(agent.service || "").toLowerCase();
     const eligible = items.filter((item) => ["verified", "foundation_verified"].includes(String(item.verification_status || "").toLowerCase()) && String(item.availability_status || "").toLowerCase() !== "archived");
     if (eligible.length <= 1) return "";
-    return `<label>Catalog<select class="seller-agent-catalog"><option value="">Choose the matching catalog</option>${eligible.map((item) => `<option value="${escapeHtml(item.catalog_item_id)}">${escapeHtml(`${item.title || item.catalog_item_id} · ${item.service_type || service}`)}</option>`).join("")}</select></label>`;
+    const exact = eligible.filter((item) => String(item.service_type || "").trim().toLowerCase() === service);
+    const automaticCatalogId = exact.length === 1 ? exact[0].catalog_item_id : "";
+    return `<label>Catalog<select class="seller-agent-catalog"><option value="">Choose the matching catalog</option>${eligible.map((item) => `<option value="${escapeHtml(item.catalog_item_id)}"${item.catalog_item_id === automaticCatalogId ? " selected" : ""}>${escapeHtml(`${item.title || item.catalog_item_id} · ${item.service_type || service}`)}</option>`).join("")}</select>${automaticCatalogId ? '<small>Matched automatically by service type.</small>' : ""}</label>`;
   };
   const records = [...agents.map((agent) => `<li>Capability <code>${escapeHtml(agent.seller_agent_id || "unknown")}</code><span>${escapeHtml(agent.seller_agent_status || "unknown")}</span>${agent.seller_agent_status === "pending_review" ? `${capabilityCatalogSelector(agent)}<button type="button" class="button secondary seller-review-agent" data-agent-id="${escapeHtml(agent.seller_agent_id || "")}">Review &amp; activate</button>` : ""}${agent.seller_agent_status === "disabled" ? "" : `<button type="button" class="button secondary seller-disable-agent" data-agent-id="${escapeHtml(agent.seller_agent_id || "")}">Disable</button>`}</li>`), ...items.map((item) => `<li>Catalog <code>${escapeHtml(item.catalog_item_id || "unknown")}</code><span>${escapeHtml(item.verification_status || "unverified")}</span>${item.availability_status === "archived" ? "<span>archived</span>" : `${!["verified", "foundation_verified"].includes(String(item.verification_status || "").toLowerCase()) ? `<button type="button" class="button secondary seller-review-catalog" data-catalog-id="${escapeHtml(item.catalog_item_id || "")}">Request review</button>` : ""}<button type="button" class="button secondary seller-archive-catalog" data-catalog-id="${escapeHtml(item.catalog_item_id || "")}">Archive</button>`}</li>`), ...requests.map((item) => `<li>Review <code>${escapeHtml(item.factory_request_id || "unknown")}</code><span>${escapeHtml(item.governance_status || "unknown")}</span></li>`)];
   if (records.length) panel.insertAdjacentHTML("beforeend", `<h4>Your server records</h4><ul>${records.join("")}</ul>`);

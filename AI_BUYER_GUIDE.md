@@ -297,6 +297,19 @@ same wallet address and the public Solana transaction signature. Redirects,
 identity changes and invalid signatures fail closed. The IAT session token and
 all wallet key material stay outside this request.
 
+### Reference sidecar service
+
+`create_wallet_sidecar_app()` creates the matching local FastAPI service around
+a `WalletSigningBackend`. The backend owns the approval, signature and broadcast
+implementation; the sidecar has no endpoint or configuration field for a seed,
+private key or keypair file.
+
+The service authenticates its local caller, defaults to devnet, requires a
+successful simulation and short expiry, deserializes the actual transaction,
+checks its fee payer and required signers, then delegates once. Identical
+transaction bytes return the cached public signature and are never signed or
+broadcast twice. Tests use only a fake backend and never contact Solana.
+
 ## Production boundary
 
 The production buyer flow remains:

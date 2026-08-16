@@ -12,6 +12,7 @@ from .autonomous_buyer import (
     TransactionApproval,
 )
 from .wallet_adapters import LocalWalletRPCAdapter, WalletAdapterError
+from .wallet_sidecar import WalletSigningBackend, create_wallet_sidecar_app
 
 __all__ = [
     "IATAPIError",
@@ -28,6 +29,8 @@ __all__ = [
     "TransactionApproval",
     "LocalWalletRPCAdapter",
     "WalletAdapterError",
+    "WalletSigningBackend",
+    "create_wallet_sidecar_app",
     "RetryPolicy",
     "IATWallet",
     "create_order",

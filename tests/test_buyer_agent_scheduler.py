@@ -42,6 +42,8 @@ class Runner:
         self.quality_calls = []
         self.quality_error = None
         self.quality_decision = "accepted_by_explicit_criteria"
+        self.eligibility_calls = []
+        self.eligibility_error = None
 
     def lifecycle(self, decision_id):
         self.calls.append(("lifecycle", decision_id))
@@ -107,6 +109,30 @@ class Runner:
             "evaluated_at": 1_003,
             "effect": "evidence_only",
             "content_disclosed": False,
+        }
+
+    def evaluate_settlement_eligibility(self, quality_id):
+        self.eligibility_calls.append(quality_id)
+        if self.eligibility_error is not None:
+            raise self.eligibility_error
+        accepted = self.quality_decision == "accepted_by_explicit_criteria"
+        return {
+            "status": "protocol_settlement_eligibility_recorded",
+            "quality_validation_id": quality_id,
+            "eligibility_id": "pse_1234567890abcdef12345678",
+            "eligibility_sha256": "f" * 64,
+            "decision": (
+                "eligible_for_governed_release"
+                if accepted
+                else "eligible_for_compensation_review"
+            ),
+            "reason": "bounded_evidence_policy_passed",
+            "settlement_id": "settlement_1" if accepted else None,
+            "evaluated_at": 1_004,
+            "effect": "eligibility_only",
+            "funds_moved": False,
+            "transaction_signed": False,
+            "transaction_broadcast": False,
         }
 
 
@@ -198,7 +224,12 @@ def test_ready_delivery_is_opened_once_and_job_completes(tmp_path):
     assert quality["work_type"] == "quality_validation"
     assert quality["state"] == "quality_accepted"
     assert quality["quality_decision"] == "accepted_by_explicit_criteria"
-    assert scheduler.run_due_once(now=1_004) == []
+    eligibility = scheduler.run_due_once(now=1_004)[0]
+    assert eligibility["work_type"] == "settlement_eligibility"
+    assert eligibility["state"] == "release_eligible"
+    assert eligibility["eligibility_decision"] == "eligible_for_governed_release"
+    assert eligibility["settlement_id"] == "settlement_1"
+    assert scheduler.run_due_once(now=1_005) == []
     assert [call[0] for call in runner.calls] == ["lifecycle", "result"]
     assert scheduler.list_events("bid_1")["events"][-1]["event_type"] == "completed"
 
@@ -300,6 +331,9 @@ def test_quality_rejection_and_missing_contract_are_distinct(tmp_path):
     rejected = rejected_scheduler.run_due_once(now=104)[0]
     assert rejected["state"] == "quality_rejected"
     assert rejected["quality_failed_count"] == 1
+    compensation = rejected_scheduler.run_due_once(now=105)[0]
+    assert compensation["state"] == "compensation_review_eligible"
+    assert compensation["eligibility_decision"] == "eligible_for_compensation_review"
 
     missing_runner = Runner(
         [{"next_action": "open_delivery_inbox"}],
@@ -519,6 +553,14 @@ def test_existing_anchor_table_gains_publication_receipt_columns(tmp_path):
         "quality_validation_sha256",
         "quality_decision",
         "quality_validated_at",
+        "eligibility_attempt_count",
+        "eligibility_next_run_at",
+        "eligibility_error",
+        "eligibility_id",
+        "eligibility_sha256",
+        "eligibility_decision",
+        "settlement_id",
+        "eligibility_evaluated_at",
     } <= columns
 
 
@@ -547,6 +589,14 @@ def test_existing_published_anchor_is_enrolled_for_validation(tmp_path):
         )
     migrated = BuyerAgentScheduler(runner, database).get_anchor("bid_1")
     assert migrated["quality_next_run_at"] == 120
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """UPDATE buyer_agent_job_anchors
+               SET state = 'quality_accepted', eligibility_next_run_at = NULL,
+                   updated_at = 130 WHERE anchor_id = 'bea_legacy'"""
+        )
+    eligible = BuyerAgentScheduler(runner, database).get_anchor("bid_1")
+    assert eligible["eligibility_next_run_at"] == 130
 
 
 def test_security_stopped_job_cannot_be_resumed(tmp_path):

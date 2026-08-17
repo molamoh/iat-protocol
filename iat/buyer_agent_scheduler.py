@@ -187,6 +187,17 @@ class BuyerAgentScheduler:
                     quality_passed_count INTEGER,
                     quality_failed_count INTEGER,
                     quality_validated_at INTEGER,
+                    eligibility_attempt_count INTEGER NOT NULL DEFAULT 0,
+                    eligibility_max_attempts INTEGER NOT NULL DEFAULT 10,
+                    eligibility_next_run_at INTEGER,
+                    eligibility_lease_until INTEGER,
+                    eligibility_error TEXT,
+                    eligibility_id TEXT,
+                    eligibility_sha256 TEXT,
+                    eligibility_decision TEXT,
+                    eligibility_reason TEXT,
+                    settlement_id TEXT,
+                    eligibility_evaluated_at INTEGER,
                     last_error TEXT,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
@@ -230,6 +241,17 @@ class BuyerAgentScheduler:
                 "quality_passed_count": "INTEGER",
                 "quality_failed_count": "INTEGER",
                 "quality_validated_at": "INTEGER",
+                "eligibility_attempt_count": "INTEGER NOT NULL DEFAULT 0",
+                "eligibility_max_attempts": "INTEGER NOT NULL DEFAULT 10",
+                "eligibility_next_run_at": "INTEGER",
+                "eligibility_lease_until": "INTEGER",
+                "eligibility_error": "TEXT",
+                "eligibility_id": "TEXT",
+                "eligibility_sha256": "TEXT",
+                "eligibility_decision": "TEXT",
+                "eligibility_reason": "TEXT",
+                "settlement_id": "TEXT",
+                "eligibility_evaluated_at": "INTEGER",
             }
             for column, definition in anchor_migrations.items():
                 if column not in anchor_columns:
@@ -250,6 +272,12 @@ class BuyerAgentScheduler:
                 """UPDATE buyer_agent_job_anchors
                    SET quality_next_run_at = updated_at
                    WHERE state = 'delivery_verified' AND quality_next_run_at IS NULL"""
+            )
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET eligibility_next_run_at = updated_at
+                   WHERE state IN ('quality_accepted', 'quality_rejected')
+                     AND eligibility_next_run_at IS NULL"""
             )
             connection.execute(
                 """CREATE INDEX IF NOT EXISTS idx_buyer_agent_job_anchors_due
@@ -506,8 +534,10 @@ class BuyerAgentScheduler:
         timestamp = int(time.time() if now is None else now)
         results: list[dict[str, Any]] = []
         with self._lock:
-            quality_id = self._claim_quality_validation(timestamp)
-            if quality_id is not None:
+            eligibility_id = self._claim_settlement_eligibility(timestamp)
+            if eligibility_id is not None:
+                results.append(self._run_settlement_eligibility(eligibility_id, timestamp))
+            elif (quality_id := self._claim_quality_validation(timestamp)) is not None:
                 results.append(self._run_quality_validation(quality_id, timestamp))
             elif (validation_id := self._claim_validation(timestamp)) is not None:
                 results.append(self._run_validation(validation_id, timestamp))
@@ -521,6 +551,152 @@ class BuyerAgentScheduler:
                     break
                 results.append(self._run_claimed(decision_id, timestamp))
         return results
+
+    def _claim_settlement_eligibility(self, now: int) -> str | None:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """SELECT anchor_id, eligibility_attempt_count,
+                          eligibility_max_attempts
+                   FROM buyer_agent_job_anchors
+                   WHERE (state IN ('quality_accepted', 'quality_rejected')
+                          AND eligibility_next_run_at <= ?)
+                      OR (state = 'eligibility_evaluating'
+                          AND eligibility_lease_until IS NOT NULL
+                          AND eligibility_lease_until <= ?)
+                   ORDER BY eligibility_next_run_at, created_at LIMIT 1""",
+                (now, now),
+            ).fetchone()
+            if row is None:
+                return None
+            anchor_id = str(row["anchor_id"])
+            if int(row["eligibility_attempt_count"]) >= int(
+                row["eligibility_max_attempts"]
+            ):
+                connection.execute(
+                    """UPDATE buyer_agent_job_anchors
+                       SET state = 'settlement_eligibility_failed',
+                           eligibility_lease_until = NULL,
+                           eligibility_error = 'maximum_eligibility_attempts_reached',
+                           updated_at = ? WHERE anchor_id = ?""",
+                    (now, anchor_id),
+                )
+                return anchor_id
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET state = 'eligibility_evaluating', eligibility_lease_until = ?,
+                       eligibility_attempt_count = eligibility_attempt_count + 1,
+                       updated_at = ? WHERE anchor_id = ?""",
+                (now + self.lease_seconds, now, anchor_id),
+            )
+            return anchor_id
+
+    def _run_settlement_eligibility(self, anchor_id: str, now: int) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM buyer_agent_job_anchors WHERE anchor_id = ?",
+                (anchor_id,),
+            ).fetchone()
+        anchor = dict(row)
+        if anchor["state"] == "settlement_eligibility_failed":
+            return {"work_type": "settlement_eligibility", **anchor}
+        try:
+            eligibility = self.runner.evaluate_settlement_eligibility(
+                anchor["quality_validation_id"]
+            )
+            decision = str(eligibility.get("decision") or "")
+            bindings = (
+                str(eligibility.get("quality_validation_id") or "")
+                == str(anchor["quality_validation_id"])
+                and decision
+                in {"eligible_for_governed_release", "eligible_for_compensation_review"}
+                and eligibility.get("effect") == "eligibility_only"
+                and eligibility.get("funds_moved") is False
+                and eligibility.get("transaction_signed") is False
+                and eligibility.get("transaction_broadcast") is False
+                and str(eligibility.get("eligibility_id") or "").startswith("pse_")
+                and len(str(eligibility.get("eligibility_sha256") or "")) == 64
+            )
+            if not bindings:
+                raise AutonomousBuyerError("protocol_settlement_eligibility_mismatch")
+        except AutonomousBuyerError as exc:
+            attempts = int(anchor["eligibility_attempt_count"])
+            if attempts >= int(anchor["eligibility_max_attempts"]):
+                return self._finish_settlement_eligibility(
+                    anchor_id, now, state="settlement_eligibility_failed", error=exc.code
+                )
+            delay = min(300, self.default_poll_seconds * (2 ** min(attempts - 1, 5)))
+            prior_state = (
+                "quality_accepted"
+                if anchor["quality_decision"] == "accepted_by_explicit_criteria"
+                else "quality_rejected"
+            )
+            return self._finish_settlement_eligibility(
+                anchor_id,
+                now,
+                state=prior_state,
+                error=exc.code,
+                next_run_at=now + delay,
+            )
+        except Exception:
+            return self._finish_settlement_eligibility(
+                anchor_id,
+                now,
+                state="settlement_eligibility_failed",
+                error="unexpected_eligibility_failure",
+            )
+        final_state = (
+            "release_eligible"
+            if decision == "eligible_for_governed_release"
+            else "compensation_review_eligible"
+        )
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET state = ?, eligibility_lease_until = NULL,
+                       eligibility_error = NULL, eligibility_id = ?,
+                       eligibility_sha256 = ?, eligibility_decision = ?,
+                       eligibility_reason = ?, settlement_id = ?,
+                       eligibility_evaluated_at = ?, updated_at = ?
+                   WHERE anchor_id = ?""",
+                (
+                    final_state,
+                    str(eligibility["eligibility_id"]),
+                    str(eligibility["eligibility_sha256"]),
+                    decision,
+                    str(eligibility.get("reason") or ""),
+                    eligibility.get("settlement_id"),
+                    int(eligibility.get("evaluated_at") or now),
+                    now,
+                    anchor_id,
+                ),
+            )
+        return {"work_type": "settlement_eligibility", **self.get_anchor(
+            str(anchor["intent_decision_id"])
+        )}
+
+    def _finish_settlement_eligibility(
+        self,
+        anchor_id: str,
+        now: int,
+        *,
+        state: str,
+        error: str,
+        next_run_at: int | None = None,
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET state = ?, eligibility_next_run_at = ?,
+                       eligibility_lease_until = NULL, eligibility_error = ?,
+                       updated_at = ? WHERE anchor_id = ?""",
+                (state, next_run_at or now, error, now, anchor_id),
+            )
+            row = connection.execute(
+                "SELECT * FROM buyer_agent_job_anchors WHERE anchor_id = ?",
+                (anchor_id,),
+            ).fetchone()
+        return {"work_type": "settlement_eligibility", **dict(row)}
 
     def _claim_quality_validation(self, now: int) -> str | None:
         with self._connect() as connection:
@@ -638,6 +814,11 @@ class BuyerAgentScheduler:
                     now,
                     anchor_id,
                 ),
+            )
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors SET eligibility_next_run_at = ?
+                   WHERE anchor_id = ?""",
+                (now, anchor_id),
             )
         return {"work_type": "quality_validation", **self.get_anchor(
             str(anchor["intent_decision_id"])

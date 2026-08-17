@@ -572,8 +572,16 @@ Every response explicitly reports `effect: eligibility_only`, `funds_moved:
 false`, `transaction_signed: false` and `transaction_broadcast: false`. The
 policy therefore closes the evidence-to-settlement decision gap without
 bypassing escrow governance, buyer dispute handling or compensation review.
-Automatic scheduler consumption and actual governed execution remain separate
-future steps.
+Actual governed execution remains a separate future step.
+
+The scheduler now consumes eligibility automatically in a sixth independent
+cycle after `quality_accepted` or `quality_rejected`, then re-reads the public
+record before storing it. Terminal states are `release_eligible` and
+`compensation_review_eligible`; bounded transport or allocation retries can
+end as `settlement_eligibility_failed`. Existing terminal quality records are
+enrolled during migration. This automation still performs no escrow release,
+refund, transaction signing or broadcast; governed execution remains a
+separate next step.
 
 ## Production boundary
 

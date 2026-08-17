@@ -270,6 +270,29 @@ class AutonomousBuyerRunner:
             raise AutonomousBuyerError("protocol_quality_validation_mismatch")
         return public
 
+    def evaluate_settlement_eligibility(self, quality_validation_id: str) -> dict[str, Any]:
+        quality_id = str(quality_validation_id).strip()
+        if not quality_id.startswith("pqv_") or len(quality_id) > 64:
+            raise AutonomousBuyerError("quality_validation_id_invalid")
+        path = f"/protocol/v1/settlement-eligibility/{quote(quality_id, safe='')}"
+        evaluated = self._request("POST", path, authenticate=False)
+        public = self._request("GET", path, authenticate=False)
+        bindings = (
+            public == evaluated
+            and public.get("quality_validation_id") == quality_id
+            and public.get("effect") == "eligibility_only"
+            and public.get("funds_moved") is False
+            and public.get("transaction_signed") is False
+            and public.get("transaction_broadcast") is False
+            and public.get("decision")
+            in {"eligible_for_governed_release", "eligible_for_compensation_review"}
+            and str(public.get("eligibility_id") or "").startswith("pse_")
+            and len(str(public.get("eligibility_sha256") or "")) == 64
+        )
+        if not bindings:
+            raise AutonomousBuyerError("protocol_settlement_eligibility_mismatch")
+        return public
+
     def _validate_prepared_transaction(self, prepared: Any) -> dict[str, Any]:
         if not isinstance(prepared, dict):
             raise AutonomousBuyerError("prepared_transaction_missing")

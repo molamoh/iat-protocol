@@ -196,6 +196,27 @@ def test_quality_validation_is_publicly_verified_without_session_token():
     assert all("Authorization" not in call[2]["headers"] for call in session.calls)
 
 
+def test_settlement_eligibility_is_publicly_verified_without_session_token():
+    eligibility = {
+        "status": "protocol_settlement_eligibility_recorded",
+        "quality_validation_id": "pqv_1234567890abcdef12345678",
+        "eligibility_id": "pse_1234567890abcdef12345678",
+        "eligibility_sha256": "f" * 64,
+        "decision": "eligible_for_governed_release",
+        "effect": "eligibility_only",
+        "funds_moved": False,
+        "transaction_signed": False,
+        "transaction_broadcast": False,
+    }
+    session = Session([Response(eligibility), Response(eligibility)])
+    result = runner(session).evaluate_settlement_eligibility(
+        "pqv_1234567890abcdef12345678"
+    )
+    assert result == eligibility
+    assert [call[0] for call in session.calls] == ["POST", "GET"]
+    assert all("Authorization" not in call[2]["headers"] for call in session.calls)
+
+
 @pytest.mark.parametrize(
     "change,code",
     [

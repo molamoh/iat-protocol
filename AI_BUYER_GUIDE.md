@@ -445,6 +445,21 @@ anchor. Protocol-level evidence will require an independently signed or
 externally anchored head hash before it can influence settlement or
 reputation.
 
+### Wallet-attested journal heads
+
+`AttestedHTTPSDetachedSigner.sign_evidence()` defines a separate, narrowly
+scoped provider contract at `POST /v1/evidence/sign`. It accepts only a
+`buyer_job_journal` identifier, SHA-256 head and observation timestamp. The
+signed message is domain-separated with `IAT_AGENT_EVIDENCE_ATTESTATION_V1`,
+bound to the configured Solana wallet, and verified locally before it is
+accepted.
+
+This operation signs no transaction, names no recipient or amount, consumes no
+blockhash and broadcasts nothing to Solana. The signer token remains only in
+the HTTPS authorization header. Arbitrary-message signing is deliberately not
+supported. The next integration step is to expose this restricted operation
+through the local wallet sidecar and anchor completed journal heads.
+
 ## Production boundary
 
 The production buyer flow remains:

@@ -9,6 +9,7 @@ from solders.transaction import VersionedTransaction
 
 from iat.attested_wallet_signer import (
     ATTESTATION_DOMAIN,
+    EVIDENCE_DOMAIN,
     AttestedHTTPSDetachedSigner,
     AttestedWalletSignerError,
 )
@@ -56,6 +57,20 @@ class ProviderSession:
                     "wallet_address": payload["wallet_address"],
                     "nonce": payload["nonce"],
                     "signature": str(signature),
+                }
+            )
+        if url.endswith("/v1/evidence/sign"):
+            message = base64.b64decode(payload["message_base64"])
+            return Response(
+                {
+                    "wallet_address": payload["wallet_address"],
+                    "evidence_type": payload["evidence_type"],
+                    "evidence_id": (
+                        "wrong" if self.wrong_binding else payload["evidence_id"]
+                    ),
+                    "evidence_sha256": payload["evidence_sha256"],
+                    "observed_at": payload["observed_at"],
+                    "signature": str(KEYPAIR.sign_message(message)),
                 }
             )
         prepared = VersionedTransaction.from_bytes(
@@ -129,4 +144,37 @@ def test_signer_rejects_insecure_remote_endpoint():
             "http://agent-wallet.example",
             wallet_address=WALLET,
             auth_token=TOKEN,
+        )
+
+
+def test_signer_returns_locally_verified_domain_separated_evidence():
+    session = ProviderSession()
+    result = signer(session).sign_evidence(
+        evidence_type="buyer_job_journal",
+        evidence_id="bid_123",
+        evidence_sha256="ab" * 32,
+        observed_at=1_787_000_000,
+    )
+    message = base64.b64decode(result["message_base64"])
+    assert message.startswith(EVIDENCE_DOMAIN + b"\n" + WALLET.encode() + b"\n")
+    assert Signature.from_string(result["signature"]).verify(KEYPAIR.pubkey(), message)
+    assert session.calls[-1][0].endswith("/v1/evidence/sign")
+    assert "transaction" not in session.calls[-1][1]["json"]
+    assert TOKEN not in str(session.calls[-1][1]["json"])
+
+
+def test_signer_rejects_rebound_or_unbounded_evidence():
+    with pytest.raises(AttestedWalletSignerError, match="evidence_signature_binding_mismatch"):
+        signer(ProviderSession(wrong_binding=True)).sign_evidence(
+            evidence_type="buyer_job_journal",
+            evidence_id="bid_123",
+            evidence_sha256="ab" * 32,
+            observed_at=1_787_000_000,
+        )
+    with pytest.raises(ValueError, match="evidence_type_not_allowed"):
+        signer().sign_evidence(
+            evidence_type="arbitrary_message",
+            evidence_id="bid_123",
+            evidence_sha256="ab" * 32,
+            observed_at=1_787_000_000,
         )

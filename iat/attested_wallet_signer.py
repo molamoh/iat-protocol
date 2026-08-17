@@ -6,6 +6,7 @@ import base64
 import hashlib
 import hmac
 import ipaddress
+import re
 import secrets
 import threading
 import time
@@ -18,6 +19,8 @@ from solders.signature import Signature
 
 
 ATTESTATION_DOMAIN = b"IAT_AGENT_WALLET_ATTESTATION_V1"
+EVIDENCE_DOMAIN = b"IAT_AGENT_EVIDENCE_ATTESTATION_V1"
+EVIDENCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{3,160}$")
 
 
 class AttestedWalletSignerError(RuntimeError):
@@ -157,6 +160,79 @@ class AttestedHTTPSDetachedSigner:
         except ValueError as exc:
             raise AttestedWalletSignerError("signed_transaction_encoding_invalid") from exc
         return signed
+
+    def sign_evidence(
+        self,
+        *,
+        evidence_type: str,
+        evidence_id: str,
+        evidence_sha256: str,
+        observed_at: int,
+    ) -> dict[str, Any]:
+        """Sign one domain-separated evidence digest; never signs a transaction."""
+        self.verify_identity()
+        kind = str(evidence_type)
+        identifier = str(evidence_id)
+        digest = str(evidence_sha256).lower()
+        if kind != "buyer_job_journal":
+            raise ValueError("evidence_type_not_allowed")
+        if not EVIDENCE_ID_PATTERN.fullmatch(identifier):
+            raise ValueError("evidence_id_invalid")
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError("evidence_sha256_invalid")
+        try:
+            timestamp = int(observed_at)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("evidence_observed_at_invalid") from exc
+        if timestamp < 1:
+            raise ValueError("evidence_observed_at_invalid")
+        message = b"\n".join(
+            [
+                EVIDENCE_DOMAIN,
+                self.wallet_address.encode("ascii"),
+                kind.encode("ascii"),
+                identifier.encode("ascii"),
+                digest.encode("ascii"),
+                str(timestamp).encode("ascii"),
+            ]
+        )
+        body = self._post(
+            "/v1/evidence/sign",
+            {
+                "operation": "sign_iat_evidence",
+                "wallet_address": self.wallet_address,
+                "evidence_type": kind,
+                "evidence_id": identifier,
+                "evidence_sha256": digest,
+                "observed_at": timestamp,
+                "message_base64": base64.b64encode(message).decode(),
+            },
+        )
+        bindings = (
+            hmac.compare_digest(str(body.get("wallet_address") or ""), self.wallet_address)
+            and hmac.compare_digest(str(body.get("evidence_type") or ""), kind)
+            and hmac.compare_digest(str(body.get("evidence_id") or ""), identifier)
+            and hmac.compare_digest(str(body.get("evidence_sha256") or ""), digest)
+            and str(body.get("observed_at") or "") == str(timestamp)
+        )
+        if not bindings:
+            raise AttestedWalletSignerError("evidence_signature_binding_mismatch")
+        try:
+            signature = Signature.from_string(str(body.get("signature") or ""))
+        except Exception as exc:
+            raise AttestedWalletSignerError("evidence_signature_invalid") from exc
+        if not signature.verify(self._wallet_pubkey, message):
+            raise AttestedWalletSignerError("evidence_signature_invalid")
+        return {
+            "status": "evidence_signed",
+            "wallet_address": self.wallet_address,
+            "evidence_type": kind,
+            "evidence_id": identifier,
+            "evidence_sha256": digest,
+            "observed_at": timestamp,
+            "message_base64": base64.b64encode(message).decode(),
+            "signature": str(signature),
+        }
 
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         try:

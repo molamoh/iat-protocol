@@ -37,6 +37,10 @@ settlement_execution_plan_router = APIRouter(
     prefix="/protocol/v1/settlement-execution-plans",
     tags=["protocol-evidence"],
 )
+settlement_authorization_router = APIRouter(
+    prefix="/protocol/v1/settlement-authorizations",
+    tags=["protocol-evidence"],
+)
 MAX_EVIDENCE_AGE_SECONDS = 86_400
 MAX_FUTURE_SKEW_SECONDS = 60
 
@@ -114,6 +118,26 @@ def init_protocol_evidence_db() -> None:
                 policy_version TEXT NOT NULL,
                 plan_sha256 TEXT NOT NULL,
                 evaluated_at BIGINT NOT NULL
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS protocol_settlement_authorizations (
+                authorization_id TEXT PRIMARY KEY,
+                plan_id TEXT NOT NULL UNIQUE,
+                eligibility_id TEXT NOT NULL,
+                order_id TEXT NOT NULL,
+                settlement_id TEXT NOT NULL,
+                authorized_by TEXT NOT NULL,
+                authorization_mode TEXT NOT NULL,
+                authorization_reason TEXT NOT NULL,
+                financial_release_confidence REAL,
+                financial_risk_score REAL,
+                receipt_gate_json TEXT NOT NULL,
+                policy_version TEXT NOT NULL,
+                authorization_sha256 TEXT NOT NULL,
+                authorized_at BIGINT NOT NULL
             )
             """
         )
@@ -335,6 +359,43 @@ def _minor_amount(settlement: dict[str, Any], field: str) -> int | None:
         return int(parsed_decimal * Decimal("1000000"))
     except (InvalidOperation, TypeError, ValueError):
         return None
+
+
+def _find_settlement_authorization(cursor: Any, plan_id: str) -> Any:
+    placeholder = db.qmark()
+    cursor.execute(
+        f"""SELECT * FROM protocol_settlement_authorizations
+            WHERE plan_id = {placeholder}""",
+        (plan_id,),
+    )
+    return cursor.fetchone()
+
+
+def _public_settlement_authorization(row: Any) -> dict[str, Any]:
+    record = dict(row)
+    try:
+        record["receipt_gate"] = json.loads(record.pop("receipt_gate_json"))
+    except (TypeError, json.JSONDecodeError):
+        record["receipt_gate"] = {}
+    return {
+        "status": "protocol_settlement_authorization_recorded",
+        **record,
+        "release_authorized": True,
+        "effect": "authorization_only",
+        "execution_enabled": False,
+        "transaction_built": False,
+        "simulation_performed": False,
+        "transaction_signed": False,
+        "transaction_broadcast": False,
+        "funds_moved": False,
+    }
+
+
+def _evaluate_foundation_release(order_id: str) -> dict[str, Any]:
+    # Imported lazily to keep this public registry independent from API startup.
+    from iat.api.agent_b_api import authorize_settlement_release
+
+    return authorize_settlement_release(order_id)
 
 
 def _lookup_journey(cursor: Any, evidence: dict[str, Any]) -> tuple[Any, Any]:
@@ -935,5 +996,154 @@ def get_settlement_execution_plan(eligibility_id: str) -> dict[str, Any]:
         if record is None:
             raise HTTPException(status_code=404, detail="settlement_execution_plan_not_found")
         return _public_settlement_execution_plan(record)
+    finally:
+        db.release_conn(connection)
+
+
+@settlement_authorization_router.post("/{plan_id}")
+def authorize_settlement_plan(plan_id: str) -> dict[str, Any]:
+    connection = db.get_conn()
+    try:
+        cursor = connection.cursor()
+        existing = _find_settlement_authorization(cursor, plan_id)
+        if existing is not None:
+            return _public_settlement_authorization(existing)
+        placeholder = db.qmark()
+        cursor.execute(
+            f"""SELECT * FROM protocol_settlement_execution_plans
+                WHERE plan_id = {placeholder}""",
+            (plan_id,),
+        )
+        plan_row = cursor.fetchone()
+    finally:
+        db.release_conn(connection)
+    if plan_row is None:
+        raise HTTPException(status_code=404, detail="settlement_execution_plan_not_found")
+    plan = dict(plan_row)
+    try:
+        blockers = json.loads(plan["blockers_json"])
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=409, detail="settlement_execution_plan_invalid") from exc
+    structural_blockers = {
+        blocker
+        for blocker in blockers
+        if blocker
+        in {
+            "winner_wallet_invalid",
+            "treasury_wallet_invalid",
+            "settlement_amount_invalid",
+            "settlement_amount_conservation_failed",
+        }
+    }
+    if not _valid_wallet(plan.get("winner_wallet")):
+        structural_blockers.add("winner_wallet_invalid")
+    if not _valid_wallet(plan.get("treasury_wallet")):
+        structural_blockers.add("treasury_wallet_invalid")
+    plan_amounts = (
+        plan.get("gross_amount_minor"),
+        plan.get("protocol_commission_amount_minor"),
+        plan.get("seller_payout_amount_minor"),
+    )
+    if any(not isinstance(value, int) or value < 0 for value in plan_amounts):
+        structural_blockers.add("settlement_amount_invalid")
+    elif plan_amounts[1] + plan_amounts[2] != plan_amounts[0]:
+        structural_blockers.add("settlement_amount_conservation_failed")
+    if structural_blockers:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "settlement_execution_plan_structurally_blocked",
+                "blockers": sorted(structural_blockers),
+            },
+        )
+
+    authorization = _evaluate_foundation_release(str(plan["order_id"]))
+    if not isinstance(authorization, dict):
+        raise HTTPException(status_code=503, detail="foundation_authorization_unavailable")
+    if authorization.get("release_authorized") is not True:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "foundation_release_not_authorized",
+                "authorization_mode": authorization.get("authorization_mode"),
+                "authorization_reason": authorization.get("authorization_reason"),
+                "blockers": authorization.get("release_block_reasons") or [],
+            },
+        )
+    if authorization.get("authorized_by") != "foundation":
+        raise HTTPException(status_code=409, detail="foundation_authority_invalid")
+    receipt_gate = authorization.get("final_delivery_receipt") or {}
+    if receipt_gate.get("release_allowed") is not True:
+        raise HTTPException(status_code=409, detail="final_delivery_receipt_not_accepted")
+
+    financial_risk = authorization.get("financial_risk") or {}
+    financial_risk_score = financial_risk.get("risk_score")
+    authorized_at = _now()
+    policy_version = "settlement_authorization_v1"
+    public_facts = {
+        "authorization_mode": authorization.get("authorization_mode"),
+        "authorization_reason": authorization.get("authorization_reason"),
+        "authorized_at": authorized_at,
+        "authorized_by": "foundation",
+        "eligibility_id": plan["eligibility_id"],
+        "financial_release_confidence": authorization.get(
+            "financial_release_confidence"
+        ),
+        "financial_risk_score": financial_risk_score,
+        "order_id": plan["order_id"],
+        "plan_id": plan_id,
+        "policy_version": policy_version,
+        "receipt_gate": receipt_gate,
+        "settlement_id": plan["settlement_id"],
+    }
+    authorization_sha256 = hashlib.sha256(
+        json.dumps(public_facts, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    authorization_id = "psa_" + authorization_sha256[:24]
+    connection = db.get_conn()
+    try:
+        cursor = connection.cursor()
+        placeholder = db.qmark()
+        cursor.execute(
+            f"""INSERT INTO protocol_settlement_authorizations (
+                    authorization_id, plan_id, eligibility_id, order_id,
+                    settlement_id, authorized_by, authorization_mode,
+                    authorization_reason, financial_release_confidence,
+                    financial_risk_score, receipt_gate_json, policy_version,
+                    authorization_sha256, authorized_at
+                ) VALUES ({', '.join([placeholder] * 14)})""",
+            (
+                authorization_id,
+                plan_id,
+                plan["eligibility_id"],
+                plan["order_id"],
+                plan["settlement_id"],
+                "foundation",
+                public_facts["authorization_mode"],
+                public_facts["authorization_reason"],
+                public_facts["financial_release_confidence"],
+                financial_risk_score,
+                json.dumps(receipt_gate, sort_keys=True, separators=(",", ":")),
+                policy_version,
+                authorization_sha256,
+                authorized_at,
+            ),
+        )
+        connection.commit()
+        return _public_settlement_authorization(
+            _find_settlement_authorization(cursor, plan_id)
+        )
+    finally:
+        db.release_conn(connection)
+
+
+@settlement_authorization_router.get("/{plan_id}")
+def get_settlement_authorization(plan_id: str) -> dict[str, Any]:
+    connection = db.get_conn()
+    try:
+        record = _find_settlement_authorization(connection.cursor(), plan_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="settlement_authorization_not_found")
+        return _public_settlement_authorization(record)
     finally:
         db.release_conn(connection)

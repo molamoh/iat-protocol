@@ -191,9 +191,11 @@ devis, l'exécution, la livraison scellée, le journal signé, la publication de
 preuve, la validation technique indépendante, les critères d'acceptation
 sémantiques et la décision d'éligibilité au règlement. Un plan de règlement
 public en lecture seule contrôle ensuite les bénéficiaires, les montants, leur
-conservation et les blocages du reçu et de la gouvernance, sans construire ni
-signer de transaction.
+conservation et les blocages du reçu et de la gouvernance. La Fondation peut
+désormais produire une autorisation de règlement immuable après réévaluation
+du reçu, des preuves, du consensus et du risque financier. Aucune de ces deux
+couches ne construit ni ne signe une transaction.
 
-La prochaine frontière est l'autorisation de règlement gouvernée puis la
-simulation Solana indépendante. L'envoi réel restera séparé et ne pourra être
-activé qu'après validation explicite de ces deux couches.
+La prochaine frontière est la simulation Solana indépendante d'un règlement
+autorisé. L'envoi réel restera séparé et ne pourra être activé qu'après
+validation explicite de cette couche supplémentaire.

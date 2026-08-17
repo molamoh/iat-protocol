@@ -58,6 +58,7 @@ def evidence_app(tmp_path, monkeypatch):
     app.include_router(protocol_evidence.quality_router)
     app.include_router(protocol_evidence.settlement_eligibility_router)
     app.include_router(protocol_evidence.settlement_execution_plan_router)
+    app.include_router(protocol_evidence.settlement_authorization_router)
     return app
 
 
@@ -426,3 +427,124 @@ def test_compensation_eligibility_cannot_create_release_plan(tmp_path, monkeypat
     )
     assert response.status_code == 409
     assert response.json()["detail"] == "settlement_execution_plan_not_applicable"
+
+
+def insert_execution_plan(*, blockers=None):
+    connection = db.get_conn()
+    try:
+        connection.cursor().execute(
+            """INSERT INTO protocol_settlement_execution_plans (
+                plan_id, eligibility_id, quality_validation_id, order_id,
+                settlement_id, winner_wallet, treasury_wallet,
+                gross_amount_minor, protocol_commission_amount_minor,
+                seller_payout_amount_minor, decision, blockers_json,
+                receipt_gate_json, policy_version, plan_sha256, evaluated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "psp_authorize", "pse_authorize", "pqv_authorize", "order_1",
+                "settlement_1", str(Keypair().pubkey()), str(Keypair().pubkey()),
+                1_000_000, 100_000, 900_000,
+                "awaiting_governance_authorization",
+                json.dumps(blockers or ["foundation_release_authorization_not_evaluated"]),
+                json.dumps({"release_allowed": False}),
+                "settlement_execution_plan_v1", "e" * 64, NOW,
+            ),
+        )
+        connection.commit()
+    finally:
+        db.release_conn(connection)
+
+
+def test_foundation_authorization_is_public_idempotent_and_does_not_execute(
+    tmp_path, monkeypatch
+):
+    app = evidence_app(tmp_path, monkeypatch)
+    insert_execution_plan()
+    monkeypatch.setattr(
+        protocol_evidence,
+        "_evaluate_foundation_release",
+        lambda order_id: {
+            "release_authorized": True,
+            "authorized_by": "foundation",
+            "authorization_mode": "authorized",
+            "authorization_reason": "release_policy_automatic_authorized",
+            "financial_release_confidence": 0.93,
+            "financial_risk": {"risk_score": 8},
+            "final_delivery_receipt": {
+                "release_allowed": True,
+                "reason": "buyer_accepted_sealed_delivery",
+                "receipt_state": "accepted",
+                "payload_digest": "d" * 64,
+            },
+            "order_id": order_id,
+        },
+    )
+    authorized = call(
+        app, "POST", "/protocol/v1/settlement-authorizations/psp_authorize"
+    )
+    public = call(
+        app, "GET", "/protocol/v1/settlement-authorizations/psp_authorize"
+    )
+    repeated = call(
+        app, "POST", "/protocol/v1/settlement-authorizations/psp_authorize"
+    )
+    assert authorized.status_code == public.status_code == repeated.status_code == 200
+    assert authorized.json() == public.json() == repeated.json()
+    record = authorized.json()
+    assert record["release_authorized"] is True
+    assert record["authorized_by"] == "foundation"
+    assert record["effect"] == "authorization_only"
+    assert record["execution_enabled"] is False
+    assert record["transaction_built"] is False
+    assert record["simulation_performed"] is False
+    assert record["transaction_signed"] is False
+    assert record["transaction_broadcast"] is False
+    assert record["funds_moved"] is False
+    assert len(record["authorization_sha256"]) == 64
+    assert "foundation_decision" not in record
+
+
+def test_blocked_foundation_authorization_can_be_retried(tmp_path, monkeypatch):
+    app = evidence_app(tmp_path, monkeypatch)
+    insert_execution_plan()
+    monkeypatch.setattr(
+        protocol_evidence,
+        "_evaluate_foundation_release",
+        lambda _order_id: {
+            "release_authorized": False,
+            "authorized_by": None,
+            "authorization_mode": "blocked",
+            "authorization_reason": "buyer_delivery_confirmation_pending",
+            "release_block_reasons": ["buyer_delivery_confirmation_pending"],
+        },
+    )
+    blocked = call(
+        app, "POST", "/protocol/v1/settlement-authorizations/psp_authorize"
+    )
+    missing = call(
+        app, "GET", "/protocol/v1/settlement-authorizations/psp_authorize"
+    )
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"]["code"] == "foundation_release_not_authorized"
+    assert missing.status_code == 404
+
+
+def test_structurally_invalid_plan_never_reaches_foundation(tmp_path, monkeypatch):
+    app = evidence_app(tmp_path, monkeypatch)
+    insert_execution_plan(blockers=["settlement_amount_conservation_failed"])
+    called = False
+
+    def evaluate(_order_id):
+        nonlocal called
+        called = True
+        return {"release_authorized": True}
+
+    monkeypatch.setattr(protocol_evidence, "_evaluate_foundation_release", evaluate)
+    blocked = call(
+        app, "POST", "/protocol/v1/settlement-authorizations/psp_authorize"
+    )
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"]["code"] == (
+        "settlement_execution_plan_structurally_blocked"
+    )
+    assert called is False

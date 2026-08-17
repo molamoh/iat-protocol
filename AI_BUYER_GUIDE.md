@@ -603,6 +603,23 @@ false`. Compensation-review eligibility cannot be converted into a release
 plan. This makes future execution inputs auditable without connecting evidence
 acceptance directly to the legacy escrow release path.
 
+### Foundation settlement authorization
+
+`POST /protocol/v1/settlement-authorizations/{plan_id}` revalidates the plan's
+wallets and amount conservation, then asks the existing independent Foundation
+policy engine to evaluate the current receipt, evidence, consensus and
+financial risk. A blocked or incomplete evaluation returns a retryable public
+conflict and is not frozen as a final decision. Only an explicit Foundation
+approval with an accepted final receipt creates an immutable authorization;
+the corresponding `GET` endpoint exposes its bounded policy facts and digest.
+
+The full private Foundation decision is not copied into the public registry.
+The authorization records only its mode, reason, release confidence, risk
+score and current receipt gate. It is still an authority artifact, not an
+execution command: `execution_enabled`, transaction construction, simulation,
+signing, broadcast and movement of funds all remain false. The next layer may
+use this authorization solely to prepare an independently checked simulation.
+
 ## Production boundary
 
 The production buyer flow remains:

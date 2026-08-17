@@ -41,6 +41,10 @@ settlement_authorization_router = APIRouter(
     prefix="/protocol/v1/settlement-authorizations",
     tags=["protocol-evidence"],
 )
+settlement_simulation_router = APIRouter(
+    prefix="/protocol/v1/settlement-simulations",
+    tags=["protocol-evidence"],
+)
 MAX_EVIDENCE_AGE_SECONDS = 86_400
 MAX_FUTURE_SKEW_SECONDS = 60
 
@@ -138,6 +142,40 @@ def init_protocol_evidence_db() -> None:
                 policy_version TEXT NOT NULL,
                 authorization_sha256 TEXT NOT NULL,
                 authorized_at BIGINT NOT NULL
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS protocol_settlement_simulations (
+                simulation_id TEXT PRIMARY KEY,
+                authorization_id TEXT NOT NULL UNIQUE,
+                plan_id TEXT NOT NULL,
+                settlement_id TEXT NOT NULL,
+                order_id TEXT NOT NULL,
+                cluster TEXT NOT NULL,
+                genesis_hash TEXT NOT NULL,
+                commitment TEXT NOT NULL,
+                token_program TEXT NOT NULL,
+                mint TEXT NOT NULL,
+                mint_decimals INTEGER NOT NULL,
+                fee_payer TEXT NOT NULL,
+                escrow_authority TEXT NOT NULL,
+                source_token_account TEXT NOT NULL,
+                treasury_token_account TEXT NOT NULL,
+                winner_token_account TEXT NOT NULL,
+                gross_amount_minor BIGINT NOT NULL,
+                protocol_commission_amount_minor BIGINT NOT NULL,
+                seller_payout_amount_minor BIGINT NOT NULL,
+                instruction_count INTEGER NOT NULL,
+                required_signature_count INTEGER NOT NULL,
+                unsigned_transaction_sha256 TEXT NOT NULL,
+                simulation_logs_sha256 TEXT NOT NULL,
+                units_consumed BIGINT,
+                context_slot BIGINT,
+                policy_version TEXT NOT NULL,
+                simulation_sha256 TEXT NOT NULL,
+                simulated_at BIGINT NOT NULL
             )
             """
         )
@@ -396,6 +434,36 @@ def _evaluate_foundation_release(order_id: str) -> dict[str, Any]:
     from iat.api.agent_b_api import authorize_settlement_release
 
     return authorize_settlement_release(order_id)
+
+
+def _simulate_authorized_settlement(**kwargs: Any) -> dict[str, Any]:
+    from iat.settlement_simulation import simulate_authorized_settlement
+
+    return simulate_authorized_settlement(**kwargs)
+
+
+def _find_settlement_simulation(cursor: Any, authorization_id: str) -> Any:
+    placeholder = db.qmark()
+    cursor.execute(
+        f"""SELECT * FROM protocol_settlement_simulations
+            WHERE authorization_id = {placeholder}""",
+        (authorization_id,),
+    )
+    return cursor.fetchone()
+
+
+def _public_settlement_simulation(row: Any) -> dict[str, Any]:
+    return {
+        "status": "protocol_settlement_simulation_recorded",
+        **dict(row),
+        "effect": "simulation_only",
+        "execution_enabled": False,
+        "unsigned_transaction_built": True,
+        "serialized_transaction_disclosed": False,
+        "transaction_signed": False,
+        "transaction_broadcast": False,
+        "funds_moved": False,
+    }
 
 
 def _lookup_journey(cursor: Any, evidence: dict[str, Any]) -> tuple[Any, Any]:
@@ -1077,7 +1145,9 @@ def authorize_settlement_plan(plan_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=409, detail="final_delivery_receipt_not_accepted")
 
     financial_risk = authorization.get("financial_risk") or {}
-    financial_risk_score = financial_risk.get("risk_score")
+    financial_risk_score = financial_risk.get(
+        "release_risk_score", financial_risk.get("risk_score")
+    )
     authorized_at = _now()
     policy_version = "settlement_authorization_v1"
     public_facts = {
@@ -1145,5 +1215,146 @@ def get_settlement_authorization(plan_id: str) -> dict[str, Any]:
         if record is None:
             raise HTTPException(status_code=404, detail="settlement_authorization_not_found")
         return _public_settlement_authorization(record)
+    finally:
+        db.release_conn(connection)
+
+
+@settlement_simulation_router.post("/{authorization_id}")
+def simulate_settlement(authorization_id: str) -> dict[str, Any]:
+    connection = db.get_conn()
+    try:
+        cursor = connection.cursor()
+        existing = _find_settlement_simulation(cursor, authorization_id)
+        if existing is not None:
+            return _public_settlement_simulation(existing)
+        placeholder = db.qmark()
+        cursor.execute(
+            f"""SELECT a.authorization_id, a.plan_id, a.settlement_id, a.order_id,
+                       p.winner_wallet, p.treasury_wallet, p.gross_amount_minor,
+                       p.protocol_commission_amount_minor,
+                       p.seller_payout_amount_minor
+                FROM protocol_settlement_authorizations a
+                JOIN protocol_settlement_execution_plans p ON p.plan_id = a.plan_id
+                WHERE a.authorization_id = {placeholder}""",
+            (authorization_id,),
+        )
+        joined = cursor.fetchone()
+    finally:
+        db.release_conn(connection)
+    if joined is None:
+        raise HTTPException(status_code=404, detail="settlement_authorization_not_found")
+    record = dict(joined)
+    try:
+        simulation = _simulate_authorized_settlement(
+            authorization_id=authorization_id,
+            settlement_id=str(record["settlement_id"]),
+            order_id=str(record["order_id"]),
+            winner_wallet=str(record["winner_wallet"]),
+            treasury_wallet=str(record["treasury_wallet"]),
+            gross_amount_minor=int(record["gross_amount_minor"]),
+            commission_amount_minor=int(record["protocol_commission_amount_minor"]),
+            seller_payout_amount_minor=int(record["seller_payout_amount_minor"]),
+        )
+    except Exception as exc:
+        from iat.settlement_simulation import SettlementSimulationError
+
+        if not isinstance(exc, SettlementSimulationError):
+            raise
+        code = str(exc)
+        status_code = 503 if "rpc_" in code else 409
+        raise HTTPException(status_code=status_code, detail=code) from exc
+    if simulation.get("simulation_status") != "succeeded":
+        raise HTTPException(status_code=409, detail="settlement_simulation_failed")
+    if simulation.get("serialized_transaction_disclosed") is not False:
+        raise HTTPException(status_code=409, detail="settlement_simulation_disclosure_invalid")
+
+    simulated_at = _now()
+    policy_version = "settlement_simulation_v1"
+    public_facts = {
+        key: simulation.get(key)
+        for key in (
+            "authorization_id",
+            "cluster",
+            "genesis_hash",
+            "commitment",
+            "token_program",
+            "mint",
+            "mint_decimals",
+            "fee_payer",
+            "escrow_authority",
+            "source_token_account",
+            "treasury_token_account",
+            "winner_token_account",
+            "gross_amount_minor",
+            "protocol_commission_amount_minor",
+            "seller_payout_amount_minor",
+            "instruction_count",
+            "required_signature_count",
+            "unsigned_transaction_sha256",
+            "simulation_logs_sha256",
+            "units_consumed",
+            "context_slot",
+        )
+    }
+    public_facts.update(
+        {
+            "order_id": record["order_id"],
+            "plan_id": record["plan_id"],
+            "policy_version": policy_version,
+            "settlement_id": record["settlement_id"],
+            "simulated_at": simulated_at,
+        }
+    )
+    simulation_sha256 = hashlib.sha256(
+        json.dumps(public_facts, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    simulation_id = "pss_" + simulation_sha256[:24]
+    ordered_fields = (
+        "cluster", "genesis_hash", "commitment", "token_program", "mint", "mint_decimals",
+        "fee_payer", "escrow_authority", "source_token_account",
+        "treasury_token_account", "winner_token_account", "gross_amount_minor",
+        "protocol_commission_amount_minor", "seller_payout_amount_minor",
+        "instruction_count", "required_signature_count",
+        "unsigned_transaction_sha256", "simulation_logs_sha256",
+        "units_consumed", "context_slot",
+    )
+    connection = db.get_conn()
+    try:
+        cursor = connection.cursor()
+        placeholder = db.qmark()
+        cursor.execute(
+            f"""INSERT INTO protocol_settlement_simulations (
+                    simulation_id, authorization_id, plan_id, settlement_id,
+                    order_id, {', '.join(ordered_fields)}, policy_version,
+                    simulation_sha256, simulated_at
+                ) VALUES ({', '.join([placeholder] * 28)})""",
+            (
+                simulation_id,
+                authorization_id,
+                record["plan_id"],
+                record["settlement_id"],
+                record["order_id"],
+                *(public_facts[field] for field in ordered_fields),
+                policy_version,
+                simulation_sha256,
+                simulated_at,
+            ),
+        )
+        connection.commit()
+        return _public_settlement_simulation(
+            _find_settlement_simulation(cursor, authorization_id)
+        )
+    finally:
+        db.release_conn(connection)
+
+
+@settlement_simulation_router.get("/{authorization_id}")
+def get_settlement_simulation(authorization_id: str) -> dict[str, Any]:
+    connection = db.get_conn()
+    try:
+        record = _find_settlement_simulation(connection.cursor(), authorization_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="settlement_simulation_not_found")
+        return _public_settlement_simulation(record)
     finally:
         db.release_conn(connection)

@@ -59,6 +59,7 @@ def evidence_app(tmp_path, monkeypatch):
     app.include_router(protocol_evidence.settlement_eligibility_router)
     app.include_router(protocol_evidence.settlement_execution_plan_router)
     app.include_router(protocol_evidence.settlement_authorization_router)
+    app.include_router(protocol_evidence.settlement_simulation_router)
     return app
 
 
@@ -548,3 +549,81 @@ def test_structurally_invalid_plan_never_reaches_foundation(tmp_path, monkeypatc
         "settlement_execution_plan_structurally_blocked"
     )
     assert called is False
+
+
+def test_authorized_settlement_simulation_is_public_and_never_broadcast(
+    tmp_path, monkeypatch
+):
+    app = evidence_app(tmp_path, monkeypatch)
+    insert_execution_plan()
+    connection = db.get_conn()
+    try:
+        connection.cursor().execute(
+            """INSERT INTO protocol_settlement_authorizations (
+                authorization_id, plan_id, eligibility_id, order_id,
+                settlement_id, authorized_by, authorization_mode,
+                authorization_reason, financial_release_confidence,
+                financial_risk_score, receipt_gate_json, policy_version,
+                authorization_sha256, authorized_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "psa_simulate", "psp_authorize", "pse_authorize", "order_1",
+                "settlement_1", "foundation", "authorized",
+                "release_policy_automatic_authorized", 0.93, 8,
+                json.dumps({"release_allowed": True}),
+                "settlement_authorization_v1", "a" * 64, NOW,
+            ),
+        )
+        connection.commit()
+    finally:
+        db.release_conn(connection)
+    monkeypatch.setattr(
+        protocol_evidence,
+        "_simulate_authorized_settlement",
+        lambda **kwargs: {
+            "simulation_status": "succeeded",
+            "authorization_id": kwargs["authorization_id"],
+            "cluster": "solana-devnet",
+            "genesis_hash": "EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+            "commitment": "confirmed",
+            "token_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "mint": str(Keypair().pubkey()),
+            "mint_decimals": 8,
+            "fee_payer": str(Keypair().pubkey()),
+            "escrow_authority": str(Keypair().pubkey()),
+            "source_token_account": str(Keypair().pubkey()),
+            "treasury_token_account": str(Keypair().pubkey()),
+            "winner_token_account": str(Keypair().pubkey()),
+            "gross_amount_minor": kwargs["gross_amount_minor"],
+            "protocol_commission_amount_minor": kwargs["commission_amount_minor"],
+            "seller_payout_amount_minor": kwargs["seller_payout_amount_minor"],
+            "instruction_count": 3,
+            "required_signature_count": 1,
+            "unsigned_transaction_sha256": "b" * 64,
+            "simulation_logs_sha256": "c" * 64,
+            "units_consumed": 9000,
+            "context_slot": 123,
+            "serialized_transaction_disclosed": False,
+        },
+    )
+    simulated = call(
+        app, "POST", "/protocol/v1/settlement-simulations/psa_simulate"
+    )
+    public = call(
+        app, "GET", "/protocol/v1/settlement-simulations/psa_simulate"
+    )
+    repeated = call(
+        app, "POST", "/protocol/v1/settlement-simulations/psa_simulate"
+    )
+    assert simulated.status_code == public.status_code == repeated.status_code == 200
+    assert simulated.json() == public.json() == repeated.json()
+    record = simulated.json()
+    assert record["effect"] == "simulation_only"
+    assert record["execution_enabled"] is False
+    assert record["unsigned_transaction_built"] is True
+    assert record["serialized_transaction_disclosed"] is False
+    assert record["transaction_signed"] is False
+    assert record["transaction_broadcast"] is False
+    assert record["funds_moved"] is False
+    assert "transaction_base64" not in record
+    assert len(record["simulation_sha256"]) == 64

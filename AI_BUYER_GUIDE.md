@@ -620,6 +620,30 @@ execution command: `execution_enabled`, transaction construction, simulation,
 signing, broadcast and movement of funds all remain false. The next layer may
 use this authorization solely to prepare an independently checked simulation.
 
+### Independent Solana settlement simulation
+
+`POST /protocol/v1/settlement-simulations/{authorization_id}` accepts only an
+immutable Foundation authorization. It derives the escrow, treasury and winner
+IAT token accounts, verifies the classic SPL Token program, mint decimals,
+account owners and bindings, escrow balance and exact integer amount
+conservation. Devnet is the default; mainnet is rejected, and the RPC's genesis
+hash must identify the real Solana devnet. Localnet is also supported when
+explicitly configured.
+
+The simulator builds the two transfers and settlement memo atomically with the
+public escrow authority as fee payer. It inserts null signatures and calls
+`simulateTransaction` with signature verification disabled. It never loads an
+escrow keypair and never calls a send method. A successful immutable receipt
+stores the cluster identity, accounts, amounts, compute units and hashes of the
+unsigned transaction and sanitized logs. Serialized transaction bytes and raw
+untrusted logs are neither stored nor returned.
+
+The public record explicitly reports `effect: simulation_only`,
+`execution_enabled: false`, `unsigned_transaction_built: true`,
+`serialized_transaction_disclosed: false`, `transaction_signed: false`,
+`transaction_broadcast: false` and `funds_moved: false`. Failed simulations are
+retryable and cannot become an execution authorization.
+
 ## Production boundary
 
 The production buyer flow remains:

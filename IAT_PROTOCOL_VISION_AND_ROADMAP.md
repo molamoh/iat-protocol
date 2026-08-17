@@ -194,8 +194,11 @@ public en lecture seule contrôle ensuite les bénéficiaires, les montants, leu
 conservation et les blocages du reçu et de la gouvernance. La Fondation peut
 désormais produire une autorisation de règlement immuable après réévaluation
 du reçu, des preuves, du consensus et du risque financier. Aucune de ces deux
-couches ne construit ni ne signe une transaction.
+couches ne construit ni ne signe une transaction. Une simulation indépendante
+peut ensuite vérifier sur Solana devnet le mint IAT, les comptes SPL, le solde,
+les deux transferts atomiques et leur coût de calcul, sans clé privée ni envoi.
 
-La prochaine frontière est la simulation Solana indépendante d'un règlement
-autorisé. L'envoi réel restera séparé et ne pourra être activé qu'après
-validation explicite de cette couche supplémentaire.
+La prochaine frontière est l'automatisation de cette préparation dans le
+scheduler, puis la conception d'une autorisation d'exécution à usage unique.
+L'envoi réel restera séparé et exigera encore une approbation explicite de sa
+politique de sécurité.

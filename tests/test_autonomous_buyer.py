@@ -132,6 +132,32 @@ def test_runner_rejection_never_calls_wallet_or_submit():
     assert len(session.calls) == 1
 
 
+def test_evidence_publication_is_publicly_verified_without_session_token():
+    evidence = {
+        "evidence_type": "buyer_job_journal",
+        "evidence_id": "bid_test_decision",
+        "evidence_sha256": "a" * 64,
+        "observed_at": 2_000_000_000,
+        "wallet_address": WALLET,
+        "signature": str(Signature.default()),
+    }
+    receipt = {
+        **evidence,
+        "status": "protocol_evidence_registered",
+        "receipt_id": "per_1234567890abcdef12345678",
+        "receipt_sha256": "b" * 64,
+        "received_at": 2_000_000_001,
+        "effect": "evidence_only",
+    }
+    session = Session([Response(receipt), Response(receipt)])
+    result = runner(session).publish_evidence(evidence)
+    assert result == receipt
+    assert [call[0] for call in session.calls] == ["POST", "GET"]
+    assert session.calls[0][1].endswith("/protocol/v1/evidence")
+    assert "wallet_address=" in session.calls[1][1]
+    assert all("Authorization" not in call[2]["headers"] for call in session.calls)
+
+
 @pytest.mark.parametrize(
     "change,code",
     [

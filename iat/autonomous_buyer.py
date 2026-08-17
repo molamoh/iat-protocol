@@ -7,7 +7,7 @@ import hmac
 import time
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
-from urllib.parse import urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 import requests
 from solders.pubkey import Pubkey
@@ -191,6 +191,41 @@ class AutonomousBuyerRunner:
             f"/payments/v1/universal/wallet-inbox/{quote_id}",
         )
 
+    def publish_evidence(self, evidence: Mapping[str, Any]) -> dict[str, Any]:
+        required = {
+            "evidence_type",
+            "evidence_id",
+            "evidence_sha256",
+            "observed_at",
+            "wallet_address",
+            "signature",
+        }
+        payload = {key: evidence.get(key) for key in required}
+        if any(value in (None, "") for value in payload.values()):
+            raise AutonomousBuyerError("protocol_evidence_incomplete")
+        published = self._request(
+            "POST",
+            "/protocol/v1/evidence",
+            payload,
+            authenticate=False,
+        )
+        query = urlencode({"wallet_address": str(payload["wallet_address"])})
+        public = self._request(
+            "GET",
+            f"/protocol/v1/evidence/{quote(str(payload['evidence_id']), safe='')}?{query}",
+            authenticate=False,
+        )
+        bindings = (
+            public == published
+            and public.get("effect") == "evidence_only"
+            and all(str(public.get(key)) == str(value) for key, value in payload.items())
+            and str(public.get("receipt_id") or "").startswith("per_")
+            and len(str(public.get("receipt_sha256") or "")) == 64
+        )
+        if not bindings:
+            raise AutonomousBuyerError("protocol_evidence_receipt_mismatch")
+        return public
+
     def _validate_prepared_transaction(self, prepared: Any) -> dict[str, Any]:
         if not isinstance(prepared, dict):
             raise AutonomousBuyerError("prepared_transaction_missing")
@@ -261,12 +296,14 @@ class AutonomousBuyerRunner:
         payload: dict[str, Any] | None = None,
         *,
         headers: Mapping[str, str] | None = None,
+        authenticate: bool = True,
     ) -> dict[str, Any]:
         request_headers = {
-            "Authorization": f"Bearer {self.access_token}",
             "Accept": "application/json",
             "User-Agent": "iat-autonomous-buyer/1.0",
         }
+        if authenticate:
+            request_headers["Authorization"] = f"Bearer {self.access_token}"
         request_headers.update(dict(headers or {}))
         try:
             response = self.session.request(

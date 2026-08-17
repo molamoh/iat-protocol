@@ -157,6 +157,14 @@ class BuyerAgentScheduler:
                     observed_at INTEGER,
                     wallet_address TEXT,
                     signature TEXT,
+                    publication_attempt_count INTEGER NOT NULL DEFAULT 0,
+                    publication_max_attempts INTEGER NOT NULL DEFAULT 10,
+                    publication_next_run_at INTEGER,
+                    publication_lease_until INTEGER,
+                    publication_error TEXT,
+                    receipt_id TEXT,
+                    receipt_sha256 TEXT,
+                    published_at INTEGER,
                     last_error TEXT,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
@@ -165,6 +173,25 @@ class BuyerAgentScheduler:
                 )
                 """
             )
+            anchor_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(buyer_agent_job_anchors)")
+            }
+            anchor_migrations = {
+                "publication_attempt_count": "INTEGER NOT NULL DEFAULT 0",
+                "publication_max_attempts": "INTEGER NOT NULL DEFAULT 10",
+                "publication_next_run_at": "INTEGER",
+                "publication_lease_until": "INTEGER",
+                "publication_error": "TEXT",
+                "receipt_id": "TEXT",
+                "receipt_sha256": "TEXT",
+                "published_at": "INTEGER",
+            }
+            for column, definition in anchor_migrations.items():
+                if column not in anchor_columns:
+                    connection.execute(
+                        f"ALTER TABLE buyer_agent_job_anchors ADD COLUMN {column} {definition}"
+                    )
             connection.execute(
                 """CREATE INDEX IF NOT EXISTS idx_buyer_agent_job_anchors_due
                    ON buyer_agent_job_anchors(state, next_run_at)"""
@@ -420,8 +447,10 @@ class BuyerAgentScheduler:
         timestamp = int(time.time() if now is None else now)
         results: list[dict[str, Any]] = []
         with self._lock:
-            anchor_id = self._claim_anchor(timestamp)
-            if anchor_id is not None:
+            publication_id = self._claim_publication(timestamp)
+            if publication_id is not None:
+                results.append(self._run_publication(publication_id, timestamp))
+            elif (anchor_id := self._claim_anchor(timestamp)) is not None:
                 results.append(self._run_anchor(anchor_id, timestamp))
             for _ in range(limit - len(results)):
                 decision_id = self._claim_one(timestamp)
@@ -429,6 +458,139 @@ class BuyerAgentScheduler:
                     break
                 results.append(self._run_claimed(decision_id, timestamp))
         return results
+
+    def _claim_publication(self, now: int) -> str | None:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """SELECT anchor_id, publication_attempt_count,
+                          publication_max_attempts
+                   FROM buyer_agent_job_anchors
+                   WHERE (state = 'attested' AND publication_next_run_at <= ?)
+                      OR (state = 'publishing' AND publication_lease_until IS NOT NULL
+                          AND publication_lease_until <= ?)
+                   ORDER BY publication_next_run_at, created_at LIMIT 1""",
+                (now, now),
+            ).fetchone()
+            if row is None:
+                return None
+            anchor_id = str(row["anchor_id"])
+            if int(row["publication_attempt_count"]) >= int(
+                row["publication_max_attempts"]
+            ):
+                connection.execute(
+                    """UPDATE buyer_agent_job_anchors
+                       SET state = 'publication_failed', publication_lease_until = NULL,
+                           updated_at = ?, publication_error =
+                           'maximum_publication_attempts_reached'
+                       WHERE anchor_id = ?""",
+                    (now, anchor_id),
+                )
+                return anchor_id
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET state = 'publishing', publication_lease_until = ?, updated_at = ?,
+                       publication_attempt_count = publication_attempt_count + 1
+                   WHERE anchor_id = ?""",
+                (now + self.lease_seconds, now, anchor_id),
+            )
+            return anchor_id
+
+    def _run_publication(self, anchor_id: str, now: int) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM buyer_agent_job_anchors WHERE anchor_id = ?",
+                (anchor_id,),
+            ).fetchone()
+        anchor = dict(row)
+        if anchor["state"] == "publication_failed":
+            return {"work_type": "evidence_publication", **anchor}
+        try:
+            receipt = self.runner.publish_evidence(
+                {
+                    "evidence_type": "buyer_job_journal",
+                    "evidence_id": anchor["intent_decision_id"],
+                    "evidence_sha256": anchor["evidence_sha256"],
+                    "observed_at": anchor["observed_at"],
+                    "wallet_address": anchor["wallet_address"],
+                    "signature": anchor["signature"],
+                }
+            )
+            bindings = (
+                str(receipt.get("evidence_id") or "") == str(anchor["intent_decision_id"])
+                and str(receipt.get("evidence_sha256") or "")
+                == str(anchor["evidence_sha256"])
+                and str(receipt.get("wallet_address") or "")
+                == str(anchor["wallet_address"])
+                and str(receipt.get("signature") or "") == str(anchor["signature"])
+                and str(receipt.get("observed_at") or "") == str(anchor["observed_at"])
+                and receipt.get("effect") == "evidence_only"
+                and str(receipt.get("receipt_id") or "").startswith("per_")
+                and len(str(receipt.get("receipt_sha256") or "")) == 64
+            )
+            if not bindings:
+                raise AutonomousBuyerError("protocol_evidence_receipt_mismatch")
+        except AutonomousBuyerError as exc:
+            attempts = int(anchor["publication_attempt_count"])
+            if attempts >= int(anchor["publication_max_attempts"]):
+                return self._finish_publication(
+                    anchor_id, now, state="publication_failed", error=exc.code
+                )
+            delay = min(300, self.default_poll_seconds * (2 ** min(attempts - 1, 5)))
+            return self._finish_publication(
+                anchor_id,
+                now,
+                state="attested",
+                error=exc.code,
+                next_run_at=now + delay,
+            )
+        except Exception:
+            return self._finish_publication(
+                anchor_id,
+                now,
+                state="publication_failed",
+                error="unexpected_publication_failure",
+            )
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET state = 'published', publication_lease_until = NULL,
+                       publication_error = NULL, receipt_id = ?, receipt_sha256 = ?,
+                       published_at = ?, updated_at = ? WHERE anchor_id = ?""",
+                (
+                    str(receipt["receipt_id"]),
+                    str(receipt["receipt_sha256"]),
+                    int(receipt.get("received_at") or now),
+                    now,
+                    anchor_id,
+                ),
+            )
+        return {"work_type": "evidence_publication", **self.get_anchor(
+            str(anchor["intent_decision_id"])
+        )}
+
+    def _finish_publication(
+        self,
+        anchor_id: str,
+        now: int,
+        *,
+        state: str,
+        error: str,
+        next_run_at: int | None = None,
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET state = ?, publication_next_run_at = ?,
+                       publication_lease_until = NULL, publication_error = ?,
+                       updated_at = ? WHERE anchor_id = ?""",
+                (state, next_run_at or now, error, now, anchor_id),
+            )
+            row = connection.execute(
+                "SELECT * FROM buyer_agent_job_anchors WHERE anchor_id = ?",
+                (anchor_id,),
+            ).fetchone()
+        return {"work_type": "evidence_publication", **dict(row)}
 
     def _claim_anchor(self, now: int) -> str | None:
         with self._connect() as connection:
@@ -539,8 +701,9 @@ class BuyerAgentScheduler:
                 """UPDATE buyer_agent_job_anchors
                    SET state = 'attested', lease_until = NULL, observed_at = ?,
                        wallet_address = ?, signature = ?, last_error = NULL,
+                       publication_next_run_at = ?,
                        updated_at = ? WHERE anchor_id = ?""",
-                (now, wallet_address, str(signature), now, anchor_id),
+                (now, wallet_address, str(signature), now, now, anchor_id),
             )
         return {"work_type": "evidence_anchor", **self.get_anchor(decision_id)}
 

@@ -492,8 +492,17 @@ Successful publication returns a deterministic receipt identifier and receipt
 SHA-256. Anyone can retrieve the public proof using
 `GET /protocol/v1/evidence/{evidence_id}?wallet_address={wallet}`. The registry
 labels every record `evidence_only`: publication does not release funds,
-approve a dispute or modify reputation. Automatic scheduler publication is a
-separate integration step, preserving a narrow and testable trust boundary.
+approve a dispute or modify reputation.
+
+The scheduler automatically publishes an `attested` anchor in a later,
+separate cycle and then reads the public record back before accepting the
+receipt. The public calls deliberately omit the buyer session token. Receipt
+identifier, digest and publication timestamp are stored with the anchor, which
+then becomes `published`. Transport failures use a separate ten-attempt budget
+and bounded backoff, survive process restarts, and never reopen or invalidate
+the completed buyer job. A signature failure remains distinct from a
+`publication_failed` registry failure, making operational recovery observable
+without weakening the signing boundary.
 
 ## Production boundary
 

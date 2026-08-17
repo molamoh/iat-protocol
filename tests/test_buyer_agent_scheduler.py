@@ -34,6 +34,8 @@ class Runner:
         self.results = list(results or [])
         self.calls = []
         self.wallet = EvidenceWallet()
+        self.publication_calls = []
+        self.publication_error = None
 
     def lifecycle(self, decision_id):
         self.calls.append(("lifecycle", decision_id))
@@ -52,6 +54,19 @@ class Runner:
     def open_result(self, decision_id):
         self.calls.append(("result", decision_id))
         return self.results.pop(0)
+
+    def publish_evidence(self, evidence):
+        self.publication_calls.append(dict(evidence))
+        if self.publication_error is not None:
+            raise self.publication_error
+        return {
+            **evidence,
+            "status": "protocol_evidence_registered",
+            "receipt_id": "per_1234567890abcdef12345678",
+            "receipt_sha256": "b" * 64,
+            "received_at": int(evidence["observed_at"]) + 1,
+            "effect": "evidence_only",
+        }
 
 
 def test_schedule_is_idempotent_and_survives_restart(tmp_path):
@@ -130,7 +145,11 @@ def test_ready_delivery_is_opened_once_and_job_completes(tmp_path):
     anchor = scheduler.run_due_once(now=1_000)[0]
     assert anchor["work_type"] == "evidence_anchor"
     assert anchor["state"] == "attested"
-    assert scheduler.run_due_once(now=1_001) == []
+    published = scheduler.run_due_once(now=1_001)[0]
+    assert published["work_type"] == "evidence_publication"
+    assert published["state"] == "published"
+    assert published["receipt_id"].startswith("per_")
+    assert scheduler.run_due_once(now=1_002) == []
     assert [call[0] for call in runner.calls] == ["lifecycle", "result"]
     assert scheduler.list_events("bid_1")["events"][-1]["event_type"] == "completed"
 
@@ -154,6 +173,29 @@ def test_completed_journal_anchor_retries_without_reopening_job(tmp_path):
     attested = restarted.run_due_once(now=pending["next_run_at"])[0]
     assert attested["state"] == "attested"
     assert attested["signature"]
+
+
+def test_protocol_publication_retries_and_survives_restart(tmp_path):
+    database = tmp_path / "jobs.sqlite3"
+    runner = Runner(
+        [{"next_action": "open_delivery_inbox"}],
+        results=[{"status": "wallet_inbox_item_opened"}],
+    )
+    scheduler = BuyerAgentScheduler(runner, database)
+    scheduler.schedule("bid_1", now=100)
+    scheduler.run_due_once(now=100)
+    scheduler.run_due_once(now=101)
+    runner.publication_error = AutonomousBuyerError("iat_transport_failed")
+    pending = scheduler.run_due_once(now=102)[0]
+    assert pending["state"] == "attested"
+    assert pending["publication_error"] == "iat_transport_failed"
+    assert scheduler.get("bid_1")["state"] == "completed"
+    runner.publication_error = None
+    restarted = BuyerAgentScheduler(runner, database)
+    published = restarted.run_due_once(now=pending["publication_next_run_at"])[0]
+    assert published["state"] == "published"
+    assert published["receipt_sha256"] == "b" * 64
+    assert published["publication_attempt_count"] == 2
 
 
 def test_changed_completed_journal_fails_anchor_closed(tmp_path):
@@ -314,6 +356,35 @@ def test_existing_unhashed_journal_is_migrated_once(tmp_path):
     assert verified["valid"] is True
     assert verified["event_count"] == 1
     assert scheduler.get("bid_legacy")["event_count"] == 1
+
+
+def test_existing_anchor_table_gains_publication_receipt_columns(tmp_path):
+    database = tmp_path / "legacy-anchor.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """CREATE TABLE buyer_agent_job_anchors (
+                anchor_id TEXT PRIMARY KEY, intent_decision_id TEXT NOT NULL UNIQUE,
+                evidence_sha256 TEXT NOT NULL, state TEXT NOT NULL,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                max_attempts INTEGER NOT NULL DEFAULT 10,
+                next_run_at INTEGER NOT NULL, lease_until INTEGER,
+                observed_at INTEGER, wallet_address TEXT, signature TEXT,
+                last_error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+            )"""
+        )
+    BuyerAgentScheduler(Runner([]), database)
+    with sqlite3.connect(database) as connection:
+        columns = {row[1] for row in connection.execute(
+            "PRAGMA table_info(buyer_agent_job_anchors)"
+        )}
+    assert {
+        "publication_attempt_count",
+        "publication_next_run_at",
+        "publication_error",
+        "receipt_id",
+        "receipt_sha256",
+        "published_at",
+    } <= columns
 
 
 def test_security_stopped_job_cannot_be_resumed(tmp_path):

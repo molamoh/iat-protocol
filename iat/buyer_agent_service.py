@@ -239,6 +239,23 @@ def create_buyer_agent_service(
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    @app.get("/v1/jobs/{intent_decision_id}/events")
+    async def job_events(
+        intent_decision_id: str,
+        limit: int = Query(default=100, ge=1, le=200),
+        offset: int = Query(default=0, ge=0, le=1_000_000),
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ):
+        authenticate(authorization)
+        try:
+            return require_scheduler().list_events(
+                intent_decision_id,
+                limit=limit,
+                offset=offset,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
+
     @app.post("/v1/scheduler/run-once")
     async def run_scheduler_once(
         req: BuyerAgentRunRequest,

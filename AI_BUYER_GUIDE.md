@@ -424,6 +424,15 @@ stopped by wallet identity, signature, transaction, cluster, simulation or
 protocol-state controls cannot be resumed through this endpoint. This keeps
 operational recovery separate from security-policy override.
 
+`GET /v1/jobs/{id}/events` returns the ordered, paginated transition journal
+for one intent. New scheduling, attempt, waiting, retry, resume, completion and
+stop records are appended; previous records are never rewritten by scheduler
+operations. Events contain only intent identifiers, public state/action/error
+codes and timestamps. They intentionally exclude credentials, serialized
+transactions, signatures, prompts and delivered content. This local audit
+trail is a precursor to protocol-level signed execution evidence; it is not
+itself a settlement proof.
+
 ## Production boundary
 
 The production buyer flow remains:

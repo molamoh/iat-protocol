@@ -80,6 +80,25 @@ class BuyerAgentScheduler:
                 )
                 """
             )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS buyer_agent_job_events (
+                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    intent_decision_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    action TEXT,
+                    error TEXT,
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY(intent_decision_id)
+                        REFERENCES buyer_agent_jobs(intent_decision_id)
+                )
+                """
+            )
+            connection.execute(
+                """CREATE INDEX IF NOT EXISTS idx_buyer_agent_job_events_intent
+                   ON buyer_agent_job_events(intent_decision_id, event_id)"""
+            )
 
     def schedule(
         self,
@@ -95,7 +114,7 @@ class BuyerAgentScheduler:
             raise ValueError("max_attempts_invalid")
         timestamp = int(time.time() if now is None else now)
         with self._connect() as connection:
-            connection.execute(
+            inserted = connection.execute(
                 """
                 INSERT INTO buyer_agent_jobs (
                     intent_decision_id, state, next_run_at, lease_until,
@@ -105,6 +124,14 @@ class BuyerAgentScheduler:
                 """,
                 (decision_id, timestamp, max_attempts, timestamp, timestamp),
             )
+            if inserted.rowcount == 1:
+                self._record_event(
+                    connection,
+                    decision_id,
+                    event_type="scheduled",
+                    state="scheduled",
+                    created_at=timestamp,
+                )
         return self.get(decision_id)
 
     def get(self, intent_decision_id: str) -> dict[str, Any]:
@@ -151,6 +178,45 @@ class BuyerAgentScheduler:
             "next_offset": offset + len(jobs) if offset + len(jobs) < int(total) else None,
         }
 
+    def list_events(
+        self,
+        intent_decision_id: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        if not 1 <= limit <= 200 or not 0 <= offset <= 1_000_000:
+            raise ValueError("buyer_agent_event_pagination_invalid")
+        decision_id = str(intent_decision_id)
+        with self._connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM buyer_agent_jobs WHERE intent_decision_id = ?",
+                (decision_id,),
+            ).fetchone()
+            if exists is None:
+                raise KeyError("buyer_agent_job_not_found")
+            total = connection.execute(
+                "SELECT COUNT(*) FROM buyer_agent_job_events WHERE intent_decision_id = ?",
+                (decision_id,),
+            ).fetchone()[0]
+            rows = connection.execute(
+                """SELECT event_id, intent_decision_id, event_type, state,
+                          action, error, created_at
+                   FROM buyer_agent_job_events
+                   WHERE intent_decision_id = ?
+                   ORDER BY event_id ASC LIMIT ? OFFSET ?""",
+                (decision_id, limit, offset),
+            ).fetchall()
+        events = [dict(row) for row in rows]
+        return {
+            "status": "buyer_agent_job_events_listed",
+            "intent_decision_id": decision_id,
+            "events": events,
+            "count": len(events),
+            "total": int(total),
+            "next_offset": offset + len(events) if offset + len(events) < int(total) else None,
+        }
+
     def resume(
         self,
         intent_decision_id: str,
@@ -183,6 +249,13 @@ class BuyerAgentScheduler:
                     timestamp,
                     decision_id,
                 ),
+            )
+            self._record_event(
+                connection,
+                decision_id,
+                event_type="resumed",
+                state="scheduled",
+                created_at=timestamp,
             )
         return self.get(decision_id)
 
@@ -251,6 +324,14 @@ class BuyerAgentScheduler:
                        WHERE intent_decision_id = ?""",
                     (now, decision_id),
                 )
+                self._record_event(
+                    connection,
+                    decision_id,
+                    event_type="stopped",
+                    state="stopped",
+                    error="maximum_attempts_reached",
+                    created_at=now,
+                )
                 return decision_id
             connection.execute(
                 """UPDATE buyer_agent_jobs
@@ -258,6 +339,13 @@ class BuyerAgentScheduler:
                        attempt_count = attempt_count + 1
                    WHERE intent_decision_id = ?""",
                 (now + self.lease_seconds, now, decision_id),
+            )
+            self._record_event(
+                connection,
+                decision_id,
+                event_type="attempt_started",
+                state="running",
+                created_at=now,
             )
             return decision_id
 
@@ -342,6 +430,15 @@ class BuyerAgentScheduler:
                    WHERE intent_decision_id = ?""",
                 (now + delay, now, action, error, decision_id),
             )
+            self._record_event(
+                connection,
+                decision_id,
+                event_type="retry_scheduled" if error else "waiting",
+                state="waiting",
+                action=action,
+                error=error,
+                created_at=now,
+            )
         return self.get(decision_id)
 
     def _finish(
@@ -361,7 +458,34 @@ class BuyerAgentScheduler:
                    WHERE intent_decision_id = ?""",
                 (state, now, action, error, decision_id),
             )
+            self._record_event(
+                connection,
+                decision_id,
+                event_type="completed" if state == "completed" else "stopped",
+                state=state,
+                action=action,
+                error=error,
+                created_at=now,
+            )
         return self.get(decision_id)
+
+    @staticmethod
+    def _record_event(
+        connection: sqlite3.Connection,
+        intent_decision_id: str,
+        *,
+        event_type: str,
+        state: str,
+        created_at: int,
+        action: str | None = None,
+        error: str | None = None,
+    ) -> None:
+        connection.execute(
+            """INSERT INTO buyer_agent_job_events (
+                   intent_decision_id, event_type, state, action, error, created_at
+               ) VALUES (?, ?, ?, ?, ?, ?)""",
+            (intent_decision_id, event_type, state, action, error, created_at),
+        )
 
     @staticmethod
     def _present(job: dict[str, Any]) -> dict[str, Any]:

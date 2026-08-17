@@ -40,6 +40,8 @@ def test_schedule_is_idempotent_and_survives_restart(tmp_path):
     assert job["state"] == "scheduled"
     assert job["next_run_at"] == 100
     assert job["max_attempts"] == 7
+    events = resumed.list_events("bid_1")
+    assert [event["event_type"] for event in events["events"]] == ["scheduled"]
 
 
 def test_summary_exposes_counts_without_job_contents(tmp_path):
@@ -81,6 +83,13 @@ def test_cycle_performs_only_one_transition_and_respects_poll_delay(tmp_path):
     assert jobs[0]["state"] == "waiting"
     assert jobs[0]["next_run_at"] == 117
     assert scheduler.run_due_once(now=116) == []
+    events = scheduler.list_events("bid_1")["events"]
+    assert [event["event_type"] for event in events] == [
+        "scheduled",
+        "attempt_started",
+        "waiting",
+    ]
+    assert events[-1]["action"] == "confirm_payment"
 
 
 def test_ready_delivery_is_opened_once_and_job_completes(tmp_path):
@@ -94,6 +103,7 @@ def test_ready_delivery_is_opened_once_and_job_completes(tmp_path):
     assert job["state"] == "completed"
     assert scheduler.run_due_once(now=1_000) == []
     assert [call[0] for call in runner.calls] == ["lifecycle", "result"]
+    assert scheduler.list_events("bid_1")["events"][-1]["event_type"] == "completed"
 
 
 def test_security_error_stops_without_retry(tmp_path):
@@ -114,6 +124,9 @@ def test_transport_error_retries_with_bounded_backoff(tmp_path):
     assert job["state"] == "waiting"
     assert job["next_run_at"] == 105
     assert job["last_error"] == "iat_transport_failed"
+    event = scheduler.list_events("bid_1")["events"][-1]
+    assert event["event_type"] == "retry_scheduled"
+    assert event["error"] == "iat_transport_failed"
 
 
 def test_job_stops_as_soon_as_attempt_budget_is_exhausted(tmp_path):
@@ -141,6 +154,23 @@ def test_exhausted_job_can_be_resumed_with_a_new_bounded_budget(tmp_path):
     assert resumed["max_attempts"] == 4
     assert resumed["last_error"] is None
     assert resumed["recoverable"] is False
+    assert scheduler.list_events("bid_1")["events"][-1]["event_type"] == "resumed"
+
+
+def test_event_history_is_paginated_and_survives_restart(tmp_path):
+    database = tmp_path / "jobs.sqlite3"
+    scheduler = BuyerAgentScheduler(
+        Runner([{"next_action": "wait_for_delivery"}]),
+        database,
+    )
+    scheduler.schedule("bid_1", now=100)
+    scheduler.run_due_once(now=100)
+    resumed = BuyerAgentScheduler(Runner([]), database)
+    first_page = resumed.list_events("bid_1", limit=2)
+    second_page = resumed.list_events("bid_1", limit=2, offset=2)
+    assert first_page["total"] == 3
+    assert first_page["next_offset"] == 2
+    assert [event["event_type"] for event in second_page["events"]] == ["waiting"]
 
 
 def test_security_stopped_job_cannot_be_resumed(tmp_path):

@@ -213,3 +213,20 @@ def test_job_api_rejects_resume_after_security_stop(tmp_path):
     )
     assert response.status_code == 409
     assert response.json()["detail"] == "buyer_agent_job_not_recoverable"
+
+
+def test_job_api_exposes_metadata_only_event_history(tmp_path):
+    runner = Runner()
+    scheduler = BuyerAgentScheduler(runner, tmp_path / "jobs.sqlite3")
+    scheduler.schedule("bid_1")
+    scheduler.run_due_once()
+    app = create_buyer_agent_service(runner, service_token=TOKEN, scheduler=scheduler)
+    response = call(app, "GET", "/v1/jobs/bid_1/events", headers=headers())
+    assert response.status_code == 200
+    body = response.json()
+    assert [event["event_type"] for event in body["events"]] == [
+        "scheduled",
+        "attempt_started",
+        "waiting",
+    ]
+    assert TOKEN not in str(body)

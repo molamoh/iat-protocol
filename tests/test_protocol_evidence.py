@@ -56,6 +56,7 @@ def evidence_app(tmp_path, monkeypatch):
     app.include_router(protocol_evidence.router)
     app.include_router(protocol_evidence.validation_router)
     app.include_router(protocol_evidence.quality_router)
+    app.include_router(protocol_evidence.settlement_eligibility_router)
     return app
 
 
@@ -263,3 +264,69 @@ def test_quality_validation_requires_predeclared_criteria(tmp_path, monkeypatch)
     )
     assert quality.status_code == 409
     assert quality.json()["detail"] == "acceptance_criteria_not_declared"
+
+
+def test_accepted_quality_creates_release_eligibility_without_moving_funds(
+    tmp_path, monkeypatch
+):
+    app = evidence_app(tmp_path, monkeypatch)
+    payload = signed_payload(Keypair())
+    evidence = call(app, "POST", "/protocol/v1/evidence", json=payload).json()
+    receipt_token = completed_journey(
+        payload,
+        acceptance_criteria={"min_sources": 1},
+        result={"status": "delivered", "sources": ["source"]},
+    )
+    open_delivery_inbox(receipt_token, now=NOW - 40)
+    delivery = call(
+        app, "POST", f"/protocol/v1/delivery-validations/{evidence['receipt_id']}"
+    ).json()
+    quality = call(
+        app, "POST", f"/protocol/v1/quality-validations/{delivery['validation_id']}"
+    ).json()
+    monkeypatch.setattr(
+        db,
+        "get_settlement_by_order_id_db",
+        lambda order_id: {"settlement_id": "settlement_1", "order_id": order_id},
+    )
+    eligible = call(
+        app, "POST", f"/protocol/v1/settlement-eligibility/{quality['quality_validation_id']}"
+    )
+    public = call(
+        app, "GET", f"/protocol/v1/settlement-eligibility/{quality['quality_validation_id']}"
+    )
+    assert eligible.status_code == public.status_code == 200
+    assert eligible.json() == public.json()
+    assert eligible.json()["decision"] == "eligible_for_governed_release"
+    assert eligible.json()["settlement_id"] == "settlement_1"
+    assert eligible.json()["funds_moved"] is False
+    assert eligible.json()["transaction_signed"] is False
+    assert eligible.json()["transaction_broadcast"] is False
+
+
+def test_rejected_quality_creates_compensation_review_eligibility(
+    tmp_path, monkeypatch
+):
+    app = evidence_app(tmp_path, monkeypatch)
+    payload = signed_payload(Keypair())
+    evidence = call(app, "POST", "/protocol/v1/evidence", json=payload).json()
+    receipt_token = completed_journey(
+        payload,
+        acceptance_criteria={"min_sources": 3},
+        result={"status": "delivered", "sources": ["only-one"]},
+    )
+    open_delivery_inbox(receipt_token, now=NOW - 40)
+    delivery = call(
+        app, "POST", f"/protocol/v1/delivery-validations/{evidence['receipt_id']}"
+    ).json()
+    quality = call(
+        app, "POST", f"/protocol/v1/quality-validations/{delivery['validation_id']}"
+    ).json()
+    monkeypatch.setattr(db, "get_settlement_by_order_id_db", lambda _order_id: None)
+    eligible = call(
+        app, "POST", f"/protocol/v1/settlement-eligibility/{quality['quality_validation_id']}"
+    )
+    assert eligible.status_code == 200
+    assert eligible.json()["decision"] == "eligible_for_compensation_review"
+    assert eligible.json()["effect"] == "eligibility_only"
+    assert eligible.json()["funds_moved"] is False

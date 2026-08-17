@@ -28,6 +28,10 @@ quality_router = APIRouter(
     prefix="/protocol/v1/quality-validations",
     tags=["protocol-evidence"],
 )
+settlement_eligibility_router = APIRouter(
+    prefix="/protocol/v1/settlement-eligibility",
+    tags=["protocol-evidence"],
+)
 MAX_EVIDENCE_AGE_SECONDS = 86_400
 MAX_FUTURE_SKEW_SECONDS = 60
 
@@ -64,6 +68,25 @@ def init_protocol_evidence_db() -> None:
                 receipt_sha256 TEXT NOT NULL,
                 received_at BIGINT NOT NULL,
                 UNIQUE(wallet_address, evidence_type, evidence_id)
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS protocol_settlement_eligibility (
+                eligibility_id TEXT PRIMARY KEY,
+                quality_validation_id TEXT NOT NULL UNIQUE,
+                delivery_validation_id TEXT NOT NULL,
+                evidence_receipt_id TEXT NOT NULL,
+                evidence_id TEXT NOT NULL,
+                order_id TEXT NOT NULL,
+                quote_id TEXT NOT NULL,
+                settlement_id TEXT,
+                decision TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                policy_version TEXT NOT NULL,
+                eligibility_sha256 TEXT NOT NULL,
+                evaluated_at BIGINT NOT NULL
             )
             """
         )
@@ -207,6 +230,27 @@ def _public_quality_validation(row: Any) -> dict[str, Any]:
         "checks": checks,
         "effect": "evidence_only",
         "content_disclosed": False,
+    }
+
+
+def _find_settlement_eligibility(cursor: Any, quality_validation_id: str) -> Any:
+    placeholder = db.qmark()
+    cursor.execute(
+        f"""SELECT * FROM protocol_settlement_eligibility
+            WHERE quality_validation_id = {placeholder}""",
+        (quality_validation_id,),
+    )
+    return cursor.fetchone()
+
+
+def _public_settlement_eligibility(row: Any) -> dict[str, Any]:
+    return {
+        "status": "protocol_settlement_eligibility_recorded",
+        **dict(row),
+        "effect": "eligibility_only",
+        "funds_moved": False,
+        "transaction_signed": False,
+        "transaction_broadcast": False,
     }
 
 
@@ -567,5 +611,114 @@ def get_delivery_quality_validation(delivery_validation_id: str) -> dict[str, An
         if record is None:
             raise HTTPException(status_code=404, detail="quality_validation_not_found")
         return _public_quality_validation(record)
+    finally:
+        db.release_conn(connection)
+
+
+@settlement_eligibility_router.post("/{quality_validation_id}")
+def evaluate_settlement_eligibility(quality_validation_id: str) -> dict[str, Any]:
+    connection = db.get_conn()
+    try:
+        cursor = connection.cursor()
+        existing = _find_settlement_eligibility(cursor, quality_validation_id)
+        if existing is not None:
+            return _public_settlement_eligibility(existing)
+        placeholder = db.qmark()
+        cursor.execute(
+            f"""SELECT q.*, d.order_id, d.quote_id
+                FROM protocol_quality_validations q
+                JOIN protocol_delivery_validations d
+                  ON d.validation_id = q.delivery_validation_id
+                WHERE q.quality_validation_id = {placeholder}""",
+            (quality_validation_id,),
+        )
+        joined = cursor.fetchone()
+    finally:
+        db.release_conn(connection)
+    if joined is None:
+        raise HTTPException(status_code=404, detail="quality_validation_not_found")
+    record = dict(joined)
+    quality_decision = str(record["decision"])
+    if quality_decision == "accepted_by_explicit_criteria":
+        settlement = db.get_settlement_by_order_id_db(str(record["order_id"]))
+        if not settlement:
+            raise HTTPException(status_code=409, detail="settlement_allocation_pending")
+        decision = "eligible_for_governed_release"
+        reason = "explicit_quality_criteria_and_delivery_binding_passed"
+        settlement_id = str(settlement.get("settlement_id") or "") or None
+    elif quality_decision == "rejected_by_explicit_criteria":
+        decision = "eligible_for_compensation_review"
+        reason = "explicit_quality_criteria_failed_after_verified_delivery"
+        settlement = db.get_settlement_by_order_id_db(str(record["order_id"]))
+        settlement_id = (
+            str(settlement.get("settlement_id") or "") or None
+            if settlement
+            else None
+        )
+    else:
+        raise HTTPException(status_code=409, detail="quality_validation_not_terminal")
+
+    evaluated_at = _now()
+    policy_version = "settlement_eligibility_v1"
+    eligibility_facts = {
+        "decision": decision,
+        "delivery_validation_id": record["delivery_validation_id"],
+        "evidence_id": record["evidence_id"],
+        "evidence_receipt_id": record["evidence_receipt_id"],
+        "evaluated_at": evaluated_at,
+        "order_id": record["order_id"],
+        "policy_version": policy_version,
+        "quality_validation_id": quality_validation_id,
+        "quote_id": record["quote_id"],
+        "reason": reason,
+        "settlement_id": settlement_id,
+    }
+    eligibility_sha256 = hashlib.sha256(
+        json.dumps(eligibility_facts, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    eligibility_id = "pse_" + eligibility_sha256[:24]
+    connection = db.get_conn()
+    try:
+        cursor = connection.cursor()
+        placeholder = db.qmark()
+        cursor.execute(
+            f"""INSERT INTO protocol_settlement_eligibility (
+                    eligibility_id, quality_validation_id, delivery_validation_id,
+                    evidence_receipt_id, evidence_id, order_id, quote_id,
+                    settlement_id, decision, reason, policy_version,
+                    eligibility_sha256, evaluated_at
+                ) VALUES ({', '.join([placeholder] * 13)})""",
+            (
+                eligibility_id,
+                quality_validation_id,
+                record["delivery_validation_id"],
+                record["evidence_receipt_id"],
+                record["evidence_id"],
+                record["order_id"],
+                record["quote_id"],
+                settlement_id,
+                decision,
+                reason,
+                policy_version,
+                eligibility_sha256,
+                evaluated_at,
+            ),
+        )
+        connection.commit()
+        return _public_settlement_eligibility(
+            _find_settlement_eligibility(cursor, quality_validation_id)
+        )
+    finally:
+        db.release_conn(connection)
+
+
+@settlement_eligibility_router.get("/{quality_validation_id}")
+def get_settlement_eligibility(quality_validation_id: str) -> dict[str, Any]:
+    connection = db.get_conn()
+    try:
+        record = _find_settlement_eligibility(connection.cursor(), quality_validation_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="settlement_eligibility_not_found")
+        return _public_settlement_eligibility(record)
     finally:
         db.release_conn(connection)

@@ -558,6 +558,23 @@ separate as `quality_validation_failed`. Existing delivery-verified anchors
 are enrolled during migration, and the completed transaction is never
 rewritten by this evaluation.
 
+### Settlement eligibility
+
+`POST /protocol/v1/settlement-eligibility/{quality_validation_id}` converts a
+terminal quality record into a narrow policy decision. Accepted explicit
+criteria become `eligible_for_governed_release`, but only after the existing
+settlement allocation is present. Rejected criteria become
+`eligible_for_compensation_review`; they do not create or approve a refund.
+The decision is immutable and publicly retrievable with the corresponding
+`GET` endpoint.
+
+Every response explicitly reports `effect: eligibility_only`, `funds_moved:
+false`, `transaction_signed: false` and `transaction_broadcast: false`. The
+policy therefore closes the evidence-to-settlement decision gap without
+bypassing escrow governance, buyer dispute handling or compensation review.
+Automatic scheduler consumption and actual governed execution remain separate
+future steps.
+
 ## Production boundary
 
 The production buyer flow remains:

@@ -411,6 +411,19 @@ python -m iat.buyer_agent_worker
 Both values have strict bounds. SIGTERM and SIGINT request a clean stop between
 cycles; each cycle still performs at most one transition for each claimed job.
 
+### Agent-readable supervision
+
+`GET /v1/jobs` lists scheduling records with optional `state`, `limit` and
+`offset` filters. Every record includes `reason_category`,
+`recommended_action` and `recoverable`, so an agent does not need to interpret
+internal exceptions. Results and transaction bytes are not included.
+
+Only a job stopped because its attempt budget was exhausted can be resumed via
+`POST /v1/jobs/{id}/resume` with a bounded `additional_attempts` value. Jobs
+stopped by wallet identity, signature, transaction, cluster, simulation or
+protocol-state controls cannot be resumed through this endpoint. This keeps
+operational recovery separate from security-policy override.
+
 ## Production boundary
 
 The production buyer flow remains:

@@ -7,7 +7,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from iat.agent_buyer_runtime import AgentBuyerRuntimeConfig, BoundedTransactionApproval
@@ -39,6 +39,12 @@ class BuyerAgentRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     limit: int = Field(default=10, ge=1, le=100)
+
+
+class BuyerAgentResumeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    additional_attempts: int = Field(default=25, ge=1, le=1_000)
 
 
 @dataclass(frozen=True)
@@ -202,6 +208,36 @@ def create_buyer_agent_service(
             return require_scheduler().get(intent_decision_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
+
+    @app.get("/v1/jobs")
+    async def jobs(
+        state: str | None = Query(default=None),
+        limit: int = Query(default=50, ge=1, le=100),
+        offset: int = Query(default=0, ge=0, le=1_000_000),
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ):
+        authenticate(authorization)
+        try:
+            return require_scheduler().list_jobs(state=state, limit=limit, offset=offset)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/v1/jobs/{intent_decision_id}/resume")
+    async def resume_job(
+        intent_decision_id: str,
+        req: BuyerAgentResumeRequest,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ):
+        authenticate(authorization)
+        try:
+            return require_scheduler().resume(
+                intent_decision_id,
+                additional_attempts=req.additional_attempts,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/v1/scheduler/run-once")
     async def run_scheduler_once(

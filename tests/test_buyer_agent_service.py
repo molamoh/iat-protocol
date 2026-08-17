@@ -172,3 +172,44 @@ def test_unselected_intent_is_not_enrolled(tmp_path):
     assert response.status_code == 200
     assert "scheduler_job" not in response.json()
     assert scheduler.summary()["total_jobs"] == 0
+
+
+def test_job_api_lists_and_resumes_only_exhausted_jobs(tmp_path):
+    runner = Runner()
+    scheduler = BuyerAgentScheduler(runner, tmp_path / "jobs.sqlite3")
+    scheduler.schedule("bid_1", max_attempts=1)
+    scheduler.run_due_once()
+    app = create_buyer_agent_service(runner, service_token=TOKEN, scheduler=scheduler)
+    listed = call(app, "GET", "/v1/jobs?state=stopped", headers=headers())
+    resumed = call(
+        app,
+        "POST",
+        "/v1/jobs/bid_1/resume",
+        headers=headers(),
+        json={"additional_attempts": 2},
+    )
+    assert listed.status_code == resumed.status_code == 200
+    assert listed.json()["jobs"][0]["recoverable"] is True
+    assert resumed.json()["state"] == "scheduled"
+    assert resumed.json()["max_attempts"] == 3
+
+
+def test_job_api_rejects_resume_after_security_stop(tmp_path):
+    runner = Runner()
+    scheduler = BuyerAgentScheduler(runner, tmp_path / "jobs.sqlite3")
+    scheduler.schedule("bid_1")
+    with scheduler._connect() as connection:
+        connection.execute(
+            "UPDATE buyer_agent_jobs SET state = 'stopped', last_error = ? WHERE intent_decision_id = ?",
+            ("transaction_fee_payer_mismatch", "bid_1"),
+        )
+    app = create_buyer_agent_service(runner, service_token=TOKEN, scheduler=scheduler)
+    response = call(
+        app,
+        "POST",
+        "/v1/jobs/bid_1/resume",
+        headers=headers(),
+        json={"additional_attempts": 2},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "buyer_agent_job_not_recoverable"

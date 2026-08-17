@@ -33,6 +33,8 @@ ACTIONABLE = {
     "confirm_payment",
 }
 
+JOB_STATES = {"scheduled", "running", "waiting", "completed", "stopped"}
+
 
 class BuyerAgentScheduler:
     """Persist intent jobs while executing at most one transition per cycle."""
@@ -113,7 +115,76 @@ class BuyerAgentScheduler:
             ).fetchone()
         if row is None:
             raise KeyError("buyer_agent_job_not_found")
-        return dict(row)
+        return self._present(dict(row))
+
+    def list_jobs(
+        self,
+        *,
+        state: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        if state is not None and state not in JOB_STATES:
+            raise ValueError("buyer_agent_job_state_invalid")
+        if not 1 <= limit <= 100 or not 0 <= offset <= 1_000_000:
+            raise ValueError("buyer_agent_job_pagination_invalid")
+        where = " WHERE state = ?" if state is not None else ""
+        params: tuple[Any, ...] = (state,) if state is not None else ()
+        with self._connect() as connection:
+            total = connection.execute(
+                "SELECT COUNT(*) FROM buyer_agent_jobs" + where,
+                params,
+            ).fetchone()[0]
+            rows = connection.execute(
+                "SELECT * FROM buyer_agent_jobs"
+                + where
+                + " ORDER BY updated_at DESC, intent_decision_id ASC LIMIT ? OFFSET ?",
+                params + (limit, offset),
+            ).fetchall()
+        jobs = [self._present(dict(row)) for row in rows]
+        return {
+            "status": "buyer_agent_jobs_listed",
+            "state_filter": state,
+            "jobs": jobs,
+            "count": len(jobs),
+            "total": int(total),
+            "next_offset": offset + len(jobs) if offset + len(jobs) < int(total) else None,
+        }
+
+    def resume(
+        self,
+        intent_decision_id: str,
+        *,
+        additional_attempts: int = 25,
+        now: int | None = None,
+    ) -> dict[str, Any]:
+        if not 1 <= additional_attempts <= 1_000:
+            raise ValueError("additional_attempts_invalid")
+        timestamp = int(time.time() if now is None else now)
+        decision_id = str(intent_decision_id)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT state, last_error, attempt_count FROM buyer_agent_jobs WHERE intent_decision_id = ?",
+                (decision_id,),
+            ).fetchone()
+            if row is None:
+                raise KeyError("buyer_agent_job_not_found")
+            if row["state"] != "stopped" or row["last_error"] != "maximum_attempts_reached":
+                raise ValueError("buyer_agent_job_not_recoverable")
+            connection.execute(
+                """UPDATE buyer_agent_jobs
+                   SET state = 'scheduled', next_run_at = ?, lease_until = NULL,
+                       max_attempts = ?, updated_at = ?, last_error = NULL
+                   WHERE intent_decision_id = ?""",
+                (
+                    timestamp,
+                    int(row["attempt_count"]) + additional_attempts,
+                    timestamp,
+                    decision_id,
+                ),
+            )
+        return self.get(decision_id)
 
     def summary(self, *, now: int | None = None) -> dict[str, Any]:
         timestamp = int(time.time() if now is None else now)
@@ -291,3 +362,28 @@ class BuyerAgentScheduler:
                 (state, now, action, error, decision_id),
             )
         return self.get(decision_id)
+
+    @staticmethod
+    def _present(job: dict[str, Any]) -> dict[str, Any]:
+        state = str(job.get("state") or "")
+        error = str(job.get("last_error") or "")
+        if state == "completed":
+            category, action = "completed", "open_or_use_result"
+        elif state in {"scheduled", "running", "waiting"}:
+            category, action = "in_progress", "wait_for_scheduler"
+        elif error == "maximum_attempts_reached":
+            category, action = "retry_budget_exhausted", "review_then_extend_attempt_budget"
+        elif error == "buyer_signature_not_approved":
+            category, action = "local_policy_denied", "review_local_purchase_policy"
+        elif error in HARD_STOP_ERRORS:
+            category, action = "security_boundary", "inspect_security_evidence"
+        elif error == "unsupported_or_unsafe_next_action":
+            category, action = "protocol_state", "inspect_intent_lifecycle"
+        else:
+            category, action = "local_failure", "inspect_local_worker_logs"
+        return {
+            **job,
+            "recoverable": state == "stopped" and error == "maximum_attempts_reached",
+            "reason_category": category,
+            "recommended_action": action,
+        }

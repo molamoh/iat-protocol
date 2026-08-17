@@ -56,6 +56,19 @@ def test_summary_exposes_counts_without_job_contents(tmp_path):
     }
 
 
+def test_jobs_can_be_filtered_and_explain_their_state(tmp_path):
+    scheduler = BuyerAgentScheduler(Runner([]), tmp_path / "jobs.sqlite3")
+    scheduler.schedule("bid_a", now=100)
+    scheduler.schedule("bid_b", now=101)
+    listed = scheduler.list_jobs(state="scheduled", limit=1)
+    assert listed["total"] == 2
+    assert listed["count"] == 1
+    assert listed["next_offset"] == 1
+    assert listed["jobs"][0]["reason_category"] == "in_progress"
+    assert listed["jobs"][0]["recommended_action"] == "wait_for_scheduler"
+    assert listed["jobs"][0]["recoverable"] is False
+
+
 def test_cycle_performs_only_one_transition_and_respects_poll_delay(tmp_path):
     runner = Runner(
         [{"next_action": "confirm_payment"}],
@@ -113,6 +126,35 @@ def test_job_stops_as_soon_as_attempt_budget_is_exhausted(tmp_path):
     assert job["state"] == "stopped"
     assert job["attempt_count"] == 1
     assert job["last_error"] == "maximum_attempts_reached"
+    assert job["recoverable"] is True
+    assert job["reason_category"] == "retry_budget_exhausted"
+
+
+def test_exhausted_job_can_be_resumed_with_a_new_bounded_budget(tmp_path):
+    runner = Runner([{"next_action": "wait_for_delivery"}])
+    scheduler = BuyerAgentScheduler(runner, tmp_path / "jobs.sqlite3")
+    scheduler.schedule("bid_1", now=100, max_attempts=1)
+    scheduler.run_due_once(now=100)
+    resumed = scheduler.resume("bid_1", additional_attempts=3, now=200)
+    assert resumed["state"] == "scheduled"
+    assert resumed["next_run_at"] == 200
+    assert resumed["max_attempts"] == 4
+    assert resumed["last_error"] is None
+    assert resumed["recoverable"] is False
+
+
+def test_security_stopped_job_cannot_be_resumed(tmp_path):
+    runner = Runner([AutonomousBuyerError("transaction_fee_payer_mismatch")])
+    scheduler = BuyerAgentScheduler(runner, tmp_path / "jobs.sqlite3")
+    scheduler.schedule("bid_1", now=100)
+    stopped = scheduler.run_due_once(now=100)[0]
+    assert stopped["reason_category"] == "security_boundary"
+    try:
+        scheduler.resume("bid_1", now=200)
+    except ValueError as exc:
+        assert str(exc) == "buyer_agent_job_not_recoverable"
+    else:
+        raise AssertionError("security-stopped job was resumed")
 
 
 def test_scheduler_database_contains_no_runner_credentials(tmp_path):

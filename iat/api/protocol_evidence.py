@@ -14,6 +14,7 @@ from solders.signature import Signature
 
 from iat.api import db
 from iat.attested_wallet_signer import build_evidence_message
+from iat.acceptance import AcceptanceCriteria, evaluate_acceptance
 from iat.checkout_delivery import get_delivery
 from iat.checkout_receipt import get_delivery_receipt
 
@@ -21,6 +22,10 @@ from iat.checkout_receipt import get_delivery_receipt
 router = APIRouter(prefix="/protocol/v1/evidence", tags=["protocol-evidence"])
 validation_router = APIRouter(
     prefix="/protocol/v1/delivery-validations",
+    tags=["protocol-evidence"],
+)
+quality_router = APIRouter(
+    prefix="/protocol/v1/quality-validations",
     tags=["protocol-evidence"],
 )
 MAX_EVIDENCE_AGE_SECONDS = 86_400
@@ -59,6 +64,24 @@ def init_protocol_evidence_db() -> None:
                 receipt_sha256 TEXT NOT NULL,
                 received_at BIGINT NOT NULL,
                 UNIQUE(wallet_address, evidence_type, evidence_id)
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS protocol_quality_validations (
+                quality_validation_id TEXT PRIMARY KEY,
+                delivery_validation_id TEXT NOT NULL UNIQUE,
+                evidence_receipt_id TEXT NOT NULL,
+                evidence_id TEXT NOT NULL,
+                decision TEXT NOT NULL,
+                criteria_sha256 TEXT NOT NULL,
+                payload_digest TEXT NOT NULL,
+                checks_json TEXT NOT NULL,
+                passed_count INTEGER NOT NULL,
+                failed_count INTEGER NOT NULL,
+                quality_validation_sha256 TEXT NOT NULL,
+                evaluated_at BIGINT NOT NULL
             )
             """
         )
@@ -159,6 +182,31 @@ def _public_validation(row: Any) -> dict[str, Any]:
         **record,
         "effect": "evidence_only",
         "quality_verified": False,
+    }
+
+
+def _find_quality_validation(cursor: Any, delivery_validation_id: str) -> Any:
+    placeholder = db.qmark()
+    cursor.execute(
+        f"""SELECT * FROM protocol_quality_validations
+            WHERE delivery_validation_id = {placeholder}""",
+        (delivery_validation_id,),
+    )
+    return cursor.fetchone()
+
+
+def _public_quality_validation(row: Any) -> dict[str, Any]:
+    record = dict(row)
+    try:
+        checks = json.loads(record.pop("checks_json"))
+    except (TypeError, json.JSONDecodeError):
+        checks = []
+    return {
+        "status": "protocol_quality_validation_recorded",
+        **record,
+        "checks": checks,
+        "effect": "evidence_only",
+        "content_disclosed": False,
     }
 
 
@@ -395,5 +443,129 @@ def get_delivery_validation(evidence_receipt_id: str) -> dict[str, Any]:
         if record is None:
             raise HTTPException(status_code=404, detail="delivery_validation_not_found")
         return _public_validation(record)
+    finally:
+        db.release_conn(connection)
+
+
+@quality_router.post("/{delivery_validation_id}")
+def validate_delivery_quality(delivery_validation_id: str) -> dict[str, Any]:
+    connection = db.get_conn()
+    try:
+        cursor = connection.cursor()
+        existing = _find_quality_validation(cursor, delivery_validation_id)
+        if existing is not None:
+            return _public_quality_validation(existing)
+        placeholder = db.qmark()
+        cursor.execute(
+            f"""SELECT * FROM protocol_delivery_validations
+                WHERE validation_id = {placeholder}""",
+            (delivery_validation_id,),
+        )
+        delivery_row = cursor.fetchone()
+        if delivery_row is None:
+            raise HTTPException(status_code=404, detail="delivery_validation_not_found")
+        delivery_validation = dict(delivery_row)
+        if delivery_validation["decision"] != "verified_delivery_binding":
+            raise HTTPException(status_code=409, detail="quality_validation_delivery_rejected")
+        cursor.execute(
+            f"""SELECT request_json FROM buyer_intent_decisions
+                WHERE intent_decision_id = {placeholder}""",
+            (delivery_validation["evidence_id"],),
+        )
+        intent_row = cursor.fetchone()
+    finally:
+        db.release_conn(connection)
+    if intent_row is None:
+        raise HTTPException(status_code=409, detail="quality_validation_intent_unavailable")
+    try:
+        request_payload = json.loads(dict(intent_row)["request_json"])
+        raw_criteria = request_payload.get("acceptance_criteria")
+        if not isinstance(raw_criteria, dict):
+            raise HTTPException(status_code=409, detail="acceptance_criteria_not_declared")
+        criteria = AcceptanceCriteria.model_validate(raw_criteria)
+    except HTTPException:
+        raise
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=409, detail="acceptance_criteria_invalid") from exc
+
+    receipt = get_delivery_receipt(str(delivery_validation["quote_id"]))
+    if not receipt or not receipt.get("sealed_payload"):
+        raise HTTPException(status_code=409, detail="quality_validation_payload_unavailable")
+    try:
+        result = json.loads(str(receipt["sealed_payload"]))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=409, detail="quality_validation_payload_invalid") from exc
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=409, detail="quality_validation_payload_invalid")
+    evaluation = evaluate_acceptance(
+        criteria,
+        result,
+        inbox_signature_status=str(delivery_validation["inbox_signature_status"]),
+    )
+    criteria_payload = criteria.model_dump()
+    criteria_sha256 = hashlib.sha256(
+        json.dumps(criteria_payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    evaluated_at = _now()
+    public_facts = {
+        "criteria_sha256": criteria_sha256,
+        "decision": evaluation["decision"],
+        "delivery_validation_id": delivery_validation_id,
+        "evidence_id": delivery_validation["evidence_id"],
+        "evidence_receipt_id": delivery_validation["evidence_receipt_id"],
+        "evaluated_at": evaluated_at,
+        "failed_count": evaluation["failed_count"],
+        "passed_count": evaluation["passed_count"],
+        "payload_digest": delivery_validation["payload_digest"],
+    }
+    quality_digest = hashlib.sha256(
+        json.dumps(public_facts, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    quality_id = "pqv_" + quality_digest[:24]
+    checks_json = json.dumps(
+        evaluation["checks"], sort_keys=True, separators=(",", ":")
+    )
+    connection = db.get_conn()
+    try:
+        cursor = connection.cursor()
+        placeholder = db.qmark()
+        cursor.execute(
+            f"""INSERT INTO protocol_quality_validations (
+                    quality_validation_id, delivery_validation_id,
+                    evidence_receipt_id, evidence_id, decision, criteria_sha256,
+                    payload_digest, checks_json, passed_count, failed_count,
+                    quality_validation_sha256, evaluated_at
+                ) VALUES ({', '.join([placeholder] * 12)})""",
+            (
+                quality_id,
+                delivery_validation_id,
+                delivery_validation["evidence_receipt_id"],
+                delivery_validation["evidence_id"],
+                evaluation["decision"],
+                criteria_sha256,
+                delivery_validation["payload_digest"],
+                checks_json,
+                evaluation["passed_count"],
+                evaluation["failed_count"],
+                quality_digest,
+                evaluated_at,
+            ),
+        )
+        connection.commit()
+        return _public_quality_validation(
+            _find_quality_validation(cursor, delivery_validation_id)
+        )
+    finally:
+        db.release_conn(connection)
+
+
+@quality_router.get("/{delivery_validation_id}")
+def get_delivery_quality_validation(delivery_validation_id: str) -> dict[str, Any]:
+    connection = db.get_conn()
+    try:
+        record = _find_quality_validation(connection.cursor(), delivery_validation_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="quality_validation_not_found")
+        return _public_quality_validation(record)
     finally:
         db.release_conn(connection)

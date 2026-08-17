@@ -109,6 +109,7 @@ from iat.buyer_identity import (
 )
 from iat.buyer_discovery import build_buyer_intent_preview
 from iat.api.schemas import OrderRequest
+from iat.acceptance import AcceptanceCriteria
 
 
 router = APIRouter(prefix="/payments/v1/universal", tags=["universal-checkout"])
@@ -185,6 +186,7 @@ class BuyerIntentPreviewRequest(BaseModel):
     maximum_price: float = Field(gt=0, le=1_000_000_000)
     strategy: str = Field(default="balanced", pattern="^(balanced|cheapest|fastest|safest|quality)$")
     required_capabilities: list[str] = Field(default_factory=list, max_length=20)
+    acceptance_criteria: AcceptanceCriteria | None = None
 
 
 class BuyerIntentCommitRequest(BaseModel):
@@ -2218,6 +2220,11 @@ def preview_buyer_intent(
                 "maximum_price": req.maximum_price,
                 "strategy": req.strategy,
                 "required_capabilities": required,
+                "acceptance_criteria": (
+                    req.acceptance_criteria.model_dump()
+                    if req.acceptance_criteria is not None
+                    else None
+                ),
             },
             selection=result,
             selected_record=selected_record,
@@ -2241,6 +2248,11 @@ def preview_buyer_intent(
             "maximum_price": req.maximum_price,
             "strategy": req.strategy,
             "required_capabilities": required,
+            "acceptance_criteria": (
+                req.acceptance_criteria.model_dump()
+                if req.acceptance_criteria is not None
+                else None
+            ),
         },
         "market": {
             "verified_candidate_count": len(records),

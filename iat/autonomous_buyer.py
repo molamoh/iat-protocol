@@ -134,6 +134,7 @@ class AutonomousBuyerRunner:
         idempotency_key: str,
         strategy: str = "balanced",
         required_capabilities: list[str] | None = None,
+        acceptance_criteria: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         preview = self._request(
             "POST",
@@ -144,6 +145,7 @@ class AutonomousBuyerRunner:
                 "maximum_price": maximum_price,
                 "strategy": strategy,
                 "required_capabilities": list(required_capabilities or []),
+                "acceptance_criteria": dict(acceptance_criteria) if acceptance_criteria else None,
             },
             headers={"Idempotency-Key": idempotency_key},
         )

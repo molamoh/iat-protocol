@@ -530,6 +530,26 @@ errors retry under a separate bounded budget and can end as
 On upgrade, existing `published` anchors are enrolled automatically so the
 validation backlog is not silently skipped.
 
+### Explicit semantic acceptance
+
+A buyer intent may now declare `acceptance_criteria` before market selection
+and payment. The bounded contract supports required public result fields,
+minimum source count, minimum confidence, minimum verified claim count, a
+required Foundation decision and a required signed delivery. Empty contracts,
+unknown fields and out-of-range thresholds are rejected. Because the contract
+is stored inside the idempotent intent request, neither buyer nor seller can
+silently redefine success after seeing the result.
+
+After a `verified_delivery_binding`,
+`POST /protocol/v1/quality-validations/{delivery_validation_id}` evaluates the
+sealed result deterministically against that original contract. The public
+record exposes check codes, counts and cryptographic digests, but not the goal,
+summary, sources or delivered content. Its decision is either
+`accepted_by_explicit_criteria` or `rejected_by_explicit_criteria`; it remains
+`evidence_only` until settlement and reputation policies explicitly consume
+it. Intents created without criteria cannot receive an accidental quality
+approval.
+
 ## Production boundary
 
 The production buyer flow remains:

@@ -14,6 +14,7 @@ from iat.agent_buyer_runtime import AgentBuyerRuntimeConfig, BoundedTransactionA
 from iat.autonomous_buyer import AutonomousBuyerError, AutonomousBuyerRunner, BuyerRunnerPolicy
 from iat.buyer_agent_scheduler import BuyerAgentScheduler
 from iat.wallet_adapters import LocalWalletRPCAdapter, WalletAdapterError
+from iat.acceptance import AcceptanceCriteria
 
 
 class BuyerAgentIntentRequest(BaseModel):
@@ -25,6 +26,7 @@ class BuyerAgentIntentRequest(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=128)
     strategy: str = Field(default="balanced", pattern="^(balanced|cheapest|fastest|safest|quality)$")
     required_capabilities: list[str] = Field(default_factory=list, max_length=20)
+    acceptance_criteria: AcceptanceCriteria | None = None
     auto_schedule: bool = True
     max_attempts: int = Field(default=100, ge=1, le=10_000)
 
@@ -151,6 +153,11 @@ def create_buyer_agent_service(
             idempotency_key=req.idempotency_key,
             strategy=req.strategy,
             required_capabilities=req.required_capabilities,
+            acceptance_criteria=(
+                req.acceptance_criteria.model_dump()
+                if req.acceptance_criteria is not None
+                else None
+            ),
         )
         decision_id = str(result.get("intent_decision_id") or "")
         if (

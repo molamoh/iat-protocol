@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import httpx
 from fastapi import FastAPI
@@ -54,10 +55,11 @@ def evidence_app(tmp_path, monkeypatch):
     app = FastAPI()
     app.include_router(protocol_evidence.router)
     app.include_router(protocol_evidence.validation_router)
+    app.include_router(protocol_evidence.quality_router)
     return app
 
 
-def completed_journey(payload):
+def completed_journey(payload, *, acceptance_criteria=None, result=None):
     init_wallet_identity_db()
     init_checkout_db()
     connection = db.get_conn()
@@ -68,10 +70,12 @@ def completed_journey(payload):
                 intent_decision_id, wallet, idempotency_key, request_hash,
                 request_json, selection_json, created_at, expires_at, consumed_at,
                 order_id
-            ) VALUES (?, ?, ?, ?, '{}', '{}', ?, ?, ?, ?)""",
+            ) VALUES (?, ?, ?, ?, ?, '{}', ?, ?, ?, ?)""",
             (
                 payload["evidence_id"], payload["wallet_address"], "idem_12345678",
-                "request_hash", NOW - 100, NOW + 100, NOW - 90, "order_1",
+                "request_hash",
+                json.dumps({"acceptance_criteria": acceptance_criteria}),
+                NOW - 100, NOW + 100, NOW - 90, "order_1",
             ),
         )
         cursor.execute(
@@ -102,7 +106,8 @@ def completed_journey(payload):
         destination=None, now=NOW - 60,
     )
     publish_delivery_payload(
-        quote_id="quote_1", order_id="order_1", payload={"status": "delivered"},
+        quote_id="quote_1", order_id="order_1",
+        payload=result or {"status": "delivered"},
         now=NOW - 50,
     )
     return configured["receipt_token"]
@@ -214,3 +219,47 @@ def test_changed_sealed_delivery_is_rejected_and_recorded(tmp_path, monkeypatch)
     assert rejected.status_code == 200
     assert rejected.json()["decision"] == "rejected_delivery_binding"
     assert rejected.json()["reason"] == "delivery_payload_digest_invalid"
+
+
+def test_explicit_quality_criteria_are_evaluated_without_content_disclosure(
+    tmp_path, monkeypatch
+):
+    app = evidence_app(tmp_path, monkeypatch)
+    payload = signed_payload(Keypair())
+    evidence = call(app, "POST", "/protocol/v1/evidence", json=payload).json()
+    receipt_token = completed_journey(
+        payload,
+        acceptance_criteria={"required_result_fields": ["summary", "sources"], "min_sources": 2},
+        result={"status": "delivered", "summary": "private analysis", "sources": ["a", "b"]},
+    )
+    open_delivery_inbox(receipt_token, now=NOW - 40)
+    delivery = call(
+        app, "POST", f"/protocol/v1/delivery-validations/{evidence['receipt_id']}"
+    ).json()
+    quality = call(
+        app, "POST", f"/protocol/v1/quality-validations/{delivery['validation_id']}"
+    )
+    public = call(
+        app, "GET", f"/protocol/v1/quality-validations/{delivery['validation_id']}"
+    )
+    assert quality.status_code == public.status_code == 200
+    assert quality.json() == public.json()
+    assert quality.json()["decision"] == "accepted_by_explicit_criteria"
+    assert quality.json()["content_disclosed"] is False
+    assert "private analysis" not in str(quality.json())
+
+
+def test_quality_validation_requires_predeclared_criteria(tmp_path, monkeypatch):
+    app = evidence_app(tmp_path, monkeypatch)
+    payload = signed_payload(Keypair())
+    evidence = call(app, "POST", "/protocol/v1/evidence", json=payload).json()
+    receipt_token = completed_journey(payload)
+    open_delivery_inbox(receipt_token, now=NOW - 40)
+    delivery = call(
+        app, "POST", f"/protocol/v1/delivery-validations/{evidence['receipt_id']}"
+    ).json()
+    quality = call(
+        app, "POST", f"/protocol/v1/quality-validations/{delivery['validation_id']}"
+    )
+    assert quality.status_code == 409
+    assert quality.json()["detail"] == "acceptance_criteria_not_declared"

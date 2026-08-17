@@ -265,10 +265,12 @@ def test_runner_creates_and_commits_selected_intent_idempotently():
         goal="Produce a cited autonomous market report",
         maximum_price=2,
         idempotency_key="buyer-intent-0001",
+        acceptance_criteria={"min_sources": 2},
     )
     assert result["status"] == "buyer_intent_created"
     assert result["order_id"] == "order_1"
     assert session.calls[0][2]["headers"]["Idempotency-Key"] == "buyer-intent-0001"
+    assert session.calls[0][2]["json"]["acceptance_criteria"] == {"min_sources": 2}
     assert session.calls[1][2]["json"] == {"intent_decision_id": "bid_test_decision"}
 
 

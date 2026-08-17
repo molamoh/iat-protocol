@@ -475,8 +475,25 @@ and a ten-attempt ceiling; a changed or invalid journal fails closed. Only the
 public wallet, signature, digest and observation time are persisted. Inspect
 the resulting `pending`, `attesting`, `attested` or `failed` record with
 `GET /v1/jobs/{id}/anchor`. This signature makes later database alteration
-detectable; publication to an independent protocol evidence store remains a
-separate future layer.
+detectable; the protocol evidence registry below supplies the independent
+publication layer.
+
+### Protocol evidence registry
+
+The central IAT API now accepts a completed signed journal head at
+`POST /protocol/v1/evidence`. The Ed25519 signature itself authorizes the
+write: the API reconstructs the domain-separated message, rejects stale,
+future-dated or invalid evidence, and never accepts arbitrary evidence types.
+The tuple `(wallet_address, evidence_type, evidence_id)` is immutable through
+the API. Repeating the exact request is idempotent; attempting to replace its
+digest returns a conflict.
+
+Successful publication returns a deterministic receipt identifier and receipt
+SHA-256. Anyone can retrieve the public proof using
+`GET /protocol/v1/evidence/{evidence_id}?wallet_address={wallet}`. The registry
+labels every record `evidence_only`: publication does not release funds,
+approve a dispute or modify reputation. Automatic scheduler publication is a
+separate integration step, preserving a narrow and testable trust boundary.
 
 ## Production boundary
 

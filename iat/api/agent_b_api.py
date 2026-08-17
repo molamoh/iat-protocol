@@ -52,6 +52,10 @@ from iat.api.growth_public import router as growth_public_router
 from iat.api.goia_public import router as goia_public_router
 from iat.api.goia_admin import build_goia_admin_router
 from iat.api.checkout_api import init_checkout_db, router as checkout_router
+from iat.api.protocol_evidence import (
+    init_protocol_evidence_db,
+    router as protocol_evidence_router,
+)
 from iat.checkout_delivery import (
     delivery_dashboard,
     delivery_events,
@@ -359,6 +363,7 @@ app.include_router(public_router)
 app.include_router(growth_public_router)
 app.include_router(goia_public_router)
 app.include_router(checkout_router)
+app.include_router(protocol_evidence_router)
 
 def require_admin_key(x_api_key):
     expected_key = os.getenv("IAT_ADMIN_API_KEY")
@@ -12721,6 +12726,7 @@ def runtime_heartbeat_governance_loop():
 
 def initialize_application():
     init_db()
+    init_protocol_evidence_db()
     try:
         init_wallet_identity_db()
     except Exception as exc:

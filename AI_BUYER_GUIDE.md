@@ -521,6 +521,15 @@ evidence_only`: it proves that one delivery is bound end-to-end to one signed
 buyer journal, not that the delivered content satisfies the buyer's semantic
 acceptance criteria. Automated quality verification is the next layer.
 
+After a journal receipt becomes `published`, the buyer scheduler requests this
+delivery validation in a fourth independent cycle and reads the public record
+back before storing it. A verified binding becomes `delivery_verified`; a
+protocol rejection becomes `delivery_rejected`; network or pending-state
+errors retry under a separate bounded budget and can end as
+`validation_failed`. None of these states rewrites the completed buyer job.
+On upgrade, existing `published` anchors are enrolled automatically so the
+validation backlog is not silently skipped.
+
 ## Production boundary
 
 The production buyer flow remains:

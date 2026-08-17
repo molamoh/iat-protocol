@@ -36,6 +36,9 @@ class Runner:
         self.wallet = EvidenceWallet()
         self.publication_calls = []
         self.publication_error = None
+        self.validation_calls = []
+        self.validation_error = None
+        self.validation_decision = "verified_delivery_binding"
 
     def lifecycle(self, decision_id):
         self.calls.append(("lifecycle", decision_id))
@@ -66,6 +69,22 @@ class Runner:
             "receipt_sha256": "b" * 64,
             "received_at": int(evidence["observed_at"]) + 1,
             "effect": "evidence_only",
+        }
+
+    def validate_delivery_evidence(self, receipt_id):
+        self.validation_calls.append(receipt_id)
+        if self.validation_error is not None:
+            raise self.validation_error
+        return {
+            "status": "protocol_delivery_validation_recorded",
+            "evidence_receipt_id": receipt_id,
+            "validation_id": "pdv_1234567890abcdef12345678",
+            "validation_sha256": "c" * 64,
+            "decision": self.validation_decision,
+            "reason": "protocol_checkout_execution_delivery_and_opening_bound",
+            "evaluated_at": 1_002,
+            "effect": "evidence_only",
+            "quality_verified": False,
         }
 
 
@@ -149,7 +168,11 @@ def test_ready_delivery_is_opened_once_and_job_completes(tmp_path):
     assert published["work_type"] == "evidence_publication"
     assert published["state"] == "published"
     assert published["receipt_id"].startswith("per_")
-    assert scheduler.run_due_once(now=1_002) == []
+    validated = scheduler.run_due_once(now=1_002)[0]
+    assert validated["work_type"] == "delivery_validation"
+    assert validated["state"] == "delivery_verified"
+    assert validated["validation_decision"] == "verified_delivery_binding"
+    assert scheduler.run_due_once(now=1_003) == []
     assert [call[0] for call in runner.calls] == ["lifecycle", "result"]
     assert scheduler.list_events("bid_1")["events"][-1]["event_type"] == "completed"
 
@@ -196,6 +219,46 @@ def test_protocol_publication_retries_and_survives_restart(tmp_path):
     assert published["state"] == "published"
     assert published["receipt_sha256"] == "b" * 64
     assert published["publication_attempt_count"] == 2
+
+
+def test_delivery_validation_retries_without_changing_completed_job(tmp_path):
+    database = tmp_path / "jobs.sqlite3"
+    runner = Runner(
+        [{"next_action": "open_delivery_inbox"}],
+        results=[{"status": "wallet_inbox_item_opened"}],
+    )
+    scheduler = BuyerAgentScheduler(runner, database)
+    scheduler.schedule("bid_1", now=100)
+    scheduler.run_due_once(now=100)
+    scheduler.run_due_once(now=101)
+    scheduler.run_due_once(now=102)
+    runner.validation_error = AutonomousBuyerError("iat_transport_failed")
+    pending = scheduler.run_due_once(now=103)[0]
+    assert pending["state"] == "published"
+    assert pending["validation_error"] == "iat_transport_failed"
+    assert scheduler.get("bid_1")["state"] == "completed"
+    runner.validation_error = None
+    restarted = BuyerAgentScheduler(runner, database)
+    verified = restarted.run_due_once(now=pending["validation_next_run_at"])[0]
+    assert verified["state"] == "delivery_verified"
+    assert verified["validation_attempt_count"] == 2
+
+
+def test_rejected_delivery_binding_is_not_a_transport_failure(tmp_path):
+    runner = Runner(
+        [{"next_action": "open_delivery_inbox"}],
+        results=[{"status": "wallet_inbox_item_opened"}],
+    )
+    runner.validation_decision = "rejected_delivery_binding"
+    scheduler = BuyerAgentScheduler(runner, tmp_path / "jobs.sqlite3")
+    scheduler.schedule("bid_1", now=100)
+    scheduler.run_due_once(now=100)
+    scheduler.run_due_once(now=101)
+    scheduler.run_due_once(now=102)
+    rejected = scheduler.run_due_once(now=103)[0]
+    assert rejected["state"] == "delivery_rejected"
+    assert rejected["validation_error"] is None
+    assert rejected["validation_decision"] == "rejected_delivery_binding"
 
 
 def test_changed_completed_journal_fails_anchor_closed(tmp_path):
@@ -384,7 +447,33 @@ def test_existing_anchor_table_gains_publication_receipt_columns(tmp_path):
         "receipt_id",
         "receipt_sha256",
         "published_at",
+        "validation_attempt_count",
+        "validation_next_run_at",
+        "validation_error",
+        "validation_id",
+        "validation_sha256",
+        "validation_decision",
+        "validated_at",
     } <= columns
+
+
+def test_existing_published_anchor_is_enrolled_for_validation(tmp_path):
+    database = tmp_path / "published-anchor.sqlite3"
+    runner = Runner([])
+    scheduler = BuyerAgentScheduler(runner, database)
+    scheduler.schedule("bid_1", now=100)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """INSERT INTO buyer_agent_job_anchors (
+                anchor_id, intent_decision_id, evidence_sha256, state,
+                next_run_at, receipt_id, receipt_sha256, published_at,
+                created_at, updated_at
+            ) VALUES ('bea_legacy', 'bid_1', ?, 'published', 100, ?, ?, 110, 100, 110)""",
+            ("a" * 64, "per_1234567890abcdef12345678", "b" * 64),
+        )
+    restarted = BuyerAgentScheduler(runner, database)
+    anchor = restarted.get_anchor("bid_1")
+    assert anchor["validation_next_run_at"] == 110
 
 
 def test_security_stopped_job_cannot_be_resumed(tmp_path):

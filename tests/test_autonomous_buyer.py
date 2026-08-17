@@ -158,6 +158,25 @@ def test_evidence_publication_is_publicly_verified_without_session_token():
     assert all("Authorization" not in call[2]["headers"] for call in session.calls)
 
 
+def test_delivery_validation_is_publicly_verified_without_session_token():
+    validation = {
+        "status": "protocol_delivery_validation_recorded",
+        "evidence_receipt_id": "per_1234567890abcdef12345678",
+        "validation_id": "pdv_1234567890abcdef12345678",
+        "validation_sha256": "c" * 64,
+        "decision": "verified_delivery_binding",
+        "quality_verified": False,
+        "effect": "evidence_only",
+    }
+    session = Session([Response(validation), Response(validation)])
+    result = runner(session).validate_delivery_evidence(
+        "per_1234567890abcdef12345678"
+    )
+    assert result == validation
+    assert [call[0] for call in session.calls] == ["POST", "GET"]
+    assert all("Authorization" not in call[2]["headers"] for call in session.calls)
+
+
 @pytest.mark.parametrize(
     "change,code",
     [

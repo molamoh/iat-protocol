@@ -165,6 +165,16 @@ class BuyerAgentScheduler:
                     receipt_id TEXT,
                     receipt_sha256 TEXT,
                     published_at INTEGER,
+                    validation_attempt_count INTEGER NOT NULL DEFAULT 0,
+                    validation_max_attempts INTEGER NOT NULL DEFAULT 10,
+                    validation_next_run_at INTEGER,
+                    validation_lease_until INTEGER,
+                    validation_error TEXT,
+                    validation_id TEXT,
+                    validation_sha256 TEXT,
+                    validation_decision TEXT,
+                    validation_reason TEXT,
+                    validated_at INTEGER,
                     last_error TEXT,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
@@ -186,12 +196,32 @@ class BuyerAgentScheduler:
                 "receipt_id": "TEXT",
                 "receipt_sha256": "TEXT",
                 "published_at": "INTEGER",
+                "validation_attempt_count": "INTEGER NOT NULL DEFAULT 0",
+                "validation_max_attempts": "INTEGER NOT NULL DEFAULT 10",
+                "validation_next_run_at": "INTEGER",
+                "validation_lease_until": "INTEGER",
+                "validation_error": "TEXT",
+                "validation_id": "TEXT",
+                "validation_sha256": "TEXT",
+                "validation_decision": "TEXT",
+                "validation_reason": "TEXT",
+                "validated_at": "INTEGER",
             }
             for column, definition in anchor_migrations.items():
                 if column not in anchor_columns:
                     connection.execute(
                         f"ALTER TABLE buyer_agent_job_anchors ADD COLUMN {column} {definition}"
                     )
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET publication_next_run_at = updated_at
+                   WHERE state = 'attested' AND publication_next_run_at IS NULL"""
+            )
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET validation_next_run_at = updated_at
+                   WHERE state = 'published' AND validation_next_run_at IS NULL"""
+            )
             connection.execute(
                 """CREATE INDEX IF NOT EXISTS idx_buyer_agent_job_anchors_due
                    ON buyer_agent_job_anchors(state, next_run_at)"""
@@ -447,8 +477,10 @@ class BuyerAgentScheduler:
         timestamp = int(time.time() if now is None else now)
         results: list[dict[str, Any]] = []
         with self._lock:
-            publication_id = self._claim_publication(timestamp)
-            if publication_id is not None:
+            validation_id = self._claim_validation(timestamp)
+            if validation_id is not None:
+                results.append(self._run_validation(validation_id, timestamp))
+            elif (publication_id := self._claim_publication(timestamp)) is not None:
                 results.append(self._run_publication(publication_id, timestamp))
             elif (anchor_id := self._claim_anchor(timestamp)) is not None:
                 results.append(self._run_anchor(anchor_id, timestamp))
@@ -458,6 +490,139 @@ class BuyerAgentScheduler:
                     break
                 results.append(self._run_claimed(decision_id, timestamp))
         return results
+
+    def _claim_validation(self, now: int) -> str | None:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """SELECT anchor_id, validation_attempt_count,
+                          validation_max_attempts
+                   FROM buyer_agent_job_anchors
+                   WHERE (state = 'published' AND validation_next_run_at <= ?)
+                      OR (state = 'validating' AND validation_lease_until IS NOT NULL
+                          AND validation_lease_until <= ?)
+                   ORDER BY validation_next_run_at, created_at LIMIT 1""",
+                (now, now),
+            ).fetchone()
+            if row is None:
+                return None
+            anchor_id = str(row["anchor_id"])
+            if int(row["validation_attempt_count"]) >= int(
+                row["validation_max_attempts"]
+            ):
+                connection.execute(
+                    """UPDATE buyer_agent_job_anchors
+                       SET state = 'validation_failed', validation_lease_until = NULL,
+                           updated_at = ?, validation_error =
+                           'maximum_validation_attempts_reached'
+                       WHERE anchor_id = ?""",
+                    (now, anchor_id),
+                )
+                return anchor_id
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET state = 'validating', validation_lease_until = ?, updated_at = ?,
+                       validation_attempt_count = validation_attempt_count + 1
+                   WHERE anchor_id = ?""",
+                (now + self.lease_seconds, now, anchor_id),
+            )
+            return anchor_id
+
+    def _run_validation(self, anchor_id: str, now: int) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM buyer_agent_job_anchors WHERE anchor_id = ?",
+                (anchor_id,),
+            ).fetchone()
+        anchor = dict(row)
+        if anchor["state"] == "validation_failed":
+            return {"work_type": "delivery_validation", **anchor}
+        try:
+            validation = self.runner.validate_delivery_evidence(anchor["receipt_id"])
+            decision = str(validation.get("decision") or "")
+            bindings = (
+                str(validation.get("evidence_receipt_id") or "")
+                == str(anchor["receipt_id"])
+                and decision
+                in {"verified_delivery_binding", "rejected_delivery_binding"}
+                and validation.get("effect") == "evidence_only"
+                and validation.get("quality_verified") is False
+                and str(validation.get("validation_id") or "").startswith("pdv_")
+                and len(str(validation.get("validation_sha256") or "")) == 64
+            )
+            if not bindings:
+                raise AutonomousBuyerError("protocol_delivery_validation_mismatch")
+        except AutonomousBuyerError as exc:
+            attempts = int(anchor["validation_attempt_count"])
+            if attempts >= int(anchor["validation_max_attempts"]):
+                return self._finish_validation(
+                    anchor_id, now, state="validation_failed", error=exc.code
+                )
+            delay = min(300, self.default_poll_seconds * (2 ** min(attempts - 1, 5)))
+            return self._finish_validation(
+                anchor_id,
+                now,
+                state="published",
+                error=exc.code,
+                next_run_at=now + delay,
+            )
+        except Exception:
+            return self._finish_validation(
+                anchor_id,
+                now,
+                state="validation_failed",
+                error="unexpected_validation_failure",
+            )
+        final_state = (
+            "delivery_verified"
+            if decision == "verified_delivery_binding"
+            else "delivery_rejected"
+        )
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET state = ?, validation_lease_until = NULL,
+                       validation_error = NULL, validation_id = ?,
+                       validation_sha256 = ?, validation_decision = ?,
+                       validation_reason = ?, validated_at = ?, updated_at = ?
+                   WHERE anchor_id = ?""",
+                (
+                    final_state,
+                    str(validation["validation_id"]),
+                    str(validation["validation_sha256"]),
+                    decision,
+                    str(validation.get("reason") or ""),
+                    int(validation.get("evaluated_at") or now),
+                    now,
+                    anchor_id,
+                ),
+            )
+        return {"work_type": "delivery_validation", **self.get_anchor(
+            str(anchor["intent_decision_id"])
+        )}
+
+    def _finish_validation(
+        self,
+        anchor_id: str,
+        now: int,
+        *,
+        state: str,
+        error: str,
+        next_run_at: int | None = None,
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET state = ?, validation_next_run_at = ?,
+                       validation_lease_until = NULL, validation_error = ?,
+                       updated_at = ? WHERE anchor_id = ?""",
+                (state, next_run_at or now, error, now, anchor_id),
+            )
+            row = connection.execute(
+                "SELECT * FROM buyer_agent_job_anchors WHERE anchor_id = ?",
+                (anchor_id,),
+            ).fetchone()
+        return {"work_type": "delivery_validation", **dict(row)}
 
     def _claim_publication(self, now: int) -> str | None:
         with self._connect() as connection:
@@ -556,11 +721,13 @@ class BuyerAgentScheduler:
                 """UPDATE buyer_agent_job_anchors
                    SET state = 'published', publication_lease_until = NULL,
                        publication_error = NULL, receipt_id = ?, receipt_sha256 = ?,
-                       published_at = ?, updated_at = ? WHERE anchor_id = ?""",
+                       published_at = ?, validation_next_run_at = ?, updated_at = ?
+                   WHERE anchor_id = ?""",
                 (
                     str(receipt["receipt_id"]),
                     str(receipt["receipt_sha256"]),
                     int(receipt.get("received_at") or now),
+                    now,
                     now,
                     anchor_id,
                 ),

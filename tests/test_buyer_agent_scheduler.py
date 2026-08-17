@@ -173,6 +173,80 @@ def test_event_history_is_paginated_and_survives_restart(tmp_path):
     assert [event["event_type"] for event in second_page["events"]] == ["waiting"]
 
 
+def test_event_hash_chain_verifies_and_detects_modified_event(tmp_path):
+    database = tmp_path / "jobs.sqlite3"
+    scheduler = BuyerAgentScheduler(
+        Runner([{"next_action": "wait_for_delivery"}]),
+        database,
+    )
+    scheduler.schedule("bid_1", now=100)
+    scheduler.run_due_once(now=100)
+    verified = scheduler.verify_event_chain("bid_1")
+    assert verified["valid"] is True
+    assert verified["event_count"] == 3
+    assert len(verified["head_hash"]) == 64
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE buyer_agent_job_events SET action = 'tampered' WHERE event_id = 2"
+        )
+    invalid = scheduler.verify_event_chain("bid_1")
+    assert invalid["valid"] is False
+    assert invalid["first_invalid_event_id"] == 2
+
+
+def test_event_hash_chain_detects_deleted_tail(tmp_path):
+    database = tmp_path / "jobs.sqlite3"
+    scheduler = BuyerAgentScheduler(
+        Runner([{"next_action": "wait_for_delivery"}]),
+        database,
+    )
+    scheduler.schedule("bid_1", now=100)
+    scheduler.run_due_once(now=100)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "DELETE FROM buyer_agent_job_events WHERE event_id = (SELECT MAX(event_id) FROM buyer_agent_job_events)"
+        )
+    invalid = scheduler.verify_event_chain("bid_1")
+    assert invalid["valid"] is False
+    assert invalid["first_invalid_event_id"] is None
+
+
+def test_existing_unhashed_journal_is_migrated_once(tmp_path):
+    database = tmp_path / "legacy.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """CREATE TABLE buyer_agent_jobs (
+                intent_decision_id TEXT PRIMARY KEY, state TEXT NOT NULL,
+                next_run_at INTEGER NOT NULL, lease_until INTEGER,
+                attempt_count INTEGER NOT NULL, max_attempts INTEGER NOT NULL,
+                created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                last_action TEXT, last_error TEXT
+            )"""
+        )
+        connection.execute(
+            """CREATE TABLE buyer_agent_job_events (
+                event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                intent_decision_id TEXT NOT NULL, event_type TEXT NOT NULL,
+                state TEXT NOT NULL, action TEXT, error TEXT,
+                created_at INTEGER NOT NULL
+            )"""
+        )
+        connection.execute(
+            """INSERT INTO buyer_agent_jobs VALUES
+               ('bid_legacy', 'scheduled', 100, NULL, 0, 5, 100, 100, NULL, NULL)"""
+        )
+        connection.execute(
+            """INSERT INTO buyer_agent_job_events
+               (intent_decision_id, event_type, state, created_at)
+               VALUES ('bid_legacy', 'scheduled', 'scheduled', 100)"""
+        )
+    scheduler = BuyerAgentScheduler(Runner([]), database)
+    verified = scheduler.verify_event_chain("bid_legacy")
+    assert verified["valid"] is True
+    assert verified["event_count"] == 1
+    assert scheduler.get("bid_legacy")["event_count"] == 1
+
+
 def test_security_stopped_job_cannot_be_resumed(tmp_path):
     runner = Runner([AutonomousBuyerError("transaction_fee_payer_mismatch")])
     scheduler = BuyerAgentScheduler(runner, tmp_path / "jobs.sqlite3")

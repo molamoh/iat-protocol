@@ -256,6 +256,17 @@ def create_buyer_agent_service(
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
 
+    @app.get("/v1/jobs/{intent_decision_id}/events/verify")
+    async def verify_job_events(
+        intent_decision_id: str,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ):
+        authenticate(authorization)
+        try:
+            return require_scheduler().verify_event_chain(intent_decision_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
+
     @app.post("/v1/scheduler/run-once")
     async def run_scheduler_once(
         req: BuyerAgentRunRequest,

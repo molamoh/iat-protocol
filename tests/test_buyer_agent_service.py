@@ -230,3 +230,12 @@ def test_job_api_exposes_metadata_only_event_history(tmp_path):
         "waiting",
     ]
     assert TOKEN not in str(body)
+    verification = call(
+        app,
+        "GET",
+        "/v1/jobs/bid_1/events/verify",
+        headers=headers(),
+    )
+    assert verification.status_code == 200
+    assert verification.json()["valid"] is True
+    assert len(verification.json()["head_hash"]) == 64

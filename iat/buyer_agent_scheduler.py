@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import sqlite3
 import threading
 import time
@@ -34,6 +37,7 @@ ACTIONABLE = {
 }
 
 JOB_STATES = {"scheduled", "running", "waiting", "completed", "stopped"}
+GENESIS_EVENT_HASH = "0" * 64
 
 
 class BuyerAgentScheduler:
@@ -76,10 +80,26 @@ class BuyerAgentScheduler:
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
                     last_action TEXT,
-                    last_error TEXT
+                    last_error TEXT,
+                    event_count INTEGER NOT NULL DEFAULT 0,
+                    event_head_hash TEXT NOT NULL DEFAULT
+                        '0000000000000000000000000000000000000000000000000000000000000000'
                 )
                 """
             )
+            job_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(buyer_agent_jobs)")
+            }
+            if "event_count" not in job_columns:
+                connection.execute(
+                    "ALTER TABLE buyer_agent_jobs ADD COLUMN event_count INTEGER NOT NULL DEFAULT 0"
+                )
+            if "event_head_hash" not in job_columns:
+                connection.execute(
+                    """ALTER TABLE buyer_agent_jobs ADD COLUMN event_head_hash TEXT NOT NULL
+                       DEFAULT '0000000000000000000000000000000000000000000000000000000000000000'"""
+                )
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS buyer_agent_job_events (
@@ -90,6 +110,8 @@ class BuyerAgentScheduler:
                     action TEXT,
                     error TEXT,
                     created_at INTEGER NOT NULL,
+                    previous_hash TEXT,
+                    event_hash TEXT,
                     FOREIGN KEY(intent_decision_id)
                         REFERENCES buyer_agent_jobs(intent_decision_id)
                 )
@@ -99,6 +121,24 @@ class BuyerAgentScheduler:
                 """CREATE INDEX IF NOT EXISTS idx_buyer_agent_job_events_intent
                    ON buyer_agent_job_events(intent_decision_id, event_id)"""
             )
+            columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(buyer_agent_job_events)")
+            }
+            if "previous_hash" not in columns:
+                connection.execute(
+                    "ALTER TABLE buyer_agent_job_events ADD COLUMN previous_hash TEXT"
+                )
+            if "event_hash" not in columns:
+                connection.execute(
+                    "ALTER TABLE buyer_agent_job_events ADD COLUMN event_hash TEXT"
+                )
+            event_count, hashed_count = connection.execute(
+                """SELECT COUNT(*), COUNT(event_hash)
+                   FROM buyer_agent_job_events"""
+            ).fetchone()
+            if int(event_count) and not int(hashed_count):
+                self._backfill_event_hashes(connection)
 
     def schedule(
         self,
@@ -201,7 +241,7 @@ class BuyerAgentScheduler:
             ).fetchone()[0]
             rows = connection.execute(
                 """SELECT event_id, intent_decision_id, event_type, state,
-                          action, error, created_at
+                          action, error, created_at, previous_hash, event_hash
                    FROM buyer_agent_job_events
                    WHERE intent_decision_id = ?
                    ORDER BY event_id ASC LIMIT ? OFFSET ?""",
@@ -215,6 +255,48 @@ class BuyerAgentScheduler:
             "count": len(events),
             "total": int(total),
             "next_offset": offset + len(events) if offset + len(events) < int(total) else None,
+        }
+
+    def verify_event_chain(self, intent_decision_id: str) -> dict[str, Any]:
+        decision_id = str(intent_decision_id)
+        history = self.list_events(decision_id, limit=200, offset=0)
+        with self._connect() as connection:
+            job = connection.execute(
+                """SELECT event_count, event_head_hash FROM buyer_agent_jobs
+                   WHERE intent_decision_id = ?""",
+                (decision_id,),
+            ).fetchone()
+        if history["total"] > 200:
+            with self._connect() as connection:
+                rows = connection.execute(
+                    """SELECT event_id, intent_decision_id, event_type, state,
+                              action, error, created_at, previous_hash, event_hash
+                       FROM buyer_agent_job_events
+                       WHERE intent_decision_id = ? ORDER BY event_id ASC""",
+                    (decision_id,),
+                ).fetchall()
+            events = [dict(row) for row in rows]
+        else:
+            events = history["events"]
+        previous_hash = GENESIS_EVENT_HASH
+        for event in events:
+            expected = self._event_hash(event, previous_hash)
+            if not hmac.compare_digest(str(event.get("previous_hash") or ""), previous_hash):
+                return self._verification_result(decision_id, events, event["event_id"])
+            if not hmac.compare_digest(str(event.get("event_hash") or ""), expected):
+                return self._verification_result(decision_id, events, event["event_id"])
+            previous_hash = expected
+        if int(job["event_count"]) != len(events):
+            return self._verification_result(decision_id, events, None)
+        if not hmac.compare_digest(str(job["event_head_hash"]), previous_hash):
+            return self._verification_result(decision_id, events, None)
+        return {
+            "status": "buyer_agent_event_chain_verified",
+            "intent_decision_id": decision_id,
+            "valid": True,
+            "event_count": len(events),
+            "head_hash": previous_hash,
+            "first_invalid_event_id": None,
         }
 
     def resume(
@@ -480,12 +562,113 @@ class BuyerAgentScheduler:
         action: str | None = None,
         error: str | None = None,
     ) -> None:
+        row = connection.execute(
+            """SELECT event_hash FROM buyer_agent_job_events
+               WHERE intent_decision_id = ? ORDER BY event_id DESC LIMIT 1""",
+            (intent_decision_id,),
+        ).fetchone()
+        previous_hash = str(row["event_hash"]) if row is not None else GENESIS_EVENT_HASH
+        if len(previous_hash) != 64:
+            raise RuntimeError("buyer_agent_event_chain_unavailable")
+        event = {
+            "intent_decision_id": intent_decision_id,
+            "event_type": event_type,
+            "state": state,
+            "action": action,
+            "error": error,
+            "created_at": created_at,
+        }
+        event_hash = BuyerAgentScheduler._event_hash(event, previous_hash)
         connection.execute(
             """INSERT INTO buyer_agent_job_events (
-                   intent_decision_id, event_type, state, action, error, created_at
-               ) VALUES (?, ?, ?, ?, ?, ?)""",
-            (intent_decision_id, event_type, state, action, error, created_at),
+                   intent_decision_id, event_type, state, action, error, created_at,
+                   previous_hash, event_hash
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                intent_decision_id,
+                event_type,
+                state,
+                action,
+                error,
+                created_at,
+                previous_hash,
+                event_hash,
+            ),
         )
+        connection.execute(
+            """UPDATE buyer_agent_jobs
+               SET event_count = event_count + 1, event_head_hash = ?
+               WHERE intent_decision_id = ?""",
+            (event_hash, intent_decision_id),
+        )
+
+    @staticmethod
+    def _event_hash(event: dict[str, Any], previous_hash: str) -> str:
+        canonical = json.dumps(
+            {
+                "version": 1,
+                "intent_decision_id": str(event["intent_decision_id"]),
+                "event_type": str(event["event_type"]),
+                "state": str(event["state"]),
+                "action": event.get("action"),
+                "error": event.get("error"),
+                "created_at": int(event["created_at"]),
+                "previous_hash": previous_hash,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(canonical).hexdigest()
+
+    @classmethod
+    def _backfill_event_hashes(
+        cls,
+        connection: sqlite3.Connection,
+    ) -> None:
+        rows = connection.execute(
+            """SELECT event_id, intent_decision_id, event_type, state,
+                      action, error, created_at
+               FROM buyer_agent_job_events
+               ORDER BY intent_decision_id ASC, event_id ASC"""
+        ).fetchall()
+        previous_by_intent: dict[str, str] = {}
+        count_by_intent: dict[str, int] = {}
+        for row in rows:
+            event = dict(row)
+            decision_id = str(event["intent_decision_id"])
+            previous_hash = previous_by_intent.get(decision_id, GENESIS_EVENT_HASH)
+            event_hash = cls._event_hash(event, previous_hash)
+            connection.execute(
+                """UPDATE buyer_agent_job_events
+                   SET previous_hash = ?, event_hash = ? WHERE event_id = ?""",
+                (previous_hash, event_hash, event["event_id"]),
+            )
+            previous_by_intent[decision_id] = event_hash
+            count_by_intent[decision_id] = count_by_intent.get(decision_id, 0) + 1
+        for decision_id, event_hash in previous_by_intent.items():
+            connection.execute(
+                """UPDATE buyer_agent_jobs
+                   SET event_count = ?, event_head_hash = ?
+                   WHERE intent_decision_id = ?""",
+                (count_by_intent[decision_id], event_hash, decision_id),
+            )
+
+    @staticmethod
+    def _verification_result(
+        intent_decision_id: str,
+        events: list[dict[str, Any]],
+        invalid_event_id: int | None,
+    ) -> dict[str, Any]:
+        return {
+            "status": "buyer_agent_event_chain_invalid",
+            "intent_decision_id": intent_decision_id,
+            "valid": False,
+            "event_count": len(events),
+            "head_hash": None,
+            "first_invalid_event_id": (
+                int(invalid_event_id) if invalid_event_id is not None else None
+            ),
+        }
 
     @staticmethod
     def _present(job: dict[str, Any]) -> dict[str, Any]:

@@ -433,6 +433,18 @@ transactions, signatures, prompts and delivered content. This local audit
 trail is a precursor to protocol-level signed execution evidence; it is not
 itself a settlement proof.
 
+Every new event carries `previous_hash` and `event_hash`; the job record keeps
+the expected event count and chain head. `GET /v1/jobs/{id}/events/verify`
+recomputes the canonical SHA-256 chain and detects modified events, broken
+links, deleted tails and a mismatched head. Existing unhashed local journals
+are deterministically chained during the one-time SQLite migration.
+
+This mechanism is tamper-evident, not tamper-proof: an operator with direct
+write access to the SQLite file could replace both the journal and its local
+anchor. Protocol-level evidence will require an independently signed or
+externally anchored head hash before it can influence settlement or
+reputation.
+
 ## Production boundary
 
 The production buyer flow remains:

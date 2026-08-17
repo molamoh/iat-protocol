@@ -209,6 +209,17 @@ def create_buyer_agent_service(
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
 
+    @app.get("/v1/jobs/{intent_decision_id}/anchor")
+    async def job_anchor(
+        intent_decision_id: str,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ):
+        authenticate(authorization)
+        try:
+            return require_scheduler().get_anchor(intent_decision_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc.args[0])) from exc
+
     @app.get("/v1/jobs")
     async def jobs(
         state: str | None = Query(default=None),

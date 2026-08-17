@@ -239,3 +239,15 @@ def test_job_api_exposes_metadata_only_event_history(tmp_path):
     assert verification.status_code == 200
     assert verification.json()["valid"] is True
     assert len(verification.json()["head_hash"]) == 64
+
+
+def test_job_anchor_api_is_authenticated_and_reports_missing_anchor(tmp_path):
+    runner = Runner()
+    scheduler = BuyerAgentScheduler(runner, tmp_path / "jobs.sqlite3")
+    scheduler.schedule("bid_1")
+    app = create_buyer_agent_service(runner, service_token=TOKEN, scheduler=scheduler)
+    unauthorized = call(app, "GET", "/v1/jobs/bid_1/anchor")
+    missing = call(app, "GET", "/v1/jobs/bid_1/anchor", headers=headers())
+    assert unauthorized.status_code == 401
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "buyer_agent_anchor_not_found"

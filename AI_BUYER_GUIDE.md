@@ -465,9 +465,18 @@ observation, verifies the backend's Ed25519 signature independently and caches
 identical requests idempotently. `LocalWalletRPCAdapter.attest_evidence()`
 reconstructs and verifies the message again at the client boundary.
 `SolanaRPCWalletBackend.attest_evidence()` makes no Solana RPC call because
-this is an off-chain identity proof, not a transfer. The remaining integration
-step is to anchor completed journal heads automatically in the scheduler
-database.
+this is an off-chain identity proof, not a transfer.
+
+When a scheduler job completes, its final journal head is now queued for wallet
+attestation in the same SQLite transaction. Attestation runs as separate work
+in a later scheduler cycle, so delivery completion never depends on signer
+availability. Transient adapter errors retry with bounded exponential backoff
+and a ten-attempt ceiling; a changed or invalid journal fails closed. Only the
+public wallet, signature, digest and observation time are persisted. Inspect
+the resulting `pending`, `attesting`, `attested` or `failed` record with
+`GET /v1/jobs/{id}/anchor`. This signature makes later database alteration
+detectable; publication to an independent protocol evidence store remains a
+separate future layer.
 
 ## Production boundary
 

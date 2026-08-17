@@ -11,6 +11,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+from solders.pubkey import Pubkey
+from solders.signature import Signature
+
+from iat.attested_wallet_signer import build_evidence_message
 from iat.autonomous_buyer import AutonomousBuyerError, AutonomousBuyerRunner
 from iat.wallet_adapters import WalletAdapterError
 
@@ -139,6 +143,32 @@ class BuyerAgentScheduler:
             ).fetchone()
             if int(event_count) and not int(hashed_count):
                 self._backfill_event_hashes(connection)
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS buyer_agent_job_anchors (
+                    anchor_id TEXT PRIMARY KEY,
+                    intent_decision_id TEXT NOT NULL UNIQUE,
+                    evidence_sha256 TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    max_attempts INTEGER NOT NULL DEFAULT 10,
+                    next_run_at INTEGER NOT NULL,
+                    lease_until INTEGER,
+                    observed_at INTEGER,
+                    wallet_address TEXT,
+                    signature TEXT,
+                    last_error TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    FOREIGN KEY(intent_decision_id)
+                        REFERENCES buyer_agent_jobs(intent_decision_id)
+                )
+                """
+            )
+            connection.execute(
+                """CREATE INDEX IF NOT EXISTS idx_buyer_agent_job_anchors_due
+                   ON buyer_agent_job_anchors(state, next_run_at)"""
+            )
 
     def schedule(
         self,
@@ -299,6 +329,17 @@ class BuyerAgentScheduler:
             "first_invalid_event_id": None,
         }
 
+    def get_anchor(self, intent_decision_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                """SELECT * FROM buyer_agent_job_anchors
+                   WHERE intent_decision_id = ?""",
+                (str(intent_decision_id),),
+            ).fetchone()
+        if row is None:
+            raise KeyError("buyer_agent_anchor_not_found")
+        return dict(row)
+
     def resume(
         self,
         intent_decision_id: str,
@@ -356,12 +397,20 @@ class BuyerAgentScheduler:
                 """SELECT MIN(next_run_at) FROM buyer_agent_jobs
                    WHERE state IN ('scheduled', 'waiting')"""
             ).fetchone()[0]
+            anchor_rows = connection.execute(
+                """SELECT state, COUNT(*) AS count
+                   FROM buyer_agent_job_anchors GROUP BY state"""
+            ).fetchall()
         states = {str(row["state"]): int(row["count"]) for row in rows}
+        anchor_states = {
+            str(row["state"]): int(row["count"]) for row in anchor_rows
+        }
         return {
             "status": "ready",
             "due_jobs": int(due),
             "next_due_at": int(next_due) if next_due is not None else None,
             "states": states,
+            "anchor_states": anchor_states,
             "total_jobs": sum(states.values()),
         }
 
@@ -371,12 +420,151 @@ class BuyerAgentScheduler:
         timestamp = int(time.time() if now is None else now)
         results: list[dict[str, Any]] = []
         with self._lock:
-            for _ in range(limit):
+            anchor_id = self._claim_anchor(timestamp)
+            if anchor_id is not None:
+                results.append(self._run_anchor(anchor_id, timestamp))
+            for _ in range(limit - len(results)):
                 decision_id = self._claim_one(timestamp)
                 if decision_id is None:
                     break
                 results.append(self._run_claimed(decision_id, timestamp))
         return results
+
+    def _claim_anchor(self, now: int) -> str | None:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """SELECT anchor_id, attempt_count, max_attempts
+                   FROM buyer_agent_job_anchors
+                   WHERE (state = 'pending' AND next_run_at <= ?)
+                      OR (state = 'attesting' AND lease_until IS NOT NULL AND lease_until <= ?)
+                   ORDER BY next_run_at, created_at LIMIT 1""",
+                (now, now),
+            ).fetchone()
+            if row is None:
+                return None
+            anchor_id = str(row["anchor_id"])
+            if int(row["attempt_count"]) >= int(row["max_attempts"]):
+                connection.execute(
+                    """UPDATE buyer_agent_job_anchors
+                       SET state = 'failed', lease_until = NULL, updated_at = ?,
+                           last_error = 'maximum_attestation_attempts_reached'
+                       WHERE anchor_id = ?""",
+                    (now, anchor_id),
+                )
+                return anchor_id
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET state = 'attesting', lease_until = ?, updated_at = ?,
+                       attempt_count = attempt_count + 1
+                   WHERE anchor_id = ?""",
+                (now + self.lease_seconds, now, anchor_id),
+            )
+            return anchor_id
+
+    def _run_anchor(self, anchor_id: str, now: int) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM buyer_agent_job_anchors WHERE anchor_id = ?",
+                (anchor_id,),
+            ).fetchone()
+        anchor = dict(row)
+        if anchor["state"] == "failed":
+            return {"work_type": "evidence_anchor", **anchor}
+        decision_id = str(anchor["intent_decision_id"])
+        verification = self.verify_event_chain(decision_id)
+        if (
+            verification.get("valid") is not True
+            or not hmac.compare_digest(
+                str(verification.get("head_hash") or ""),
+                str(anchor["evidence_sha256"]),
+            )
+        ):
+            return self._finish_anchor(
+                anchor_id,
+                now,
+                state="failed",
+                error="journal_chain_verification_failed",
+            )
+        try:
+            result = self.runner.wallet.attest_evidence(
+                evidence_type="buyer_job_journal",
+                evidence_id=decision_id,
+                evidence_sha256=str(anchor["evidence_sha256"]),
+                observed_at=now,
+            )
+            signature = Signature.from_string(str(result.get("signature") or ""))
+            wallet_address = str(result.get("wallet_address") or "")
+            message = build_evidence_message(
+                wallet_address,
+                "buyer_job_journal",
+                decision_id,
+                str(anchor["evidence_sha256"]),
+                now,
+            )
+            bindings = (
+                hmac.compare_digest(wallet_address, str(self.runner.wallet.wallet_address))
+                and hmac.compare_digest(str(result.get("evidence_id") or ""), decision_id)
+                and hmac.compare_digest(
+                    str(result.get("evidence_sha256") or ""),
+                    str(anchor["evidence_sha256"]),
+                )
+                and str(result.get("observed_at") or "") == str(now)
+                and signature.verify(Pubkey.from_string(wallet_address), message)
+            )
+            if not bindings:
+                raise WalletAdapterError("wallet_evidence_binding_mismatch")
+        except (WalletAdapterError, ValueError) as exc:
+            code = str(getattr(exc, "code", "wallet_evidence_invalid"))
+            attempts = int(anchor["attempt_count"])
+            if attempts >= int(anchor["max_attempts"]):
+                return self._finish_anchor(anchor_id, now, state="failed", error=code)
+            delay = min(300, self.default_poll_seconds * (2 ** min(attempts - 1, 5)))
+            return self._finish_anchor(
+                anchor_id,
+                now,
+                state="pending",
+                error=code,
+                next_run_at=now + delay,
+            )
+        except Exception:
+            return self._finish_anchor(
+                anchor_id,
+                now,
+                state="failed",
+                error="unexpected_attestation_failure",
+            )
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET state = 'attested', lease_until = NULL, observed_at = ?,
+                       wallet_address = ?, signature = ?, last_error = NULL,
+                       updated_at = ? WHERE anchor_id = ?""",
+                (now, wallet_address, str(signature), now, anchor_id),
+            )
+        return {"work_type": "evidence_anchor", **self.get_anchor(decision_id)}
+
+    def _finish_anchor(
+        self,
+        anchor_id: str,
+        now: int,
+        *,
+        state: str,
+        error: str,
+        next_run_at: int | None = None,
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET state = ?, next_run_at = ?, lease_until = NULL,
+                       last_error = ?, updated_at = ? WHERE anchor_id = ?""",
+                (state, next_run_at or now, error, now, anchor_id),
+            )
+            row = connection.execute(
+                "SELECT * FROM buyer_agent_job_anchors WHERE anchor_id = ?",
+                (anchor_id,),
+            ).fetchone()
+        return {"work_type": "evidence_anchor", **dict(row)}
 
     def _claim_one(self, now: int) -> str | None:
         with self._connect() as connection:
@@ -549,6 +737,23 @@ class BuyerAgentScheduler:
                 error=error,
                 created_at=now,
             )
+            if state == "completed":
+                head = connection.execute(
+                    """SELECT event_head_hash FROM buyer_agent_jobs
+                       WHERE intent_decision_id = ?""",
+                    (decision_id,),
+                ).fetchone()[0]
+                anchor_id = "bea_" + hashlib.sha256(
+                    f"{decision_id}:{head}".encode("utf-8")
+                ).hexdigest()[:24]
+                connection.execute(
+                    """INSERT INTO buyer_agent_job_anchors (
+                           anchor_id, intent_decision_id, evidence_sha256,
+                           state, next_run_at, created_at, updated_at
+                       ) VALUES (?, ?, ?, 'pending', ?, ?, ?)
+                       ON CONFLICT(intent_decision_id) DO NOTHING""",
+                    (anchor_id, decision_id, head, now, now, now),
+                )
         return self.get(decision_id)
 
     @staticmethod

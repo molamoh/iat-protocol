@@ -1,7 +1,30 @@
 import sqlite3
 
+from solders.keypair import Keypair
+
+from iat.attested_wallet_signer import build_evidence_message
 from iat.autonomous_buyer import AutonomousBuyerError
 from iat.buyer_agent_scheduler import BuyerAgentScheduler
+from iat.wallet_adapters import WalletAdapterError
+
+
+class EvidenceWallet:
+    def __init__(self):
+        self.keypair = Keypair()
+        self.wallet_address = str(self.keypair.pubkey())
+        self.calls = []
+        self.error = None
+
+    def attest_evidence(self, **evidence):
+        self.calls.append(evidence)
+        if self.error is not None:
+            raise self.error
+        message = build_evidence_message(self.wallet_address, **evidence)
+        return {
+            **evidence,
+            "wallet_address": self.wallet_address,
+            "signature": str(self.keypair.sign_message(message)),
+        }
 
 
 class Runner:
@@ -10,6 +33,7 @@ class Runner:
         self.steps = list(steps or [])
         self.results = list(results or [])
         self.calls = []
+        self.wallet = EvidenceWallet()
 
     def lifecycle(self, decision_id):
         self.calls.append(("lifecycle", decision_id))
@@ -54,6 +78,7 @@ def test_summary_exposes_counts_without_job_contents(tmp_path):
         "due_jobs": 1,
         "next_due_at": 100,
         "states": {"scheduled": 2},
+        "anchor_states": {},
         "total_jobs": 2,
     }
 
@@ -101,9 +126,53 @@ def test_ready_delivery_is_opened_once_and_job_completes(tmp_path):
     scheduler.schedule("bid_1", now=100)
     job = scheduler.run_due_once(now=100)[0]
     assert job["state"] == "completed"
-    assert scheduler.run_due_once(now=1_000) == []
+    assert runner.wallet.calls == []
+    anchor = scheduler.run_due_once(now=1_000)[0]
+    assert anchor["work_type"] == "evidence_anchor"
+    assert anchor["state"] == "attested"
+    assert scheduler.run_due_once(now=1_001) == []
     assert [call[0] for call in runner.calls] == ["lifecycle", "result"]
     assert scheduler.list_events("bid_1")["events"][-1]["event_type"] == "completed"
+
+
+def test_completed_journal_anchor_retries_without_reopening_job(tmp_path):
+    database = tmp_path / "jobs.sqlite3"
+    runner = Runner(
+        [{"next_action": "open_delivery_inbox"}],
+        results=[{"status": "wallet_inbox_item_opened"}],
+    )
+    scheduler = BuyerAgentScheduler(runner, database)
+    scheduler.schedule("bid_1", now=100)
+    assert scheduler.run_due_once(now=100)[0]["state"] == "completed"
+    runner.wallet.error = WalletAdapterError("wallet_provider_unavailable")
+    pending = scheduler.run_due_once(now=101)[0]
+    assert pending["state"] == "pending"
+    assert pending["last_error"] == "wallet_provider_unavailable"
+    assert scheduler.get("bid_1")["state"] == "completed"
+    runner.wallet.error = None
+    restarted = BuyerAgentScheduler(runner, database)
+    attested = restarted.run_due_once(now=pending["next_run_at"])[0]
+    assert attested["state"] == "attested"
+    assert attested["signature"]
+
+
+def test_changed_completed_journal_fails_anchor_closed(tmp_path):
+    database = tmp_path / "jobs.sqlite3"
+    runner = Runner(
+        [{"next_action": "open_delivery_inbox"}],
+        results=[{"status": "wallet_inbox_item_opened"}],
+    )
+    scheduler = BuyerAgentScheduler(runner, database)
+    scheduler.schedule("bid_1", now=100)
+    scheduler.run_due_once(now=100)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE buyer_agent_job_events SET action = 'tampered' WHERE intent_decision_id = 'bid_1'"
+        )
+    failed = scheduler.run_due_once(now=101)[0]
+    assert failed["state"] == "failed"
+    assert failed["last_error"] == "journal_chain_verification_failed"
+    assert runner.wallet.calls == []
 
 
 def test_security_error_stops_without_retry(tmp_path):

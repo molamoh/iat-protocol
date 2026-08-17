@@ -39,6 +39,10 @@ class Signer:
         signed = VersionedTransaction.populate(message, [signature])
         return base64.b64encode(bytes(signed)).decode()
 
+    def sign_evidence(self, **kwargs):
+        self.calls.append(("evidence", dict(kwargs)))
+        return {"wallet_address": WALLET, **kwargs, "signature": str(Signature.default())}
+
 
 class Approval:
     def __init__(self, approved=True):
@@ -150,3 +154,19 @@ def test_backend_rejects_non_devnet_and_insecure_remote_rpc():
         SolanaRPCWalletBackend(
             signer=Signer(), approval=Approval(), rpc_url="http://rpc.example"
         )
+
+
+def test_backend_delegates_evidence_without_approval_or_rpc():
+    signer = Signer()
+    approval = Approval()
+    session = Session()
+    result = backend(signer=signer, approval=approval, session=session).attest_evidence(
+        evidence_type="buyer_job_journal",
+        evidence_id="bid_123",
+        evidence_sha256="ab" * 32,
+        observed_at=1_787_000_000,
+    )
+    assert result["evidence_id"] == "bid_123"
+    assert [call[0] for call in signer.calls] == ["evidence"]
+    assert approval.calls == []
+    assert session.calls == []

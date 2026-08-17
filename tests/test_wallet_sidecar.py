@@ -9,6 +9,7 @@ from solders.message import Message
 from solders.signature import Signature
 from solders.transaction import VersionedTransaction
 
+from iat.attested_wallet_signer import build_evidence_message
 from iat.wallet_sidecar import create_wallet_sidecar_app
 
 
@@ -26,6 +27,17 @@ class Backend:
     def approve_sign_and_broadcast(self, transaction_base64, review):
         self.calls.append((transaction_base64, dict(review)))
         return str(Signature.default())
+
+    def attest_evidence(self, **kwargs):
+        self.calls.append(("evidence", dict(kwargs)))
+        message = build_evidence_message(
+            WALLET,
+            kwargs["evidence_type"],
+            kwargs["evidence_id"],
+            kwargs["evidence_sha256"],
+            kwargs["observed_at"],
+        )
+        return {"wallet_address": WALLET, **kwargs, "signature": str(KEYPAIR.sign_message(message))}
 
 
 def transaction(fee_payer=KEYPAIR.pubkey()):
@@ -153,6 +165,69 @@ def test_sidecar_health_discloses_only_public_configuration():
         "status": "ready",
         "wallet_address": WALLET,
         "allowed_clusters": ["solana:devnet"],
+        "allowed_evidence_types": ["buyer_job_journal"],
         "key_custody": "external_backend",
     }
     assert TOKEN not in str(body)
+
+
+def test_sidecar_attests_evidence_idempotently_without_transaction():
+    api, backend = client()
+    payload = {
+        "operation": "attest_iat_evidence",
+        "wallet_address": WALLET,
+        "evidence_type": "buyer_job_journal",
+        "evidence_id": "bid_123",
+        "evidence_sha256": "ab" * 32,
+        "observed_at": int(time.time()),
+    }
+    first = call(
+        api,
+        "POST",
+        "/v1/wallet/attest-evidence",
+        json=payload,
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+    second = call(
+        api,
+        "POST",
+        "/v1/wallet/attest-evidence",
+        json=payload,
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+    assert first.status_code == second.status_code == 200
+    assert first.json()["idempotent"] is False
+    assert second.json()["idempotent"] is True
+    assert [call[0] for call in backend.calls] == ["evidence"]
+    assert "transaction" not in str(payload)
+
+
+def test_sidecar_rejects_stale_or_wrong_wallet_evidence_before_backend():
+    api, backend = client()
+    payload = {
+        "operation": "attest_iat_evidence",
+        "wallet_address": str(Keypair().pubkey()),
+        "evidence_type": "buyer_job_journal",
+        "evidence_id": "bid_123",
+        "evidence_sha256": "ab" * 32,
+        "observed_at": int(time.time()) - 1_000,
+    }
+    response = call(
+        api,
+        "POST",
+        "/v1/wallet/attest-evidence",
+        json=payload,
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+    assert response.status_code == 409
+    assert backend.calls == []
+    payload["wallet_address"] = WALLET
+    response = call(
+        api,
+        "POST",
+        "/v1/wallet/attest-evidence",
+        json=payload,
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+    assert response.status_code == 422
+    assert backend.calls == []

@@ -457,8 +457,17 @@ accepted.
 This operation signs no transaction, names no recipient or amount, consumes no
 blockhash and broadcasts nothing to Solana. The signer token remains only in
 the HTTPS authorization header. Arbitrary-message signing is deliberately not
-supported. The next integration step is to expose this restricted operation
-through the local wallet sidecar and anchor completed journal heads.
+supported.
+
+The local sidecar now exposes it at `POST /v1/wallet/attest-evidence`. It
+authenticates its caller, requires the configured wallet, accepts only a recent
+observation, verifies the backend's Ed25519 signature independently and caches
+identical requests idempotently. `LocalWalletRPCAdapter.attest_evidence()`
+reconstructs and verifies the message again at the client boundary.
+`SolanaRPCWalletBackend.attest_evidence()` makes no Solana RPC call because
+this is an off-chain identity proof, not a transfer. The remaining integration
+step is to anchor completed journal heads automatically in the scheduler
+database.
 
 ## Production boundary
 

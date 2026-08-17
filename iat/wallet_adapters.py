@@ -11,6 +11,8 @@ import requests
 from solders.pubkey import Pubkey
 from solders.signature import Signature
 
+from iat.attested_wallet_signer import build_evidence_message
+
 
 class WalletAdapterError(RuntimeError):
     def __init__(self, code: str, *, details: Any = None):
@@ -116,3 +118,83 @@ class LocalWalletRPCAdapter:
         except Exception as exc:
             raise WalletAdapterError("wallet_sidecar_signature_invalid") from exc
         return signature
+
+    def attest_evidence(
+        self,
+        *,
+        evidence_type: str,
+        evidence_id: str,
+        evidence_sha256: str,
+        observed_at: int,
+    ) -> dict[str, Any]:
+        message = build_evidence_message(
+            self._wallet_address,
+            evidence_type,
+            evidence_id,
+            evidence_sha256,
+            observed_at,
+        )
+        try:
+            response = self.session.post(
+                self.endpoint + "/v1/wallet/attest-evidence",
+                json={
+                    "operation": "attest_iat_evidence",
+                    "wallet_address": self._wallet_address,
+                    "evidence_type": evidence_type,
+                    "evidence_id": evidence_id,
+                    "evidence_sha256": evidence_sha256,
+                    "observed_at": int(observed_at),
+                },
+                headers={
+                    "Authorization": f"Bearer {self._auth_token}",
+                    "Accept": "application/json",
+                    "User-Agent": "iat-wallet-adapter/1.0",
+                },
+                timeout=self.timeout_seconds,
+                allow_redirects=False,
+            )
+        except requests.RequestException as exc:
+            raise WalletAdapterError("wallet_sidecar_unavailable") from exc
+        if 300 <= int(response.status_code) < 400:
+            raise WalletAdapterError("wallet_sidecar_redirect_rejected")
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise WalletAdapterError("wallet_sidecar_response_invalid") from exc
+        if not 200 <= int(response.status_code) < 300:
+            raise WalletAdapterError(
+                "wallet_sidecar_rejected",
+                details={"status_code": response.status_code, "response": body},
+            )
+        bindings = (
+            isinstance(body, dict)
+            and body.get("approved") is True
+            and hmac.compare_digest(
+                str(body.get("wallet_address") or ""), self._wallet_address
+            )
+            and hmac.compare_digest(str(body.get("evidence_type") or ""), evidence_type)
+            and hmac.compare_digest(str(body.get("evidence_id") or ""), evidence_id)
+            and hmac.compare_digest(
+                str(body.get("evidence_sha256") or ""), evidence_sha256
+            )
+            and str(body.get("observed_at") or "") == str(int(observed_at))
+        )
+        if not bindings:
+            raise WalletAdapterError("wallet_evidence_binding_mismatch")
+        try:
+            signature = Signature.from_string(str(body.get("signature") or ""))
+            wallet = Pubkey.from_string(self._wallet_address)
+        except Exception as exc:
+            raise WalletAdapterError("wallet_evidence_signature_invalid") from exc
+        if not signature.verify(wallet, message):
+            raise WalletAdapterError("wallet_evidence_signature_invalid")
+        return {
+            "status": "wallet_evidence_attested",
+            "wallet_address": self._wallet_address,
+            "evidence_type": evidence_type,
+            "evidence_id": evidence_id,
+            "evidence_sha256": evidence_sha256,
+            "observed_at": int(observed_at),
+            "signature": str(signature),
+            "idempotent": body.get("idempotent") is True,
+        }

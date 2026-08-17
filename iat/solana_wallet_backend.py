@@ -33,6 +33,15 @@ class DetachedTransactionSigner(Protocol):
         review: Mapping[str, Any],
     ) -> str: ...
 
+    def sign_evidence(
+        self,
+        *,
+        evidence_type: str,
+        evidence_id: str,
+        evidence_sha256: str,
+        observed_at: int,
+    ) -> Mapping[str, Any]: ...
+
 
 class TransactionReviewApproval(Protocol):
     def approve(self, review: Mapping[str, Any]) -> bool: ...
@@ -150,6 +159,22 @@ class SolanaRPCWalletBackend:
         if not hmac.compare_digest(rpc_signature, str(signed.signatures[0])):
             raise SolanaWalletBackendError("solana_rpc_signature_mismatch")
         return rpc_signature
+
+    def attest_evidence(
+        self,
+        *,
+        evidence_type: str,
+        evidence_id: str,
+        evidence_sha256: str,
+        observed_at: int,
+    ) -> Mapping[str, Any]:
+        """Delegate bounded evidence signing without RPC or transaction handling."""
+        return self.signer.sign_evidence(
+            evidence_type=evidence_type,
+            evidence_id=evidence_id,
+            evidence_sha256=evidence_sha256,
+            observed_at=observed_at,
+        )
 
     @staticmethod
     def _decode_transaction(value: str, code: str) -> VersionedTransaction:

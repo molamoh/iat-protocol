@@ -23,6 +23,40 @@ EVIDENCE_DOMAIN = b"IAT_AGENT_EVIDENCE_ATTESTATION_V1"
 EVIDENCE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]{3,160}$")
 
 
+def build_evidence_message(
+    wallet_address: str,
+    evidence_type: str,
+    evidence_id: str,
+    evidence_sha256: str,
+    observed_at: int,
+) -> bytes:
+    kind = str(evidence_type)
+    identifier = str(evidence_id)
+    digest = str(evidence_sha256).lower()
+    if kind != "buyer_job_journal":
+        raise ValueError("evidence_type_not_allowed")
+    if not EVIDENCE_ID_PATTERN.fullmatch(identifier):
+        raise ValueError("evidence_id_invalid")
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise ValueError("evidence_sha256_invalid")
+    try:
+        timestamp = int(observed_at)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("evidence_observed_at_invalid") from exc
+    if timestamp < 1:
+        raise ValueError("evidence_observed_at_invalid")
+    return b"\n".join(
+        [
+            EVIDENCE_DOMAIN,
+            str(wallet_address).encode("ascii"),
+            kind.encode("ascii"),
+            identifier.encode("ascii"),
+            digest.encode("ascii"),
+            str(timestamp).encode("ascii"),
+        ]
+    )
+
+
 class AttestedWalletSignerError(RuntimeError):
     def __init__(self, code: str, *, details: Any = None):
         super().__init__(code)
@@ -174,27 +208,16 @@ class AttestedHTTPSDetachedSigner:
         kind = str(evidence_type)
         identifier = str(evidence_id)
         digest = str(evidence_sha256).lower()
-        if kind != "buyer_job_journal":
-            raise ValueError("evidence_type_not_allowed")
-        if not EVIDENCE_ID_PATTERN.fullmatch(identifier):
-            raise ValueError("evidence_id_invalid")
-        if not re.fullmatch(r"[0-9a-f]{64}", digest):
-            raise ValueError("evidence_sha256_invalid")
         try:
             timestamp = int(observed_at)
         except (TypeError, ValueError) as exc:
             raise ValueError("evidence_observed_at_invalid") from exc
-        if timestamp < 1:
-            raise ValueError("evidence_observed_at_invalid")
-        message = b"\n".join(
-            [
-                EVIDENCE_DOMAIN,
-                self.wallet_address.encode("ascii"),
-                kind.encode("ascii"),
-                identifier.encode("ascii"),
-                digest.encode("ascii"),
-                str(timestamp).encode("ascii"),
-            ]
+        message = build_evidence_message(
+            self.wallet_address,
+            kind,
+            identifier,
+            digest,
+            timestamp,
         )
         body = self._post(
             "/v1/evidence/sign",

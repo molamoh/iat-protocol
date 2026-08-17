@@ -2,6 +2,7 @@ import pytest
 from solders.keypair import Keypair
 from solders.signature import Signature
 
+from iat.attested_wallet_signer import build_evidence_message
 from iat.wallet_adapters import LocalWalletRPCAdapter, WalletAdapterError
 
 
@@ -127,3 +128,43 @@ def test_wallet_adapter_fails_closed_on_untrusted_sidecar_response(response, cod
         wallet.sign_and_broadcast(
             "transaction-base64", {"cluster": "solana:devnet", "fee_payer": WALLET}
         )
+
+
+def test_wallet_adapter_verifies_bound_evidence_signature():
+    observed_at = 1_787_000_000
+    digest = "ab" * 32
+    message = build_evidence_message(
+        WALLET, "buyer_job_journal", "bid_123", digest, observed_at
+    )
+    session = Session(
+        Response(
+            {
+                "approved": True,
+                "wallet_address": WALLET,
+                "evidence_type": "buyer_job_journal",
+                "evidence_id": "bid_123",
+                "evidence_sha256": digest,
+                "observed_at": observed_at,
+                "signature": str(
+                    Keypair.from_seed(bytes([9]) * 32).sign_message(message)
+                ),
+                "idempotent": False,
+            }
+        )
+    )
+    wallet = LocalWalletRPCAdapter(
+        "http://127.0.0.1:8787",
+        wallet_address=WALLET,
+        auth_token=TOKEN,
+        session=session,
+    )
+    result = wallet.attest_evidence(
+        evidence_type="buyer_job_journal",
+        evidence_id="bid_123",
+        evidence_sha256=digest,
+        observed_at=observed_at,
+    )
+    assert result["status"] == "wallet_evidence_attested"
+    assert session.calls[0][0].endswith("/v1/wallet/attest-evidence")
+    assert "transaction" not in str(session.calls[0][1]["json"])
+    assert TOKEN not in str(session.calls[0][1]["json"])

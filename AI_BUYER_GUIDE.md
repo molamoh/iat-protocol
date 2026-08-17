@@ -583,6 +583,26 @@ enrolled during migration. This automation still performs no escrow release,
 refund, transaction signing or broadcast; governed execution remains a
 separate next step.
 
+### Read-only settlement execution plan
+
+`POST /protocol/v1/settlement-execution-plans/{eligibility_id}` turns only an
+`eligible_for_governed_release` record into an immutable preparation artifact.
+It verifies the public winner and treasury addresses, the non-negative minor
+unit amounts, conservation of the gross amount, the final delivery receipt
+gate and the existing settlement allocation. The matching `GET` endpoint
+exposes the same idempotent plan and its SHA-256 digest.
+
+The first policy version always reports
+`foundation_release_authorization_not_evaluated` and therefore remains
+`awaiting_governance_authorization`. It deliberately contains no blockhash,
+instruction, serialized transaction, signing request or private key. Every
+response reports `effect: planning_only`, `execution_enabled: false`,
+`transaction_built: false`, `simulation_performed: false`,
+`transaction_signed: false`, `transaction_broadcast: false` and `funds_moved:
+false`. Compensation-review eligibility cannot be converted into a release
+plan. This makes future execution inputs auditable without connecting evidence
+acceptance directly to the legacy escrow release path.
+
 ## Production boundary
 
 The production buyer flow remains:

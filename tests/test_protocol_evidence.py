@@ -57,6 +57,7 @@ def evidence_app(tmp_path, monkeypatch):
     app.include_router(protocol_evidence.validation_router)
     app.include_router(protocol_evidence.quality_router)
     app.include_router(protocol_evidence.settlement_eligibility_router)
+    app.include_router(protocol_evidence.settlement_execution_plan_router)
     return app
 
 
@@ -330,3 +331,98 @@ def test_rejected_quality_creates_compensation_review_eligibility(
     assert eligible.json()["decision"] == "eligible_for_compensation_review"
     assert eligible.json()["effect"] == "eligibility_only"
     assert eligible.json()["funds_moved"] is False
+
+
+def test_release_eligibility_creates_read_only_execution_plan(
+    tmp_path, monkeypatch
+):
+    app = evidence_app(tmp_path, monkeypatch)
+    payload = signed_payload(Keypair())
+    evidence = call(app, "POST", "/protocol/v1/evidence", json=payload).json()
+    receipt_token = completed_journey(
+        payload,
+        acceptance_criteria={"min_sources": 1},
+        result={"status": "delivered", "sources": ["source"]},
+    )
+    open_delivery_inbox(receipt_token, now=NOW - 40)
+    delivery = call(
+        app, "POST", f"/protocol/v1/delivery-validations/{evidence['receipt_id']}"
+    ).json()
+    quality = call(
+        app, "POST", f"/protocol/v1/quality-validations/{delivery['validation_id']}"
+    ).json()
+    settlement = {
+        "settlement_id": "settlement_1",
+        "order_id": "order_1",
+        "winner_wallet": str(Keypair().pubkey()),
+        "treasury_wallet": str(Keypair().pubkey()),
+        "gross_amount_minor": 1_000_000,
+        "protocol_commission_amount_minor": 100_000,
+        "seller_payout_amount_minor": 900_000,
+    }
+    monkeypatch.setattr(
+        db, "get_settlement_by_order_id_db", lambda _order_id: settlement
+    )
+    eligibility = call(
+        app,
+        "POST",
+        f"/protocol/v1/settlement-eligibility/{quality['quality_validation_id']}",
+    ).json()
+
+    planned = call(
+        app,
+        "POST",
+        f"/protocol/v1/settlement-execution-plans/{eligibility['eligibility_id']}",
+    )
+    public = call(
+        app,
+        "GET",
+        f"/protocol/v1/settlement-execution-plans/{eligibility['eligibility_id']}",
+    )
+
+    assert planned.status_code == public.status_code == 200
+    assert planned.json() == public.json()
+    plan = planned.json()
+    assert plan["decision"] == "awaiting_governance_authorization"
+    assert "foundation_release_authorization_not_evaluated" in plan["blockers"]
+    assert "buyer_delivery_confirmation_pending" in plan["blockers"]
+    assert plan["gross_amount_minor"] == 1_000_000
+    assert plan["protocol_commission_amount_minor"] == 100_000
+    assert plan["seller_payout_amount_minor"] == 900_000
+    assert len(plan["plan_sha256"]) == 64
+    assert plan["effect"] == "planning_only"
+    assert plan["execution_enabled"] is False
+    assert plan["transaction_built"] is False
+    assert plan["simulation_performed"] is False
+    assert plan["transaction_signed"] is False
+    assert plan["transaction_broadcast"] is False
+    assert plan["funds_moved"] is False
+    assert "serialized_transaction" not in plan
+
+
+def test_compensation_eligibility_cannot_create_release_plan(tmp_path, monkeypatch):
+    app = evidence_app(tmp_path, monkeypatch)
+    connection = db.get_conn()
+    try:
+        connection.cursor().execute(
+            """INSERT INTO protocol_settlement_eligibility (
+                eligibility_id, quality_validation_id, delivery_validation_id,
+                evidence_receipt_id, evidence_id, order_id, quote_id,
+                settlement_id, decision, reason, policy_version,
+                eligibility_sha256, evaluated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                "pse_compensation", "pqv_compensation", "pdv_1", "per_1",
+                "bid_1", "order_1", "quote_1", None,
+                "eligible_for_compensation_review", "quality_failed",
+                "settlement_eligibility_v1", "f" * 64, NOW,
+            ),
+        )
+        connection.commit()
+    finally:
+        db.release_conn(connection)
+    response = call(
+        app, "POST", "/protocol/v1/settlement-execution-plans/pse_compensation"
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "settlement_execution_plan_not_applicable"

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
@@ -16,7 +17,7 @@ from iat.api import db
 from iat.attested_wallet_signer import build_evidence_message
 from iat.acceptance import AcceptanceCriteria, evaluate_acceptance
 from iat.checkout_delivery import get_delivery
-from iat.checkout_receipt import get_delivery_receipt
+from iat.checkout_receipt import get_delivery_receipt, settlement_release_receipt_gate
 
 
 router = APIRouter(prefix="/protocol/v1/evidence", tags=["protocol-evidence"])
@@ -30,6 +31,10 @@ quality_router = APIRouter(
 )
 settlement_eligibility_router = APIRouter(
     prefix="/protocol/v1/settlement-eligibility",
+    tags=["protocol-evidence"],
+)
+settlement_execution_plan_router = APIRouter(
+    prefix="/protocol/v1/settlement-execution-plans",
     tags=["protocol-evidence"],
 )
 MAX_EVIDENCE_AGE_SECONDS = 86_400
@@ -86,6 +91,28 @@ def init_protocol_evidence_db() -> None:
                 reason TEXT NOT NULL,
                 policy_version TEXT NOT NULL,
                 eligibility_sha256 TEXT NOT NULL,
+                evaluated_at BIGINT NOT NULL
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS protocol_settlement_execution_plans (
+                plan_id TEXT PRIMARY KEY,
+                eligibility_id TEXT NOT NULL UNIQUE,
+                quality_validation_id TEXT NOT NULL,
+                order_id TEXT NOT NULL,
+                settlement_id TEXT NOT NULL,
+                winner_wallet TEXT,
+                treasury_wallet TEXT,
+                gross_amount_minor BIGINT,
+                protocol_commission_amount_minor BIGINT,
+                seller_payout_amount_minor BIGINT,
+                decision TEXT NOT NULL,
+                blockers_json TEXT NOT NULL,
+                receipt_gate_json TEXT NOT NULL,
+                policy_version TEXT NOT NULL,
+                plan_sha256 TEXT NOT NULL,
                 evaluated_at BIGINT NOT NULL
             )
             """
@@ -252,6 +279,62 @@ def _public_settlement_eligibility(row: Any) -> dict[str, Any]:
         "transaction_signed": False,
         "transaction_broadcast": False,
     }
+
+
+def _find_settlement_execution_plan(cursor: Any, eligibility_id: str) -> Any:
+    placeholder = db.qmark()
+    cursor.execute(
+        f"""SELECT * FROM protocol_settlement_execution_plans
+            WHERE eligibility_id = {placeholder}""",
+        (eligibility_id,),
+    )
+    return cursor.fetchone()
+
+
+def _public_settlement_execution_plan(row: Any) -> dict[str, Any]:
+    record = dict(row)
+    for field in ("blockers_json", "receipt_gate_json"):
+        try:
+            record[field.removesuffix("_json")] = json.loads(record.pop(field))
+        except (TypeError, json.JSONDecodeError):
+            record[field.removesuffix("_json")] = [] if field == "blockers_json" else {}
+    return {
+        "status": "protocol_settlement_execution_plan_recorded",
+        **record,
+        "effect": "planning_only",
+        "execution_enabled": False,
+        "transaction_built": False,
+        "simulation_performed": False,
+        "transaction_signed": False,
+        "transaction_broadcast": False,
+        "funds_moved": False,
+    }
+
+
+def _valid_wallet(value: Any) -> bool:
+    try:
+        Pubkey.from_string(str(value))
+        return True
+    except ValueError:
+        return False
+
+
+def _minor_amount(settlement: dict[str, Any], field: str) -> int | None:
+    value = settlement.get(field)
+    if value is not None:
+        try:
+            parsed = int(value)
+            return parsed if parsed >= 0 else None
+        except (TypeError, ValueError):
+            return None
+    decimal_field = field.removesuffix("_minor") + "_iat"
+    try:
+        parsed_decimal = Decimal(str(settlement.get(decimal_field)))
+        if parsed_decimal < 0:
+            return None
+        return int(parsed_decimal * Decimal("1000000"))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
 
 
 def _lookup_journey(cursor: Any, evidence: dict[str, Any]) -> tuple[Any, Any]:
@@ -720,5 +803,137 @@ def get_settlement_eligibility(quality_validation_id: str) -> dict[str, Any]:
         if record is None:
             raise HTTPException(status_code=404, detail="settlement_eligibility_not_found")
         return _public_settlement_eligibility(record)
+    finally:
+        db.release_conn(connection)
+
+
+@settlement_execution_plan_router.post("/{eligibility_id}")
+def plan_settlement_execution(eligibility_id: str) -> dict[str, Any]:
+    connection = db.get_conn()
+    try:
+        cursor = connection.cursor()
+        existing = _find_settlement_execution_plan(cursor, eligibility_id)
+        if existing is not None:
+            return _public_settlement_execution_plan(existing)
+        placeholder = db.qmark()
+        cursor.execute(
+            f"""SELECT * FROM protocol_settlement_eligibility
+                WHERE eligibility_id = {placeholder}""",
+            (eligibility_id,),
+        )
+        eligibility_row = cursor.fetchone()
+    finally:
+        db.release_conn(connection)
+    if eligibility_row is None:
+        raise HTTPException(status_code=404, detail="settlement_eligibility_not_found")
+    eligibility = dict(eligibility_row)
+    if eligibility["decision"] != "eligible_for_governed_release":
+        raise HTTPException(
+            status_code=409,
+            detail="settlement_execution_plan_not_applicable",
+        )
+    settlement = db.get_settlement_by_order_id_db(str(eligibility["order_id"]))
+    if not settlement or not settlement.get("settlement_id"):
+        raise HTTPException(status_code=409, detail="settlement_allocation_unavailable")
+
+    winner_wallet = settlement.get("winner_wallet")
+    treasury_wallet = settlement.get("treasury_wallet")
+    amounts = {
+        name: _minor_amount(settlement, name)
+        for name in (
+            "gross_amount_minor",
+            "protocol_commission_amount_minor",
+            "seller_payout_amount_minor",
+        )
+    }
+    blockers: list[str] = ["foundation_release_authorization_not_evaluated"]
+    if not _valid_wallet(winner_wallet):
+        blockers.append("winner_wallet_invalid")
+    if not _valid_wallet(treasury_wallet):
+        blockers.append("treasury_wallet_invalid")
+    if any(value is None for value in amounts.values()):
+        blockers.append("settlement_amount_invalid")
+    elif (
+        amounts["protocol_commission_amount_minor"]
+        + amounts["seller_payout_amount_minor"]
+        != amounts["gross_amount_minor"]
+    ):
+        blockers.append("settlement_amount_conservation_failed")
+    receipt_gate = settlement_release_receipt_gate(str(eligibility["order_id"]))
+    if not receipt_gate.get("release_allowed"):
+        blockers.append(str(receipt_gate.get("reason") or "receipt_release_blocked"))
+
+    evaluated_at = _now()
+    policy_version = "settlement_execution_plan_v1"
+    decision = "awaiting_governance_authorization"
+    public_facts = {
+        "blockers": sorted(set(blockers)),
+        "decision": decision,
+        "eligibility_id": eligibility_id,
+        "evaluated_at": evaluated_at,
+        "gross_amount_minor": amounts["gross_amount_minor"],
+        "order_id": eligibility["order_id"],
+        "policy_version": policy_version,
+        "protocol_commission_amount_minor": amounts[
+            "protocol_commission_amount_minor"
+        ],
+        "quality_validation_id": eligibility["quality_validation_id"],
+        "receipt_gate": receipt_gate,
+        "seller_payout_amount_minor": amounts["seller_payout_amount_minor"],
+        "settlement_id": settlement["settlement_id"],
+        "treasury_wallet": treasury_wallet,
+        "winner_wallet": winner_wallet,
+    }
+    plan_sha256 = hashlib.sha256(
+        json.dumps(public_facts, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    plan_id = "psp_" + plan_sha256[:24]
+    connection = db.get_conn()
+    try:
+        cursor = connection.cursor()
+        placeholder = db.qmark()
+        cursor.execute(
+            f"""INSERT INTO protocol_settlement_execution_plans (
+                    plan_id, eligibility_id, quality_validation_id, order_id,
+                    settlement_id, winner_wallet, treasury_wallet,
+                    gross_amount_minor, protocol_commission_amount_minor,
+                    seller_payout_amount_minor, decision, blockers_json,
+                    receipt_gate_json, policy_version, plan_sha256, evaluated_at
+                ) VALUES ({', '.join([placeholder] * 16)})""",
+            (
+                plan_id,
+                eligibility_id,
+                eligibility["quality_validation_id"],
+                eligibility["order_id"],
+                settlement["settlement_id"],
+                winner_wallet,
+                treasury_wallet,
+                amounts["gross_amount_minor"],
+                amounts["protocol_commission_amount_minor"],
+                amounts["seller_payout_amount_minor"],
+                decision,
+                json.dumps(public_facts["blockers"], separators=(",", ":")),
+                json.dumps(receipt_gate, sort_keys=True, separators=(",", ":")),
+                policy_version,
+                plan_sha256,
+                evaluated_at,
+            ),
+        )
+        connection.commit()
+        return _public_settlement_execution_plan(
+            _find_settlement_execution_plan(cursor, eligibility_id)
+        )
+    finally:
+        db.release_conn(connection)
+
+
+@settlement_execution_plan_router.get("/{eligibility_id}")
+def get_settlement_execution_plan(eligibility_id: str) -> dict[str, Any]:
+    connection = db.get_conn()
+    try:
+        record = _find_settlement_execution_plan(connection.cursor(), eligibility_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="settlement_execution_plan_not_found")
+        return _public_settlement_execution_plan(record)
     finally:
         db.release_conn(connection)

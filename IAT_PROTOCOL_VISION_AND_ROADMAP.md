@@ -184,3 +184,16 @@ catalogues, capacités, gouvernance indépendante, runtime IAT hébergé, canari
 activation contrôlée. Le chantier prioritaire est désormais la transaction
 autonome de référence côté acheteur.
 
+## Progression actuelle de la phase 1
+
+La chaîne acheteur couvre maintenant l'intention bornée, la sélection, le
+devis, l'exécution, la livraison scellée, le journal signé, la publication de
+preuve, la validation technique indépendante, les critères d'acceptation
+sémantiques et la décision d'éligibilité au règlement. Un plan de règlement
+public en lecture seule contrôle ensuite les bénéficiaires, les montants, leur
+conservation et les blocages du reçu et de la gouvernance, sans construire ni
+signer de transaction.
+
+La prochaine frontière est l'autorisation de règlement gouvernée puis la
+simulation Solana indépendante. L'envoi réel restera séparé et ne pourra être
+activé qu'après validation explicite de ces deux couches.

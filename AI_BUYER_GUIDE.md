@@ -550,6 +550,14 @@ summary, sources or delivered content. Its decision is either
 it. Intents created without criteria cannot receive an accidental quality
 approval.
 
+The scheduler consumes this record in a fifth independent cycle after
+`delivery_verified`, re-reads the public decision, and stores only its public
+digests and aggregate check counts. Terminal states are `quality_accepted`,
+`quality_rejected` and `quality_not_configured`; transport exhaustion is kept
+separate as `quality_validation_failed`. Existing delivery-verified anchors
+are enrolled during migration, and the completed transaction is never
+rewritten by this evaluation.
+
 ## Production boundary
 
 The production buyer flow remains:

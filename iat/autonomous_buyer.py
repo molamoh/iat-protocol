@@ -249,6 +249,27 @@ class AutonomousBuyerRunner:
             raise AutonomousBuyerError("protocol_delivery_validation_mismatch")
         return public
 
+    def validate_delivery_quality(self, delivery_validation_id: str) -> dict[str, Any]:
+        validation_id = str(delivery_validation_id).strip()
+        if not validation_id.startswith("pdv_") or len(validation_id) > 64:
+            raise AutonomousBuyerError("delivery_validation_id_invalid")
+        path = f"/protocol/v1/quality-validations/{quote(validation_id, safe='')}"
+        validated = self._request("POST", path, authenticate=False)
+        public = self._request("GET", path, authenticate=False)
+        bindings = (
+            public == validated
+            and public.get("delivery_validation_id") == validation_id
+            and public.get("effect") == "evidence_only"
+            and public.get("content_disclosed") is False
+            and public.get("decision")
+            in {"accepted_by_explicit_criteria", "rejected_by_explicit_criteria"}
+            and str(public.get("quality_validation_id") or "").startswith("pqv_")
+            and len(str(public.get("quality_validation_sha256") or "")) == 64
+        )
+        if not bindings:
+            raise AutonomousBuyerError("protocol_quality_validation_mismatch")
+        return public
+
     def _validate_prepared_transaction(self, prepared: Any) -> dict[str, Any]:
         if not isinstance(prepared, dict):
             raise AutonomousBuyerError("prepared_transaction_missing")

@@ -39,6 +39,9 @@ class Runner:
         self.validation_calls = []
         self.validation_error = None
         self.validation_decision = "verified_delivery_binding"
+        self.quality_calls = []
+        self.quality_error = None
+        self.quality_decision = "accepted_by_explicit_criteria"
 
     def lifecycle(self, decision_id):
         self.calls.append(("lifecycle", decision_id))
@@ -85,6 +88,25 @@ class Runner:
             "evaluated_at": 1_002,
             "effect": "evidence_only",
             "quality_verified": False,
+        }
+
+    def validate_delivery_quality(self, validation_id):
+        self.quality_calls.append(validation_id)
+        if self.quality_error is not None:
+            raise self.quality_error
+        failed = int(self.quality_decision == "rejected_by_explicit_criteria")
+        return {
+            "status": "protocol_quality_validation_recorded",
+            "delivery_validation_id": validation_id,
+            "quality_validation_id": "pqv_1234567890abcdef12345678",
+            "quality_validation_sha256": "d" * 64,
+            "criteria_sha256": "e" * 64,
+            "decision": self.quality_decision,
+            "passed_count": 1 - failed,
+            "failed_count": failed,
+            "evaluated_at": 1_003,
+            "effect": "evidence_only",
+            "content_disclosed": False,
         }
 
 
@@ -172,7 +194,11 @@ def test_ready_delivery_is_opened_once_and_job_completes(tmp_path):
     assert validated["work_type"] == "delivery_validation"
     assert validated["state"] == "delivery_verified"
     assert validated["validation_decision"] == "verified_delivery_binding"
-    assert scheduler.run_due_once(now=1_003) == []
+    quality = scheduler.run_due_once(now=1_003)[0]
+    assert quality["work_type"] == "quality_validation"
+    assert quality["state"] == "quality_accepted"
+    assert quality["quality_decision"] == "accepted_by_explicit_criteria"
+    assert scheduler.run_due_once(now=1_004) == []
     assert [call[0] for call in runner.calls] == ["lifecycle", "result"]
     assert scheduler.list_events("bid_1")["events"][-1]["event_type"] == "completed"
 
@@ -259,6 +285,38 @@ def test_rejected_delivery_binding_is_not_a_transport_failure(tmp_path):
     assert rejected["state"] == "delivery_rejected"
     assert rejected["validation_error"] is None
     assert rejected["validation_decision"] == "rejected_delivery_binding"
+
+
+def test_quality_rejection_and_missing_contract_are_distinct(tmp_path):
+    rejected_runner = Runner(
+        [{"next_action": "open_delivery_inbox"}],
+        results=[{"status": "wallet_inbox_item_opened"}],
+    )
+    rejected_runner.quality_decision = "rejected_by_explicit_criteria"
+    rejected_scheduler = BuyerAgentScheduler(rejected_runner, tmp_path / "rejected.sqlite3")
+    rejected_scheduler.schedule("bid_rejected", now=100)
+    for timestamp in range(100, 104):
+        result = rejected_scheduler.run_due_once(now=timestamp)[0]
+    rejected = rejected_scheduler.run_due_once(now=104)[0]
+    assert rejected["state"] == "quality_rejected"
+    assert rejected["quality_failed_count"] == 1
+
+    missing_runner = Runner(
+        [{"next_action": "open_delivery_inbox"}],
+        results=[{"status": "wallet_inbox_item_opened"}],
+    )
+    missing_runner.quality_error = AutonomousBuyerError(
+        "iat_request_rejected",
+        details={"response": {"detail": "acceptance_criteria_not_declared"}},
+    )
+    missing_scheduler = BuyerAgentScheduler(missing_runner, tmp_path / "missing.sqlite3")
+    missing_scheduler.schedule("bid_missing", now=100)
+    for timestamp in range(100, 104):
+        missing_scheduler.run_due_once(now=timestamp)
+    missing = missing_scheduler.run_due_once(now=104)[0]
+    assert missing["state"] == "quality_not_configured"
+    assert missing["quality_error"] is None
+    assert missing["quality_decision"] == "acceptance_criteria_not_declared"
 
 
 def test_changed_completed_journal_fails_anchor_closed(tmp_path):
@@ -454,6 +512,13 @@ def test_existing_anchor_table_gains_publication_receipt_columns(tmp_path):
         "validation_sha256",
         "validation_decision",
         "validated_at",
+        "quality_attempt_count",
+        "quality_next_run_at",
+        "quality_error",
+        "quality_validation_id",
+        "quality_validation_sha256",
+        "quality_decision",
+        "quality_validated_at",
     } <= columns
 
 
@@ -474,6 +539,14 @@ def test_existing_published_anchor_is_enrolled_for_validation(tmp_path):
     restarted = BuyerAgentScheduler(runner, database)
     anchor = restarted.get_anchor("bid_1")
     assert anchor["validation_next_run_at"] == 110
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """UPDATE buyer_agent_job_anchors
+               SET state = 'delivery_verified', quality_next_run_at = NULL,
+                   updated_at = 120 WHERE anchor_id = 'bea_legacy'"""
+        )
+    migrated = BuyerAgentScheduler(runner, database).get_anchor("bid_1")
+    assert migrated["quality_next_run_at"] == 120
 
 
 def test_security_stopped_job_cannot_be_resumed(tmp_path):

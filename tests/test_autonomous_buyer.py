@@ -177,6 +177,25 @@ def test_delivery_validation_is_publicly_verified_without_session_token():
     assert all("Authorization" not in call[2]["headers"] for call in session.calls)
 
 
+def test_quality_validation_is_publicly_verified_without_session_token():
+    quality = {
+        "status": "protocol_quality_validation_recorded",
+        "delivery_validation_id": "pdv_1234567890abcdef12345678",
+        "quality_validation_id": "pqv_1234567890abcdef12345678",
+        "quality_validation_sha256": "d" * 64,
+        "decision": "accepted_by_explicit_criteria",
+        "effect": "evidence_only",
+        "content_disclosed": False,
+    }
+    session = Session([Response(quality), Response(quality)])
+    result = runner(session).validate_delivery_quality(
+        "pdv_1234567890abcdef12345678"
+    )
+    assert result == quality
+    assert [call[0] for call in session.calls] == ["POST", "GET"]
+    assert all("Authorization" not in call[2]["headers"] for call in session.calls)
+
+
 @pytest.mark.parametrize(
     "change,code",
     [

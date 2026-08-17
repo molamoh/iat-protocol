@@ -175,6 +175,18 @@ class BuyerAgentScheduler:
                     validation_decision TEXT,
                     validation_reason TEXT,
                     validated_at INTEGER,
+                    quality_attempt_count INTEGER NOT NULL DEFAULT 0,
+                    quality_max_attempts INTEGER NOT NULL DEFAULT 10,
+                    quality_next_run_at INTEGER,
+                    quality_lease_until INTEGER,
+                    quality_error TEXT,
+                    quality_validation_id TEXT,
+                    quality_validation_sha256 TEXT,
+                    quality_decision TEXT,
+                    quality_criteria_sha256 TEXT,
+                    quality_passed_count INTEGER,
+                    quality_failed_count INTEGER,
+                    quality_validated_at INTEGER,
                     last_error TEXT,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
@@ -206,6 +218,18 @@ class BuyerAgentScheduler:
                 "validation_decision": "TEXT",
                 "validation_reason": "TEXT",
                 "validated_at": "INTEGER",
+                "quality_attempt_count": "INTEGER NOT NULL DEFAULT 0",
+                "quality_max_attempts": "INTEGER NOT NULL DEFAULT 10",
+                "quality_next_run_at": "INTEGER",
+                "quality_lease_until": "INTEGER",
+                "quality_error": "TEXT",
+                "quality_validation_id": "TEXT",
+                "quality_validation_sha256": "TEXT",
+                "quality_decision": "TEXT",
+                "quality_criteria_sha256": "TEXT",
+                "quality_passed_count": "INTEGER",
+                "quality_failed_count": "INTEGER",
+                "quality_validated_at": "INTEGER",
             }
             for column, definition in anchor_migrations.items():
                 if column not in anchor_columns:
@@ -221,6 +245,11 @@ class BuyerAgentScheduler:
                 """UPDATE buyer_agent_job_anchors
                    SET validation_next_run_at = updated_at
                    WHERE state = 'published' AND validation_next_run_at IS NULL"""
+            )
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET quality_next_run_at = updated_at
+                   WHERE state = 'delivery_verified' AND quality_next_run_at IS NULL"""
             )
             connection.execute(
                 """CREATE INDEX IF NOT EXISTS idx_buyer_agent_job_anchors_due
@@ -477,8 +506,10 @@ class BuyerAgentScheduler:
         timestamp = int(time.time() if now is None else now)
         results: list[dict[str, Any]] = []
         with self._lock:
-            validation_id = self._claim_validation(timestamp)
-            if validation_id is not None:
+            quality_id = self._claim_quality_validation(timestamp)
+            if quality_id is not None:
+                results.append(self._run_quality_validation(quality_id, timestamp))
+            elif (validation_id := self._claim_validation(timestamp)) is not None:
                 results.append(self._run_validation(validation_id, timestamp))
             elif (publication_id := self._claim_publication(timestamp)) is not None:
                 results.append(self._run_publication(publication_id, timestamp))
@@ -490,6 +521,151 @@ class BuyerAgentScheduler:
                     break
                 results.append(self._run_claimed(decision_id, timestamp))
         return results
+
+    def _claim_quality_validation(self, now: int) -> str | None:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                """SELECT anchor_id, quality_attempt_count, quality_max_attempts
+                   FROM buyer_agent_job_anchors
+                   WHERE (state = 'delivery_verified' AND quality_next_run_at <= ?)
+                      OR (state = 'quality_validating' AND quality_lease_until IS NOT NULL
+                          AND quality_lease_until <= ?)
+                   ORDER BY quality_next_run_at, created_at LIMIT 1""",
+                (now, now),
+            ).fetchone()
+            if row is None:
+                return None
+            anchor_id = str(row["anchor_id"])
+            if int(row["quality_attempt_count"]) >= int(row["quality_max_attempts"]):
+                connection.execute(
+                    """UPDATE buyer_agent_job_anchors
+                       SET state = 'quality_validation_failed', quality_lease_until = NULL,
+                           quality_error = 'maximum_quality_attempts_reached', updated_at = ?
+                       WHERE anchor_id = ?""",
+                    (now, anchor_id),
+                )
+                return anchor_id
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET state = 'quality_validating', quality_lease_until = ?,
+                       quality_attempt_count = quality_attempt_count + 1, updated_at = ?
+                   WHERE anchor_id = ?""",
+                (now + self.lease_seconds, now, anchor_id),
+            )
+            return anchor_id
+
+    def _run_quality_validation(self, anchor_id: str, now: int) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM buyer_agent_job_anchors WHERE anchor_id = ?",
+                (anchor_id,),
+            ).fetchone()
+        anchor = dict(row)
+        if anchor["state"] == "quality_validation_failed":
+            return {"work_type": "quality_validation", **anchor}
+        try:
+            quality = self.runner.validate_delivery_quality(anchor["validation_id"])
+            decision = str(quality.get("decision") or "")
+            bindings = (
+                str(quality.get("delivery_validation_id") or "")
+                == str(anchor["validation_id"])
+                and decision
+                in {"accepted_by_explicit_criteria", "rejected_by_explicit_criteria"}
+                and quality.get("effect") == "evidence_only"
+                and quality.get("content_disclosed") is False
+                and str(quality.get("quality_validation_id") or "").startswith("pqv_")
+                and len(str(quality.get("quality_validation_sha256") or "")) == 64
+            )
+            if not bindings:
+                raise AutonomousBuyerError("protocol_quality_validation_mismatch")
+        except AutonomousBuyerError as exc:
+            response = (
+                exc.details.get("response", {})
+                if isinstance(exc.details, dict)
+                else {}
+            )
+            if response.get("detail") == "acceptance_criteria_not_declared":
+                return self._finish_quality_validation(
+                    anchor_id,
+                    now,
+                    state="quality_not_configured",
+                    error=None,
+                    decision="acceptance_criteria_not_declared",
+                )
+            attempts = int(anchor["quality_attempt_count"])
+            if attempts >= int(anchor["quality_max_attempts"]):
+                return self._finish_quality_validation(
+                    anchor_id, now, state="quality_validation_failed", error=exc.code
+                )
+            delay = min(300, self.default_poll_seconds * (2 ** min(attempts - 1, 5)))
+            return self._finish_quality_validation(
+                anchor_id,
+                now,
+                state="delivery_verified",
+                error=exc.code,
+                next_run_at=now + delay,
+            )
+        except Exception:
+            return self._finish_quality_validation(
+                anchor_id,
+                now,
+                state="quality_validation_failed",
+                error="unexpected_quality_validation_failure",
+            )
+        final_state = (
+            "quality_accepted"
+            if decision == "accepted_by_explicit_criteria"
+            else "quality_rejected"
+        )
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET state = ?, quality_lease_until = NULL, quality_error = NULL,
+                       quality_validation_id = ?, quality_validation_sha256 = ?,
+                       quality_decision = ?, quality_criteria_sha256 = ?,
+                       quality_passed_count = ?, quality_failed_count = ?,
+                       quality_validated_at = ?, updated_at = ? WHERE anchor_id = ?""",
+                (
+                    final_state,
+                    str(quality["quality_validation_id"]),
+                    str(quality["quality_validation_sha256"]),
+                    decision,
+                    str(quality.get("criteria_sha256") or ""),
+                    int(quality.get("passed_count") or 0),
+                    int(quality.get("failed_count") or 0),
+                    int(quality.get("evaluated_at") or now),
+                    now,
+                    anchor_id,
+                ),
+            )
+        return {"work_type": "quality_validation", **self.get_anchor(
+            str(anchor["intent_decision_id"])
+        )}
+
+    def _finish_quality_validation(
+        self,
+        anchor_id: str,
+        now: int,
+        *,
+        state: str,
+        error: str | None,
+        decision: str | None = None,
+        next_run_at: int | None = None,
+    ) -> dict[str, Any]:
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET state = ?, quality_next_run_at = ?, quality_lease_until = NULL,
+                       quality_error = ?, quality_decision = COALESCE(?, quality_decision),
+                       updated_at = ? WHERE anchor_id = ?""",
+                (state, next_run_at or now, error, decision, now, anchor_id),
+            )
+            row = connection.execute(
+                "SELECT * FROM buyer_agent_job_anchors WHERE anchor_id = ?",
+                (anchor_id,),
+            ).fetchone()
+        return {"work_type": "quality_validation", **dict(row)}
 
     def _claim_validation(self, now: int) -> str | None:
         with self._connect() as connection:
@@ -597,6 +773,12 @@ class BuyerAgentScheduler:
                     anchor_id,
                 ),
             )
+            if final_state == "delivery_verified":
+                connection.execute(
+                    """UPDATE buyer_agent_job_anchors SET quality_next_run_at = ?
+                       WHERE anchor_id = ?""",
+                    (now, anchor_id),
+                )
         return {"work_type": "delivery_validation", **self.get_anchor(
             str(anchor["intent_decision_id"])
         )}

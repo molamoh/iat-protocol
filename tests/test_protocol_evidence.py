@@ -6,7 +6,14 @@ from solders.keypair import Keypair
 
 from iat.api import db
 from iat.api import protocol_evidence
+from iat.api.checkout_api import init_checkout_db
 from iat.attested_wallet_signer import build_evidence_message
+from iat.buyer_identity import init_wallet_identity_db
+from iat.checkout_receipt import (
+    configure_delivery_receipt,
+    open_delivery_inbox,
+    publish_delivery_payload,
+)
 
 
 NOW = 1_800_000_000
@@ -46,7 +53,59 @@ def evidence_app(tmp_path, monkeypatch):
     protocol_evidence.init_protocol_evidence_db()
     app = FastAPI()
     app.include_router(protocol_evidence.router)
+    app.include_router(protocol_evidence.validation_router)
     return app
+
+
+def completed_journey(payload):
+    init_wallet_identity_db()
+    init_checkout_db()
+    connection = db.get_conn()
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """INSERT INTO buyer_intent_decisions (
+                intent_decision_id, wallet, idempotency_key, request_hash,
+                request_json, selection_json, created_at, expires_at, consumed_at,
+                order_id
+            ) VALUES (?, ?, ?, ?, '{}', '{}', ?, ?, ?, ?)""",
+            (
+                payload["evidence_id"], payload["wallet_address"], "idem_12345678",
+                "request_hash", NOW - 100, NOW + 100, NOW - 90, "order_1",
+            ),
+        )
+        cursor.execute(
+            """INSERT INTO universal_checkout_quotes (
+                quote_id, order_id, buyer_wallet, input_asset, route, required_iat,
+                state, intent_hash, request_hash, idempotency_key, quote_payload,
+                created_at, expires_at, updated_at, tx_signature
+            ) VALUES (?, ?, ?, 'USDC', 'direct', '1', 'confirmed', 'intent',
+                      'request', 'quote_idem_1', '{}', ?, ?, ?, ?)""",
+            (
+                "quote_1", "order_1", payload["wallet_address"], NOW - 80,
+                NOW + 100, NOW - 70, "3" * 88,
+            ),
+        )
+        cursor.execute(
+            """INSERT INTO universal_checkout_deliveries (
+                quote_id, order_id, tx_signature, state, attempt_count,
+                next_attempt_at, settlement_state, created_at, updated_at,
+                completed_at
+            ) VALUES (?, ?, ?, 'completed', 1, ?, 'completed', ?, ?, ?)""",
+            ("quote_1", "order_1", "3" * 88, NOW - 70, NOW - 70, NOW - 60, NOW - 60),
+        )
+        connection.commit()
+    finally:
+        db.release_conn(connection)
+    configured = configure_delivery_receipt(
+        quote_id="quote_1", order_id="order_1", channel="api_pull",
+        destination=None, now=NOW - 60,
+    )
+    publish_delivery_payload(
+        quote_id="quote_1", order_id="order_1", payload={"status": "delivered"},
+        now=NOW - 50,
+    )
+    return configured["receipt_token"]
 
 
 def test_signed_evidence_is_public_and_idempotent(tmp_path, monkeypatch):
@@ -108,3 +167,50 @@ def test_unknown_evidence_is_not_disclosed_as_present(tmp_path, monkeypatch):
     )
     assert response.status_code == 404
     assert response.json()["detail"] == "protocol_evidence_not_found"
+
+
+def test_delivery_binding_requires_opening_then_becomes_public(tmp_path, monkeypatch):
+    app = evidence_app(tmp_path, monkeypatch)
+    payload = signed_payload(Keypair())
+    evidence = call(app, "POST", "/protocol/v1/evidence", json=payload).json()
+    receipt_token = completed_journey(payload)
+    pending = call(
+        app, "POST", f"/protocol/v1/delivery-validations/{evidence['receipt_id']}"
+    )
+    assert pending.status_code == 409
+    assert pending.json()["detail"] == "delivery_validation_inbox_not_opened"
+    open_delivery_inbox(receipt_token, now=NOW - 40)
+    validated = call(
+        app, "POST", f"/protocol/v1/delivery-validations/{evidence['receipt_id']}"
+    )
+    public = call(
+        app, "GET", f"/protocol/v1/delivery-validations/{evidence['receipt_id']}"
+    )
+    assert validated.status_code == public.status_code == 200
+    assert validated.json() == public.json()
+    assert validated.json()["decision"] == "verified_delivery_binding"
+    assert validated.json()["quality_verified"] is False
+    assert validated.json()["effect"] == "evidence_only"
+    assert len(validated.json()["validation_sha256"]) == 64
+
+
+def test_changed_sealed_delivery_is_rejected_and_recorded(tmp_path, monkeypatch):
+    app = evidence_app(tmp_path, monkeypatch)
+    payload = signed_payload(Keypair())
+    evidence = call(app, "POST", "/protocol/v1/evidence", json=payload).json()
+    receipt_token = completed_journey(payload)
+    open_delivery_inbox(receipt_token, now=NOW - 40)
+    connection = db.get_conn()
+    try:
+        connection.cursor().execute(
+            "UPDATE universal_checkout_delivery_receipts SET sealed_payload='tampered' WHERE quote_id='quote_1'"
+        )
+        connection.commit()
+    finally:
+        db.release_conn(connection)
+    rejected = call(
+        app, "POST", f"/protocol/v1/delivery-validations/{evidence['receipt_id']}"
+    )
+    assert rejected.status_code == 200
+    assert rejected.json()["decision"] == "rejected_delivery_binding"
+    assert rejected.json()["reason"] == "delivery_payload_digest_invalid"

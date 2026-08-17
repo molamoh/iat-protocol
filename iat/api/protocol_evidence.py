@@ -14,9 +14,15 @@ from solders.signature import Signature
 
 from iat.api import db
 from iat.attested_wallet_signer import build_evidence_message
+from iat.checkout_delivery import get_delivery
+from iat.checkout_receipt import get_delivery_receipt
 
 
 router = APIRouter(prefix="/protocol/v1/evidence", tags=["protocol-evidence"])
+validation_router = APIRouter(
+    prefix="/protocol/v1/delivery-validations",
+    tags=["protocol-evidence"],
+)
 MAX_EVIDENCE_AGE_SECONDS = 86_400
 MAX_FUTURE_SKEW_SECONDS = 60
 
@@ -53,6 +59,25 @@ def init_protocol_evidence_db() -> None:
                 receipt_sha256 TEXT NOT NULL,
                 received_at BIGINT NOT NULL,
                 UNIQUE(wallet_address, evidence_type, evidence_id)
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS protocol_delivery_validations (
+                validation_id TEXT PRIMARY KEY,
+                evidence_receipt_id TEXT NOT NULL UNIQUE,
+                evidence_id TEXT NOT NULL,
+                wallet_address TEXT NOT NULL,
+                order_id TEXT NOT NULL,
+                quote_id TEXT NOT NULL,
+                tx_signature TEXT NOT NULL,
+                payload_digest TEXT NOT NULL,
+                inbox_signature_status TEXT NOT NULL,
+                decision TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                validation_sha256 TEXT NOT NULL,
+                evaluated_at BIGINT NOT NULL
             )
             """
         )
@@ -106,6 +131,74 @@ def _find(cursor: Any, evidence_id: str, wallet_address: str) -> Any:
         (evidence_id, wallet_address),
     )
     return cursor.fetchone()
+
+
+def _find_receipt(cursor: Any, receipt_id: str) -> Any:
+    placeholder = db.qmark()
+    cursor.execute(
+        f"SELECT * FROM protocol_execution_evidence WHERE receipt_id = {placeholder}",
+        (receipt_id,),
+    )
+    return cursor.fetchone()
+
+
+def _find_validation(cursor: Any, receipt_id: str) -> Any:
+    placeholder = db.qmark()
+    cursor.execute(
+        f"""SELECT * FROM protocol_delivery_validations
+            WHERE evidence_receipt_id = {placeholder}""",
+        (receipt_id,),
+    )
+    return cursor.fetchone()
+
+
+def _public_validation(row: Any) -> dict[str, Any]:
+    record = dict(row)
+    return {
+        "status": "protocol_delivery_validation_recorded",
+        **record,
+        "effect": "evidence_only",
+        "quality_verified": False,
+    }
+
+
+def _lookup_journey(cursor: Any, evidence: dict[str, Any]) -> tuple[Any, Any]:
+    placeholder = db.qmark()
+    cursor.execute(
+        f"""SELECT intent_decision_id, wallet, order_id
+            FROM buyer_intent_decisions
+            WHERE intent_decision_id = {placeholder} AND wallet = {placeholder}""",
+        (evidence["evidence_id"], evidence["wallet_address"]),
+    )
+    intent = cursor.fetchone()
+    if intent is None or not dict(intent).get("order_id"):
+        return intent, None
+    intent_record = dict(intent)
+    cursor.execute(
+        f"""SELECT quote_id, order_id, buyer_wallet, state, tx_signature
+            FROM universal_checkout_quotes
+            WHERE order_id = {placeholder} AND buyer_wallet = {placeholder}
+            ORDER BY created_at DESC LIMIT 1""",
+        (intent_record["order_id"], evidence["wallet_address"]),
+    )
+    return intent, cursor.fetchone()
+
+
+def _validate_inbox_signature(receipt: dict[str, Any]) -> str:
+    signature = receipt.get("inbox_signature")
+    signer = receipt.get("inbox_signer")
+    if not signature and not signer:
+        return "not_configured"
+    if not signature or not signer:
+        return "invalid"
+    try:
+        valid = Signature.from_string(str(signature)).verify(
+            Pubkey.from_string(str(signer)),
+            str(receipt.get("sealed_payload") or "").encode(),
+        )
+    except ValueError:
+        return "invalid"
+    return "verified" if valid else "invalid"
 
 
 @router.post("")
@@ -186,5 +279,121 @@ def get_protocol_evidence(
         if record is None:
             raise HTTPException(status_code=404, detail="protocol_evidence_not_found")
         return _public_record(record)
+    finally:
+        db.release_conn(connection)
+
+
+@validation_router.post("/{evidence_receipt_id}")
+def validate_delivery_binding(evidence_receipt_id: str) -> dict[str, Any]:
+    connection = db.get_conn()
+    try:
+        cursor = connection.cursor()
+        existing = _find_validation(cursor, evidence_receipt_id)
+        if existing is not None:
+            return _public_validation(existing)
+        evidence_row = _find_receipt(cursor, evidence_receipt_id)
+        if evidence_row is None:
+            raise HTTPException(status_code=404, detail="protocol_evidence_not_found")
+        evidence = dict(evidence_row)
+        intent_row, quote_row = _lookup_journey(cursor, evidence)
+    finally:
+        db.release_conn(connection)
+
+    if intent_row is None:
+        raise HTTPException(status_code=409, detail="delivery_validation_intent_unavailable")
+    intent = dict(intent_row)
+    if quote_row is None:
+        raise HTTPException(status_code=409, detail="delivery_validation_checkout_pending")
+    quote_record = dict(quote_row)
+    quote_id = str(quote_record.get("quote_id") or "")
+    if quote_record.get("state") != "confirmed" or not quote_record.get("tx_signature"):
+        raise HTTPException(status_code=409, detail="delivery_validation_checkout_pending")
+    delivery = get_delivery(quote_id)
+    receipt = get_delivery_receipt(quote_id)
+    if not delivery or delivery.get("state") != "completed":
+        raise HTTPException(status_code=409, detail="delivery_validation_execution_pending")
+    if not receipt or receipt.get("state") not in {"delivered", "accepted"}:
+        raise HTTPException(status_code=409, detail="delivery_validation_receipt_pending")
+    sealed_payload = str(receipt.get("sealed_payload") or "")
+    payload_digest = str(receipt.get("payload_digest") or "")
+    digest_valid = bool(sealed_payload and len(payload_digest) == 64) and hashlib.sha256(
+        sealed_payload.encode()
+    ).hexdigest() == payload_digest
+    signature_status = _validate_inbox_signature(receipt)
+    opened = receipt.get("inbox_opened_at") is not None
+    if not digest_valid or signature_status == "invalid":
+        decision = "rejected_delivery_binding"
+        reason = (
+            "delivery_payload_digest_invalid"
+            if not digest_valid
+            else "delivery_payload_signature_invalid"
+        )
+    elif not opened:
+        raise HTTPException(status_code=409, detail="delivery_validation_inbox_not_opened")
+    else:
+        decision = "verified_delivery_binding"
+        reason = "protocol_checkout_execution_delivery_and_opening_bound"
+
+    evaluated_at = _now()
+    validation_payload = {
+        "decision": decision,
+        "evidence_id": evidence["evidence_id"],
+        "evidence_receipt_id": evidence_receipt_id,
+        "evaluated_at": evaluated_at,
+        "inbox_signature_status": signature_status,
+        "order_id": intent["order_id"],
+        "payload_digest": payload_digest,
+        "quote_id": quote_id,
+        "reason": reason,
+        "tx_signature": quote_record["tx_signature"],
+        "wallet_address": evidence["wallet_address"],
+    }
+    validation_sha256 = hashlib.sha256(
+        json.dumps(
+            validation_payload, sort_keys=True, separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    validation_id = "pdv_" + validation_sha256[:24]
+    connection = db.get_conn()
+    try:
+        cursor = connection.cursor()
+        placeholder = db.qmark()
+        cursor.execute(
+            f"""INSERT INTO protocol_delivery_validations (
+                    validation_id, evidence_receipt_id, evidence_id, wallet_address,
+                    order_id, quote_id, tx_signature, payload_digest,
+                    inbox_signature_status, decision, reason, validation_sha256,
+                    evaluated_at
+                ) VALUES ({', '.join([placeholder] * 13)})""",
+            (
+                validation_id,
+                evidence_receipt_id,
+                evidence["evidence_id"],
+                evidence["wallet_address"],
+                intent["order_id"],
+                quote_id,
+                quote_record["tx_signature"],
+                payload_digest,
+                signature_status,
+                decision,
+                reason,
+                validation_sha256,
+                evaluated_at,
+            ),
+        )
+        connection.commit()
+        return _public_validation(_find_validation(cursor, evidence_receipt_id))
+    finally:
+        db.release_conn(connection)
+
+
+@validation_router.get("/{evidence_receipt_id}")
+def get_delivery_validation(evidence_receipt_id: str) -> dict[str, Any]:
+    connection = db.get_conn()
+    try:
+        record = _find_validation(connection.cursor(), evidence_receipt_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="delivery_validation_not_found")
+        return _public_validation(record)
     finally:
         db.release_conn(connection)

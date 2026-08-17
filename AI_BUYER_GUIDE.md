@@ -504,6 +504,23 @@ the completed buyer job. A signature failure remains distinct from a
 `publication_failed` registry failure, making operational recovery observable
 without weakening the signing boundary.
 
+### Independent delivery binding
+
+`POST /protocol/v1/delivery-validations/{evidence_receipt_id}` independently
+correlates a registered wallet proof with protocol-owned records: buyer intent,
+confirmed checkout and transaction signature, completed IAT execution, sealed
+payload digest, delivery receipt and inbox opening. A missing intermediate
+state returns a retryable conflict and is not frozen as a rejection. A broken
+payload digest or invalid optional inbox signature produces an immutable
+rejected validation instead.
+
+Successful correlation records a deterministic validation digest and can be
+read publicly with `GET /protocol/v1/delivery-validations/{receipt_id}`. The
+record explicitly states `quality_verified: false` and `effect:
+evidence_only`: it proves that one delivery is bound end-to-end to one signed
+buyer journal, not that the delivered content satisfies the buyer's semantic
+acceptance criteria. Automated quality verification is the next layer.
+
 ## Production boundary
 
 The production buyer flow remains:

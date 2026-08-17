@@ -55,6 +55,7 @@ from iat.api.checkout_api import init_checkout_db, router as checkout_router
 from iat.api.protocol_evidence import (
     init_protocol_evidence_db,
     router as protocol_evidence_router,
+    validation_router as protocol_validation_router,
 )
 from iat.checkout_delivery import (
     delivery_dashboard,
@@ -364,6 +365,7 @@ app.include_router(growth_public_router)
 app.include_router(goia_public_router)
 app.include_router(checkout_router)
 app.include_router(protocol_evidence_router)
+app.include_router(protocol_validation_router)
 
 def require_admin_key(x_api_key):
     expected_key = os.getenv("IAT_ADMIN_API_KEY")

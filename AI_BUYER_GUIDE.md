@@ -659,6 +659,22 @@ devnet genesis hash. Deployments may set `IAT_SETTLEMENT_SIMULATION_RPC_URL`,
 escrow keypair variable is read by this chain. Scheduler automation stops at a
 successful unsigned simulation and exposes no signing or broadcast method.
 
+### Short-lived one-time execution permit
+
+`POST /protocol/v1/settlement-execution-permits/{simulation_id}` converts only
+a recent successful simulation into a five-minute execution permit. It is
+bound to the immutable plan, Foundation authorization, settlement, order,
+cluster genesis, IAT mint, exact integer split and unsigned transaction digest.
+Expired simulations, mainnet, a wrong devnet identity, altered amounts or an
+invalid digest fail closed.
+
+No bearer secret is issued or stored. The public record is `issued`,
+`one_time: true` and `claim_required: true`, but
+`public_claim_available: false`: a future internal executor must claim it
+atomically through a separate trust boundary. This endpoint cannot build, sign
+or broadcast a transaction and reports all three operations and movement of
+funds as false. Automatic permit creation is the next bounded scheduler phase.
+
 ## Production boundary
 
 The production buyer flow remains:

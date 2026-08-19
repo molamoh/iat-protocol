@@ -205,3 +205,10 @@ La prochaine frontière est la conception d'une autorisation d'exécution à
 usage unique, liée à une simulation récente et au même plan immuable. L'envoi
 réel restera séparé et exigera encore une approbation explicite de sa politique
 de sécurité.
+
+Cette autorisation existe maintenant sous forme d'un permis public de cinq
+minutes, sans secret porteur, lié au plan, à la gouvernance, au hash de la
+simulation et aux montants exacts. Aucun appel public ne peut le réclamer ou
+déclencher un paiement. La prochaine étape est son enrôlement dans le scheduler,
+puis seulement la conception de la réclamation atomique par un exécuteur
+interne isolé.

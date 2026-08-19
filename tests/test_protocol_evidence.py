@@ -60,6 +60,7 @@ def evidence_app(tmp_path, monkeypatch):
     app.include_router(protocol_evidence.settlement_execution_plan_router)
     app.include_router(protocol_evidence.settlement_authorization_router)
     app.include_router(protocol_evidence.settlement_simulation_router)
+    app.include_router(protocol_evidence.settlement_execution_permit_router)
     return app
 
 
@@ -627,3 +628,28 @@ def test_authorized_settlement_simulation_is_public_and_never_broadcast(
     assert record["funds_moved"] is False
     assert "transaction_base64" not in record
     assert len(record["simulation_sha256"]) == 64
+    permit = call(
+        app,
+        "POST",
+        f"/protocol/v1/settlement-execution-permits/{record['simulation_id']}",
+    )
+    public_permit = call(
+        app,
+        "GET",
+        f"/protocol/v1/settlement-execution-permits/{record['simulation_id']}",
+    )
+    assert permit.status_code == public_permit.status_code == 200
+    assert permit.json() == public_permit.json()
+    issued = permit.json()
+    assert issued["state"] == "issued"
+    assert issued["effect"] == "execution_authorization_only"
+    assert issued["one_time"] is True
+    assert issued["claim_required"] is True
+    assert issued["currently_valid"] is True
+    assert issued["public_claim_available"] is False
+    assert issued["transaction_built"] is False
+    assert issued["transaction_signed"] is False
+    assert issued["transaction_broadcast"] is False
+    assert issued["funds_moved"] is False
+    assert issued["expires_at"] == NOW + 300
+    assert len(issued["permit_sha256"]) == 64

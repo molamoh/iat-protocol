@@ -45,6 +45,10 @@ settlement_simulation_router = APIRouter(
     prefix="/protocol/v1/settlement-simulations",
     tags=["protocol-evidence"],
 )
+settlement_execution_permit_router = APIRouter(
+    prefix="/protocol/v1/settlement-execution-permits",
+    tags=["protocol-evidence"],
+)
 MAX_EVIDENCE_AGE_SECONDS = 86_400
 MAX_FUTURE_SKEW_SECONDS = 60
 
@@ -176,6 +180,30 @@ def init_protocol_evidence_db() -> None:
                 policy_version TEXT NOT NULL,
                 simulation_sha256 TEXT NOT NULL,
                 simulated_at BIGINT NOT NULL
+            )
+            """
+        )
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS protocol_settlement_execution_permits (
+                permit_id TEXT PRIMARY KEY,
+                simulation_id TEXT NOT NULL UNIQUE,
+                authorization_id TEXT NOT NULL,
+                plan_id TEXT NOT NULL,
+                settlement_id TEXT NOT NULL,
+                order_id TEXT NOT NULL,
+                cluster TEXT NOT NULL,
+                genesis_hash TEXT NOT NULL,
+                mint TEXT NOT NULL,
+                unsigned_transaction_sha256 TEXT NOT NULL,
+                gross_amount_minor BIGINT NOT NULL,
+                protocol_commission_amount_minor BIGINT NOT NULL,
+                seller_payout_amount_minor BIGINT NOT NULL,
+                state TEXT NOT NULL,
+                policy_version TEXT NOT NULL,
+                permit_sha256 TEXT NOT NULL,
+                issued_at BIGINT NOT NULL,
+                expires_at BIGINT NOT NULL
             )
             """
         )
@@ -460,6 +488,33 @@ def _public_settlement_simulation(row: Any) -> dict[str, Any]:
         "execution_enabled": False,
         "unsigned_transaction_built": True,
         "serialized_transaction_disclosed": False,
+        "transaction_signed": False,
+        "transaction_broadcast": False,
+        "funds_moved": False,
+    }
+
+
+def _find_settlement_execution_permit(cursor: Any, simulation_id: str) -> Any:
+    placeholder = db.qmark()
+    cursor.execute(
+        f"""SELECT * FROM protocol_settlement_execution_permits
+            WHERE simulation_id = {placeholder}""",
+        (simulation_id,),
+    )
+    return cursor.fetchone()
+
+
+def _public_settlement_execution_permit(row: Any) -> dict[str, Any]:
+    record = dict(row)
+    return {
+        "status": "protocol_settlement_execution_permit_recorded",
+        **record,
+        "effect": "execution_authorization_only",
+        "one_time": True,
+        "claim_required": True,
+        "currently_valid": record["state"] == "issued" and _now() <= int(record["expires_at"]),
+        "public_claim_available": False,
+        "transaction_built": False,
         "transaction_signed": False,
         "transaction_broadcast": False,
         "funds_moved": False,
@@ -1356,5 +1411,104 @@ def get_settlement_simulation(authorization_id: str) -> dict[str, Any]:
         if record is None:
             raise HTTPException(status_code=404, detail="settlement_simulation_not_found")
         return _public_settlement_simulation(record)
+    finally:
+        db.release_conn(connection)
+
+
+@settlement_execution_permit_router.post("/{simulation_id}")
+def issue_settlement_execution_permit(simulation_id: str) -> dict[str, Any]:
+    connection = db.get_conn()
+    try:
+        cursor = connection.cursor()
+        existing = _find_settlement_execution_permit(cursor, simulation_id)
+        if existing is not None:
+            return _public_settlement_execution_permit(existing)
+        placeholder = db.qmark()
+        cursor.execute(
+            f"""SELECT s.*, p.gross_amount_minor,
+                       p.protocol_commission_amount_minor,
+                       p.seller_payout_amount_minor
+                FROM protocol_settlement_simulations s
+                JOIN protocol_settlement_execution_plans p ON p.plan_id = s.plan_id
+                WHERE s.simulation_id = {placeholder}""",
+            (simulation_id,),
+        )
+        joined = cursor.fetchone()
+    finally:
+        db.release_conn(connection)
+    if joined is None:
+        raise HTTPException(status_code=404, detail="settlement_simulation_not_found")
+    record = dict(joined)
+    now = _now()
+    max_age = 300
+    if int(record["simulated_at"]) < now - max_age:
+        raise HTTPException(status_code=409, detail="settlement_simulation_expired")
+    if record["cluster"] not in {"solana-devnet", "solana-localnet"}:
+        raise HTTPException(status_code=409, detail="settlement_simulation_cluster_invalid")
+    if (
+        record["cluster"] == "solana-devnet"
+        and record["genesis_hash"] != "EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
+    ):
+        raise HTTPException(status_code=409, detail="settlement_simulation_cluster_invalid")
+    amounts = (
+        int(record["gross_amount_minor"]),
+        int(record["protocol_commission_amount_minor"]),
+        int(record["seller_payout_amount_minor"]),
+    )
+    if amounts[0] <= 0 or min(amounts) < 0 or amounts[1] + amounts[2] != amounts[0]:
+        raise HTTPException(status_code=409, detail="settlement_permit_amount_invalid")
+    if len(str(record["unsigned_transaction_sha256"])) != 64:
+        raise HTTPException(status_code=409, detail="settlement_simulation_digest_invalid")
+    expires_at = now + 300
+    policy_version = "settlement_execution_permit_v1"
+    facts = {
+        "authorization_id": record["authorization_id"],
+        "cluster": record["cluster"],
+        "expires_at": expires_at,
+        "genesis_hash": record["genesis_hash"],
+        "gross_amount_minor": amounts[0],
+        "issued_at": now,
+        "mint": record["mint"],
+        "order_id": record["order_id"],
+        "plan_id": record["plan_id"],
+        "policy_version": policy_version,
+        "protocol_commission_amount_minor": amounts[1],
+        "seller_payout_amount_minor": amounts[2],
+        "settlement_id": record["settlement_id"],
+        "simulation_id": simulation_id,
+        "state": "issued",
+        "unsigned_transaction_sha256": record["unsigned_transaction_sha256"],
+    }
+    permit_sha256 = hashlib.sha256(
+        json.dumps(facts, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    permit_id = "pep_" + permit_sha256[:24]
+    fields = tuple(facts)
+    connection = db.get_conn()
+    try:
+        cursor = connection.cursor()
+        placeholder = db.qmark()
+        cursor.execute(
+            f"""INSERT INTO protocol_settlement_execution_permits (
+                    permit_id, {', '.join(fields)}, permit_sha256
+                ) VALUES ({', '.join([placeholder] * 18)})""",
+            (permit_id, *(facts[field] for field in fields), permit_sha256),
+        )
+        connection.commit()
+        return _public_settlement_execution_permit(
+            _find_settlement_execution_permit(cursor, simulation_id)
+        )
+    finally:
+        db.release_conn(connection)
+
+
+@settlement_execution_permit_router.get("/{simulation_id}")
+def get_settlement_execution_permit(simulation_id: str) -> dict[str, Any]:
+    connection = db.get_conn()
+    try:
+        record = _find_settlement_execution_permit(connection.cursor(), simulation_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="settlement_execution_permit_not_found")
+        return _public_settlement_execution_permit(record)
     finally:
         db.release_conn(connection)

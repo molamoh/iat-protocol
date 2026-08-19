@@ -670,8 +670,8 @@ invalid digest fail closed.
 
 No bearer secret is issued or stored. The public record is `issued`,
 `one_time: true` and `claim_required: true`, but
-`public_claim_available: false`: a future internal executor must claim it
-atomically through a separate trust boundary. This endpoint cannot build, sign
+`public_claim_available: false`: the canonical settlement execution guard must
+consume it atomically while reserving the financial settlement. This endpoint cannot build, sign
 or broadcast a transaction and reports all three operations and movement of
 funds as false. Automatic permit creation is the next bounded scheduler phase.
 
@@ -683,21 +683,18 @@ are enrolled during migration. Only the public permit identifier, digest,
 state and timestamps enter the local journal. Reaching this state still offers
 no claim, signer or broadcast operation.
 
-### Isolated atomic permit claim
+### Canonical atomic execution claim
 
-`POST /internal/v1/settlement-executor/permits/{permit_id}/claim` is the first
-non-public executor boundary. It fails closed unless a distinct
-`IAT_SETTLEMENT_EXECUTOR_SECRET` of at least 32 characters is configured and
-supplied in `X-IAT-Settlement-Executor-Secret`; comparison is constant-time.
-The secret is never persisted or returned.
+There is no independent permit-claim route. The existing settlement action
+engine is the sole execution path. Its database guard consumes an unexpired
+permit and reserves the matching financial settlement in the same transaction.
+If either update fails, both are rolled back. Concurrent or repeated claims
+cannot both succeed, and no parallel execution lock can diverge from the
+financial settlement state.
 
-One conditional database update changes an unexpired permit from `issued` to
-`claimed` and records a public claim identifier, executor class and timestamp.
-Concurrent or repeated claims cannot both succeed. This operation does not
-claim the legacy settlement execution row, load an escrow keypair, construct a
-transaction, sign, broadcast or move funds. The next layer must revalidate the
-claim and prepare a fresh transaction for a second simulation before any
-signature can be considered.
+Simulation and execution also use the same canonical Solana instruction
+builder. The execution path performs a final signed simulation before any RPC
+broadcast.
 
 ## Production boundary
 

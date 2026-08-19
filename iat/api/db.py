@@ -11668,11 +11668,13 @@ def update_settlement_status_db(
 def claim_settlement_execution_db(
     settlement_id,
     claim_token=None,
+    execution_permit_id=None,
 ):
     """
     Settlement Execution Guard V1.
 
-    Atomically reserves one settlement before any blockchain broadcast.
+    Atomically consumes an optional protocol permit and reserves one
+    settlement before any blockchain broadcast.
 
     Safety doctrine:
     - A stored transaction signature is always returned idempotently.
@@ -11769,6 +11771,101 @@ def claim_settlement_execution_db(
                 ),
             }
 
+        permit_claim = None
+        if execution_permit_id:
+            cur.execute(f"""
+            SELECT *
+            FROM protocol_settlement_execution_permits
+            WHERE permit_id = {p}
+            """, (
+                execution_permit_id,
+            ))
+            permit_row = cur.fetchone()
+            if not permit_row:
+                conn.rollback()
+                return {
+                    "status": "execution_permit_not_found",
+                    "reason": "settlement_execution_permit_not_found",
+                    "settlement_id": settlement_id,
+                    "claimed": False,
+                    "broadcast_allowed": False,
+                }
+
+            permit = dict(permit_row)
+            permit_matches_settlement = (
+                permit.get("settlement_id") == settlement_id
+                and permit.get("order_id") == settlement.get("order_id")
+                and int(permit.get("gross_amount_minor") or 0)
+                == int(settlement.get("gross_amount_minor") or 0)
+                and int(permit.get("protocol_commission_amount_minor") or 0)
+                == int(settlement.get("protocol_commission_amount_minor") or 0)
+                and int(permit.get("seller_payout_amount_minor") or 0)
+                == int(settlement.get("seller_payout_amount_minor") or 0)
+            )
+            if not permit_matches_settlement:
+                conn.rollback()
+                return {
+                    "status": "execution_permit_mismatch",
+                    "reason": "settlement_execution_permit_mismatch",
+                    "settlement_id": settlement_id,
+                    "claimed": False,
+                    "broadcast_allowed": False,
+                }
+            if int(permit.get("expires_at") or 0) < now:
+                conn.rollback()
+                return {
+                    "status": "execution_permit_expired",
+                    "reason": "settlement_execution_permit_expired",
+                    "settlement_id": settlement_id,
+                    "claimed": False,
+                    "broadcast_allowed": False,
+                }
+            if permit.get("state") != "issued":
+                conn.rollback()
+                return {
+                    "status": "execution_permit_already_consumed",
+                    "reason": "settlement_execution_permit_already_claimed",
+                    "settlement_id": settlement_id,
+                    "claimed": False,
+                    "broadcast_allowed": False,
+                    "idempotent": True,
+                }
+
+            permit_claim_id = "pec_" + hashlib.sha256(
+                f"{execution_permit_id}:{claim_token}:{now}".encode()
+            ).hexdigest()[:24]
+            cur.execute(f"""
+            UPDATE protocol_settlement_execution_permits
+            SET state = 'claimed', claim_id = {p},
+                claimed_by = {p}, claimed_at = {p}
+            WHERE permit_id = {p}
+              AND settlement_id = {p}
+              AND state = 'issued'
+              AND expires_at >= {p}
+            """, (
+                permit_claim_id,
+                "settlement_execution_guard_v2",
+                now,
+                execution_permit_id,
+                settlement_id,
+                now,
+            ))
+            if int(cur.rowcount or 0) != 1:
+                conn.rollback()
+                return {
+                    "status": "execution_permit_claim_conflict",
+                    "reason": "atomic_execution_permit_claim_not_acquired",
+                    "settlement_id": settlement_id,
+                    "claimed": False,
+                    "broadcast_allowed": False,
+                    "idempotent": True,
+                }
+            permit_claim = {
+                "permit_id": execution_permit_id,
+                "claim_id": permit_claim_id,
+                "claimed_at": now,
+            }
+
         cur.execute(f"""
         UPDATE settlements
         SET execution_claim_status = {p},
@@ -11811,6 +11908,7 @@ def claim_settlement_execution_db(
             "claimed": True,
             "broadcast_allowed": True,
             "claimed_at": now,
+            "execution_permit": permit_claim,
         }
 
     except Exception as exc:

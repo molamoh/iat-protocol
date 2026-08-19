@@ -140,6 +140,9 @@ def execute_settlement_atomic_action(action_request):
 
     claim_result = claim_settlement_execution_db(
         settlement_id=settlement_id,
+        execution_permit_id=(
+            payload.get("execution_permit_id") or payload.get("permit_id")
+        ),
     )
 
     if claim_result.get("status") == "settlement_already_submitted":

@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
 import os
 import time
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
 from solders.pubkey import Pubkey
 from solders.signature import Signature
@@ -50,10 +49,6 @@ settlement_simulation_router = APIRouter(
 settlement_execution_permit_router = APIRouter(
     prefix="/protocol/v1/settlement-execution-permits",
     tags=["protocol-evidence"],
-)
-settlement_executor_router = APIRouter(
-    prefix="/internal/v1/settlement-executor",
-    tags=["internal-settlement-executor"],
 )
 MAX_EVIDENCE_AGE_SECONDS = 86_400
 MAX_FUTURE_SKEW_SECONDS = 60
@@ -1532,91 +1527,5 @@ def get_settlement_execution_permit(simulation_id: str) -> dict[str, Any]:
         if record is None:
             raise HTTPException(status_code=404, detail="settlement_execution_permit_not_found")
         return _public_settlement_execution_permit(record)
-    finally:
-        db.release_conn(connection)
-
-
-def _authenticate_settlement_executor(supplied: str | None) -> None:
-    expected = os.getenv("IAT_SETTLEMENT_EXECUTOR_SECRET", "")
-    if len(expected) < 32:
-        raise HTTPException(status_code=503, detail="settlement_executor_not_configured")
-    if not hmac.compare_digest(expected, str(supplied or "")):
-        raise HTTPException(status_code=401, detail="settlement_executor_unauthorized")
-
-
-@settlement_executor_router.post("/permits/{permit_id}/claim")
-def claim_settlement_execution_permit(
-    permit_id: str,
-    executor_secret: str | None = Header(
-        default=None, alias="X-IAT-Settlement-Executor-Secret"
-    ),
-) -> dict[str, Any]:
-    _authenticate_settlement_executor(executor_secret)
-    if not permit_id.startswith("pep_") or len(permit_id) > 64:
-        raise HTTPException(status_code=404, detail="settlement_execution_permit_not_found")
-    now = _now()
-    claimed_by = "isolated_settlement_executor"
-    connection = db.get_conn()
-    try:
-        cursor = connection.cursor()
-        placeholder = db.qmark()
-        cursor.execute(
-            f"SELECT * FROM protocol_settlement_execution_permits WHERE permit_id = {placeholder}",
-            (permit_id,),
-        )
-        row = cursor.fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail="settlement_execution_permit_not_found")
-        permit = dict(row)
-        claim_sha256 = hashlib.sha256(
-            json.dumps(
-                {
-                    "claimed_at": now,
-                    "claimed_by": claimed_by,
-                    "permit_id": permit_id,
-                    "permit_sha256": permit["permit_sha256"],
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
-        ).hexdigest()
-        claim_id = "pec_" + claim_sha256[:24]
-        cursor.execute(
-            f"""UPDATE protocol_settlement_execution_permits
-                SET state = 'claimed', claim_id = {placeholder},
-                    claimed_by = {placeholder}, claimed_at = {placeholder}
-                WHERE permit_id = {placeholder} AND state = 'issued'
-                  AND expires_at >= {placeholder}""",
-            (claim_id, claimed_by, now, permit_id, now),
-        )
-        if cursor.rowcount != 1:
-            if int(permit["expires_at"]) < now:
-                raise HTTPException(status_code=409, detail="settlement_execution_permit_expired")
-            raise HTTPException(status_code=409, detail="settlement_execution_permit_already_claimed")
-        connection.commit()
-        cursor.execute(
-            f"SELECT * FROM protocol_settlement_execution_permits WHERE permit_id = {placeholder}",
-            (permit_id,),
-        )
-        claimed = dict(cursor.fetchone())
-        return {
-            "status": "settlement_execution_permit_claimed",
-            "permit_id": claimed["permit_id"],
-            "simulation_id": claimed["simulation_id"],
-            "settlement_id": claimed["settlement_id"],
-            "order_id": claimed["order_id"],
-            "claim_id": claimed["claim_id"],
-            "claimed_by": claimed["claimed_by"],
-            "claimed_at": int(claimed["claimed_at"]),
-            "state": claimed["state"],
-            "effect": "claim_only",
-            "transaction_built": False,
-            "transaction_signed": False,
-            "transaction_broadcast": False,
-            "funds_moved": False,
-        }
-    except HTTPException:
-        connection.rollback()
-        raise
     finally:
         db.release_conn(connection)

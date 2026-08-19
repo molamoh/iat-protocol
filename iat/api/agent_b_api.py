@@ -61,7 +61,6 @@ from iat.api.protocol_evidence import (
     settlement_authorization_router as protocol_settlement_authorization_router,
     settlement_simulation_router as protocol_settlement_simulation_router,
     settlement_execution_permit_router as protocol_settlement_execution_permit_router,
-    settlement_executor_router as protocol_settlement_executor_router,
     validation_router as protocol_validation_router,
 )
 from iat.checkout_delivery import (
@@ -379,7 +378,6 @@ app.include_router(protocol_settlement_execution_plan_router)
 app.include_router(protocol_settlement_authorization_router)
 app.include_router(protocol_settlement_simulation_router)
 app.include_router(protocol_settlement_execution_permit_router)
-app.include_router(protocol_settlement_executor_router)
 
 def require_admin_key(x_api_key):
     expected_key = os.getenv("IAT_ADMIN_API_KEY")

@@ -5,7 +5,11 @@ from solders.pubkey import Pubkey
 from solders.instruction import Instruction
 from spl.token.instructions import transfer_checked, TransferCheckedParams, get_associated_token_address, create_associated_token_account
 from spl.token.constants import TOKEN_PROGRAM_ID
-from iat.config import IAT_TOKEN_ADDRESS
+from iat.config import IAT_DECIMALS, IAT_TOKEN_ADDRESS
+from iat.settlement_transaction import (
+    MEMO_PROGRAM_ID,
+    build_atomic_settlement_instructions,
+)
 
 import os
 
@@ -15,11 +19,6 @@ RPC = (
     or "https://api.mainnet-beta.solana.com"
 )
 IAT_MINT = IAT_TOKEN_ADDRESS
-
-# Memo program
-MEMO_PROGRAM_ID = Pubkey.from_string("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr")
-
-
 
 def load_keypair(keypair_input):
     from solders.keypair import Keypair
@@ -301,6 +300,8 @@ def send_iat_split_atomic(
 
     Either every instruction succeeds or the complete transaction fails.
     """
+    from solana.rpc.commitment import Confirmed
+
     client = Client(RPC)
     keypair = load_keypair(from_keypair_path)
 
@@ -308,81 +309,24 @@ def send_iat_split_atomic(
     treasury_owner = Pubkey.from_string(str(treasury_address))
     winner_owner = Pubkey.from_string(str(winner_address))
 
-    source_ata = get_associated_token_address(keypair.pubkey(), mint)
     treasury_ata = get_associated_token_address(treasury_owner, mint)
     winner_ata = get_associated_token_address(winner_owner, mint)
 
-    commission_raw = int(round(float(commission_amount or 0) * 10**8))
-    seller_payout_raw = int(round(float(seller_payout_amount or 0) * 10**8))
-
-    if commission_raw < 0 or seller_payout_raw < 0:
-        raise ValueError("Atomic split amounts cannot be negative")
-
-    if commission_raw + seller_payout_raw <= 0:
-        raise ValueError("Atomic split total amount must be positive")
-
-    instructions = []
-
-    treasury_info = client.get_account_info(treasury_ata)
-    if treasury_info.value is None:
-        instructions.append(
-            create_associated_token_account(
-                payer=keypair.pubkey(),
-                owner=treasury_owner,
-                mint=mint,
-            )
-        )
-
-    winner_info = client.get_account_info(winner_ata)
-    if winner_info.value is None:
-        instructions.append(
-            create_associated_token_account(
-                payer=keypair.pubkey(),
-                owner=winner_owner,
-                mint=mint,
-            )
-        )
-
-    if commission_raw > 0:
-        instructions.append(
-            transfer_checked(
-                TransferCheckedParams(
-                    program_id=TOKEN_PROGRAM_ID,
-                    source=source_ata,
-                    mint=mint,
-                    dest=treasury_ata,
-                    owner=keypair.pubkey(),
-                    amount=commission_raw,
-                    decimals=8,
-                    signers=[],
-                )
-            )
-        )
-
-    if seller_payout_raw > 0:
-        instructions.append(
-            transfer_checked(
-                TransferCheckedParams(
-                    program_id=TOKEN_PROGRAM_ID,
-                    source=source_ata,
-                    mint=mint,
-                    dest=winner_ata,
-                    owner=keypair.pubkey(),
-                    amount=seller_payout_raw,
-                    decimals=8,
-                    signers=[],
-                )
-            )
-        )
-
-    if memo_text:
-        instructions.append(
-            Instruction(
-                program_id=MEMO_PROGRAM_ID,
-                accounts=[],
-                data=str(memo_text).encode("utf-8"),
-            )
-        )
+    commission_raw = int(round(float(commission_amount or 0) * 10**IAT_DECIMALS))
+    seller_payout_raw = int(round(float(seller_payout_amount or 0) * 10**IAT_DECIMALS))
+    treasury_info = client.get_account_info(treasury_ata, commitment=Confirmed)
+    winner_info = client.get_account_info(winner_ata, commitment=Confirmed)
+    instructions, _accounts = build_atomic_settlement_instructions(
+        escrow_authority=keypair.pubkey(),
+        mint=mint,
+        treasury_owner=treasury_owner,
+        winner_owner=winner_owner,
+        commission_amount_minor=commission_raw,
+        seller_payout_amount_minor=seller_payout_raw,
+        create_treasury_account=treasury_info.value is None,
+        create_winner_account=winner_info.value is None,
+        memo_text=memo_text,
+    )
 
     blockhash = client.get_latest_blockhash().value.blockhash
 
@@ -391,6 +335,18 @@ def send_iat_split_atomic(
 
     message = Message(instructions, keypair.pubkey())
     transaction = Transaction([keypair], message, blockhash)
+
+    simulation = client.simulate_transaction(
+        transaction,
+        sig_verify=True,
+        commitment=Confirmed,
+    )
+    if simulation.value.err is not None:
+        raise RuntimeError(
+            "Solana atomic settlement simulation failed: "
+            f"error={simulation.value.err!r}; "
+            f"logs={(simulation.value.logs or [])!r}"
+        )
 
     response = client.send_raw_transaction(bytes(transaction))
     return str(response.value)

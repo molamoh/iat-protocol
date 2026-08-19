@@ -10,25 +10,17 @@ from typing import Any, Callable
 
 import requests
 from solders.hash import Hash
-from solders.instruction import Instruction
 from solders.message import Message
 from solders.pubkey import Pubkey
 from solders.signature import Signature
 from solders.transaction import VersionedTransaction
 from spl.token.constants import TOKEN_PROGRAM_ID
-from spl.token.instructions import (
-    TransferCheckedParams,
-    create_associated_token_account,
-    get_associated_token_address,
-    transfer_checked,
-)
+from spl.token.instructions import get_associated_token_address
 
 from iat.config import IAT_DECIMALS, IAT_TOKEN_ADDRESS
+from iat.settlement_transaction import build_atomic_settlement_instructions
 
 
-MEMO_PROGRAM_ID = Pubkey.from_string(
-    "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
-)
 ALLOWED_CLUSTERS = {"solana-devnet", "solana-localnet"}
 SOLANA_DEVNET_GENESIS_HASH = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
 
@@ -184,41 +176,31 @@ def simulate_authorized_settlement(
     if source_balance < gross_amount_minor:
         raise SettlementSimulationError("escrow_token_balance_insufficient")
 
-    instructions: list[Instruction] = []
+    create_accounts: dict[str, bool] = {}
     for owner, ata, field in (
         (treasury, treasury_ata, "treasury_token_account"),
         (winner, winner_ata, "winner_token_account"),
     ):
         account = _parsed_account(call, ata)
         if account is None:
-            instructions.append(create_associated_token_account(escrow, owner, mint))
+            create_accounts[field] = True
             continue
+        create_accounts[field] = False
         info = _parsed_info(account, field)
         if info.get("mint") != str(mint) or info.get("owner") != str(owner):
             raise SettlementSimulationError(f"{field}_binding_invalid")
 
-    for destination, amount in (
-        (treasury_ata, commission_amount_minor),
-        (winner_ata, seller_payout_amount_minor),
-    ):
-        if amount <= 0:
-            continue
-        instructions.append(
-            transfer_checked(
-                TransferCheckedParams(
-                    program_id=TOKEN_PROGRAM_ID,
-                    source=source,
-                    mint=mint,
-                    dest=destination,
-                    owner=escrow,
-                    amount=amount,
-                    decimals=IAT_DECIMALS,
-                    signers=[],
-                )
-            )
-        )
-    memo = f"IAT_SETTLEMENT_SIMULATION:{settlement_id}:{order_id}"
-    instructions.append(Instruction(MEMO_PROGRAM_ID, memo.encode(), []))
+    instructions, accounts = build_atomic_settlement_instructions(
+        escrow_authority=escrow,
+        mint=mint,
+        treasury_owner=treasury,
+        winner_owner=winner,
+        commission_amount_minor=commission_amount_minor,
+        seller_payout_amount_minor=seller_payout_amount_minor,
+        create_treasury_account=create_accounts["treasury_token_account"],
+        create_winner_account=create_accounts["winner_token_account"],
+        memo_text=f"IAT_SETTLEMENT:{settlement_id}:{order_id}",
+    )
 
     latest = call("getLatestBlockhash", [{"commitment": "confirmed"}])
     try:
@@ -265,9 +247,9 @@ def simulate_authorized_settlement(
         "mint_decimals": IAT_DECIMALS,
         "fee_payer": str(escrow),
         "escrow_authority": str(escrow),
-        "source_token_account": str(source),
-        "treasury_token_account": str(treasury_ata),
-        "winner_token_account": str(winner_ata),
+        "source_token_account": str(accounts["source_token_account"]),
+        "treasury_token_account": str(accounts["treasury_token_account"]),
+        "winner_token_account": str(accounts["winner_token_account"]),
         "gross_amount_minor": gross_amount_minor,
         "protocol_commission_amount_minor": commission_amount_minor,
         "seller_payout_amount_minor": seller_payout_amount_minor,

@@ -220,3 +220,16 @@ La prochaine frontière est l'isolation du signataire et la définition d'une
 politique explicite d'autorisation de diffusion. Elle devra réutiliser ce
 chemin unique, ne jamais exposer la clé d'escrow et conserver la récupération
 contrôlée des diffusions ambiguës.
+
+Le protocole réutilise désormais l'infrastructure non dépositaire existante :
+signataire HTTPS attesté, sidecar de wallet et backend RPC devnet. Une politique
+de règlement IAT spécialisée vérifie le wallet d'escrow, la trésorerie, le
+plafond, la conservation des montants, le permit réclamé, son lien au règlement
+et à la commande, l'expiration et le hash exact de la simulation finale. Cette
+politique n'est pas encore raccordée à l'adaptateur financier et ne peut donc
+déclencher aucune signature ou diffusion.
+
+La prochaine étape est de produire une transaction non signée fraîche depuis
+le constructeur canonique, de la simuler, puis de transmettre au sidecar cette
+transaction et cette revue strictement liées. L'ancien chargement local de clé
+devra alors être retiré du chemin de règlement.

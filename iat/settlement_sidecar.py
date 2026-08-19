@@ -7,6 +7,7 @@ import os
 from typing import Any, Mapping
 
 from solders.keypair import Keypair
+from solders.pubkey import Pubkey
 from solders.signature import Signature
 from solders.transaction import VersionedTransaction
 
@@ -96,11 +97,52 @@ def create_settlement_sidecar_app_from_env():
 
 
 def settlement_sidecar_diagnostic() -> dict[str, Any]:
-    values = _required_env()
+    keypair_input = (
+        os.getenv("IAT_ESCROW_KEYPAIR_JSON")
+        or os.getenv("IAT_ESCROW_KEYPAIR_PATH")
+    )
+    escrow_wallet = os.getenv("IAT_ESCROW_WALLET", "").strip()
+    treasury_wallet = os.getenv("IAT_PROTOCOL_TREASURY_WALLET", "").strip()
+    token_configured = len(os.getenv("IAT_SETTLEMENT_WALLET_SIDECAR_TOKEN", "")) >= 16
+    missing = [
+        name for name, value in (
+            ("IAT_ESCROW_KEYPAIR_JSON_OR_PATH", keypair_input),
+            ("IAT_ESCROW_WALLET", escrow_wallet),
+            ("IAT_PROTOCOL_TREASURY_WALLET", treasury_wallet),
+        ) if not str(value or "").strip()
+    ]
+    keypair_status = "not_checked"
+    wallet_match = False
+    if keypair_input:
+        try:
+            keypair = load_keypair(keypair_input)
+            keypair_status = "loaded"
+            wallet_match = str(keypair.pubkey()) == escrow_wallet
+        except Exception:
+            keypair_status = "unavailable_or_invalid"
+    treasury_status = "valid"
+    if treasury_wallet:
+        try:
+            Pubkey.from_string(treasury_wallet)
+        except ValueError:
+            treasury_status = "invalid"
+    if not token_configured:
+        missing.append("IAT_SETTLEMENT_WALLET_SIDECAR_TOKEN")
+    if keypair_status != "loaded":
+        missing.append("escrow_keypair_load")
+    elif not wallet_match:
+        missing.append("escrow_wallet_keypair_mismatch")
+    if treasury_status != "valid":
+        missing.append("treasury_wallet_invalid")
     return {
-        "status": "settlement_sidecar_ready" if values else "settlement_sidecar_not_configured",
+        "status": "settlement_sidecar_ready" if not missing else "settlement_sidecar_not_ready",
         "local_only": True,
         "public_url_required": False,
         "private_key_returned": False,
-        "wallet_configured": bool(values),
+        "wallet_configured": bool(escrow_wallet),
+        "token_configured": token_configured,
+        "keypair_status": keypair_status,
+        "wallet_matches_keypair": wallet_match,
+        "treasury_status": treasury_status,
+        "missing_checks": sorted(set(missing)),
     }

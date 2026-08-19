@@ -63,7 +63,10 @@ from iat.api.protocol_evidence import (
     settlement_execution_permit_router as protocol_settlement_execution_permit_router,
     validation_router as protocol_validation_router,
 )
-from iat.settlement_sidecar import create_settlement_sidecar_app_from_env
+from iat.settlement_sidecar import (
+    create_settlement_sidecar_app_from_env,
+    settlement_sidecar_diagnostic,
+)
 from iat.checkout_delivery import (
     delivery_dashboard,
     delivery_events,
@@ -2597,6 +2600,7 @@ def health():
         "status": "ok",
         "service": "iat-protocol",
         "build_version": os.getenv("IAT_BUILD_VERSION", "development"),
+        "settlement_sidecar": settlement_sidecar_diagnostic(),
     }
 
 

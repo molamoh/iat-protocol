@@ -19,7 +19,10 @@ def test_local_settlement_sidecar_is_not_configured_without_render_secrets(monke
     ):
         monkeypatch.delenv(name, raising=False)
     assert settlement_sidecar.create_settlement_sidecar_app_from_env() is None
-    assert settlement_sidecar.settlement_sidecar_diagnostic()["local_only"] is True
+    diagnostic = settlement_sidecar.settlement_sidecar_diagnostic()
+    assert diagnostic["local_only"] is True
+    assert diagnostic["status"] == "settlement_sidecar_not_ready"
+    assert "IAT_SETTLEMENT_WALLET_SIDECAR_TOKEN" in diagnostic["missing_checks"]
 
 
 def test_local_escrow_signer_signs_only_required_empty_slot():
@@ -44,3 +47,4 @@ def test_local_settlement_sidecar_assembles_from_existing_escrow_keypair(tmp_pat
     app = settlement_sidecar.create_settlement_sidecar_app_from_env()
     assert app is not None
     assert any(route.path == "/health" for route in app.routes)
+    assert settlement_sidecar.settlement_sidecar_diagnostic()["status"] == "settlement_sidecar_ready"

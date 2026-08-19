@@ -257,18 +257,35 @@ def test_post_eligibility_artifacts_are_publicly_verified_without_session_token(
         "transaction_broadcast": False,
         "funds_moved": False,
     }
+    permit = {
+        "simulation_id": simulation["simulation_id"],
+        "permit_id": "pep_1234567890abcdef12345678",
+        "permit_sha256": "5" * 64,
+        "state": "issued",
+        "effect": "execution_authorization_only",
+        "one_time": True,
+        "claim_required": True,
+        "currently_valid": True,
+        "public_claim_available": False,
+        "transaction_built": False,
+        "transaction_signed": False,
+        "transaction_broadcast": False,
+        "funds_moved": False,
+    }
     session = Session(
         [
             Response(plan), Response(plan),
             Response(authorization), Response(authorization),
             Response(simulation), Response(simulation),
+            Response(permit), Response(permit),
         ]
     )
     buyer = runner(session)
     assert buyer.plan_settlement_execution(plan["eligibility_id"]) == plan
     assert buyer.authorize_settlement_plan(plan["plan_id"]) == authorization
     assert buyer.simulate_settlement(authorization["authorization_id"]) == simulation
-    assert [call[0] for call in session.calls] == ["POST", "GET"] * 3
+    assert buyer.issue_settlement_execution_permit(simulation["simulation_id"]) == permit
+    assert [call[0] for call in session.calls] == ["POST", "GET"] * 4
     assert all("Authorization" not in call[2]["headers"] for call in session.calls)
 
 

@@ -369,6 +369,33 @@ class AutonomousBuyerRunner:
             raise AutonomousBuyerError("protocol_settlement_simulation_mismatch")
         return public
 
+    def issue_settlement_execution_permit(self, simulation_id: str) -> dict[str, Any]:
+        record_id = str(simulation_id).strip()
+        if not record_id.startswith("pss_") or len(record_id) > 64:
+            raise AutonomousBuyerError("settlement_simulation_id_invalid")
+        path = f"/protocol/v1/settlement-execution-permits/{quote(record_id, safe='')}"
+        issued = self._request("POST", path, authenticate=False)
+        public = self._request("GET", path, authenticate=False)
+        bindings = (
+            public == issued
+            and public.get("simulation_id") == record_id
+            and public.get("state") == "issued"
+            and public.get("effect") == "execution_authorization_only"
+            and public.get("one_time") is True
+            and public.get("claim_required") is True
+            and public.get("currently_valid") is True
+            and public.get("public_claim_available") is False
+            and public.get("transaction_built") is False
+            and public.get("transaction_signed") is False
+            and public.get("transaction_broadcast") is False
+            and public.get("funds_moved") is False
+            and str(public.get("permit_id") or "").startswith("pep_")
+            and len(str(public.get("permit_sha256") or "")) == 64
+        )
+        if not bindings:
+            raise AutonomousBuyerError("protocol_settlement_execution_permit_mismatch")
+        return public
+
     def _validate_prepared_transaction(self, prepared: Any) -> dict[str, Any]:
         if not isinstance(prepared, dict):
             raise AutonomousBuyerError("prepared_transaction_missing")

@@ -675,6 +675,14 @@ atomically through a separate trust boundary. This endpoint cannot build, sign
 or broadcast a transaction and reports all three operations and movement of
 funds as false. Automatic permit creation is the next bounded scheduler phase.
 
+The scheduler now creates and reads back this permit in a fourth independent
+post-eligibility cycle. `settlement_simulated` becomes
+`settlement_execution_permitted`; permit transport failures use their own
+lease, ten-attempt budget and bounded backoff, and existing simulated anchors
+are enrolled during migration. Only the public permit identifier, digest,
+state and timestamps enter the local journal. Reaching this state still offers
+no claim, signer or broadcast operation.
+
 ## Production boundary
 
 The production buyer flow remains:

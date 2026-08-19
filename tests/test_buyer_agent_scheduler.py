@@ -50,6 +50,8 @@ class Runner:
         self.authorization_error = None
         self.simulation_calls = []
         self.simulation_error = None
+        self.permit_calls = []
+        self.permit_error = None
 
     def lifecycle(self, decision_id):
         self.calls.append(("lifecycle", decision_id))
@@ -207,6 +209,28 @@ class Runner:
             "funds_moved": False,
         }
 
+    def issue_settlement_execution_permit(self, simulation_id):
+        self.permit_calls.append(simulation_id)
+        if self.permit_error is not None:
+            raise self.permit_error
+        return {
+            "simulation_id": simulation_id,
+            "permit_id": "pep_1234567890abcdef12345678",
+            "permit_sha256": "5" * 64,
+            "state": "issued",
+            "issued_at": 1_008,
+            "expires_at": 1_308,
+            "effect": "execution_authorization_only",
+            "one_time": True,
+            "claim_required": True,
+            "currently_valid": True,
+            "public_claim_available": False,
+            "transaction_built": False,
+            "transaction_signed": False,
+            "transaction_broadcast": False,
+            "funds_moved": False,
+        }
+
 
 def test_schedule_is_idempotent_and_survives_restart(tmp_path):
     database = tmp_path / "jobs.sqlite3"
@@ -314,7 +338,12 @@ def test_ready_delivery_is_opened_once_and_job_completes(tmp_path):
     assert simulation["state"] == "settlement_simulated"
     assert simulation["simulation_id"].startswith("pss_")
     assert simulation["simulation_cluster"] == "solana-devnet"
-    assert scheduler.run_due_once(now=1_008) == []
+    permit = scheduler.run_due_once(now=1_008)[0]
+    assert permit["work_type"] == "settlement_permit"
+    assert permit["state"] == "settlement_execution_permitted"
+    assert permit["permit_id"].startswith("pep_")
+    assert permit["permit_expires_at"] == 1_308
+    assert scheduler.run_due_once(now=1_009) == []
     assert [call[0] for call in runner.calls] == ["lifecycle", "result"]
     assert scheduler.list_events("bid_1")["events"][-1]["event_type"] == "completed"
 
@@ -666,6 +695,13 @@ def test_existing_anchor_table_gains_publication_receipt_columns(tmp_path):
         "simulation_cluster",
         "simulation_transaction_sha256",
         "simulated_at",
+        "permit_attempt_count",
+        "permit_next_run_at",
+        "permit_error",
+        "permit_id",
+        "permit_sha256",
+        "permit_expires_at",
+        "permit_issued_at",
     } <= columns
 
 
@@ -726,6 +762,14 @@ def test_existing_published_anchor_is_enrolled_for_validation(tmp_path):
         )
     simulated = BuyerAgentScheduler(runner, database).get_anchor("bid_1")
     assert simulated["simulation_next_run_at"] == 160
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """UPDATE buyer_agent_job_anchors
+               SET state = 'settlement_simulated', permit_next_run_at = NULL,
+                   updated_at = 170 WHERE anchor_id = 'bea_legacy'"""
+        )
+    permitted = BuyerAgentScheduler(runner, database).get_anchor("bid_1")
+    assert permitted["permit_next_run_at"] == 170
 
 
 def test_security_stopped_job_cannot_be_resumed(tmp_path):

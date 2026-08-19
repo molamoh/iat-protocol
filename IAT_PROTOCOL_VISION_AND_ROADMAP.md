@@ -209,6 +209,7 @@ de sécurité.
 Cette autorisation existe maintenant sous forme d'un permis public de cinq
 minutes, sans secret porteur, lié au plan, à la gouvernance, au hash de la
 simulation et aux montants exacts. Aucun appel public ne peut le réclamer ou
-déclencher un paiement. La prochaine étape est son enrôlement dans le scheduler,
-puis seulement la conception de la réclamation atomique par un exécuteur
-interne isolé.
+déclencher un paiement. Le scheduler enrôle maintenant automatiquement ce
+permis dans un quatrième cycle indépendant et s'arrête à
+`settlement_execution_permitted`. La prochaine étape est la conception de la
+réclamation atomique par un exécuteur interne isolé.

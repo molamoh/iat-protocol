@@ -231,6 +231,16 @@ class BuyerAgentScheduler:
                     simulation_units_consumed INTEGER,
                     simulation_context_slot INTEGER,
                     simulated_at INTEGER,
+                    permit_attempt_count INTEGER NOT NULL DEFAULT 0,
+                    permit_max_attempts INTEGER NOT NULL DEFAULT 10,
+                    permit_next_run_at INTEGER,
+                    permit_lease_until INTEGER,
+                    permit_error TEXT,
+                    permit_id TEXT,
+                    permit_sha256 TEXT,
+                    permit_state TEXT,
+                    permit_expires_at INTEGER,
+                    permit_issued_at INTEGER,
                     last_error TEXT,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
@@ -318,6 +328,16 @@ class BuyerAgentScheduler:
                 "simulation_units_consumed": "INTEGER",
                 "simulation_context_slot": "INTEGER",
                 "simulated_at": "INTEGER",
+                "permit_attempt_count": "INTEGER NOT NULL DEFAULT 0",
+                "permit_max_attempts": "INTEGER NOT NULL DEFAULT 10",
+                "permit_next_run_at": "INTEGER",
+                "permit_lease_until": "INTEGER",
+                "permit_error": "TEXT",
+                "permit_id": "TEXT",
+                "permit_sha256": "TEXT",
+                "permit_state": "TEXT",
+                "permit_expires_at": "INTEGER",
+                "permit_issued_at": "INTEGER",
             }
             for column, definition in anchor_migrations.items():
                 if column not in anchor_columns:
@@ -361,6 +381,12 @@ class BuyerAgentScheduler:
                    SET simulation_next_run_at = updated_at
                    WHERE state = 'settlement_authorized'
                      AND simulation_next_run_at IS NULL"""
+            )
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET permit_next_run_at = updated_at
+                   WHERE state = 'settlement_simulated'
+                     AND permit_next_run_at IS NULL"""
             )
             connection.execute(
                 """CREATE INDEX IF NOT EXISTS idx_buyer_agent_job_anchors_due
@@ -617,14 +643,22 @@ class BuyerAgentScheduler:
         timestamp = int(time.time() if now is None else now)
         results: list[dict[str, Any]] = []
         with self._lock:
-            simulation_id = self._claim_settlement_phase(
+            permit_id = self._claim_settlement_phase(
+                timestamp,
+                ready_state="settlement_simulated",
+                working_state="settlement_permitting",
+                failed_state="settlement_permit_failed",
+                prefix="permit",
+            )
+            if permit_id is not None:
+                results.append(self._run_settlement_permit(permit_id, timestamp))
+            elif (simulation_id := self._claim_settlement_phase(
                 timestamp,
                 ready_state="settlement_authorized",
                 working_state="settlement_simulating",
                 failed_state="settlement_simulation_failed",
                 prefix="simulation",
-            )
-            if simulation_id is not None:
+            )) is not None:
                 results.append(self._run_settlement_simulation(simulation_id, timestamp))
             elif (authorization_id := self._claim_settlement_phase(
                 timestamp,
@@ -670,7 +704,7 @@ class BuyerAgentScheduler:
         failed_state: str,
         prefix: str,
     ) -> str | None:
-        if prefix not in {"plan", "authorization", "simulation"}:
+        if prefix not in {"plan", "authorization", "simulation", "permit"}:
             raise ValueError("settlement_phase_invalid")
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -888,16 +922,70 @@ class BuyerAgentScheduler:
                        simulation_genesis_hash = ?, simulation_mint = ?,
                        simulation_transaction_sha256 = ?,
                        simulation_units_consumed = ?, simulation_context_slot = ?,
-                       simulated_at = ?, updated_at = ? WHERE anchor_id = ?""",
+                       simulated_at = ?, permit_next_run_at = ?, updated_at = ?
+                   WHERE anchor_id = ?""",
                 (
                     simulation["simulation_id"], simulation["simulation_sha256"],
                     simulation["cluster"], simulation.get("genesis_hash"),
                     simulation.get("mint"), simulation["unsigned_transaction_sha256"],
                     simulation.get("units_consumed"), simulation.get("context_slot"),
-                    int(simulation.get("simulated_at") or now), now, anchor_id,
+                    int(simulation.get("simulated_at") or now), now, now, anchor_id,
                 ),
             )
         return {"work_type": "settlement_simulation", **self.get_anchor(
+            str(anchor["intent_decision_id"])
+        )}
+
+    def _run_settlement_permit(self, anchor_id: str, now: int) -> dict[str, Any]:
+        anchor = self._anchor_row(anchor_id)
+        if anchor["state"] == "settlement_permit_failed":
+            return {"work_type": "settlement_permit", **anchor}
+        try:
+            permit = self.runner.issue_settlement_execution_permit(
+                anchor["simulation_id"]
+            )
+            bindings = (
+                str(permit.get("simulation_id") or "") == str(anchor["simulation_id"])
+                and permit.get("state") == "issued"
+                and permit.get("effect") == "execution_authorization_only"
+                and permit.get("one_time") is True
+                and permit.get("claim_required") is True
+                and permit.get("currently_valid") is True
+                and permit.get("public_claim_available") is False
+                and permit.get("transaction_built") is False
+                and permit.get("transaction_signed") is False
+                and permit.get("transaction_broadcast") is False
+                and permit.get("funds_moved") is False
+                and str(permit.get("permit_id") or "").startswith("pep_")
+                and len(str(permit.get("permit_sha256") or "")) == 64
+            )
+            if not bindings:
+                raise AutonomousBuyerError("protocol_settlement_execution_permit_mismatch")
+        except AutonomousBuyerError as exc:
+            return self._retry_settlement_phase(
+                anchor, now, prefix="permit", ready_state="settlement_simulated",
+                failed_state="settlement_permit_failed", error=exc.code,
+            )
+        except Exception:
+            return self._retry_settlement_phase(
+                anchor, now, prefix="permit", ready_state="settlement_simulated",
+                failed_state="settlement_permit_failed",
+                error="unexpected_settlement_permit_failure",
+            )
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET state = 'settlement_execution_permitted',
+                       permit_lease_until = NULL, permit_error = NULL,
+                       permit_id = ?, permit_sha256 = ?, permit_state = ?,
+                       permit_expires_at = ?, permit_issued_at = ?, updated_at = ?
+                   WHERE anchor_id = ?""",
+                (
+                    permit["permit_id"], permit["permit_sha256"], permit["state"],
+                    int(permit["expires_at"]), int(permit["issued_at"]), now, anchor_id,
+                ),
+            )
+        return {"work_type": "settlement_permit", **self.get_anchor(
             str(anchor["intent_decision_id"])
         )}
 

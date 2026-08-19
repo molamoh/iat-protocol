@@ -213,3 +213,10 @@ déclencher un paiement. Le scheduler enrôle maintenant automatiquement ce
 permis dans un quatrième cycle indépendant et s'arrête à
 `settlement_execution_permitted`. La prochaine étape est la conception de la
 réclamation atomique par un exécuteur interne isolé.
+
+La réclamation atomique est maintenant disponible derrière un secret interne
+distinct : un seul exécuteur peut faire passer un permis non expiré de
+`issued` à `claimed`. Elle ne touche pas au settlement financier et ne construit
+aucune transaction. La prochaine frontière est la reconstruction contrôlée de
+la transaction, suivie obligatoirement d'une nouvelle simulation juste avant
+toute demande de signature.

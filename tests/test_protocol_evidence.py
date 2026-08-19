@@ -61,6 +61,7 @@ def evidence_app(tmp_path, monkeypatch):
     app.include_router(protocol_evidence.settlement_authorization_router)
     app.include_router(protocol_evidence.settlement_simulation_router)
     app.include_router(protocol_evidence.settlement_execution_permit_router)
+    app.include_router(protocol_evidence.settlement_executor_router)
     return app
 
 
@@ -653,3 +654,45 @@ def test_authorized_settlement_simulation_is_public_and_never_broadcast(
     assert issued["funds_moved"] is False
     assert issued["expires_at"] == NOW + 300
     assert len(issued["permit_sha256"]) == 64
+    executor_secret = "executor-secret-that-is-at-least-32-characters"
+    monkeypatch.setenv("IAT_SETTLEMENT_EXECUTOR_SECRET", executor_secret)
+    claimed = call(
+        app,
+        "POST",
+        f"/internal/v1/settlement-executor/permits/{issued['permit_id']}/claim",
+        headers={"X-IAT-Settlement-Executor-Secret": executor_secret},
+    )
+    repeated_claim = call(
+        app,
+        "POST",
+        f"/internal/v1/settlement-executor/permits/{issued['permit_id']}/claim",
+        headers={"X-IAT-Settlement-Executor-Secret": executor_secret},
+    )
+    assert claimed.status_code == 200
+    claim = claimed.json()
+    assert claim["state"] == "claimed"
+    assert claim["effect"] == "claim_only"
+    assert claim["transaction_built"] is False
+    assert claim["transaction_signed"] is False
+    assert claim["transaction_broadcast"] is False
+    assert claim["funds_moved"] is False
+    assert claim["claim_id"].startswith("pec_")
+    assert executor_secret not in str(claim)
+    assert repeated_claim.status_code == 409
+    assert repeated_claim.json()["detail"] == (
+        "settlement_execution_permit_already_claimed"
+    )
+
+
+def test_settlement_permit_claim_fails_closed_without_executor_secret(
+    tmp_path, monkeypatch
+):
+    app = evidence_app(tmp_path, monkeypatch)
+    monkeypatch.delenv("IAT_SETTLEMENT_EXECUTOR_SECRET", raising=False)
+    response = call(
+        app,
+        "POST",
+        "/internal/v1/settlement-executor/permits/pep_missing/claim",
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"] == "settlement_executor_not_configured"

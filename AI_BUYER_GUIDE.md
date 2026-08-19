@@ -683,6 +683,22 @@ are enrolled during migration. Only the public permit identifier, digest,
 state and timestamps enter the local journal. Reaching this state still offers
 no claim, signer or broadcast operation.
 
+### Isolated atomic permit claim
+
+`POST /internal/v1/settlement-executor/permits/{permit_id}/claim` is the first
+non-public executor boundary. It fails closed unless a distinct
+`IAT_SETTLEMENT_EXECUTOR_SECRET` of at least 32 characters is configured and
+supplied in `X-IAT-Settlement-Executor-Secret`; comparison is constant-time.
+The secret is never persisted or returned.
+
+One conditional database update changes an unexpired permit from `issued` to
+`claimed` and records a public claim identifier, executor class and timestamp.
+Concurrent or repeated claims cannot both succeed. This operation does not
+claim the legacy settlement execution row, load an escrow keypair, construct a
+transaction, sign, broadcast or move funds. The next layer must revalidate the
+claim and prepare a fresh transaction for a second simulation before any
+signature can be considered.
+
 ## Production boundary
 
 The production buyer flow remains:

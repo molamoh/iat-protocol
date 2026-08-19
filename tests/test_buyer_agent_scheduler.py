@@ -44,6 +44,12 @@ class Runner:
         self.quality_decision = "accepted_by_explicit_criteria"
         self.eligibility_calls = []
         self.eligibility_error = None
+        self.plan_calls = []
+        self.plan_error = None
+        self.authorization_calls = []
+        self.authorization_error = None
+        self.simulation_calls = []
+        self.simulation_error = None
 
     def lifecycle(self, decision_id):
         self.calls.append(("lifecycle", decision_id))
@@ -133,6 +139,72 @@ class Runner:
             "funds_moved": False,
             "transaction_signed": False,
             "transaction_broadcast": False,
+        }
+
+    def plan_settlement_execution(self, eligibility_id):
+        self.plan_calls.append(eligibility_id)
+        if self.plan_error is not None:
+            raise self.plan_error
+        return {
+            "status": "protocol_settlement_execution_plan_recorded",
+            "eligibility_id": eligibility_id,
+            "plan_id": "psp_1234567890abcdef12345678",
+            "plan_sha256": "1" * 64,
+            "decision": "awaiting_governance_authorization",
+            "evaluated_at": 1_005,
+            "effect": "planning_only",
+            "execution_enabled": False,
+            "transaction_built": False,
+            "transaction_signed": False,
+            "transaction_broadcast": False,
+            "funds_moved": False,
+        }
+
+    def authorize_settlement_plan(self, plan_id):
+        self.authorization_calls.append(plan_id)
+        if self.authorization_error is not None:
+            raise self.authorization_error
+        return {
+            "status": "protocol_settlement_authorization_recorded",
+            "plan_id": plan_id,
+            "authorization_id": "psa_1234567890abcdef12345678",
+            "authorization_sha256": "2" * 64,
+            "release_authorized": True,
+            "authorized_by": "foundation",
+            "authorization_mode": "authorized",
+            "authorization_reason": "release_policy_automatic_authorized",
+            "authorized_at": 1_006,
+            "effect": "authorization_only",
+            "execution_enabled": False,
+            "transaction_built": False,
+            "transaction_signed": False,
+            "transaction_broadcast": False,
+            "funds_moved": False,
+        }
+
+    def simulate_settlement(self, authorization_id):
+        self.simulation_calls.append(authorization_id)
+        if self.simulation_error is not None:
+            raise self.simulation_error
+        return {
+            "status": "protocol_settlement_simulation_recorded",
+            "authorization_id": authorization_id,
+            "simulation_id": "pss_1234567890abcdef12345678",
+            "simulation_sha256": "3" * 64,
+            "cluster": "solana-devnet",
+            "genesis_hash": "EtWTRABZaYq6iMfeYKouRu166VU2xqa1",
+            "mint": str(Keypair().pubkey()),
+            "unsigned_transaction_sha256": "4" * 64,
+            "units_consumed": 9_000,
+            "context_slot": 123,
+            "simulated_at": 1_007,
+            "effect": "simulation_only",
+            "execution_enabled": False,
+            "unsigned_transaction_built": True,
+            "serialized_transaction_disclosed": False,
+            "transaction_signed": False,
+            "transaction_broadcast": False,
+            "funds_moved": False,
         }
 
 
@@ -229,7 +301,20 @@ def test_ready_delivery_is_opened_once_and_job_completes(tmp_path):
     assert eligibility["state"] == "release_eligible"
     assert eligibility["eligibility_decision"] == "eligible_for_governed_release"
     assert eligibility["settlement_id"] == "settlement_1"
-    assert scheduler.run_due_once(now=1_005) == []
+    plan = scheduler.run_due_once(now=1_005)[0]
+    assert plan["work_type"] == "settlement_plan"
+    assert plan["state"] == "settlement_planned"
+    assert plan["plan_id"].startswith("psp_")
+    authorization = scheduler.run_due_once(now=1_006)[0]
+    assert authorization["work_type"] == "settlement_authorization"
+    assert authorization["state"] == "settlement_authorized"
+    assert authorization["authorization_id"].startswith("psa_")
+    simulation = scheduler.run_due_once(now=1_007)[0]
+    assert simulation["work_type"] == "settlement_simulation"
+    assert simulation["state"] == "settlement_simulated"
+    assert simulation["simulation_id"].startswith("pss_")
+    assert simulation["simulation_cluster"] == "solana-devnet"
+    assert scheduler.run_due_once(now=1_008) == []
     assert [call[0] for call in runner.calls] == ["lifecycle", "result"]
     assert scheduler.list_events("bid_1")["events"][-1]["event_type"] == "completed"
 
@@ -561,6 +646,26 @@ def test_existing_anchor_table_gains_publication_receipt_columns(tmp_path):
         "eligibility_decision",
         "settlement_id",
         "eligibility_evaluated_at",
+        "plan_attempt_count",
+        "plan_next_run_at",
+        "plan_error",
+        "plan_id",
+        "plan_sha256",
+        "planned_at",
+        "authorization_attempt_count",
+        "authorization_next_run_at",
+        "authorization_error",
+        "authorization_id",
+        "authorization_sha256",
+        "authorized_at",
+        "simulation_attempt_count",
+        "simulation_next_run_at",
+        "simulation_error",
+        "simulation_id",
+        "simulation_sha256",
+        "simulation_cluster",
+        "simulation_transaction_sha256",
+        "simulated_at",
     } <= columns
 
 
@@ -597,6 +702,30 @@ def test_existing_published_anchor_is_enrolled_for_validation(tmp_path):
         )
     eligible = BuyerAgentScheduler(runner, database).get_anchor("bid_1")
     assert eligible["eligibility_next_run_at"] == 130
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """UPDATE buyer_agent_job_anchors
+               SET state = 'release_eligible', plan_next_run_at = NULL,
+                   updated_at = 140 WHERE anchor_id = 'bea_legacy'"""
+        )
+    planned = BuyerAgentScheduler(runner, database).get_anchor("bid_1")
+    assert planned["plan_next_run_at"] == 140
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """UPDATE buyer_agent_job_anchors
+               SET state = 'settlement_planned', authorization_next_run_at = NULL,
+                   updated_at = 150 WHERE anchor_id = 'bea_legacy'"""
+        )
+    authorized = BuyerAgentScheduler(runner, database).get_anchor("bid_1")
+    assert authorized["authorization_next_run_at"] == 150
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """UPDATE buyer_agent_job_anchors
+               SET state = 'settlement_authorized', simulation_next_run_at = NULL,
+                   updated_at = 160 WHERE anchor_id = 'bea_legacy'"""
+        )
+    simulated = BuyerAgentScheduler(runner, database).get_anchor("bid_1")
+    assert simulated["simulation_next_run_at"] == 160
 
 
 def test_security_stopped_job_cannot_be_resumed(tmp_path):

@@ -197,8 +197,11 @@ du reçu, des preuves, du consensus et du risque financier. Aucune de ces deux
 couches ne construit ni ne signe une transaction. Une simulation indépendante
 peut ensuite vérifier sur Solana devnet le mint IAT, les comptes SPL, le solde,
 les deux transferts atomiques et leur coût de calcul, sans clé privée ni envoi.
+Le scheduler enchaîne désormais automatiquement plan, autorisation et
+simulation sous forme de trois tâches indépendantes, reprises après redémarrage
+et limitées par des budgets de tentatives distincts.
 
-La prochaine frontière est l'automatisation de cette préparation dans le
-scheduler, puis la conception d'une autorisation d'exécution à usage unique.
-L'envoi réel restera séparé et exigera encore une approbation explicite de sa
-politique de sécurité.
+La prochaine frontière est la conception d'une autorisation d'exécution à
+usage unique, liée à une simulation récente et au même plan immuable. L'envoi
+réel restera séparé et exigera encore une approbation explicite de sa politique
+de sécurité.

@@ -644,6 +644,21 @@ The public record explicitly reports `effect: simulation_only`,
 `transaction_broadcast: false` and `funds_moved: false`. Failed simulations are
 retryable and cannot become an execution authorization.
 
+The buyer scheduler now consumes the three post-eligibility artifacts in three
+additional independent cycles. `release_eligible` becomes
+`settlement_planned`, then `settlement_authorized`, then
+`settlement_simulated`. Each phase has its own lease, ten-attempt budget,
+bounded exponential backoff, public-record readback and terminal failure state.
+Process restarts resume the exact pending phase; existing release-eligible,
+planned and authorized anchors are enrolled during migration. Compensation
+review records never enter this release path.
+
+The official devnet RPC is the safe default and is still checked against the
+devnet genesis hash. Deployments may set `IAT_SETTLEMENT_SIMULATION_RPC_URL`,
+`IAT_SETTLEMENT_SIMULATION_CLUSTER` and the public `IAT_ESCROW_WALLET`; no
+escrow keypair variable is read by this chain. Scheduler automation stops at a
+successful unsigned simulation and exposes no signing or broadcast method.
+
 ## Production boundary
 
 The production buyer flow remains:

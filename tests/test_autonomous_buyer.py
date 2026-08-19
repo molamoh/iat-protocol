@@ -217,6 +217,61 @@ def test_settlement_eligibility_is_publicly_verified_without_session_token():
     assert all("Authorization" not in call[2]["headers"] for call in session.calls)
 
 
+def test_post_eligibility_artifacts_are_publicly_verified_without_session_token():
+    plan = {
+        "eligibility_id": "pse_1234567890abcdef12345678",
+        "plan_id": "psp_1234567890abcdef12345678",
+        "plan_sha256": "1" * 64,
+        "effect": "planning_only",
+        "execution_enabled": False,
+        "transaction_built": False,
+        "transaction_signed": False,
+        "transaction_broadcast": False,
+        "funds_moved": False,
+    }
+    authorization = {
+        "plan_id": plan["plan_id"],
+        "authorization_id": "psa_1234567890abcdef12345678",
+        "authorization_sha256": "2" * 64,
+        "release_authorized": True,
+        "authorized_by": "foundation",
+        "effect": "authorization_only",
+        "execution_enabled": False,
+        "transaction_built": False,
+        "transaction_signed": False,
+        "transaction_broadcast": False,
+        "funds_moved": False,
+    }
+    simulation = {
+        "authorization_id": authorization["authorization_id"],
+        "simulation_id": "pss_1234567890abcdef12345678",
+        "simulation_sha256": "3" * 64,
+        "unsigned_transaction_sha256": "4" * 64,
+        "cluster": "solana-devnet",
+        "token_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+        "effect": "simulation_only",
+        "execution_enabled": False,
+        "unsigned_transaction_built": True,
+        "serialized_transaction_disclosed": False,
+        "transaction_signed": False,
+        "transaction_broadcast": False,
+        "funds_moved": False,
+    }
+    session = Session(
+        [
+            Response(plan), Response(plan),
+            Response(authorization), Response(authorization),
+            Response(simulation), Response(simulation),
+        ]
+    )
+    buyer = runner(session)
+    assert buyer.plan_settlement_execution(plan["eligibility_id"]) == plan
+    assert buyer.authorize_settlement_plan(plan["plan_id"]) == authorization
+    assert buyer.simulate_settlement(authorization["authorization_id"]) == simulation
+    assert [call[0] for call in session.calls] == ["POST", "GET"] * 3
+    assert all("Authorization" not in call[2]["headers"] for call in session.calls)
+
+
 @pytest.mark.parametrize(
     "change,code",
     [

@@ -293,6 +293,82 @@ class AutonomousBuyerRunner:
             raise AutonomousBuyerError("protocol_settlement_eligibility_mismatch")
         return public
 
+    def plan_settlement_execution(self, eligibility_id: str) -> dict[str, Any]:
+        record_id = str(eligibility_id).strip()
+        if not record_id.startswith("pse_") or len(record_id) > 64:
+            raise AutonomousBuyerError("settlement_eligibility_id_invalid")
+        path = f"/protocol/v1/settlement-execution-plans/{quote(record_id, safe='')}"
+        planned = self._request("POST", path, authenticate=False)
+        public = self._request("GET", path, authenticate=False)
+        bindings = (
+            public == planned
+            and public.get("eligibility_id") == record_id
+            and public.get("effect") == "planning_only"
+            and public.get("execution_enabled") is False
+            and public.get("transaction_built") is False
+            and public.get("transaction_signed") is False
+            and public.get("transaction_broadcast") is False
+            and public.get("funds_moved") is False
+            and str(public.get("plan_id") or "").startswith("psp_")
+            and len(str(public.get("plan_sha256") or "")) == 64
+        )
+        if not bindings:
+            raise AutonomousBuyerError("protocol_settlement_plan_mismatch")
+        return public
+
+    def authorize_settlement_plan(self, plan_id: str) -> dict[str, Any]:
+        record_id = str(plan_id).strip()
+        if not record_id.startswith("psp_") or len(record_id) > 64:
+            raise AutonomousBuyerError("settlement_plan_id_invalid")
+        path = f"/protocol/v1/settlement-authorizations/{quote(record_id, safe='')}"
+        authorized = self._request("POST", path, authenticate=False)
+        public = self._request("GET", path, authenticate=False)
+        bindings = (
+            public == authorized
+            and public.get("plan_id") == record_id
+            and public.get("release_authorized") is True
+            and public.get("authorized_by") == "foundation"
+            and public.get("effect") == "authorization_only"
+            and public.get("execution_enabled") is False
+            and public.get("transaction_built") is False
+            and public.get("transaction_signed") is False
+            and public.get("transaction_broadcast") is False
+            and public.get("funds_moved") is False
+            and str(public.get("authorization_id") or "").startswith("psa_")
+            and len(str(public.get("authorization_sha256") or "")) == 64
+        )
+        if not bindings:
+            raise AutonomousBuyerError("protocol_settlement_authorization_mismatch")
+        return public
+
+    def simulate_settlement(self, authorization_id: str) -> dict[str, Any]:
+        record_id = str(authorization_id).strip()
+        if not record_id.startswith("psa_") or len(record_id) > 64:
+            raise AutonomousBuyerError("settlement_authorization_id_invalid")
+        path = f"/protocol/v1/settlement-simulations/{quote(record_id, safe='')}"
+        simulated = self._request("POST", path, authenticate=False)
+        public = self._request("GET", path, authenticate=False)
+        bindings = (
+            public == simulated
+            and public.get("authorization_id") == record_id
+            and public.get("effect") == "simulation_only"
+            and public.get("execution_enabled") is False
+            and public.get("unsigned_transaction_built") is True
+            and public.get("serialized_transaction_disclosed") is False
+            and public.get("transaction_signed") is False
+            and public.get("transaction_broadcast") is False
+            and public.get("funds_moved") is False
+            and public.get("cluster") in {"solana-devnet", "solana-localnet"}
+            and str(public.get("token_program") or "")
+            == "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            and str(public.get("simulation_id") or "").startswith("pss_")
+            and len(str(public.get("simulation_sha256") or "")) == 64
+            and len(str(public.get("unsigned_transaction_sha256") or "")) == 64
+        )
+        if not bindings:
+            raise AutonomousBuyerError("protocol_settlement_simulation_mismatch")
+        return public
+
     def _validate_prepared_transaction(self, prepared: Any) -> dict[str, Any]:
         if not isinstance(prepared, dict):
             raise AutonomousBuyerError("prepared_transaction_missing")

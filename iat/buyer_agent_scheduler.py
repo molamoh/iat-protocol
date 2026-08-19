@@ -198,6 +198,39 @@ class BuyerAgentScheduler:
                     eligibility_reason TEXT,
                     settlement_id TEXT,
                     eligibility_evaluated_at INTEGER,
+                    plan_attempt_count INTEGER NOT NULL DEFAULT 0,
+                    plan_max_attempts INTEGER NOT NULL DEFAULT 10,
+                    plan_next_run_at INTEGER,
+                    plan_lease_until INTEGER,
+                    plan_error TEXT,
+                    plan_id TEXT,
+                    plan_sha256 TEXT,
+                    plan_decision TEXT,
+                    planned_at INTEGER,
+                    authorization_attempt_count INTEGER NOT NULL DEFAULT 0,
+                    authorization_max_attempts INTEGER NOT NULL DEFAULT 10,
+                    authorization_next_run_at INTEGER,
+                    authorization_lease_until INTEGER,
+                    authorization_error TEXT,
+                    authorization_id TEXT,
+                    authorization_sha256 TEXT,
+                    authorization_mode TEXT,
+                    authorization_reason TEXT,
+                    authorized_at INTEGER,
+                    simulation_attempt_count INTEGER NOT NULL DEFAULT 0,
+                    simulation_max_attempts INTEGER NOT NULL DEFAULT 10,
+                    simulation_next_run_at INTEGER,
+                    simulation_lease_until INTEGER,
+                    simulation_error TEXT,
+                    simulation_id TEXT,
+                    simulation_sha256 TEXT,
+                    simulation_cluster TEXT,
+                    simulation_genesis_hash TEXT,
+                    simulation_mint TEXT,
+                    simulation_transaction_sha256 TEXT,
+                    simulation_units_consumed INTEGER,
+                    simulation_context_slot INTEGER,
+                    simulated_at INTEGER,
                     last_error TEXT,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL,
@@ -252,6 +285,39 @@ class BuyerAgentScheduler:
                 "eligibility_reason": "TEXT",
                 "settlement_id": "TEXT",
                 "eligibility_evaluated_at": "INTEGER",
+                "plan_attempt_count": "INTEGER NOT NULL DEFAULT 0",
+                "plan_max_attempts": "INTEGER NOT NULL DEFAULT 10",
+                "plan_next_run_at": "INTEGER",
+                "plan_lease_until": "INTEGER",
+                "plan_error": "TEXT",
+                "plan_id": "TEXT",
+                "plan_sha256": "TEXT",
+                "plan_decision": "TEXT",
+                "planned_at": "INTEGER",
+                "authorization_attempt_count": "INTEGER NOT NULL DEFAULT 0",
+                "authorization_max_attempts": "INTEGER NOT NULL DEFAULT 10",
+                "authorization_next_run_at": "INTEGER",
+                "authorization_lease_until": "INTEGER",
+                "authorization_error": "TEXT",
+                "authorization_id": "TEXT",
+                "authorization_sha256": "TEXT",
+                "authorization_mode": "TEXT",
+                "authorization_reason": "TEXT",
+                "authorized_at": "INTEGER",
+                "simulation_attempt_count": "INTEGER NOT NULL DEFAULT 0",
+                "simulation_max_attempts": "INTEGER NOT NULL DEFAULT 10",
+                "simulation_next_run_at": "INTEGER",
+                "simulation_lease_until": "INTEGER",
+                "simulation_error": "TEXT",
+                "simulation_id": "TEXT",
+                "simulation_sha256": "TEXT",
+                "simulation_cluster": "TEXT",
+                "simulation_genesis_hash": "TEXT",
+                "simulation_mint": "TEXT",
+                "simulation_transaction_sha256": "TEXT",
+                "simulation_units_consumed": "INTEGER",
+                "simulation_context_slot": "INTEGER",
+                "simulated_at": "INTEGER",
             }
             for column, definition in anchor_migrations.items():
                 if column not in anchor_columns:
@@ -278,6 +344,23 @@ class BuyerAgentScheduler:
                    SET eligibility_next_run_at = updated_at
                    WHERE state IN ('quality_accepted', 'quality_rejected')
                      AND eligibility_next_run_at IS NULL"""
+            )
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET plan_next_run_at = updated_at
+                   WHERE state = 'release_eligible' AND plan_next_run_at IS NULL"""
+            )
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET authorization_next_run_at = updated_at
+                   WHERE state = 'settlement_planned'
+                     AND authorization_next_run_at IS NULL"""
+            )
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET simulation_next_run_at = updated_at
+                   WHERE state = 'settlement_authorized'
+                     AND simulation_next_run_at IS NULL"""
             )
             connection.execute(
                 """CREATE INDEX IF NOT EXISTS idx_buyer_agent_job_anchors_due
@@ -534,8 +617,34 @@ class BuyerAgentScheduler:
         timestamp = int(time.time() if now is None else now)
         results: list[dict[str, Any]] = []
         with self._lock:
-            eligibility_id = self._claim_settlement_eligibility(timestamp)
-            if eligibility_id is not None:
+            simulation_id = self._claim_settlement_phase(
+                timestamp,
+                ready_state="settlement_authorized",
+                working_state="settlement_simulating",
+                failed_state="settlement_simulation_failed",
+                prefix="simulation",
+            )
+            if simulation_id is not None:
+                results.append(self._run_settlement_simulation(simulation_id, timestamp))
+            elif (authorization_id := self._claim_settlement_phase(
+                timestamp,
+                ready_state="settlement_planned",
+                working_state="settlement_authorizing",
+                failed_state="settlement_authorization_failed",
+                prefix="authorization",
+            )) is not None:
+                results.append(
+                    self._run_settlement_authorization(authorization_id, timestamp)
+                )
+            elif (plan_id := self._claim_settlement_phase(
+                timestamp,
+                ready_state="release_eligible",
+                working_state="settlement_planning",
+                failed_state="settlement_planning_failed",
+                prefix="plan",
+            )) is not None:
+                results.append(self._run_settlement_plan(plan_id, timestamp))
+            elif (eligibility_id := self._claim_settlement_eligibility(timestamp)) is not None:
                 results.append(self._run_settlement_eligibility(eligibility_id, timestamp))
             elif (quality_id := self._claim_quality_validation(timestamp)) is not None:
                 results.append(self._run_quality_validation(quality_id, timestamp))
@@ -551,6 +660,254 @@ class BuyerAgentScheduler:
                     break
                 results.append(self._run_claimed(decision_id, timestamp))
         return results
+
+    def _claim_settlement_phase(
+        self,
+        now: int,
+        *,
+        ready_state: str,
+        working_state: str,
+        failed_state: str,
+        prefix: str,
+    ) -> str | None:
+        if prefix not in {"plan", "authorization", "simulation"}:
+            raise ValueError("settlement_phase_invalid")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                f"""SELECT anchor_id, {prefix}_attempt_count, {prefix}_max_attempts
+                    FROM buyer_agent_job_anchors
+                    WHERE (state = ? AND {prefix}_next_run_at <= ?)
+                       OR (state = ? AND {prefix}_lease_until IS NOT NULL
+                           AND {prefix}_lease_until <= ?)
+                    ORDER BY {prefix}_next_run_at, created_at LIMIT 1""",
+                (ready_state, now, working_state, now),
+            ).fetchone()
+            if row is None:
+                return None
+            anchor_id = str(row["anchor_id"])
+            if int(row[f"{prefix}_attempt_count"]) >= int(
+                row[f"{prefix}_max_attempts"]
+            ):
+                connection.execute(
+                    f"""UPDATE buyer_agent_job_anchors
+                        SET state = ?, {prefix}_lease_until = NULL,
+                            {prefix}_error = ?, updated_at = ?
+                        WHERE anchor_id = ?""",
+                    (
+                        failed_state,
+                        f"maximum_{prefix}_attempts_reached",
+                        now,
+                        anchor_id,
+                    ),
+                )
+                return anchor_id
+            connection.execute(
+                f"""UPDATE buyer_agent_job_anchors
+                    SET state = ?, {prefix}_lease_until = ?,
+                        {prefix}_attempt_count = {prefix}_attempt_count + 1,
+                        updated_at = ? WHERE anchor_id = ?""",
+                (working_state, now + self.lease_seconds, now, anchor_id),
+            )
+            return anchor_id
+
+    def _retry_settlement_phase(
+        self,
+        anchor: dict[str, Any],
+        now: int,
+        *,
+        prefix: str,
+        ready_state: str,
+        failed_state: str,
+        error: str,
+    ) -> dict[str, Any]:
+        attempts = int(anchor[f"{prefix}_attempt_count"])
+        exhausted = attempts >= int(anchor[f"{prefix}_max_attempts"])
+        delay = min(300, self.default_poll_seconds * (2 ** min(attempts - 1, 5)))
+        state = failed_state if exhausted else ready_state
+        with self._connect() as connection:
+            connection.execute(
+                f"""UPDATE buyer_agent_job_anchors
+                    SET state = ?, {prefix}_next_run_at = ?,
+                        {prefix}_lease_until = NULL, {prefix}_error = ?,
+                        updated_at = ? WHERE anchor_id = ?""",
+                (
+                    state,
+                    now if exhausted else now + delay,
+                    error,
+                    now,
+                    anchor["anchor_id"],
+                ),
+            )
+            row = connection.execute(
+                "SELECT * FROM buyer_agent_job_anchors WHERE anchor_id = ?",
+                (anchor["anchor_id"],),
+            ).fetchone()
+        return {"work_type": f"settlement_{prefix}", **dict(row)}
+
+    def _run_settlement_plan(self, anchor_id: str, now: int) -> dict[str, Any]:
+        anchor = self._anchor_row(anchor_id)
+        if anchor["state"] == "settlement_planning_failed":
+            return {"work_type": "settlement_plan", **anchor}
+        try:
+            plan = self.runner.plan_settlement_execution(anchor["eligibility_id"])
+            bindings = (
+                str(plan.get("eligibility_id") or "") == str(anchor["eligibility_id"])
+                and plan.get("effect") == "planning_only"
+                and plan.get("execution_enabled") is False
+                and plan.get("transaction_built") is False
+                and plan.get("transaction_signed") is False
+                and plan.get("transaction_broadcast") is False
+                and plan.get("funds_moved") is False
+                and str(plan.get("plan_id") or "").startswith("psp_")
+                and len(str(plan.get("plan_sha256") or "")) == 64
+            )
+            if not bindings:
+                raise AutonomousBuyerError("protocol_settlement_plan_mismatch")
+        except AutonomousBuyerError as exc:
+            return self._retry_settlement_phase(
+                anchor, now, prefix="plan", ready_state="release_eligible",
+                failed_state="settlement_planning_failed", error=exc.code,
+            )
+        except Exception:
+            return self._retry_settlement_phase(
+                anchor, now, prefix="plan", ready_state="release_eligible",
+                failed_state="settlement_planning_failed",
+                error="unexpected_settlement_plan_failure",
+            )
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET state = 'settlement_planned', plan_lease_until = NULL,
+                       plan_error = NULL, plan_id = ?, plan_sha256 = ?,
+                       plan_decision = ?, planned_at = ?,
+                       authorization_next_run_at = ?, updated_at = ?
+                   WHERE anchor_id = ?""",
+                (
+                    plan["plan_id"], plan["plan_sha256"], plan.get("decision"),
+                    int(plan.get("evaluated_at") or now), now, now, anchor_id,
+                ),
+            )
+        return {"work_type": "settlement_plan", **self.get_anchor(
+            str(anchor["intent_decision_id"])
+        )}
+
+    def _run_settlement_authorization(self, anchor_id: str, now: int) -> dict[str, Any]:
+        anchor = self._anchor_row(anchor_id)
+        if anchor["state"] == "settlement_authorization_failed":
+            return {"work_type": "settlement_authorization", **anchor}
+        try:
+            authorization = self.runner.authorize_settlement_plan(anchor["plan_id"])
+            bindings = (
+                str(authorization.get("plan_id") or "") == str(anchor["plan_id"])
+                and authorization.get("release_authorized") is True
+                and authorization.get("authorized_by") == "foundation"
+                and authorization.get("effect") == "authorization_only"
+                and authorization.get("execution_enabled") is False
+                and authorization.get("transaction_built") is False
+                and authorization.get("transaction_signed") is False
+                and authorization.get("transaction_broadcast") is False
+                and authorization.get("funds_moved") is False
+                and str(authorization.get("authorization_id") or "").startswith("psa_")
+                and len(str(authorization.get("authorization_sha256") or "")) == 64
+            )
+            if not bindings:
+                raise AutonomousBuyerError("protocol_settlement_authorization_mismatch")
+        except AutonomousBuyerError as exc:
+            return self._retry_settlement_phase(
+                anchor, now, prefix="authorization", ready_state="settlement_planned",
+                failed_state="settlement_authorization_failed", error=exc.code,
+            )
+        except Exception:
+            return self._retry_settlement_phase(
+                anchor, now, prefix="authorization", ready_state="settlement_planned",
+                failed_state="settlement_authorization_failed",
+                error="unexpected_settlement_authorization_failure",
+            )
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET state = 'settlement_authorized',
+                       authorization_lease_until = NULL, authorization_error = NULL,
+                       authorization_id = ?, authorization_sha256 = ?,
+                       authorization_mode = ?, authorization_reason = ?,
+                       authorized_at = ?, simulation_next_run_at = ?, updated_at = ?
+                   WHERE anchor_id = ?""",
+                (
+                    authorization["authorization_id"],
+                    authorization["authorization_sha256"],
+                    authorization.get("authorization_mode"),
+                    authorization.get("authorization_reason"),
+                    int(authorization.get("authorized_at") or now), now, now, anchor_id,
+                ),
+            )
+        return {"work_type": "settlement_authorization", **self.get_anchor(
+            str(anchor["intent_decision_id"])
+        )}
+
+    def _run_settlement_simulation(self, anchor_id: str, now: int) -> dict[str, Any]:
+        anchor = self._anchor_row(anchor_id)
+        if anchor["state"] == "settlement_simulation_failed":
+            return {"work_type": "settlement_simulation", **anchor}
+        try:
+            simulation = self.runner.simulate_settlement(anchor["authorization_id"])
+            bindings = (
+                str(simulation.get("authorization_id") or "")
+                == str(anchor["authorization_id"])
+                and simulation.get("effect") == "simulation_only"
+                and simulation.get("execution_enabled") is False
+                and simulation.get("unsigned_transaction_built") is True
+                and simulation.get("serialized_transaction_disclosed") is False
+                and simulation.get("transaction_signed") is False
+                and simulation.get("transaction_broadcast") is False
+                and simulation.get("funds_moved") is False
+                and simulation.get("cluster") in {"solana-devnet", "solana-localnet"}
+                and str(simulation.get("simulation_id") or "").startswith("pss_")
+                and len(str(simulation.get("simulation_sha256") or "")) == 64
+                and len(str(simulation.get("unsigned_transaction_sha256") or "")) == 64
+            )
+            if not bindings:
+                raise AutonomousBuyerError("protocol_settlement_simulation_mismatch")
+        except AutonomousBuyerError as exc:
+            return self._retry_settlement_phase(
+                anchor, now, prefix="simulation", ready_state="settlement_authorized",
+                failed_state="settlement_simulation_failed", error=exc.code,
+            )
+        except Exception:
+            return self._retry_settlement_phase(
+                anchor, now, prefix="simulation", ready_state="settlement_authorized",
+                failed_state="settlement_simulation_failed",
+                error="unexpected_settlement_simulation_failure",
+            )
+        with self._connect() as connection:
+            connection.execute(
+                """UPDATE buyer_agent_job_anchors
+                   SET state = 'settlement_simulated', simulation_lease_until = NULL,
+                       simulation_error = NULL, simulation_id = ?,
+                       simulation_sha256 = ?, simulation_cluster = ?,
+                       simulation_genesis_hash = ?, simulation_mint = ?,
+                       simulation_transaction_sha256 = ?,
+                       simulation_units_consumed = ?, simulation_context_slot = ?,
+                       simulated_at = ?, updated_at = ? WHERE anchor_id = ?""",
+                (
+                    simulation["simulation_id"], simulation["simulation_sha256"],
+                    simulation["cluster"], simulation.get("genesis_hash"),
+                    simulation.get("mint"), simulation["unsigned_transaction_sha256"],
+                    simulation.get("units_consumed"), simulation.get("context_slot"),
+                    int(simulation.get("simulated_at") or now), now, anchor_id,
+                ),
+            )
+        return {"work_type": "settlement_simulation", **self.get_anchor(
+            str(anchor["intent_decision_id"])
+        )}
+
+    def _anchor_row(self, anchor_id: str) -> dict[str, Any]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM buyer_agent_job_anchors WHERE anchor_id = ?",
+                (anchor_id,),
+            ).fetchone()
+        return dict(row)
 
     def _claim_settlement_eligibility(self, now: int) -> str | None:
         with self._connect() as connection:
@@ -671,6 +1028,12 @@ class BuyerAgentScheduler:
                     anchor_id,
                 ),
             )
+            if final_state == "release_eligible":
+                connection.execute(
+                    """UPDATE buyer_agent_job_anchors SET plan_next_run_at = ?
+                       WHERE anchor_id = ?""",
+                    (now, anchor_id),
+                )
         return {"work_type": "settlement_eligibility", **self.get_anchor(
             str(anchor["intent_decision_id"])
         )}

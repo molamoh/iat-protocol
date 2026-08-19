@@ -51,7 +51,11 @@ def configured_simulation_context() -> dict[str, str]:
     rpc_url = (
         os.getenv("IAT_SETTLEMENT_SIMULATION_RPC_URL")
         or os.getenv("IAT_SOLANA_RPC_URL")
-        or ("http://127.0.0.1:8899" if cluster == "solana-localnet" else "")
+        or (
+            "http://127.0.0.1:8899"
+            if cluster == "solana-localnet"
+            else "https://api.devnet.solana.com"
+        )
     ).strip()
     if not rpc_url:
         raise SettlementSimulationError("settlement_simulation_rpc_not_configured")

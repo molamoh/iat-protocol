@@ -201,22 +201,22 @@ Le scheduler enchaîne désormais automatiquement plan, autorisation et
 simulation sous forme de trois tâches indépendantes, reprises après redémarrage
 et limitées par des budgets de tentatives distincts.
 
-La prochaine frontière est la conception d'une autorisation d'exécution à
-usage unique, liée à une simulation récente et au même plan immuable. L'envoi
-réel restera séparé et exigera encore une approbation explicite de sa politique
-de sécurité.
-
 Cette autorisation existe maintenant sous forme d'un permis public de cinq
 minutes, sans secret porteur, lié au plan, à la gouvernance, au hash de la
 simulation et aux montants exacts. Aucun appel public ne peut le réclamer ou
 déclencher un paiement. Le scheduler enrôle maintenant automatiquement ce
 permis dans un quatrième cycle indépendant et s'arrête à
-`settlement_execution_permitted`. La prochaine étape est la conception de la
-réclamation atomique par un exécuteur interne isolé.
+`settlement_execution_permitted`.
 
-La réclamation atomique est maintenant disponible derrière un secret interne
-distinct : un seul exécuteur peut faire passer un permis non expiré de
-`issued` à `claimed`. Elle ne touche pas au settlement financier et ne construit
-aucune transaction. La prochaine frontière est la reconstruction contrôlée de
-la transaction, suivie obligatoirement d'une nouvelle simulation juste avant
-toute demande de signature.
+Le chemin d'exécution est maintenant consolidé : aucune route de réclamation
+parallèle n'existe. Le moteur d'action historique est l'unique exécuteur et son
+verrou financier consomme le permis et réserve le règlement dans une seule
+transaction de base de données. La simulation indépendante et l'exécution
+utilisent le même constructeur d'instructions Solana. L'adaptateur on-chain
+refuse désormais tout règlement dépourvu de permis canonique et effectue une
+simulation finale de la transaction signée avant un éventuel envoi.
+
+La prochaine frontière est l'isolation du signataire et la définition d'une
+politique explicite d'autorisation de diffusion. Elle devra réutiliser ce
+chemin unique, ne jamais exposer la clé d'escrow et conserver la récupération
+contrôlée des diffusions ambiguës.

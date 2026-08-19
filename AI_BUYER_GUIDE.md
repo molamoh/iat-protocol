@@ -694,7 +694,9 @@ financial settlement state.
 
 Simulation and execution also use the same canonical Solana instruction
 builder. The execution path performs a final signed simulation before any RPC
-broadcast.
+broadcast. The on-chain adapter fails closed with
+`settlement_execution_permit_required` when no canonical permit identifier is
+provided; legacy callers cannot bypass the governed evidence chain.
 
 ## Production boundary
 

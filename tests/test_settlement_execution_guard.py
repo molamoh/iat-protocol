@@ -1,6 +1,9 @@
 import time
 
 from iat.api import db, protocol_evidence
+from iat.action_engine.adapters.settlement_atomic import (
+    execute_settlement_atomic_action,
+)
 
 
 def _insert_settlement_and_permit(settlement_id: str, permit_id: str) -> None:
@@ -104,3 +107,26 @@ def test_mismatched_permit_leaves_both_records_unclaimed(tmp_path, monkeypatch):
         db.release_conn(connection)
     assert dict(permit)["state"] == "issued"
     assert dict(settlement)["execution_claim_status"] == "unclaimed"
+
+
+def test_onchain_adapter_refuses_execution_without_canonical_permit(monkeypatch):
+    monkeypatch.setenv("IAT_ENABLE_ONCHAIN_SETTLEMENT", "true")
+    monkeypatch.setenv("IAT_ESCROW_KEYPAIR_JSON", "configured-but-never-read")
+    result = execute_settlement_atomic_action(
+        {
+            "action_type": "settlement_release",
+            "action_scope": "financial_settlement",
+            "payload": {
+                "settlement_id": "settlement_guard",
+                "order_id": "order_guard",
+                "treasury_wallet": "treasury",
+                "winner_wallet": "winner",
+                "protocol_commission_amount_iat": 0.1,
+                "seller_payout_amount_iat": 0.9,
+                "onchain_settlement_enabled": True,
+            },
+        }
+    )
+    assert result["status"] == "action_blocked"
+    assert result["reason"] == "settlement_execution_permit_required"
+    assert result["result"]["broadcast_performed"] is False

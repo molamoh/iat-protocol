@@ -138,11 +138,26 @@ def execute_settlement_atomic_action(action_request):
             },
         )
 
+    execution_permit_id = (
+        payload.get("execution_permit_id") or payload.get("permit_id")
+    )
+    if not execution_permit_id:
+        return build_action_result(
+            status="action_blocked",
+            action_type=action_type,
+            action_scope=action_scope,
+            reason="settlement_execution_permit_required",
+            result={
+                "settlement_id": settlement_id,
+                "order_id": order_id,
+                "broadcast_performed": False,
+                "execution_guard": "settlement_execution_guard_v2",
+            },
+        )
+
     claim_result = claim_settlement_execution_db(
         settlement_id=settlement_id,
-        execution_permit_id=(
-            payload.get("execution_permit_id") or payload.get("permit_id")
-        ),
+        execution_permit_id=execution_permit_id,
     )
 
     if claim_result.get("status") == "settlement_already_submitted":

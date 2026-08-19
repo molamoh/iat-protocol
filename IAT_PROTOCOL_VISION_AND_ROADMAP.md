@@ -235,7 +235,10 @@ transaction avec une revue liée par SHA-256. L'ancien chargement local de clé 
 été retiré du chemin de règlement. Une configuration sidecar absente ou
 incomplète bloque l'action avant consommation du permis.
 
-La prochaine étape est le déploiement séparé du sidecar de règlement avec la
-politique bornée, puis un canari sans fonds destiné à vérifier l'attestation,
-la simulation et le refus de toute revue altérée avant d'autoriser une première
-transaction devnet explicitement contrôlée.
+Le sidecar de règlement est maintenant monté dans le service Render existant,
+sur une route locale interne. Il réutilise le wallet escrow déjà configuré,
+sans wallet supplémentaire ni URL publique. Si les secrets escrow ou le token
+interne manquent, le sidecar n'est pas monté et l'exécution reste bloquée.
+La prochaine étape est un canari sans fonds destiné à vérifier la simulation et
+le refus de toute revue altérée avant d'autoriser une première transaction
+devnet explicitement contrôlée.

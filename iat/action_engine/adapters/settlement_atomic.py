@@ -72,7 +72,10 @@ def execute_settlement_atomic_action(action_request):
         )
 
     escrow_wallet = os.getenv("IAT_ESCROW_WALLET", "").strip()
-    sidecar_url = os.getenv("IAT_SETTLEMENT_WALLET_SIDECAR_URL", "").strip()
+    sidecar_url = os.getenv(
+        "IAT_SETTLEMENT_WALLET_SIDECAR_URL",
+        "http://127.0.0.1:10000/internal/settlement-wallet",
+    ).strip()
     sidecar_token = os.getenv("IAT_SETTLEMENT_WALLET_SIDECAR_TOKEN", "")
     if not escrow_wallet or not sidecar_url or len(sidecar_token) < 16:
         return build_action_result(

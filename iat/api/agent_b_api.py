@@ -63,6 +63,7 @@ from iat.api.protocol_evidence import (
     settlement_execution_permit_router as protocol_settlement_execution_permit_router,
     validation_router as protocol_validation_router,
 )
+from iat.settlement_sidecar import create_settlement_sidecar_app_from_env
 from iat.checkout_delivery import (
     delivery_dashboard,
     delivery_events,
@@ -378,6 +379,9 @@ app.include_router(protocol_settlement_execution_plan_router)
 app.include_router(protocol_settlement_authorization_router)
 app.include_router(protocol_settlement_simulation_router)
 app.include_router(protocol_settlement_execution_permit_router)
+settlement_sidecar_app = create_settlement_sidecar_app_from_env()
+if settlement_sidecar_app is not None:
+    app.mount("/internal/settlement-wallet", settlement_sidecar_app)
 
 def require_admin_key(x_api_key):
     expected_key = os.getenv("IAT_ADMIN_API_KEY")

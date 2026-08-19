@@ -698,6 +698,15 @@ broadcast. The on-chain adapter fails closed with
 `settlement_execution_permit_required` when no canonical permit identifier is
 provided; legacy callers cannot bypass the governed evidence chain.
 
+The settlement adapter no longer reads `IAT_ESCROW_KEYPAIR_JSON` or
+`IAT_ESCROW_KEYPAIR_PATH`. It requires `IAT_ESCROW_WALLET`,
+`IAT_SETTLEMENT_WALLET_SIDECAR_URL` and a distinct
+`IAT_SETTLEMENT_WALLET_SIDECAR_TOKEN`. It builds one fresh unsigned transaction,
+simulates those exact bytes, binds their SHA-256 digest to the bounded review,
+and delegates approval, signing and RPC broadcast to the existing wallet
+sidecar. Missing isolated configuration fails closed before the permit is
+consumed.
+
 ## Production boundary
 
 The production buyer flow remains:

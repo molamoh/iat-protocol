@@ -229,7 +229,13 @@ et à la commande, l'expiration et le hash exact de la simulation finale. Cette
 politique n'est pas encore raccordée à l'adaptateur financier et ne peut donc
 déclencher aucune signature ou diffusion.
 
-La prochaine étape est de produire une transaction non signée fraîche depuis
-le constructeur canonique, de la simuler, puis de transmettre au sidecar cette
-transaction et cette revue strictement liées. L'ancien chargement local de clé
-devra alors être retiré du chemin de règlement.
+L'adaptateur produit maintenant une transaction non signée fraîche depuis le
+constructeur canonique, simule ces octets exacts et transmet au sidecar la
+transaction avec une revue liée par SHA-256. L'ancien chargement local de clé a
+été retiré du chemin de règlement. Une configuration sidecar absente ou
+incomplète bloque l'action avant consommation du permis.
+
+La prochaine étape est le déploiement séparé du sidecar de règlement avec la
+politique bornée, puis un canari sans fonds destiné à vérifier l'attestation,
+la simulation et le refus de toute revue altérée avant d'autoriser une première
+transaction devnet explicitement contrôlée.

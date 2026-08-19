@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import hmac
 import ipaddress
 from typing import Any, Mapping
@@ -72,6 +74,17 @@ class LocalWalletRPCAdapter:
         review: Mapping[str, Any],
     ) -> str:
         safe_review = dict(review)
+        try:
+            transaction_raw = base64.b64decode(str(transaction_base64), validate=True)
+        except ValueError as exc:
+            raise WalletAdapterError("wallet_transaction_encoding_invalid") from exc
+        transaction_sha256 = hashlib.sha256(transaction_raw).hexdigest()
+        supplied_sha256 = str(safe_review.get("transaction_sha256") or "")
+        if supplied_sha256 and not hmac.compare_digest(
+            supplied_sha256, transaction_sha256
+        ):
+            raise WalletAdapterError("wallet_transaction_review_mismatch")
+        safe_review["transaction_sha256"] = transaction_sha256
         if not hmac.compare_digest(
             str(safe_review.get("fee_payer") or ""), self._wallet_address
         ):

@@ -1,9 +1,13 @@
 import time
 
+import pytest
+from solders.keypair import Keypair
+
 from iat.api import db, protocol_evidence
 from iat.action_engine.adapters.settlement_atomic import (
     execute_settlement_atomic_action,
 )
+from iat.transfer import send_iat_split_atomic
 
 
 def _insert_settlement_and_permit(settlement_id: str, permit_id: str) -> None:
@@ -111,7 +115,9 @@ def test_mismatched_permit_leaves_both_records_unclaimed(tmp_path, monkeypatch):
 
 def test_onchain_adapter_refuses_execution_without_canonical_permit(monkeypatch):
     monkeypatch.setenv("IAT_ENABLE_ONCHAIN_SETTLEMENT", "true")
-    monkeypatch.setenv("IAT_ESCROW_KEYPAIR_JSON", "configured-but-never-read")
+    monkeypatch.setenv("IAT_ESCROW_WALLET", str(Keypair().pubkey()))
+    monkeypatch.setenv("IAT_SETTLEMENT_WALLET_SIDECAR_URL", "http://127.0.0.1:8787")
+    monkeypatch.setenv("IAT_SETTLEMENT_WALLET_SIDECAR_TOKEN", "sidecar-token-long-enough")
     result = execute_settlement_atomic_action(
         {
             "action_type": "settlement_release",
@@ -130,3 +136,20 @@ def test_onchain_adapter_refuses_execution_without_canonical_permit(monkeypatch)
     assert result["status"] == "action_blocked"
     assert result["reason"] == "settlement_execution_permit_required"
     assert result["result"]["broadcast_performed"] is False
+
+
+def test_isolated_settlement_refuses_mainnet_before_rpc_or_sidecar(monkeypatch):
+    monkeypatch.setenv("IAT_SETTLEMENT_SIMULATION_RPC_URL", "https://api.mainnet-beta.solana.com")
+    with pytest.raises(RuntimeError, match="mainnet_settlement_execution_not_allowed"):
+        send_iat_split_atomic(
+            escrow_wallet=str(Keypair().pubkey()),
+            sidecar_url="https://sidecar.example",
+            sidecar_token="sidecar-token-long-enough",
+            treasury_address=str(Keypair().pubkey()),
+            winner_address=str(Keypair().pubkey()),
+            commission_amount=0.1,
+            seller_payout_amount=0.9,
+            settlement_id="settlement_guard",
+            order_id="order_guard",
+            execution_permit={},
+        )

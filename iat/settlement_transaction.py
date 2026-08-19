@@ -18,6 +18,7 @@ from iat.config import IAT_DECIMALS
 MEMO_PROGRAM_ID = Pubkey.from_string(
     "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
 )
+SOLANA_DEVNET_GENESIS_HASH = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
 
 
 def build_atomic_settlement_instructions(

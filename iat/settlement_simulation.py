@@ -18,11 +18,13 @@ from spl.token.constants import TOKEN_PROGRAM_ID
 from spl.token.instructions import get_associated_token_address
 
 from iat.config import IAT_DECIMALS, IAT_TOKEN_ADDRESS
-from iat.settlement_transaction import build_atomic_settlement_instructions
+from iat.settlement_transaction import (
+    SOLANA_DEVNET_GENESIS_HASH,
+    build_atomic_settlement_instructions,
+)
 
 
 ALLOWED_CLUSTERS = {"solana-devnet", "solana-localnet"}
-SOLANA_DEVNET_GENESIS_HASH = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1"
 
 
 class SettlementSimulationError(ValueError):

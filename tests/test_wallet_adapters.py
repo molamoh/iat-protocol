@@ -1,3 +1,6 @@
+import base64
+import hashlib
+
 import pytest
 from solders.keypair import Keypair
 from solders.signature import Signature
@@ -8,6 +11,7 @@ from iat.wallet_adapters import LocalWalletRPCAdapter, WalletAdapterError
 
 WALLET = str(Keypair.from_seed(bytes([9]) * 32).pubkey())
 TOKEN = "local-wallet-token-long-enough"
+TRANSACTION = base64.b64encode(b"transaction").decode()
 
 
 class Response:
@@ -50,7 +54,7 @@ def adapter(response=None):
 def test_local_wallet_adapter_sends_only_public_transaction_contract():
     wallet = adapter()
     signature = wallet.sign_and_broadcast(
-        "transaction-base64",
+        TRANSACTION,
         {"cluster": "solana:devnet", "fee_payer": WALLET, "input": {"asset": "USDC"}},
     )
     assert signature == str(Signature.default())
@@ -60,6 +64,9 @@ def test_local_wallet_adapter_sends_only_public_transaction_contract():
     assert request["headers"]["Authorization"] == f"Bearer {TOKEN}"
     assert TOKEN not in str(request["json"])
     assert "private" not in str(request["json"]).lower()
+    assert request["json"]["review"]["transaction_sha256"] == hashlib.sha256(
+        b"transaction"
+    ).hexdigest()
 
 
 @pytest.mark.parametrize(
@@ -95,7 +102,7 @@ def test_wallet_adapter_rejects_review_for_another_fee_payer():
     wallet = adapter()
     with pytest.raises(WalletAdapterError, match="wallet_review_fee_payer_mismatch"):
         wallet.sign_and_broadcast(
-            "transaction-base64",
+            TRANSACTION,
             {"cluster": "solana:devnet", "fee_payer": str(Keypair().pubkey())},
         )
     assert wallet.session.calls == []
@@ -126,7 +133,7 @@ def test_wallet_adapter_fails_closed_on_untrusted_sidecar_response(response, cod
     wallet = adapter(response)
     with pytest.raises(WalletAdapterError, match=code):
         wallet.sign_and_broadcast(
-            "transaction-base64", {"cluster": "solana:devnet", "fee_payer": WALLET}
+            TRANSACTION, {"cluster": "solana:devnet", "fee_payer": WALLET}
         )
 
 

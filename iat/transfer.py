@@ -8,6 +8,7 @@ from spl.token.constants import TOKEN_PROGRAM_ID
 from iat.config import IAT_DECIMALS, IAT_TOKEN_ADDRESS
 from iat.settlement_transaction import (
     MEMO_PROGRAM_ID,
+    SOLANA_DEVNET_GENESIS_HASH,
     build_atomic_settlement_instructions,
 )
 
@@ -287,24 +288,43 @@ def send_iat(
     )
 
 def send_iat_split_atomic(
-    from_keypair_path,
+    escrow_wallet,
+    sidecar_url,
+    sidecar_token,
     treasury_address,
     winner_address,
     commission_amount,
     seller_payout_amount,
+    settlement_id,
+    order_id,
+    execution_permit,
     memo_text=None,
 ):
     """
-    Execute the protocol commission and seller payout in one atomic
-    Solana transaction.
+    Prepare, simulate and delegate one atomic settlement to the isolated
+    wallet sidecar. This process never loads settlement key material.
 
     Either every instruction succeeds or the complete transaction fails.
     """
+    import base64
+    import hashlib
+
     from solana.rpc.commitment import Confirmed
+    from solders.signature import Signature
+    from solders.transaction import VersionedTransaction
+    from iat.wallet_adapters import LocalWalletRPCAdapter
 
-    client = Client(RPC)
-    keypair = load_keypair(from_keypair_path)
-
+    settlement_rpc = (
+        os.getenv("IAT_SETTLEMENT_SIMULATION_RPC_URL")
+        or os.getenv("IAT_SOLANA_RPC_URL")
+        or "https://api.devnet.solana.com"
+    ).strip()
+    if not settlement_rpc or "mainnet" in settlement_rpc.lower():
+        raise RuntimeError("mainnet_settlement_execution_not_allowed")
+    client = Client(settlement_rpc)
+    if str(client.get_genesis_hash().value) != SOLANA_DEVNET_GENESIS_HASH:
+        raise RuntimeError("settlement_execution_cluster_identity_invalid")
+    escrow_authority = Pubkey.from_string(str(escrow_wallet))
     mint = Pubkey.from_string(IAT_MINT)
     treasury_owner = Pubkey.from_string(str(treasury_address))
     winner_owner = Pubkey.from_string(str(winner_address))
@@ -317,7 +337,7 @@ def send_iat_split_atomic(
     treasury_info = client.get_account_info(treasury_ata, commitment=Confirmed)
     winner_info = client.get_account_info(winner_ata, commitment=Confirmed)
     instructions, _accounts = build_atomic_settlement_instructions(
-        escrow_authority=keypair.pubkey(),
+        escrow_authority=escrow_authority,
         mint=mint,
         treasury_owner=treasury_owner,
         winner_owner=winner_owner,
@@ -328,17 +348,20 @@ def send_iat_split_atomic(
         memo_text=memo_text,
     )
 
-    blockhash = client.get_latest_blockhash().value.blockhash
+    latest = client.get_latest_blockhash(commitment=Confirmed).value
+    blockhash = latest.blockhash
 
     from solders.message import Message
-    from solders.transaction import Transaction
 
-    message = Message(instructions, keypair.pubkey())
-    transaction = Transaction([keypair], message, blockhash)
+    message = Message.new_with_blockhash(instructions, escrow_authority, blockhash)
+    transaction = VersionedTransaction.populate(
+        message,
+        [Signature.default()] * int(message.header.num_required_signatures),
+    )
 
     simulation = client.simulate_transaction(
         transaction,
-        sig_verify=True,
+        sig_verify=False,
         commitment=Confirmed,
     )
     if simulation.value.err is not None:
@@ -348,5 +371,37 @@ def send_iat_split_atomic(
             f"logs={(simulation.value.logs or [])!r}"
         )
 
-    response = client.send_raw_transaction(bytes(transaction))
-    return str(response.value)
+    raw = bytes(transaction)
+    transaction_base64 = base64.b64encode(raw).decode()
+    transaction_sha256 = hashlib.sha256(raw).hexdigest()
+    permit = dict(execution_permit or {})
+    review = {
+        "policy_version": "settlement_signing_policy_v1",
+        "cluster": "solana:devnet",
+        "fee_payer": str(escrow_authority),
+        "expires_at": int(permit.get("expires_at") or 0),
+        "transaction_sha256": transaction_sha256,
+        "settlement": {
+            "asset": "IAT",
+            "settlement_id": str(settlement_id),
+            "order_id": str(order_id),
+            "treasury_wallet": str(treasury_owner),
+            "winner_wallet": str(winner_owner),
+            "gross_amount_minor": commission_raw + seller_payout_raw,
+            "protocol_commission_amount_minor": commission_raw,
+            "seller_payout_amount_minor": seller_payout_raw,
+        },
+        "execution_permit": permit,
+        "final_simulation": {
+            "status": "succeeded",
+            "transaction_sha256": transaction_sha256,
+            "units_consumed": simulation.value.units_consumed,
+        },
+    }
+    wallet = LocalWalletRPCAdapter(
+        sidecar_url,
+        wallet_address=str(escrow_authority),
+        auth_token=sidecar_token,
+        allow_remote_https=True,
+    )
+    return wallet.sign_and_broadcast(transaction_base64, review)

@@ -71,20 +71,19 @@ def execute_settlement_atomic_action(action_request):
             },
         )
 
-    escrow_keypair_path = (
-        os.getenv("IAT_ESCROW_KEYPAIR_JSON")
-        or os.getenv("IAT_ESCROW_KEYPAIR_PATH")
-    )
-
-    if not escrow_keypair_path:
+    escrow_wallet = os.getenv("IAT_ESCROW_WALLET", "").strip()
+    sidecar_url = os.getenv("IAT_SETTLEMENT_WALLET_SIDECAR_URL", "").strip()
+    sidecar_token = os.getenv("IAT_SETTLEMENT_WALLET_SIDECAR_TOKEN", "")
+    if not escrow_wallet or not sidecar_url or len(sidecar_token) < 16:
         return build_action_result(
             status="action_blocked",
             action_type=action_type,
             action_scope=action_scope,
-            reason="escrow_keypair_path_missing",
+            reason="isolated_settlement_sidecar_not_configured",
             result={
                 "settlement_id": settlement_id,
                 "order_id": order_id,
+                "private_key_required_by_api": False,
             },
         )
 
@@ -214,11 +213,16 @@ def execute_settlement_atomic_action(action_request):
 
     try:
         atomic_signature = send_iat_split_atomic(
-            from_keypair_path=escrow_keypair_path,
+            escrow_wallet=escrow_wallet,
+            sidecar_url=sidecar_url,
+            sidecar_token=sidecar_token,
             treasury_address=treasury_wallet,
             winner_address=winner_wallet,
             commission_amount=commission_amount,
             seller_payout_amount=seller_payout_amount,
+            settlement_id=settlement_id,
+            order_id=order_id,
+            execution_permit=claim_result.get("execution_permit"),
             memo_text=f"IAT_SETTLEMENT:{settlement_id}:{order_id}",
         )
 

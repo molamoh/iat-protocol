@@ -11864,6 +11864,10 @@ def claim_settlement_execution_db(
                 "permit_id": execution_permit_id,
                 "claim_id": permit_claim_id,
                 "claimed_at": now,
+                "expires_at": int(permit["expires_at"]),
+                "state": "claimed",
+                "settlement_id": settlement_id,
+                "order_id": settlement.get("order_id"),
             }
 
         cur.execute(f"""

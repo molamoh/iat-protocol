@@ -1,5 +1,7 @@
 const API = "https://iat-protocol-latest.onrender.com";
 let session = null;
+const paymentLink = document.querySelector('a[href="/buyer/index.html#inbox"]');
+if (paymentLink) paymentLink.href = "/buyer/payment#inbox";
 const $ = (id) => document.getElementById(id);
 const setStatus = (message, type = "") => {
   $("status").className = `order-status ${type}`;

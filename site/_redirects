@@ -6,3 +6,4 @@
 /buyers/*   /buyer/order  302
 /buyer      /buyer/order  302
 /buyer/     /buyer/order  302
+/buyer/payment  /buyer/index.html  200

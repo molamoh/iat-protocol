@@ -140,6 +140,49 @@ sandboxRun.addEventListener("click", async () => {
 });
 
 const sellerEstimate = optionalElement("#seller-estimate");
+
+// Buyer order preparation is intentionally injected here so the shared buyer
+// bundle can add the governed flow without duplicating API routes or changing
+// seller pages. It turns the existing preview/confirm endpoints into a clear
+// two-step devnet experience.
+if (document.querySelector("#inbox") && !document.querySelector("#governed-order")) {
+  const orderSection = document.createElement("section");
+  orderSection.id = "governed-order";
+  orderSection.className = "sandbox-section";
+  orderSection.innerHTML = `<div class="shell sandbox-layout"><div class="sandbox-copy"><p class="kicker">GOVERNED DEVNET ORDER</p><h2>Create the order before payment.</h2><p>Enter the public buyer wallet, preview the governed offer, then confirm. Confirmation creates the order ID; it does not move funds.</p></div><div class="sandbox-app"><div class="sandbox-app-head"><strong>Buyer order preparation</strong><span class="devnet-pill">DEVNET</span></div><label for="governed-wallet">Public buyer wallet<input id="governed-wallet" autocomplete="off" placeholder="Solana devnet address"></label><label for="governed-prompt">What should the agent deliver<textarea id="governed-prompt" rows="3">Compare autonomous agent payment protocols and return sourced evidence.</textarea></label><label for="governed-max-price">Maximum price in IAT<input id="governed-max-price" value="2.00" inputmode="decimal"></label><div class="sandbox-actions"><button id="governed-preview" class="button secondary" type="button">Preview governed offer</button><button id="governed-confirm" class="button primary" type="button" disabled>Confirm and create order</button></div><p id="governed-status" class="sandbox-status" role="status" aria-live="polite"></p><pre id="governed-result" class="sandbox-result" hidden></pre></div></div>`;
+  document.querySelector("#inbox").before(orderSection);
+  const wallet = orderSection.querySelector("#governed-wallet");
+  const prompt = orderSection.querySelector("#governed-prompt");
+  const maxPrice = orderSection.querySelector("#governed-max-price");
+  const preview = orderSection.querySelector("#governed-preview");
+  const confirm = orderSection.querySelector("#governed-confirm");
+  const orderStatus = orderSection.querySelector("#governed-status");
+  const orderResult = orderSection.querySelector("#governed-result");
+  let buyerSession = null;
+  const setOrderStatus = (message, type = "") => { orderStatus.className = `sandbox-status${type ? ` ${type}` : ""}`; orderStatus.textContent = message; };
+  preview.addEventListener("click", async () => {
+    if (!wallet.value.trim() || !prompt.value.trim()) { setOrderStatus("Enter the public wallet and the requested result.", "error"); return; }
+    preview.disabled = true; confirm.disabled = true; setOrderStatus("Preparing the governed offer…");
+    try {
+      const result = await sandboxRequest("/buyer/preview", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ buyer_wallet: wallet.value.trim(), prompt: prompt.value.trim(), max_price: Number(maxPrice.value || 0) }) });
+      buyerSession = result.session_id;
+      orderResult.hidden = false; orderResult.textContent = JSON.stringify(result, null, 2);
+      confirm.disabled = !buyerSession; setOrderStatus("Offer ready. Review it above, then confirm to create the order (no payment yet).", "success");
+    } catch (error) { setOrderStatus(`Unable to preview: ${error.message}`, "error"); }
+    finally { preview.disabled = false; }
+  });
+  confirm.addEventListener("click", async () => {
+    if (!buyerSession) return;
+    confirm.disabled = true; setOrderStatus("Creating the governed order…");
+    try {
+      const result = await sandboxRequest("/buyer/confirm", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ buyer_wallet: wallet.value.trim(), session_id: buyerSession, max_price: Number(maxPrice.value || 0) }) });
+      orderResult.hidden = false; orderResult.textContent = JSON.stringify(result, null, 2);
+      if (result.order_id) { checkoutOrderId.value = result.order_id; checkoutOrderId.dispatchEvent(new Event("input", { bubbles: true })); document.querySelector("#inbox")?.scrollIntoView({ behavior: "smooth" }); setOrderStatus(`Order created: ${result.order_id}. Connect the wallet below to prepare payment.`, "success"); }
+      else { setOrderStatus(result.message || "Order creation was rejected.", "error"); confirm.disabled = false; }
+    } catch (error) { setOrderStatus(`Unable to create order: ${error.message}`, "error"); confirm.disabled = false; }
+  });
+}
+
 const sellerStatus = optionalElement("#seller-status");
 const sellerResult = optionalElement("#seller-result");
 const sellerPrice = optionalElement("#seller-price");

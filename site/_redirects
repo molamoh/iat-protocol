@@ -4,3 +4,5 @@
 # Public compatibility aliases: visitors commonly use the plural form.
 /buyers     /buyer/  302
 /buyers/*   /buyer/  302
+/buyer      /buyer/order  302
+/buyer/     /buyer/order  302

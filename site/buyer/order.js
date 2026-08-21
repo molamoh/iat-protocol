@@ -7,6 +7,12 @@ const setStatus = (message, type = "") => {
   $("status").className = `order-status ${type}`;
   $("status").textContent = message;
 };
+const showResult = (value) => {
+  const result = $("result");
+  result.hidden = false;
+  result.style.cssText = "display:block;max-height:320px;overflow:auto;margin-top:16px;padding:16px;border:1px solid #41516a;border-radius:10px;background:#07111f;color:#f4f8ff;text-align:left;white-space:pre-wrap;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;";
+  result.textContent = JSON.stringify(value, null, 2);
+};
 async function request(path, body) {
   const response = await fetch(`${API}${path}`, {
     method: "POST",
@@ -34,8 +40,7 @@ $("preview").addEventListener("click", async () => {
   try {
     const result = await request("/buyer/preview", { buyer_wallet: wallet, prompt, max_price: Number($("max").value || 0) });
     session = result.session_id;
-    $("result").hidden = false;
-    $("result").textContent = JSON.stringify(result, null, 2);
+    showResult(result);
     $("confirm").disabled = !session;
     setStatus("Offre prête. Vérifie le détail puis confirme. Aucun paiement n’a eu lieu.", "success");
   } catch (error) { setStatus(`Prévisualisation refusée : ${error.message}`, "error"); }
@@ -47,8 +52,7 @@ $("confirm").addEventListener("click", async () => {
   setStatus("Création de l’ordre gouverné…");
   try {
     const result = await request("/buyer/confirm", { buyer_wallet: $("wallet").value.trim(), session_id: session, max_price: Number($("max").value || 0) });
-    $("result").hidden = false;
-    $("result").textContent = JSON.stringify(result, null, 2);
+    showResult(result);
     if (!result.order_id) throw new Error(result.message || "order_id_missing");
     $("order-id").textContent = result.order_id;
     $("next").hidden = false;

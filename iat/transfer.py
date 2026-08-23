@@ -392,6 +392,14 @@ def send_iat_split_atomic(
             "seller_payout_amount_minor": seller_payout_raw,
         },
         "execution_permit": permit,
+        # The sidecar contract consumes the canonical ``simulation`` field.
+        # Keep ``final_simulation`` as an explicit audit alias for stored
+        # settlement reviews and backwards-compatible readers.
+        "simulation": {
+            "status": "succeeded",
+            "transaction_sha256": transaction_sha256,
+            "units_consumed": simulation.value.units_consumed,
+        },
         "final_simulation": {
             "status": "succeeded",
             "transaction_sha256": transaction_sha256,

@@ -37,8 +37,18 @@ class BoundedSettlementApproval:
     def approve(self, review: Mapping[str, Any]) -> bool:
         payment = review.get("settlement")
         permit = review.get("execution_permit")
-        simulation = review.get("final_simulation")
+        simulation = review.get("simulation")
+        audit_simulation = review.get("final_simulation")
         if not all(isinstance(value, Mapping) for value in (payment, permit, simulation)):
+            return False
+        if audit_simulation is not None and (
+            not isinstance(audit_simulation, Mapping)
+            or audit_simulation.get("status") != simulation.get("status")
+            or not hmac.compare_digest(
+                str(audit_simulation.get("transaction_sha256") or ""),
+                str(simulation.get("transaction_sha256") or ""),
+            )
+        ):
             return False
         try:
             gross = int(payment.get("gross_amount_minor"))

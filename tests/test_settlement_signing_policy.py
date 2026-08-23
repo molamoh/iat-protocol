@@ -46,6 +46,10 @@ def review(**changes):
             "status": "succeeded",
             "transaction_sha256": digest,
         },
+        "simulation": {
+            "status": "succeeded",
+            "transaction_sha256": digest,
+        },
     }
     value.update(changes)
     return value
@@ -64,6 +68,8 @@ def test_claimed_permit_and_exact_final_simulation_are_approved():
         {"expires_at": 0},
         {"execution_permit": {}},
         {"final_simulation": {"status": "failed", "transaction_sha256": "ab" * 32}},
+        {"simulation": {"status": "failed", "transaction_sha256": "ab" * 32}},
+        {"simulation": {"status": "succeeded", "transaction_sha256": "cd" * 32}},
         {
             "settlement": {
                 "asset": "IAT",

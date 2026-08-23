@@ -1042,6 +1042,11 @@ function renderWalletOptions() {
     walletSelector.append(option);
   });
   walletConnect.disabled = false;
+  const preferredProvider = sessionGet("iat_inbox_wallet_provider");
+  if (preferredProvider) {
+    const preferredIndex = discoveredWallets.findIndex((wallet) => String(wallet.name || "") === preferredProvider);
+    if (preferredIndex >= 0) walletSelector.value = String(preferredIndex);
+  }
   if (!sessionGet("iat_inbox_token")) setInboxStatus("Ready. Connecting will request one authentication signature.");
 }
 
@@ -1175,6 +1180,7 @@ async function authenticateSelectedWallet() {
   });
   sessionSet("iat_inbox_token", session.access_token);
   sessionSet("iat_inbox_wallet", session.wallet);
+  sessionSet("iat_inbox_wallet_provider", String(wallet.name || ""));
   showAuthenticatedWallet(session.wallet);
   await resumePendingCheckout();
   try {
@@ -1234,7 +1240,11 @@ function setReviewText(id, value) {
 
 async function ensureActiveWalletConnection() {
   if (activeWallet && activeAccount) return;
-  const wallet = discoveredWallets[Number(walletSelector.value)];
+  const preferredProvider = sessionGet("iat_inbox_wallet_provider");
+  const preferredIndex = preferredProvider
+    ? discoveredWallets.findIndex((wallet) => String(wallet.name || "") === preferredProvider)
+    : -1;
+  const wallet = discoveredWallets[preferredIndex >= 0 ? preferredIndex : Number(walletSelector.value)];
   if (!wallet) throw new Error("Select Phantom and reconnect it to this page");
   const connection = await wallet.features["standard:connect"].connect();
   const account = connection?.accounts?.[0] || wallet.accounts?.[0];
@@ -1488,6 +1498,7 @@ walletRefresh.addEventListener("click", () => {
 walletDisconnect.addEventListener("click", async () => {
   const token = sessionGet("iat_inbox_token");
   clearInboxSession();
+  try { sessionStorage.removeItem("iat_inbox_wallet_provider"); } catch (_) { /* already cleared */ }
   if (token) {
     try {
       await apiJson("/payments/v1/universal/wallet-auth/session", {

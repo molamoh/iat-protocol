@@ -1857,12 +1857,19 @@ def _build_authorized_wallet_transaction(
         # Solana simulation logs are public execution diagnostics. Return only
         # the bounded error/log subset; never disclose the serialized
         # transaction or any signer material.
-        detail = {
-            "code": "transaction_simulation_failed",
-            "simulation_error": value.get("err") if isinstance(value, dict) else "invalid_simulation_response",
-            "simulation_logs": (value.get("logs") or [])[-12:] if isinstance(value, dict) else [],
-        }
-        raise HTTPException(status_code=409, detail=detail)
+        simulation_error = value.get("err") if isinstance(value, dict) else "invalid_simulation_response"
+        simulation_logs = (value.get("logs") or [])[-12:] if isinstance(value, dict) else []
+        # Keep the detail a string for older browser bundles while retaining
+        # the bounded public diagnostics needed to fix the failing instruction.
+        diagnostic = json.dumps(
+            {"simulation_error": simulation_error, "simulation_logs": simulation_logs},
+            separators=(",", ":"),
+            default=str,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail=f"transaction_simulation_failed: {diagnostic}",
+        )
     return {
         "transaction_base64": authorized["transaction_base64"],
         "message_hash": authorized["message_hash"],

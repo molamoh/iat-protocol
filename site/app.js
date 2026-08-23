@@ -1456,6 +1456,32 @@ function renderDeliveries(items, append) {
       link.textContent = "Open verified receipt →";
       link.rel = "noopener";
       article.append(summary, link);
+      const receiptState = String(item.final_receipt?.state || "").toLowerCase();
+      if (["delivered", "dispatched"].includes(receiptState)) {
+        const accept = document.createElement("button");
+        accept.type = "button";
+        accept.className = "button secondary inbox-accept";
+        accept.textContent = "Accept delivery";
+        accept.addEventListener("click", async () => {
+          accept.disabled = true;
+          accept.textContent = "Accepting…";
+          try {
+            const receiptToken = new URL(deliveryUrl).hash.replace(/^#receipt=/, "");
+            if (!receiptToken) throw new Error("Receipt token unavailable");
+            await apiJson(`/payments/v1/universal/delivery-receipts/${encodeURIComponent(receiptToken)}/decision`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ decision: "accepted" }),
+            });
+            await loadInbox(true);
+          } catch (error) {
+            accept.disabled = false;
+            accept.textContent = "Accept delivery";
+            setInboxStatus(`Delivery acceptance failed: ${error.message}`, "error");
+          }
+        });
+        article.append(accept);
+      }
     } else {
       article.append(summary);
     }

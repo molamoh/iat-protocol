@@ -1854,7 +1854,15 @@ def _build_authorized_wallet_transaction(
     )
     value = simulation.get("value") if isinstance(simulation, dict) else None
     if not isinstance(value, dict) or value.get("err") is not None:
-        raise HTTPException(status_code=409, detail="transaction_simulation_failed")
+        # Solana simulation logs are public execution diagnostics. Return only
+        # the bounded error/log subset; never disclose the serialized
+        # transaction or any signer material.
+        detail = {
+            "code": "transaction_simulation_failed",
+            "simulation_error": value.get("err") if isinstance(value, dict) else "invalid_simulation_response",
+            "simulation_logs": (value.get("logs") or [])[-12:] if isinstance(value, dict) else [],
+        }
+        raise HTTPException(status_code=409, detail=detail)
     return {
         "transaction_base64": authorized["transaction_base64"],
         "message_hash": authorized["message_hash"],

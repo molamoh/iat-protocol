@@ -370,7 +370,8 @@ def test_wallet_checkout_fails_closed_when_simulation_fails(monkeypatch):
     with pytest.raises(HTTPException) as rejected:
         checkout_api._build_authorized_wallet_transaction("uq_wallet", prepared)
     assert rejected.value.status_code == 409
-    assert rejected.value.detail == "transaction_simulation_failed"
+    assert rejected.value.detail["code"] == "transaction_simulation_failed"
+    assert rejected.value.detail["simulation_error"] == {"InstructionError": [0, "Custom"]}
 
 
 def test_wallet_checkout_reuses_matching_prepared_quote(monkeypatch):

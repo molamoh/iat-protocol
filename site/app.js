@@ -1136,7 +1136,11 @@ async function apiJson(path, options = {}) {
   let payload = {};
   try { payload = await response.json(); } catch (_) { /* HTTP status is enough */ }
   if (!response.ok) {
-    const detail = typeof payload.detail === "string" ? payload.detail : `HTTP ${response.status}`;
+    const detail = typeof payload.detail === "string"
+      ? payload.detail
+      : payload.detail?.code
+        ? `${payload.detail.code}${payload.detail.simulation_error ? `: ${JSON.stringify(payload.detail.simulation_error)}` : ""}${payload.detail.simulation_logs?.length ? `\n${payload.detail.simulation_logs.join("\n")}` : ""}`
+        : `HTTP ${response.status}`;
     const error = new Error(detail);
     error.status = response.status;
     throw error;

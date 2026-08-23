@@ -900,11 +900,47 @@ def run_checkout_delivery(
     elif not result.get("error") and status in AUTHORIZED_DELIVERY_STATUSES:
         settlement_state = "completed"
         settlement_error = None
+        reputation_result: dict[str, Any] = {
+            "status": "not_updated",
+            "reason": "provider_identity_not_resolved",
+        }
+        try:
+            best_result = result.get("best_result") if isinstance(result, dict) else None
+            best_result = best_result if isinstance(best_result, dict) else {}
+            supplier_execution = result.get("supplier_execution") if isinstance(result, dict) else None
+            supplier_execution = supplier_execution if isinstance(supplier_execution, dict) else {}
+            selected_seller = supplier_execution.get("selected_seller_agent")
+            selected_seller = selected_seller if isinstance(selected_seller, dict) else {}
+            reputation_agent_id = (
+                best_result.get("agent_id")
+                or selected_seller.get("agent_id")
+                or selected_seller.get("seller_agent_id")
+                or order.get("selected_agent_id")
+                or order.get("seller_agent_id")
+                or order.get("seller_id")
+            )
+            if reputation_agent_id:
+                updated = database.update_agent_reputation_db(
+                    reputation_agent_id,
+                    success=True,
+                )
+                reputation_result = {
+                    "status": "updated" if updated is not None else "not_updated",
+                    "agent_id": reputation_agent_id,
+                    "evidence": "authorized_delivery_verified",
+                }
+        except Exception:
+            reputation_result = {
+                "status": "update_error",
+                "retryable": True,
+                "evidence": "authorized_delivery_verified",
+            }
         try:
             from iat.checkout_settlement import allocate_checkout_settlement
 
             result = {
                 **result,
+                "reputation": reputation_result,
                 "settlement": allocate_checkout_settlement(order, result),
             }
         except Exception:
@@ -912,6 +948,7 @@ def run_checkout_delivery(
             settlement_error = "settlement_allocation_error"
             result = {
                 **result,
+                "reputation": reputation_result,
                 "settlement": {
                     "status": "allocation_error",
                     "retryable": True,

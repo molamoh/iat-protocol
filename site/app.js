@@ -1042,6 +1042,8 @@ function renderWalletOptions() {
     walletSelector.append(option);
   });
   walletConnect.disabled = false;
+  const phantomIndex = discoveredWallets.findIndex((wallet) => String(wallet.name || "").toLowerCase().includes("phantom"));
+  if (phantomIndex >= 0 && !sessionGet("iat_inbox_token")) walletSelector.value = String(phantomIndex);
   const preferredProvider = sessionGet("iat_inbox_wallet_provider");
   if (preferredProvider) {
     const preferredIndex = discoveredWallets.findIndex((wallet) => String(wallet.name || "") === preferredProvider);
@@ -1154,7 +1156,9 @@ async function apiJson(path, options = {}) {
 }
 
 async function authenticateSelectedWallet() {
-  const selected = Number(walletSelector.value);
+  const phantomIndex = discoveredWallets.findIndex((wallet) => String(wallet.name || "").toLowerCase().includes("phantom"));
+  const selected = phantomIndex >= 0 ? phantomIndex : Number(walletSelector.value);
+  walletSelector.value = String(selected);
   const wallet = discoveredWallets[selected];
   if (!wallet) throw new Error("Select a compatible Solana wallet");
   const connection = await wallet.features["standard:connect"].connect();
@@ -1244,7 +1248,8 @@ async function ensureActiveWalletConnection() {
   const preferredIndex = preferredProvider
     ? discoveredWallets.findIndex((wallet) => String(wallet.name || "") === preferredProvider)
     : -1;
-  const wallet = discoveredWallets[preferredIndex >= 0 ? preferredIndex : Number(walletSelector.value)];
+  const phantomIndex = discoveredWallets.findIndex((wallet) => String(wallet.name || "").toLowerCase().includes("phantom"));
+  const wallet = discoveredWallets[phantomIndex >= 0 ? phantomIndex : (preferredIndex >= 0 ? preferredIndex : Number(walletSelector.value))];
   if (!wallet) throw new Error("Select Phantom and reconnect it to this page");
   const connection = await wallet.features["standard:connect"].connect();
   const account = connection?.accounts?.[0] || wallet.accounts?.[0];

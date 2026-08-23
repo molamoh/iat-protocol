@@ -2871,6 +2871,27 @@ def get_authenticated_buyer_inbox_item(
     inbox.pop("receipt_id", None)
     public = public_delivery_receipt(get_delivery_receipt(quote_id))
     public.pop("receipt_token", None)
+    settlement = database.get_settlement_by_order_id_db(str(order["order_id"]))
+    settlement_public = None
+    if settlement:
+        payload = settlement.get("settlement_payload")
+        payload = payload if isinstance(payload, dict) else {}
+        settlement_public = {
+            "settlement_id": settlement.get("settlement_id"),
+            "status": settlement.get("settlement_status") or "created",
+            "winner_payment_status": settlement.get("winner_payment_status"),
+            "gross_amount_iat": settlement.get("gross_amount_iat"),
+            "protocol_commission_amount_iat": settlement.get(
+                "protocol_commission_amount_iat"
+            ),
+            "seller_payout_amount_iat": settlement.get("seller_payout_amount_iat"),
+            "reason": payload.get("reason"),
+            "release_requires_governance": True,
+            "onchain_release_confirmed": bool(
+                settlement.get("commission_tx_signature")
+                and settlement.get("seller_payout_tx_signature")
+            ),
+        }
     response.headers["Cache-Control"] = "no-store, private, max-age=0"
     response.headers["Pragma"] = "no-cache"
     return {
@@ -2878,6 +2899,7 @@ def get_authenticated_buyer_inbox_item(
         "quote_id": quote_id,
         "final_receipt": public,
         "inbox": inbox,
+        "settlement": settlement_public,
     }
 
 

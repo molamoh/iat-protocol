@@ -27,8 +27,9 @@ privée d’acheteur :
    services autorisés) est stockée séparément ; sa version explicite reste à
    ajouter avant de permettre des changements concurrents de politique.
 5. Les jobs d’intention sont persistés dans PostgreSQL avec un lease, un
-   compteur de tentatives. La chaîne d’événements hashée reste à raccorder au
-   journal de preuves existant avant l’activation production.
+   compteur de tentatives et une chaîne d’événements hashée vérifiable. Le
+   raccordement de cette chaîne au journal de preuves métier reste requis
+   avant l’activation production.
 6. Un pool de workers réclame les jobs par lease et exécute au plus une
    transition bornée par cycle.
 7. La signature reste déléguée au runtime/connecteur de l’agent ; IAT ne
@@ -56,6 +57,8 @@ Les trois premiers éléments sont implémentés et testés :
 - `iat.hosted_buyer_jobs` fournit la file idempotente et ses leases ;
 - `iat.hosted_buyer_worker` exécute au plus une transition par job, en
   réutilisant les actions et erreurs du scheduler existant.
+- `verify_hosted_buyer_job_events` vérifie l’intégrité de la chaîne de
+  transitions de la file.
 
 Le worker reçoit un `HostedBuyerRuntimeResolver` injecté. Cette frontière est
 intentionnelle : tant que le connecteur acheteur authentifié n’est pas raccordé,

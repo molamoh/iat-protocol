@@ -91,8 +91,11 @@ from iat.buyer_identity import (
     init_wallet_identity_db,
     exchange_wallet_signature,
 )
-from iat.hosted_buyer_registry import register_hosted_buyer_agent
-from iat.hosted_buyer_connector import rotate_hosted_buyer_connector_key
+from iat.hosted_buyer_registry import heartbeat_hosted_buyer_agent, register_hosted_buyer_agent
+from iat.hosted_buyer_connector import (
+    authenticate_hosted_buyer_connector,
+    rotate_hosted_buyer_connector_key,
+)
 from iat.hosted_buyer_jobs import enqueue_hosted_buyer_job
 
 from iat.api.db import (
@@ -363,6 +366,7 @@ PUBLIC_WEB_ALLOW_HEADERS = [
     "Authorization",
     "Idempotency-Key",
     "X-Seller-API-Key",
+    "X-IAT-Buyer-Connector-Key",
 ]
 if PUBLIC_WEB_ORIGINS:
     app.add_middleware(
@@ -3627,6 +3631,20 @@ def admin_enqueue_hosted_buyer_job(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/buyer/hosted/heartbeat")
+def hosted_buyer_connector_heartbeat(
+    x_iat_buyer_connector_key: str | None = Header(default=None),
+):
+    """Authenticated runtime heartbeat; returns only public agent metadata."""
+    identity = authenticate_hosted_buyer_connector(x_iat_buyer_connector_key or "")
+    if not identity:
+        raise HTTPException(status_code=401, detail="buyer_connector_auth_required")
+    state = heartbeat_hosted_buyer_agent(identity["buyer_agent_id"], status="active")
+    if not state:
+        raise HTTPException(status_code=404, detail="buyer_agent_not_found")
+    return {"status": "ok", "connector": identity, "agent": state}
 
 
 @app.get("/admin/buyer/{buyer_wallet}")

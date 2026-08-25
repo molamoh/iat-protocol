@@ -164,6 +164,22 @@ def heartbeat_hosted_buyer_agent(
         db.release_conn(conn)
 
 
+def get_hosted_buyer_agent(buyer_agent_id: str) -> dict[str, Any] | None:
+    init_hosted_buyer_registry_db()
+    conn = db.get_conn()
+    try:
+        cur = conn.cursor()
+        p = db.qmark()
+        cur.execute(
+            f"SELECT * FROM hosted_buyer_agents WHERE buyer_agent_id={p}",
+            (buyer_agent_id,),
+        )
+        row = cur.fetchone()
+        return _public(dict(row)) if row else None
+    finally:
+        db.release_conn(conn)
+
+
 def update_hosted_buyer_policy(
     buyer_agent_id: str,
     policy: dict[str, Any],

@@ -93,6 +93,7 @@ from iat.buyer_identity import (
 )
 from iat.hosted_buyer_registry import register_hosted_buyer_agent
 from iat.hosted_buyer_connector import rotate_hosted_buyer_connector_key
+from iat.hosted_buyer_jobs import enqueue_hosted_buyer_job
 
 from iat.api.db import (
     update_agent_call_stats_db,
@@ -625,6 +626,12 @@ class HostedBuyerRegisterRequest(BaseModel):
     buyer_wallet: str
     runtime_connector_id: str
     policy: dict[str, Any] = Field(default_factory=dict)
+
+
+class HostedBuyerJobRequest(BaseModel):
+    intent_decision_id: str = Field(min_length=1, max_length=200)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    max_attempts: int = Field(default=100, ge=1, le=10_000)
 
 
 class InternalSellerSuccessRequest(BaseModel):
@@ -3600,6 +3607,24 @@ def admin_rotate_hosted_buyer_connector(
     """Return a connector key once; the server stores only its digest."""
     try:
         return rotate_hosted_buyer_connector_key(buyer_agent_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/admin/buyer/hosted/{buyer_agent_id}/jobs")
+def admin_enqueue_hosted_buyer_job(
+    buyer_agent_id: str,
+    req: HostedBuyerJobRequest,
+    _admin: bool = Depends(require_admin),
+):
+    """Queue one intent for an active hosted buyer agent idempotently."""
+    try:
+        return enqueue_hosted_buyer_job(
+            buyer_agent_id=buyer_agent_id,
+            intent_decision_id=req.intent_decision_id,
+            payload=req.payload,
+            max_attempts=req.max_attempts,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 

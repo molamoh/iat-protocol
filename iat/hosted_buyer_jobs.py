@@ -10,7 +10,7 @@ import uuid
 from typing import Any
 
 from iat.api import db
-from iat.hosted_buyer_registry import init_hosted_buyer_registry_db
+from iat.hosted_buyer_registry import get_hosted_buyer_agent, init_hosted_buyer_registry_db
 
 GENESIS_EVENT_HASH = "0" * 64
 
@@ -85,6 +85,11 @@ def enqueue_hosted_buyer_job(
 ) -> dict[str, Any]:
     if not buyer_agent_id or not intent_decision_id:
         raise ValueError("buyer_job_identity_required")
+    agent = get_hosted_buyer_agent(buyer_agent_id)
+    if not agent:
+        raise ValueError("buyer_agent_not_found")
+    if agent.get("status") != "active":
+        raise ValueError("buyer_agent_not_active")
     if not 1 <= int(max_attempts) <= 10_000:
         raise ValueError("buyer_job_max_attempts_invalid")
     current = int(time.time()) if now is None else int(now)

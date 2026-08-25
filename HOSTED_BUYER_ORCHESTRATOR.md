@@ -57,6 +57,8 @@ Les trois premiers éléments sont implémentés et testés :
 - `iat.hosted_buyer_jobs` fournit la file idempotente et ses leases ;
 - `iat.hosted_buyer_worker` exécute au plus une transition par job, en
   réutilisant les actions et erreurs du scheduler existant.
+- `iat.hosted_buyer_connector` gère la rotation et l’authentification des
+  clés de connecteur ; seule leur empreinte est persistée.
 - `verify_hosted_buyer_job_events` vérifie l’intégrité de la chaîne de
   transitions de la file.
 

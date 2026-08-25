@@ -151,7 +151,12 @@ if (document.querySelector("#inbox") && !document.querySelector("#governed-order
   orderSection.id = "governed-order";
   orderSection.className = "sandbox-section";
   orderSection.innerHTML = `<div class="shell sandbox-layout"><div class="sandbox-copy"><p class="kicker">GOVERNED DEVNET ORDER</p><h2>Describe the result you want.</h2><p>IAT finds a governed provider, shows the price, then prepares the payment. Nothing is paid before your wallet approves it.</p><ol><li><strong>Describe</strong><span>Tell IAT what the agent must deliver.</span></li><li><strong>Review</strong><span>See the selected offer and maximum price.</span></li><li><strong>Confirm</strong><span>Create the order, then continue to wallet checkout.</span></li></ol></div><div class="sandbox-app"><div class="sandbox-app-head"><strong>Prepare your order</strong><span class="devnet-pill">DEVNET</span></div><label for="governed-wallet">Buyer wallet<input id="governed-wallet" autocomplete="off" placeholder="Public Solana address"></label><label for="governed-prompt">What should the agent deliver?<textarea id="governed-prompt" rows="3">Compare autonomous agent payment protocols and return sourced evidence.</textarea></label><label for="governed-max-price">Maximum budget (IAT)<input id="governed-max-price" value="2.00" inputmode="decimal"></label><div class="sandbox-actions"><button id="governed-preview" class="button secondary" type="button">1. Review offer</button><button id="governed-confirm" class="button primary" type="button" disabled>2. Confirm order</button></div><p id="governed-status" class="sandbox-status" role="status" aria-live="polite"></p><div id="governed-summary" class="checkout-review" hidden></div><pre id="governed-result" class="sandbox-result" hidden></pre></div></div>`;
-  document.querySelector("#inbox").before(orderSection);
+  const sandboxSection = document.querySelector("#sandbox");
+  (sandboxSection || document.querySelector("#inbox")).before(orderSection);
+  const primaryLink = document.querySelector('.page-links a[href="#sandbox"]');
+  const simulationLink = document.querySelector('.page-links a[href="#inbox"]');
+  if (primaryLink) { primaryLink.href = "#governed-order"; primaryLink.textContent = "Start an order ↓"; }
+  if (simulationLink) { simulationLink.href = "#sandbox"; simulationLink.textContent = "Try the free simulation ↓"; }
   const technicalResult = orderSection.querySelector("#governed-result");
   const technicalDetails = document.createElement("details");
   technicalDetails.className = "governed-technical-details";

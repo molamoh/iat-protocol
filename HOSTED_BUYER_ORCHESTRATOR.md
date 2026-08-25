@@ -45,3 +45,19 @@ privée d’acheteur :
 La première livraison de cette transition ne doit exécuter aucun paiement :
 elle doit seulement inscrire un agent, réclamer un job et prouver la reprise
 après expiration de lease.
+
+## État vérifié au 25 août 2026
+
+Les trois premiers éléments sont implémentés et testés :
+
+- `iat.hosted_buyer_registry` fournit le registre public multi-tenant ;
+- `iat.hosted_buyer_jobs` fournit la file idempotente et ses leases ;
+- `iat.hosted_buyer_worker` exécute au plus une transition par job, en
+  réutilisant les actions et erreurs du scheduler existant.
+
+Le worker reçoit un `HostedBuyerRuntimeResolver` injecté. Cette frontière est
+intentionnelle : tant que le connecteur acheteur authentifié n’est pas raccordé,
+aucune route ne doit accepter un `buyer_agent_id` et un wallet au seul moyen
+de champs JSON. Le déploiement Render de cette étape reste donc désactivé pour
+les paiements réels ; le prochain travail est l’authentification du connecteur
+et son canari de signature.

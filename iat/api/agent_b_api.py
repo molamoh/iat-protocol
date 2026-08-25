@@ -91,6 +91,8 @@ from iat.buyer_identity import (
     init_wallet_identity_db,
     exchange_wallet_signature,
 )
+from iat.hosted_buyer_registry import register_hosted_buyer_agent
+from iat.hosted_buyer_connector import rotate_hosted_buyer_connector_key
 
 from iat.api.db import (
     update_agent_call_stats_db,
@@ -617,6 +619,12 @@ class SellerAgentFactoryRequest(BaseModel):
 class AdminBuyerActionRequest(BaseModel):
     buyer_wallet: str
     reason: str | None = None
+
+
+class HostedBuyerRegisterRequest(BaseModel):
+    buyer_wallet: str
+    runtime_connector_id: str
+    policy: dict[str, Any] = Field(default_factory=dict)
 
 
 class InternalSellerSuccessRequest(BaseModel):
@@ -3566,6 +3574,34 @@ def admin_list_buyers(
         "count": len(buyers),
         "buyers": buyers,
     }
+
+
+@app.post("/admin/buyer/hosted/register")
+def admin_register_hosted_buyer(
+    req: HostedBuyerRegisterRequest,
+    _admin: bool = Depends(require_admin),
+):
+    """Register public buyer runtime metadata; no secret is accepted here."""
+    try:
+        return register_hosted_buyer_agent(
+            buyer_wallet=req.buyer_wallet,
+            runtime_connector_id=req.runtime_connector_id,
+            policy=req.policy,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/admin/buyer/hosted/{buyer_agent_id}/connector/rotate")
+def admin_rotate_hosted_buyer_connector(
+    buyer_agent_id: str,
+    _admin: bool = Depends(require_admin),
+):
+    """Return a connector key once; the server stores only its digest."""
+    try:
+        return rotate_hosted_buyer_connector_key(buyer_agent_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.get("/admin/buyer/{buyer_wallet}")

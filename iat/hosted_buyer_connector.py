@@ -49,6 +49,15 @@ def rotate_hosted_buyer_connector_key(
         cur = conn.cursor()
         p = db.qmark()
         cur.execute(
+            f"SELECT status FROM hosted_buyer_agents WHERE buyer_agent_id={p}",
+            (buyer_agent_id,),
+        )
+        agent = cur.fetchone()
+        if not agent:
+            raise ValueError("buyer_agent_not_found")
+        if str(agent["status"]) != "active":
+            raise ValueError("buyer_agent_not_active")
+        cur.execute(
             f"UPDATE hosted_buyer_connector_credentials SET status='revoked', revoked_at={p} "
             f"WHERE buyer_agent_id={p} AND status='active'", (current, buyer_agent_id)
         )

@@ -5,6 +5,7 @@ from iat.hosted_buyer_jobs import (
     claim_hosted_buyer_job,
     enqueue_hosted_buyer_job,
     finish_hosted_buyer_job,
+    verify_hosted_buyer_job_events,
 )
 from iat.hosted_buyer_registry import register_hosted_buyer_agent
 
@@ -48,6 +49,9 @@ def test_job_enqueue_claim_and_finish_are_idempotent(jobs_database):
     )
     assert finished["state"] == "completed"
     assert claim_hosted_buyer_job(now=121)["status"] == "empty"
+    chain = verify_hosted_buyer_job_events(first["job_id"])
+    assert chain["valid"] is True
+    assert chain["event_count"] == 3
 
 
 def test_expired_lease_is_recoverable(jobs_database):

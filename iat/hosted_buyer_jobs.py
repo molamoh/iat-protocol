@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import secrets
 import time
 import uuid
@@ -10,6 +11,8 @@ from typing import Any
 
 from iat.api import db
 from iat.hosted_buyer_registry import init_hosted_buyer_registry_db
+
+GENESIS_EVENT_HASH = "0" * 64
 
 
 def init_hosted_buyer_jobs_db() -> None:
@@ -37,6 +40,27 @@ def init_hosted_buyer_jobs_db() -> None:
                 completed_at INTEGER
             )
             """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS hosted_buyer_job_events (
+                event_id TEXT PRIMARY KEY,
+                job_id TEXT NOT NULL,
+                buyer_agent_id TEXT NOT NULL,
+                intent_decision_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                state TEXT NOT NULL,
+                action TEXT,
+                error TEXT,
+                created_at INTEGER NOT NULL,
+                previous_hash TEXT NOT NULL,
+                event_hash TEXT NOT NULL
+            )
+            """
+        )
+        cur.execute(
+            """CREATE INDEX IF NOT EXISTS idx_hosted_buyer_job_events_job
+               ON hosted_buyer_job_events(job_id, created_at, event_id)"""
         )
         cur.execute(
             """CREATE UNIQUE INDEX IF NOT EXISTS idx_hosted_buyer_job_identity
@@ -95,6 +119,11 @@ def enqueue_hosted_buyer_job(
                 current,
             ),
         )
+        _record_event(
+            cur, job_id=job_id, buyer_agent_id=buyer_agent_id,
+            intent_decision_id=intent_decision_id, event_type="queued",
+            state="queued", created_at=current,
+        )
         conn.commit()
         cur.execute(f"SELECT * FROM hosted_buyer_jobs WHERE job_id={p}", (job_id,))
         return _public(dict(cur.fetchone()), idempotent=False)
@@ -150,6 +179,11 @@ def claim_hosted_buyer_job(
         if cur.rowcount != 1:
             conn.rollback()
             return {"status": "retry"}
+        _record_event(
+            cur, job_id=str(item["job_id"]), buyer_agent_id=str(item["buyer_agent_id"]),
+            intent_decision_id=str(item["intent_decision_id"]), event_type="leased",
+            state="leased", created_at=current,
+        )
         conn.commit()
         item["state"] = "leased"
         item["lease_token"] = token
@@ -197,6 +231,15 @@ def finish_hosted_buyer_job(
         if cur.rowcount != 1:
             conn.rollback()
             return {"status": "lease_conflict", "job_id": job_id}
+        cur.execute(f"SELECT buyer_agent_id, intent_decision_id FROM hosted_buyer_jobs WHERE job_id={p}", (job_id,))
+        identity = cur.fetchone()
+        if identity:
+            _record_event(
+                cur, job_id=job_id, buyer_agent_id=str(identity["buyer_agent_id"]),
+                intent_decision_id=str(identity["intent_decision_id"]),
+                event_type=state, state=state, action=action, error=error,
+                created_at=current,
+            )
         conn.commit()
         return {"status": "job_updated", "job_id": job_id, "state": state}
     finally:
@@ -229,3 +272,67 @@ def _public(row: dict[str, Any], *, idempotent: bool | None = None, include_leas
     if idempotent is not None:
         result["idempotent_replay"] = idempotent
     return result
+
+
+def _record_event(
+    cur: Any, *, job_id: str, buyer_agent_id: str, intent_decision_id: str,
+    event_type: str, state: str, created_at: int, action: str | None = None,
+    error: str | None = None,
+) -> None:
+    q = db.qmark()
+    previous = cur.execute(
+        f"SELECT event_hash FROM hosted_buyer_job_events WHERE job_id={q} "
+        f"ORDER BY created_at DESC, event_id DESC LIMIT 1", (job_id,)
+    ).fetchone()
+    previous_hash = str(previous["event_hash"]) if previous else GENESIS_EVENT_HASH
+    canonical = json.dumps(
+        {"version": 1, "job_id": job_id, "buyer_agent_id": buyer_agent_id,
+         "intent_decision_id": intent_decision_id, "event_type": event_type,
+         "state": state, "action": action, "error": error,
+         "created_at": int(created_at), "previous_hash": previous_hash},
+        sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    event_hash = hashlib.sha256(canonical).hexdigest()
+    marks = ",".join([q] * 11)
+    cur.execute(
+        "INSERT INTO hosted_buyer_job_events "
+        "(event_id, job_id, buyer_agent_id, intent_decision_id, event_type, state, action, error, created_at, previous_hash, event_hash) "
+        f"VALUES ({marks})",
+        ("hbe_" + uuid.uuid4().hex, job_id, buyer_agent_id, intent_decision_id,
+         event_type, state, action, error, int(created_at), previous_hash, event_hash),
+    )
+
+
+def verify_hosted_buyer_job_events(job_id: str) -> dict[str, Any]:
+    """Verify the append-only event chain for one hosted job."""
+    init_hosted_buyer_jobs_db()
+    conn = db.get_conn()
+    try:
+        cur = conn.cursor()
+        p = db.qmark()
+        cur.execute(
+            f"SELECT * FROM hosted_buyer_job_events WHERE job_id={p} "
+            "ORDER BY created_at, event_id", (job_id,)
+        )
+        rows = [dict(row) for row in cur.fetchall()]
+    finally:
+        db.release_conn(conn)
+    previous = GENESIS_EVENT_HASH
+    for index, event in enumerate(rows):
+        canonical = json.dumps(
+            {"version": 1, "job_id": str(event["job_id"]),
+             "buyer_agent_id": str(event["buyer_agent_id"]),
+             "intent_decision_id": str(event["intent_decision_id"]),
+             "event_type": str(event["event_type"]), "state": str(event["state"]),
+             "action": event.get("action"), "error": event.get("error"),
+             "created_at": int(event["created_at"]), "previous_hash": previous},
+            sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+        expected = hashlib.sha256(canonical).hexdigest()
+        if event.get("previous_hash") != previous or event.get("event_hash") != expected:
+            return {"status": "invalid", "job_id": job_id,
+                    "valid": False, "event_count": len(rows),
+                    "first_invalid_index": index, "head_hash": None}
+        previous = expected
+    return {"status": "ok", "job_id": job_id, "valid": True,
+            "event_count": len(rows), "head_hash": previous if rows else None}

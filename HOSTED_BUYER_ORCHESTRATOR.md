@@ -24,8 +24,8 @@ privée d’acheteur :
 3. `runtime_connector_id` référence son runtime hébergé ou son connecteur,
    sans contenir de secret.
 4. La politique d’achat (actif, plafond par ordre, plafond quotidien,
-   services autorisés) est stockée séparément ; sa version explicite reste à
-   ajouter avant de permettre des changements concurrents de politique.
+   services autorisés) est stockée séparément avec une version optimiste pour
+   refuser les changements concurrents obsolètes.
 5. Les jobs d’intention sont persistés dans PostgreSQL avec un lease, un
    compteur de tentatives et une chaîne d’événements hashée vérifiable. Le
    raccordement de cette chaîne au journal de preuves métier reste requis

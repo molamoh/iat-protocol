@@ -317,8 +317,19 @@ def verify_hosted_buyer_job_events(job_id: str) -> dict[str, Any]:
         rows = [dict(row) for row in cur.fetchall()]
     finally:
         db.release_conn(conn)
+    by_previous = {str(event["previous_hash"]): event for event in rows}
     previous = GENESIS_EVENT_HASH
-    for index, event in enumerate(rows):
+    ordered: list[dict[str, Any]] = []
+    while previous in by_previous:
+        event = by_previous.pop(previous)
+        ordered.append(event)
+        previous = str(event["event_hash"])
+    if by_previous:
+        return {"status": "invalid", "job_id": job_id, "valid": False,
+                "event_count": len(rows), "first_invalid_index": len(ordered),
+                "head_hash": None}
+    previous = GENESIS_EVENT_HASH
+    for index, event in enumerate(ordered):
         canonical = json.dumps(
             {"version": 1, "job_id": str(event["job_id"]),
              "buyer_agent_id": str(event["buyer_agent_id"]),
@@ -335,4 +346,4 @@ def verify_hosted_buyer_job_events(job_id: str) -> dict[str, Any]:
                     "first_invalid_index": index, "head_hash": None}
         previous = expected
     return {"status": "ok", "job_id": job_id, "valid": True,
-            "event_count": len(rows), "head_hash": previous if rows else None}
+            "event_count": len(ordered), "head_hash": previous if ordered else None}

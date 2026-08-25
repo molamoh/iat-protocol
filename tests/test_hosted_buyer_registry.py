@@ -4,6 +4,7 @@ from iat.api import db
 from iat.hosted_buyer_registry import (
     heartbeat_hosted_buyer_agent,
     register_hosted_buyer_agent,
+    update_hosted_buyer_policy,
 )
 
 
@@ -35,6 +36,23 @@ def test_registration_is_idempotent_and_never_returns_secrets(registry_database)
     assert replay["policy"] == {"max_per_order_minor": 2_000_000}
     assert "token" not in replay
     assert "private_key" not in replay
+
+
+def test_policy_update_requires_current_version(registry_database):
+    created = register_hosted_buyer_agent(
+        buyer_wallet=WALLET, runtime_connector_id="connector-policy", now=100
+    )
+    updated = update_hosted_buyer_policy(
+        created["buyer_agent_id"], {"max_per_order_minor": 3_000_000},
+        expected_version=1, now=110,
+    )
+    assert updated["status"] == "policy_updated"
+    assert updated["policy_version"] == 2
+    conflict = update_hosted_buyer_policy(
+        created["buyer_agent_id"], {"max_per_order_minor": 4_000_000},
+        expected_version=1, now=120,
+    )
+    assert conflict["status"] == "policy_version_conflict"
 
 
 def test_heartbeat_updates_only_public_runtime_state(registry_database):

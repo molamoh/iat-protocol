@@ -52,12 +52,25 @@ def init_hosted_buyer_registry_db() -> None:
                 cluster TEXT NOT NULL DEFAULT 'solana:devnet',
                 status TEXT NOT NULL DEFAULT 'active',
                 policy_json TEXT NOT NULL DEFAULT '{}',
+                policy_version INTEGER NOT NULL DEFAULT 1,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 last_heartbeat_at INTEGER
             )
             """
         )
+        if db.is_postgres():
+            columns = {
+                str(row["column_name"])
+                for row in cur.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_name='hosted_buyer_agents'"
+                ).fetchall()
+            }
+        else:
+            columns = {str(row["name"]) for row in cur.execute("PRAGMA table_info(hosted_buyer_agents)").fetchall()}
+        if "policy_version" not in columns:
+            cur.execute("ALTER TABLE hosted_buyer_agents ADD COLUMN policy_version INTEGER NOT NULL DEFAULT 1")
         cur.execute(
             """CREATE UNIQUE INDEX IF NOT EXISTS idx_hosted_buyer_identity
                ON hosted_buyer_agents(buyer_wallet, runtime_connector_id)"""
@@ -151,6 +164,39 @@ def heartbeat_hosted_buyer_agent(
         db.release_conn(conn)
 
 
+def update_hosted_buyer_policy(
+    buyer_agent_id: str,
+    policy: dict[str, Any],
+    *,
+    expected_version: int,
+    now: int | None = None,
+) -> dict[str, Any]:
+    """Update policy only when the caller still has the current version."""
+    if not isinstance(policy, dict):
+        raise ValueError("buyer_policy_invalid")
+    if int(expected_version) < 1:
+        raise ValueError("buyer_policy_version_invalid")
+    current = int(time.time()) if now is None else int(now)
+    init_hosted_buyer_registry_db()
+    conn = db.get_conn()
+    try:
+        cur = conn.cursor()
+        p = db.qmark()
+        cur.execute(
+            f"""UPDATE hosted_buyer_agents SET policy_json={p}, policy_version=policy_version+1,
+                updated_at={p} WHERE buyer_agent_id={p} AND policy_version={p} AND status != 'revoked'""",
+            (json.dumps(policy, sort_keys=True, separators=(",", ":")), current, buyer_agent_id, int(expected_version)),
+        )
+        if cur.rowcount != 1:
+            conn.rollback()
+            return {"status": "policy_version_conflict", "buyer_agent_id": buyer_agent_id}
+        conn.commit()
+        cur.execute(f"SELECT * FROM hosted_buyer_agents WHERE buyer_agent_id={p}", (buyer_agent_id,))
+        return {**_public(dict(cur.fetchone())), "status": "policy_updated"}
+    finally:
+        db.release_conn(conn)
+
+
 def _public(row: dict[str, Any]) -> dict[str, Any]:
     try:
         policy = json.loads(row.get("policy_json") or "{}")
@@ -163,6 +209,7 @@ def _public(row: dict[str, Any]) -> dict[str, Any]:
         "cluster": row.get("cluster"),
         "status": row.get("status"),
         "policy": policy,
+        "policy_version": int(row.get("policy_version") or 1),
         "created_at": row.get("created_at"),
         "updated_at": row.get("updated_at"),
         "last_heartbeat_at": row.get("last_heartbeat_at"),

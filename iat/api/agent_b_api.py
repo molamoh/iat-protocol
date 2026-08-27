@@ -6241,7 +6241,8 @@ def compute_release_policy(
     foundation_warnings=None,
     verification_consensus_status=None,
 ):
-    risk_score = float(financial_risk.get("release_risk_score", 100) or 100)
+    raw_risk_score = financial_risk.get("release_risk_score")
+    risk_score = float(100 if raw_risk_score is None else raw_risk_score)
     risk_level = financial_risk.get("release_risk_level")
 
     release_policy_mode = "blocked"
@@ -6356,7 +6357,8 @@ def authorize_release_from_risk(
     risk_result,
     release_policy,
 ):
-    risk_score = float(risk_result.get("release_risk_score", 100) or 100)
+    raw_risk_score = risk_result.get("release_risk_score")
+    risk_score = float(100 if raw_risk_score is None else raw_risk_score)
 
     policy_mode = release_policy.get("release_policy_mode")
     minimum_release_confidence = float(
@@ -7712,7 +7714,10 @@ def admin_recover_settlement_wallets(
 
     authorization = authorize_settlement_release(order_id)
 
-    if authorization.get("release_authorized") is not True:
+    release_authorized = authorization.get("release_authorized") is True
+    authorization_mode = authorization.get("authorization_mode")
+
+    if not release_authorized and authorization_mode != "manual_review":
         return {
             "status": "recovery_blocked",
             "reason": authorization.get(
@@ -7733,6 +7738,11 @@ def admin_recover_settlement_wallets(
             "wallet_resolution": wallet_resolution,
             "settlement_authorization": authorization,
         },
+        next_status=(
+            "authorized"
+            if release_authorized
+            else "manual_review"
+        ),
     )
 
     return {

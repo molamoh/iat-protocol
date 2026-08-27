@@ -11382,13 +11382,15 @@ def recover_settlement_wallet_configuration_db(
     winner_wallet,
     treasury_wallet,
     recovery_metadata=None,
+    next_status="authorized",
 ):
     """
     Recover an existing settlement after a wallet configuration failure.
 
     The settlement ID and financial history are preserved. This function
     updates only the corrected beneficiary configuration, appends an audit
-    event, then performs a controlled transition to `authorized`.
+    event, then performs a controlled transition to `authorized` or
+    `manual_review`. Manual review never implies release authorization.
     """
     if not settlement_id:
         return {
@@ -11400,6 +11402,13 @@ def recover_settlement_wallet_configuration_db(
         return {
             "status": "error",
             "reason": "resolved_wallets_required",
+        }
+
+    if next_status not in {"authorized", "manual_review"}:
+        return {
+            "status": "error",
+            "reason": "invalid_wallet_recovery_next_status",
+            "allowed_next_statuses": ["authorized", "manual_review"],
         }
 
     settlement = get_settlement_by_id_db(settlement_id)
@@ -11481,7 +11490,11 @@ def recover_settlement_wallet_configuration_db(
         winner_id,
         winner_wallet,
         treasury_wallet,
-        "wallet_configuration_recovered",
+        (
+            "wallet_configuration_recovered"
+            if next_status == "authorized"
+            else "wallet_configuration_recovered_manual_review_required"
+        ),
         json.dumps(payload),
         now,
         settlement_id,
@@ -11492,8 +11505,12 @@ def recover_settlement_wallet_configuration_db(
 
     transition = update_settlement_status_db(
         settlement_id=settlement_id,
-        next_status="authorized",
-        reason="foundation_authorized_wallet_configuration_recovery",
+        next_status=next_status,
+        reason=(
+            "foundation_authorized_wallet_configuration_recovery"
+            if next_status == "authorized"
+            else "wallet_configuration_recovered_pending_manual_review"
+        ),
         transition_metadata={
             "recovery_engine": "settlement_wallet_recovery_v1",
             "previous_status": current_status,
@@ -11504,13 +11521,17 @@ def recover_settlement_wallet_configuration_db(
 
     return {
         "status": (
-            "settlement_recovered"
+            (
+                "settlement_recovered"
+                if next_status == "authorized"
+                else "settlement_recovered_manual_review_required"
+            )
             if transition.get("status") == "settlement_status_updated"
             else "recovery_transition_failed"
         ),
         "settlement_id": settlement_id,
         "previous_status": current_status,
-        "next_status": "authorized",
+        "next_status": next_status,
         "winner_id": winner_id,
         "winner_wallet": winner_wallet,
         "treasury_wallet": treasury_wallet,

@@ -11329,6 +11329,7 @@ SETTLEMENT_ALLOWED_TRANSITIONS = {
     ],
     "authorized": [
         "ready_for_release",
+        "manual_review",
         "blocked",
     ],
     "ready_for_release": [

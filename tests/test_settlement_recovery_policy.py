@@ -142,3 +142,11 @@ def test_db_recovery_rejects_unapproved_target_state():
 
     assert result["status"] == "error"
     assert result["reason"] == "invalid_wallet_recovery_next_status"
+
+
+def test_authorized_settlement_can_be_held_for_manual_review():
+    hold = db.validate_settlement_transition("authorized", "manual_review")
+    bypass = db.validate_settlement_transition("manual_review", "ready_for_release")
+
+    assert hold["transition_allowed"] is True
+    assert bypass["transition_allowed"] is False

@@ -12650,6 +12650,16 @@ def _settlement_workflow_ready_for_release_handler(settlement):
     settlement_id = settlement.get("settlement_id")
     now = int(time.time())
 
+    execution_permit = get_active_settlement_execution_permit_db(settlement_id)
+    if not execution_permit:
+        return {
+            "next_status": None,
+            "decision": "wait_for_execution_permit",
+            "reason": "active_settlement_execution_permit_required",
+            "handler": "ready_for_release_handler_v2",
+            "broadcast_performed": False,
+        }
+
     from iat.action_engine.executor import execute_action
 
     action_result = execute_action(
@@ -12667,9 +12677,8 @@ def _settlement_workflow_ready_for_release_handler(settlement):
             ),
             "winner_wallet": settlement.get("winner_wallet"),
             "treasury_wallet": settlement.get("treasury_wallet"),
-            "onchain_settlement_enabled": bool(
-                settlement.get("onchain_settlement_enabled")
-            ),
+            "onchain_settlement_enabled": True,
+            "execution_permit_id": execution_permit.get("permit_id"),
         },
         metadata={
             "adapter": "settlement_atomic",
@@ -12757,6 +12766,33 @@ def _settlement_workflow_ready_for_release_handler(settlement):
         "release_execution": release_execution,
         "payload_update": payload_update,
     }
+
+
+def get_active_settlement_execution_permit_db(settlement_id):
+    """Return only a fresh, unclaimed canonical permit for this settlement."""
+    if not settlement_id:
+        return None
+
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        p = qmark()
+        cur.execute(
+            f"""
+            SELECT *
+            FROM protocol_settlement_execution_permits
+            WHERE settlement_id = {p}
+              AND state = 'issued'
+              AND expires_at >= {p}
+            ORDER BY issued_at DESC
+            LIMIT 1
+            """,
+            (settlement_id, int(time.time())),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        release_conn(conn)
 
 
 def _settlement_workflow_authorized_handler(settlement):

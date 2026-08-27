@@ -153,3 +153,77 @@ def test_isolated_settlement_refuses_mainnet_before_rpc_or_sidecar(monkeypatch):
             order_id="order_guard",
             execution_permit={},
         )
+
+
+def test_ready_for_release_waits_without_canonical_permit(monkeypatch):
+    monkeypatch.setattr(
+        db,
+        "get_active_settlement_execution_permit_db",
+        lambda _settlement_id: None,
+    )
+
+    decision = db._settlement_workflow_ready_for_release_handler(
+        {"settlement_id": "settlement_guard"}
+    )
+
+    assert decision["next_status"] is None
+    assert decision["decision"] == "wait_for_execution_permit"
+    assert decision["broadcast_performed"] is False
+
+
+def test_ready_for_release_passes_exact_permit_to_atomic_adapter(monkeypatch):
+    from iat.action_engine import executor
+
+    captured = {}
+    monkeypatch.setattr(
+        db,
+        "get_active_settlement_execution_permit_db",
+        lambda _settlement_id: {"permit_id": "pep_exact"},
+    )
+
+    def execute_action(**kwargs):
+        captured.update(kwargs)
+        return {
+            "status": "action_blocked",
+            "reason": "test_no_broadcast",
+            "result": {},
+        }
+
+    monkeypatch.setattr(executor, "execute_action", execute_action)
+
+    decision = db._settlement_workflow_ready_for_release_handler(
+        {
+            "settlement_id": "settlement_guard",
+            "order_id": "order_guard",
+            "winner_wallet": str(Keypair().pubkey()),
+            "treasury_wallet": str(Keypair().pubkey()),
+            "gross_amount_iat": 1.5,
+            "protocol_commission_amount_iat": 0.15,
+            "seller_payout_amount_iat": 1.35,
+        }
+    )
+
+    assert captured["payload"]["execution_permit_id"] == "pep_exact"
+    assert captured["payload"]["onchain_settlement_enabled"] is True
+    assert decision["next_status"] == "release_failed"
+
+
+def test_active_permit_lookup_rejects_expired_and_other_settlement(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", tmp_path / "permit_lookup.sqlite3")
+    monkeypatch.setattr(db, "USE_POSTGRES", False)
+    monkeypatch.setattr(db, "pool", None)
+    _insert_settlement_and_permit("settlement_guard", "pep_guard")
+
+    assert db.get_active_settlement_execution_permit_db("other_settlement") is None
+
+    connection = db.get_conn()
+    try:
+        connection.cursor().execute(
+            "UPDATE protocol_settlement_execution_permits SET expires_at = ?",
+            (int(time.time()) - 1,),
+        )
+        connection.commit()
+    finally:
+        db.release_conn(connection)
+
+    assert db.get_active_settlement_execution_permit_db("settlement_guard") is None

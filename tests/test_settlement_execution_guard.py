@@ -190,6 +190,11 @@ def test_ready_for_release_passes_exact_permit_to_atomic_adapter(monkeypatch):
         }
 
     monkeypatch.setattr(executor, "execute_action", execute_action)
+    monkeypatch.setattr(
+        db,
+        "update_settlement_payload_db",
+        lambda **_kwargs: {"status": "test_payload_not_persisted"},
+    )
 
     decision = db._settlement_workflow_ready_for_release_handler(
         {

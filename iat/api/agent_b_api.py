@@ -6661,6 +6661,7 @@ def resolve_settlement_candidate(order, execution_result):
 
     provider_wallet = (
         order.get("actual_agent_wallet")
+        or order.get("seller_wallet")
         or registered_provider.get("wallet")
     )
 
@@ -7727,6 +7728,16 @@ def admin_recover_settlement_wallets(
             "settlement_authorization": authorization,
         }
 
+    recovery_next_status = (
+        "manual_review"
+        if settlement.get("settlement_status") == "manual_review"
+        else (
+            "authorized"
+            if release_authorized
+            else "manual_review"
+        )
+    )
+
     recovery = recover_settlement_wallet_configuration_db(
         settlement_id=settlement_id,
         winner_id=best.get("agent_id"),
@@ -7738,11 +7749,7 @@ def admin_recover_settlement_wallets(
             "wallet_resolution": wallet_resolution,
             "settlement_authorization": authorization,
         },
-        next_status=(
-            "authorized"
-            if release_authorized
-            else "manual_review"
-        ),
+        next_status=recovery_next_status,
     )
 
     return {

@@ -11428,6 +11428,7 @@ def recover_settlement_wallet_configuration_db(
         "blocked_invalid_winner_wallet",
         "blocked_no_winner_wallet",
         "blocked_invalid_treasury_wallet",
+        "manual_review",
     }
 
     if current_status not in recoverable_statuses:
@@ -11504,21 +11505,30 @@ def recover_settlement_wallet_configuration_db(
     conn.commit()
     release_conn(conn)
 
-    transition = update_settlement_status_db(
-        settlement_id=settlement_id,
-        next_status=next_status,
-        reason=(
-            "foundation_authorized_wallet_configuration_recovery"
-            if next_status == "authorized"
-            else "wallet_configuration_recovered_pending_manual_review"
-        ),
-        transition_metadata={
-            "recovery_engine": "settlement_wallet_recovery_v1",
+    if current_status == next_status:
+        transition = {
+            "status": "settlement_status_unchanged",
+            "settlement_id": settlement_id,
             "previous_status": current_status,
-            "winner_wallet": winner_wallet,
-            "treasury_wallet": treasury_wallet,
-        },
-    )
+            "next_status": next_status,
+            "reason": "wallet_configuration_recovered_review_hold_preserved",
+        }
+    else:
+        transition = update_settlement_status_db(
+            settlement_id=settlement_id,
+            next_status=next_status,
+            reason=(
+                "foundation_authorized_wallet_configuration_recovery"
+                if next_status == "authorized"
+                else "wallet_configuration_recovered_pending_manual_review"
+            ),
+            transition_metadata={
+                "recovery_engine": "settlement_wallet_recovery_v1",
+                "previous_status": current_status,
+                "winner_wallet": winner_wallet,
+                "treasury_wallet": treasury_wallet,
+            },
+        )
 
     return {
         "status": (
@@ -11527,7 +11537,10 @@ def recover_settlement_wallet_configuration_db(
                 if next_status == "authorized"
                 else "settlement_recovered_manual_review_required"
             )
-            if transition.get("status") == "settlement_status_updated"
+            if transition.get("status") in {
+                "settlement_status_updated",
+                "settlement_status_unchanged",
+            }
             else "recovery_transition_failed"
         ),
         "settlement_id": settlement_id,

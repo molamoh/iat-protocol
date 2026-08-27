@@ -150,3 +150,59 @@ def test_authorized_settlement_can_be_held_for_manual_review():
 
     assert hold["transition_allowed"] is True
     assert bypass["transition_allowed"] is False
+
+
+def test_settlement_candidate_prefers_wallet_frozen_on_order(monkeypatch):
+    frozen_wallet = str(Keypair().pubkey())
+    registry_wallet = str(Keypair().pubkey())
+    monkeypatch.setattr(
+        agent_b_api,
+        "get_agent_db",
+        lambda _agent_id: {"wallet": registry_wallet},
+    )
+
+    candidate = agent_b_api.resolve_settlement_candidate(
+        {
+            "seller_id": "seller",
+            "seller_wallet": frozen_wallet,
+            "service": "web_research",
+            "price": 1.5,
+        },
+        {},
+    )
+
+    assert candidate["status"] == "resolved"
+    assert candidate["best"]["wallet"] == frozen_wallet
+
+
+def test_manual_review_hold_survives_automatic_reauthorization(monkeypatch):
+    winner_wallet, treasury_wallet = _configure_recovery(
+        monkeypatch,
+        {
+            "release_authorized": True,
+            "authorization_mode": "authorized",
+            "authorization_reason": "release_policy_automatic_authorized",
+        },
+    )
+    monkeypatch.setattr(
+        db,
+        "get_settlement_by_id_db",
+        lambda _settlement_id: {
+            "order_id": "order-canary",
+            "settlement_status": "manual_review",
+        },
+    )
+    captured = {}
+
+    def recover(**kwargs):
+        captured.update(kwargs)
+        return {"status": "settlement_recovered_manual_review_required"}
+
+    monkeypatch.setattr(db, "recover_settlement_wallet_configuration_db", recover)
+
+    result = agent_b_api.admin_recover_settlement_wallets("settlement", _admin=True)
+
+    assert result["status"] == "settlement_recovered_manual_review_required"
+    assert captured["winner_wallet"] == winner_wallet
+    assert captured["treasury_wallet"] == treasury_wallet
+    assert captured["next_status"] == "manual_review"

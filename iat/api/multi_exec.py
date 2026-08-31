@@ -2593,6 +2593,47 @@ def build_foundation_buyer_report(foundation_decision, fallback_delivery=None):
     uncertain_claims = explanation.get("uncertain_claims") or []
     evidence_quality = explanation.get("evidence_quality") or {}
 
+    def public_sources():
+        candidates = list(fallback_delivery.get("sources") or [])
+        execution = fd.get("foundation_execution_result") or {}
+        package = execution.get("evidence_package") or {}
+        evidence_results = list(package.get("research_results") or [])
+        for key in ("best_research_result", "best_verification_result"):
+            if isinstance(package.get(key), dict):
+                evidence_results.append(package[key])
+        for item in evidence_results:
+            data = item.get("data") or item if isinstance(item, dict) else {}
+            if not isinstance(data, dict):
+                continue
+            candidates.extend(data.get("sources") or [])
+            web_evidence = (
+                data.get("web_evidence")
+                or (data.get("raw") or {}).get("web_evidence")
+                or {}
+            )
+            if isinstance(web_evidence, dict):
+                candidates.extend(web_evidence.get("results") or [])
+
+        projected = []
+        seen = set()
+        allowed = ("title", "link", "url", "source", "display_link", "date")
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            public = {
+                key: candidate[key]
+                for key in allowed
+                if candidate.get(key) not in (None, "")
+            }
+            identity = str(public.get("link") or public.get("url") or public.get("title") or "")
+            if not identity or identity in seen:
+                continue
+            seen.add(identity)
+            projected.append(public)
+            if len(projected) >= 12:
+                break
+        return projected
+
     def claim_text(item):
         if isinstance(item, dict):
             raw_claim = item.get("claim")
@@ -2667,7 +2708,7 @@ def build_foundation_buyer_report(foundation_decision, fallback_delivery=None):
         "uncertain_claims": uncertain_claims[:12],
         "authority_statement": explanation.get("authority_statement"),
         "risk_factors": explanation.get("risk_factors", []),
-        "sources": fallback_delivery.get("sources", []),
+        "sources": public_sources(),
         "fallback_delivery_used": bool(fallback_delivery),
     }
 

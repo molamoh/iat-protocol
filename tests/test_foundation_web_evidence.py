@@ -180,6 +180,66 @@ def test_source_titles_are_prioritized_before_noisy_model_claims():
     assert len(claims) == 5
 
 
+def test_buyer_report_includes_only_public_foundation_sources():
+    decision = {
+        "foundation_decision": {
+            "foundation_verdict": "foundation_verified_with_evidence",
+            "decision_confidence": 0.75,
+            "foundation_decision_explanation": {
+                "decision_summary": "Verified report.",
+                "accepted_claims": [{"claim": "Supported claim"}],
+            },
+            "foundation_execution_result": {
+                "evidence_package": {
+                    "research_results": [{
+                        "data": {
+                            "raw": {
+                                "web_evidence": {
+                                    "results": [{
+                                        "title": "Primary source",
+                                        "link": "https://example.test/evidence",
+                                        "source": "example.test",
+                                        "provider_secret": "must-not-leak",
+                                    }]
+                                }
+                            }
+                        }
+                    }]
+                }
+            },
+        }
+    }
+
+    report = multi_exec.build_foundation_buyer_report(decision)
+
+    assert report["sources"] == [{
+        "title": "Primary source",
+        "link": "https://example.test/evidence",
+        "source": "example.test",
+    }]
+
+
+def test_buyer_report_deduplicates_foundation_sources():
+    source = {"title": "Primary source", "link": "https://example.test/evidence"}
+    decision = {
+        "foundation_decision": {
+            "foundation_decision_explanation": {},
+            "foundation_execution_result": {
+                "evidence_package": {
+                    "research_results": [
+                        {"data": {"sources": [source]}},
+                        {"data": {"sources": [source]}},
+                    ]
+                }
+            },
+        }
+    }
+
+    report = multi_exec.build_foundation_buyer_report(decision)
+
+    assert report["sources"] == [source]
+
+
 def test_direct_readiness_requires_high_quality_verified_sources(monkeypatch):
     evidence = {
         "provider": "test",

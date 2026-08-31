@@ -382,7 +382,12 @@ def test_wallet_checkout_reuses_matching_prepared_quote(monkeypatch):
         "input_asset": "USDC",
         "state": "prepared",
     }
-    prepared = {"solana_instruction_plan": {"program_id": "program"}}
+    prepared = {
+        "solana_instruction_plan": {
+            "program_id": "program",
+            "display": {"input_destination": "usdc-vault"},
+        }
+    }
     authorized = {"transaction_base64": "transaction", "simulation": {"status": "succeeded"}}
 
     monkeypatch.setattr(checkout_api, "_session_wallet", lambda authorization: (BUYER, {}))
@@ -429,6 +434,47 @@ def test_wallet_checkout_reuses_matching_prepared_quote(monkeypatch):
 
     assert result["quote_id"] == "uq_existing"
     assert result["transaction_base64"] == "transaction"
+    assert result["review"]["treasury_vault"] == "usdc-vault"
+    assert result["review"]["input_destination"] == "usdc-vault"
+
+
+def test_wallet_checkout_refuses_missing_input_destination(monkeypatch):
+    monkeypatch.setattr(checkout_api, "_session_wallet", lambda authorization: (BUYER, {}))
+    monkeypatch.setattr(
+        checkout_api,
+        "_wallet_owned_order",
+        lambda order_id, wallet: {"buyer_secret": SECRET},
+    )
+    monkeypatch.setattr(
+        checkout_api,
+        "create_universal_quote",
+        lambda *args, **kwargs: {
+            "quote_id": "uq_missing_destination",
+            "expires_at": NOW + 120,
+            "input": {"asset": "USDC"},
+            "output": {"asset": "IAT"},
+        },
+    )
+    monkeypatch.setattr(
+        checkout_api,
+        "prepare_universal_checkout",
+        lambda *args: {"solana_instruction_plan": {"program_id": "program"}},
+    )
+    monkeypatch.setattr(
+        checkout_api,
+        "_build_authorized_wallet_transaction",
+        lambda *args: {"transaction_base64": "transaction"},
+    )
+
+    with pytest.raises(HTTPException) as rejected:
+        checkout_api.prepare_wallet_checkout(
+            "ord-api",
+            checkout_api.WalletCheckoutRequest(input_asset="USDC"),
+            Response(),
+            authorization="Bearer session",
+        )
+
+    assert rejected.value.detail == "checkout_input_destination_missing"
 
 
 def test_authenticated_intent_commit_locks_selected_agent_and_price(monkeypatch):

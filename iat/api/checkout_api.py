@@ -2012,6 +2012,9 @@ def prepare_wallet_checkout(
     )
     authorized = _build_authorized_wallet_transaction(str(quote["quote_id"]), prepared)
     plan = prepared["solana_instruction_plan"]
+    input_destination = plan.get("display", {}).get("input_destination")
+    if not input_destination:
+        raise HTTPException(status_code=409, detail="checkout_input_destination_missing")
     _private_no_store(response)
     return {
         "status": "autonomous_checkout_policy_authorized" if req.autonomous else "wallet_checkout_ready_for_review",
@@ -2026,7 +2029,8 @@ def prepare_wallet_checkout(
             "input": quote["input"],
             "minimum_iat_output": quote["output"],
             "program_id": plan["program_id"],
-            "treasury_vault": plan.get("display", {}).get("treasury_vault"),
+            "treasury_vault": input_destination,
+            "input_destination": input_destination,
             "iat_destination": plan.get("display", {}).get("iat_destination"),
             "network_fee": "estimated_by_wallet",
         },

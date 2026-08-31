@@ -35,10 +35,8 @@ def main() -> int:
     if before["config"]["authority"] != AUTHORITY:
         raise RuntimeError("configured_authority_mismatch")
 
-    # Keep a small margin below the currently deployed on-chain ceiling.
-    # Keep the devnet canary usable for nearly the on-chain maximum policy
-    # lifetime (900s), while retaining a safety margin for RPC confirmation.
-    valid_until = int(time.time()) + 840
+    # Keep margin for devnet clock skew under the on-chain 900-second cap.
+    valid_until = int(time.time()) + 600
     plan = build_update_asset_plan(
         program_id=PROGRAM_ID,
         authority=AUTHORITY,

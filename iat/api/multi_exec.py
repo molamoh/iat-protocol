@@ -1903,6 +1903,14 @@ def foundation_local_claim_verification(order, extracted_claims, max_claims=12):
 
     source_profiles = []
 
+    def public_source(source):
+        allowed = ("title", "link", "url", "source", "display_link", "date")
+        return {
+            key: source[key]
+            for key in allowed
+            if isinstance(source, dict) and source.get(key) not in (None, "")
+        }
+
     for src in sources:
         text_blob = " ".join([
             str(src.get("title") or ""),
@@ -1971,6 +1979,11 @@ def foundation_local_claim_verification(order, extracted_claims, max_claims=12):
             verified.append({
                 "claim": claim_text,
                 "supporting_source_count": support_count,
+                "supporting_sources": [
+                    public_source(source)
+                    for source in supporting_sources[:6]
+                    if public_source(source)
+                ],
                 "confidence": min(0.90, 0.55 + support_count * 0.10),
                 "verification_method": "local_cross_source_overlap",
             })
@@ -1978,6 +1991,11 @@ def foundation_local_claim_verification(order, extracted_claims, max_claims=12):
             uncertain.append({
                 "claim": claim_text,
                 "supporting_source_count": support_count,
+                "supporting_sources": [
+                    public_source(source)
+                    for source in supporting_sources[:1]
+                    if public_source(source)
+                ],
                 "confidence": 0.45,
                 "verification_method": "single_source_overlap",
             })
@@ -2595,6 +2613,9 @@ def build_foundation_buyer_report(foundation_decision, fallback_delivery=None):
 
     def public_sources():
         candidates = list(fallback_delivery.get("sources") or [])
+        for claim in accepted_claims:
+            if isinstance(claim, dict):
+                candidates.extend(claim.get("supporting_sources") or [])
         execution = fd.get("foundation_execution_result") or {}
         package = execution.get("evidence_package") or {}
         evidence_results = list(package.get("research_results") or [])

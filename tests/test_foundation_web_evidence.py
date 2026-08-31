@@ -240,6 +240,51 @@ def test_buyer_report_deduplicates_foundation_sources():
     assert report["sources"] == [source]
 
 
+def test_verified_claims_retain_bounded_public_source_references():
+    sources = [
+        {
+            "title": f"Shared protocol evidence {index}",
+            "link": f"https://source{index}.example/evidence",
+            "source": f"source{index}.example",
+            "provider_secret": "must-not-leak",
+        }
+        for index in range(8)
+    ]
+    order = {"foundation_research_results": [{"data": {"sources": sources}}]}
+
+    verification = multi_exec.foundation_local_claim_verification(
+        order,
+        ["Shared protocol evidence"],
+    )
+
+    claim = verification["verified_claims"][0]
+    assert claim["supporting_source_count"] == 8
+    assert len(claim["supporting_sources"]) == 6
+    assert all("provider_secret" not in source for source in claim["supporting_sources"])
+
+
+def test_buyer_report_aggregates_sources_retained_by_verified_claims():
+    source = {
+        "title": "Primary source",
+        "link": "https://example.test/evidence",
+        "source": "example.test",
+    }
+    decision = {
+        "foundation_decision": {
+            "foundation_decision_explanation": {
+                "accepted_claims": [{
+                    "claim": "Supported claim",
+                    "supporting_sources": [source],
+                }]
+            }
+        }
+    }
+
+    report = multi_exec.build_foundation_buyer_report(decision)
+
+    assert report["sources"] == [source]
+
+
 def test_direct_readiness_requires_high_quality_verified_sources(monkeypatch):
     evidence = {
         "provider": "test",

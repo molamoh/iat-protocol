@@ -4563,6 +4563,18 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
             "seller_id": seller.get("seller_id"),
         }
 
+    payout_wallet = resolve_payment_wallet(
+        seller.get("seller_wallet"),
+        agent=seller,
+    )
+    if payout_wallet.get("valid") is not True:
+        return {
+            "status": "rejected",
+            "reason": "seller_payment_wallet_unresolved",
+            "seller_id": seller.get("seller_id"),
+            "wallet_resolution_reason": payout_wallet.get("reason"),
+        }
+
     if req.locked_unit_price is not None:
         try:
             price_matches = Decimal(str(seller.get("price"))) == Decimal(req.locked_unit_price)
@@ -4616,7 +4628,7 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
         "seller_id": seller["seller_id"],
         "seller_wallet": payment_wallet_for(seller["seller_wallet"]),
         "foundation_decision": foundation_decision,
-        "actual_agent_wallet": seller["seller_wallet"],
+        "actual_agent_wallet": payout_wallet["resolved_wallet"],
         "payment_target": payment_target(),
         "seller_url": seller.get("url") or "",
         "seller_source": seller.get("source"),
@@ -4651,7 +4663,7 @@ def create_order(req: OrderRequest, x_api_key: str | None = Header(default=None)
         "price": seller["price"],
         "seller_id": seller["seller_id"],
         "seller_wallet": payment_wallet_for(seller["seller_wallet"]),
-        "actual_agent_wallet": seller["seller_wallet"],
+        "actual_agent_wallet": payout_wallet["resolved_wallet"],
         "payment_target": payment_target(),
         "seller_url": seller.get("url") or "",
         "seller_source": seller.get("source"),

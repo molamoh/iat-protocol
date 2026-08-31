@@ -19570,7 +19570,9 @@ def list_verified_marketplace_candidates_db(service, limit=50):
                 sci.capacity_per_day, sci.capacity_per_order,
                 sci.verification_status AS catalog_verification_status,
                 s.trust_score AS seller_trust_score,
-                s.risk_score AS seller_risk_score
+                s.risk_score AS seller_risk_score,
+                s.wallet AS seller_wallet,
+                s.wallet_verified AS seller_wallet_verified
             FROM seller_agents sa
             JOIN agents a ON a.agent_id = sa.agent_id
             JOIN sellers s ON s.seller_id = sa.seller_id
@@ -19597,7 +19599,19 @@ def list_verified_marketplace_candidates_db(service, limit=50):
             """,
             (normalized_service, safe_limit),
         )
-        return [dict(row) for row in cur.fetchall()]
+        candidates = [dict(row) for row in cur.fetchall()]
+        from solders.pubkey import Pubkey
+
+        def payout_ready(candidate):
+            if int(candidate.get("seller_wallet_verified") or 0) != 1:
+                return False
+            try:
+                Pubkey.from_string(str(candidate.get("seller_wallet") or ""))
+                return True
+            except Exception:
+                return False
+
+        return [candidate for candidate in candidates if payout_ready(candidate)]
     finally:
         release_conn(conn)
 

@@ -233,11 +233,18 @@ def buyer_delivery_result(raw_result: Any) -> dict[str, Any] | None:
     """Keep only fields explicitly designed for disclosure to the buyer."""
     if not isinstance(raw_result, dict):
         return None
-    return {
+    nested_result = raw_result.get("result")
+    public = {
+        key: nested_result[key]
+        for key in BUYER_RESULT_FIELDS
+        if isinstance(nested_result, dict) and key in nested_result
+    }
+    public.update({
         key: raw_result[key]
         for key in BUYER_RESULT_FIELDS
         if key in raw_result
-    }
+    })
+    return public
 
 
 def _public_delivery(delivery: dict[str, Any] | None) -> dict[str, Any]:

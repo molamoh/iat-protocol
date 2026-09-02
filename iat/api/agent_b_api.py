@@ -8328,6 +8328,12 @@ def seller_register(req: SellerRegisterRequest):
             "message": "wallet_required",
         }
 
+    if not is_valid_solana_wallet(wallet):
+        return {
+            "status": "error",
+            "message": "seller_wallet_invalid",
+        }
+
     if get_seller_by_wallet_db(wallet):
         return {
             "status": "error",

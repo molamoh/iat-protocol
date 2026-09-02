@@ -2,6 +2,7 @@ import importlib.util
 from pathlib import Path
 
 import pytest
+from solders.keypair import Keypair
 
 from iat.api import agent_b_api, db
 from iat.action_engine import protocol_runtime
@@ -118,6 +119,8 @@ def test_seller_approval_does_not_reenable_disabled_agents(monkeypatch):
 
     monkeypatch.setattr(db, "get_seller_db", lambda _seller_id: {
         "seller_id": "seller_1", "seller_status": "pending", "metadata": "{}",
+        "email_verified": 1, "wallet_verified": 1,
+        "wallet": str(Keypair().pubkey()),
     })
     monkeypatch.setattr(db, "get_conn", Connection)
     monkeypatch.setattr(db, "release_conn", lambda _conn: None)

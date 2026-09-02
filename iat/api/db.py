@@ -18944,6 +18944,27 @@ def approve_seller_db(
             "message": "seller_not_found",
         }
 
+    try:
+        from solders.pubkey import Pubkey
+
+        wallet_valid = bool(Pubkey.from_string(str(seller.get("wallet") or "")))
+    except Exception:
+        wallet_valid = False
+
+    if (
+        int(seller.get("email_verified", 0) or 0) != 1
+        or int(seller.get("wallet_verified", 0) or 0) != 1
+        or not wallet_valid
+    ):
+        return {
+            "status": "error",
+            "message": "seller_identity_verification_required",
+            "seller_id": seller_id,
+            "email_verified": int(seller.get("email_verified", 0) or 0) == 1,
+            "wallet_verified": int(seller.get("wallet_verified", 0) or 0) == 1,
+            "wallet_valid": wallet_valid,
+        }
+
     if (
         str(seller.get("seller_status", "")).lower() in ["rejected", "banned"]
         and not override_terminal

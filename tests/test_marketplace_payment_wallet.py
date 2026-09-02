@@ -1,6 +1,37 @@
 from solders.keypair import Keypair
 
 from iat.api import agent_b_api
+from iat.api import db
+
+
+def test_seller_registration_rejects_non_solana_wallet(monkeypatch):
+    monkeypatch.setattr(agent_b_api, "init_db", lambda: None)
+
+    result = agent_b_api.seller_register(agent_b_api.SellerRegisterRequest(
+        seller_name="Invalid wallet seller",
+        wallet="wallet_metadata_test_001",
+        email="seller@example.com",
+    ))
+
+    assert result == {"status": "error", "message": "seller_wallet_invalid"}
+
+
+def test_seller_approval_requires_verified_email_and_wallet(monkeypatch):
+    monkeypatch.setattr(db, "get_seller_db", lambda _seller_id: {
+        "seller_id": "seller_unverified",
+        "seller_status": "pending",
+        "wallet": str(Keypair().pubkey()),
+        "email_verified": 0,
+        "wallet_verified": 0,
+    })
+
+    result = db.approve_seller_db("seller_unverified", override_terminal=True)
+
+    assert result["status"] == "error"
+    assert result["message"] == "seller_identity_verification_required"
+    assert result["email_verified"] is False
+    assert result["wallet_verified"] is False
+    assert result["wallet_valid"] is True
 
 
 def test_create_order_rejects_unresolved_seller_payment_wallet(monkeypatch):
